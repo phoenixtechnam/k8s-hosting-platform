@@ -1,28 +1,28 @@
 # K8s Hosting Platform
 
-Kubernetes-based web hosting platform replacing Plesk. Runs on self-managed k3s clusters (Hetzner VPS), targeting 50-100 clients initially at under $200/month infrastructure cost.
+Kubernetes-based, expandable web hosting platform. Runs on self-managed k3s clusters (VPS or bare metal).
 
 ## Architecture
 
 ```
                          ┌─────────────────────────────────────────────┐
-                         │              Hetzner VPS Cluster            │
+                         │               VPS Cluster                   │
                          │                                             │
-   Internet ──► 80/443 ──┤  ┌──────────────┐    ┌──────────────────┐  │
+   Internet ──► 80/443 ──┤  ┌───────────────┐    ┌──────────────────┐  │
                          │  │ NGINX Ingress │───►│ Client Workloads │  │
                          │  │  (DaemonSet)  │    │  (per-namespace) │  │
-                         │  └──────────────┘    └──────────────────┘  │
+                         │  └───────────────┘    └──────────────────┘  │
                          │                                             │
-                         │  ┌──────────────┐    ┌──────────────────┐  │
+                         │  ┌───────────────┐    ┌──────────────────┐  │
                          │  │  Management   │    │    MariaDB +     │  │
                          │  │  API (Fastify)│───►│  Redis (shared)  │  │
-                         │  └──────────────┘    └──────────────────┘  │
+                         │  └───────────────┘    └──────────────────┘  │
                          │                                             │
-                         │  ┌──────────────┐    ┌──────────────────┐  │
+                         │  ┌───────────────┐    ┌──────────────────┐  │
                          │  │ Admin Panel   │    │  Monitoring      │  │
                          │  │ Client Panel  │    │  (Prometheus +   │  │
                          │  │ (React/Vite)  │    │   Grafana + Loki)│  │
-                         │  └──────────────┘    └──────────────────┘  │
+                         │  └───────────────┘    └──────────────────┘  │
                          └─────────────────────────────────────────────┘
                                           │
                           ┌───────────────┼───────────────┐
