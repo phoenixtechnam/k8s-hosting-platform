@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer components {
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .badge-active {
+    @apply bg-green-100 text-green-800;
+  }
+  .badge-inactive {
+    @apply bg-red-100 text-red-800;
+  }
+  .badge-pending {
+    @apply bg-amber-100 text-amber-800;
+  }
+  .badge-warning {
+    @apply bg-orange-100 text-orange-800;
+  }
+}
