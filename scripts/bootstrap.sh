@@ -10,6 +10,9 @@ set -euo pipefail
 #   ./scripts/bootstrap.sh
 #
 # Options:
+#   --role <server|worker> Node role (default: server)
+#   --server <IP>          Control plane IP (required for --role worker)
+#   --token <TOKEN>        k3s join token (required for --role worker)
 #   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
 #   --skip-monitoring      Skip Prometheus/Loki/Grafana
 #   --skip-flux            Skip Flux v2 GitOps controller
@@ -18,6 +21,9 @@ set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
+NODE_ROLE="server"
+K3S_SERVER_IP=""
+K3S_TOKEN=""
 K3S_VERSION="v1.31.4+k3s1"
 CALICO_VERSION="v3.28.0"
 SKIP_MONITORING=false
@@ -44,6 +50,9 @@ marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --role)            NODE_ROLE="$2"; shift 2 ;;
+      --server)          K3S_SERVER_IP="$2"; shift 2 ;;
+      --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
       --skip-monitoring) SKIP_MONITORING=true; shift ;;
       --skip-flux)       SKIP_FLUX=true; shift ;;
@@ -52,6 +61,15 @@ parse_args() {
       *)                 error "Unknown option: $1" ;;
     esac
   done
+
+  if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
+    error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
+  fi
+
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    [[ -z "$K3S_SERVER_IP" ]] && error "Worker mode requires --server <CONTROL_PLANE_IP>"
+    [[ -z "$K3S_TOKEN" ]]     && error "Worker mode requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
+  fi
 }
 
 check_root() {
@@ -202,7 +220,15 @@ install_k3s() {
     log "Upgrading from ${installed} to ${K3S_VERSION}..."
   fi
 
-  log "Installing k3s ${K3S_VERSION}..."
+  if [[ "$NODE_ROLE" == "server" ]]; then
+    install_k3s_server
+  else
+    install_k3s_worker
+  fi
+}
+
+install_k3s_server() {
+  log "Installing k3s ${K3S_VERSION} (server)..."
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="server" \
@@ -224,6 +250,26 @@ install_k3s() {
     sleep 2
   done
   error "k3s API server did not become ready within 120 seconds."
+}
+
+install_k3s_worker() {
+  log "Installing k3s ${K3S_VERSION} (worker — joining ${K3S_SERVER_IP})..."
+  curl -sfL https://get.k3s.io | \
+    INSTALL_K3S_VERSION="$K3S_VERSION" \
+    K3S_URL="https://${K3S_SERVER_IP}:6443" \
+    K3S_TOKEN="$K3S_TOKEN" \
+    sh -
+
+  log "Waiting for k3s agent to register..."
+  local _attempt
+  for _attempt in $(seq 1 30); do
+    if systemctl is-active --quiet k3s-agent; then
+      log "k3s agent is running."
+      return 0
+    fi
+    sleep 2
+  done
+  error "k3s agent did not start within 60 seconds."
 }
 
 install_calico() {
@@ -575,41 +621,59 @@ main() {
   check_os
 
   log "════════════════════════════════════════════════"
-  log "  K8s Hosting Platform — Bootstrap"
+  log "  K8s Hosting Platform — Bootstrap (${NODE_ROLE})"
   log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
   log "════════════════════════════════════════════════"
   log ""
 
-  # Phase 1: Server hardening
+  # Phase 1: Server hardening (both roles)
   log "── Phase 1: Server Hardening ──"
   harden_ssh
   install_packages
   configure_firewall
   configure_fail2ban
 
-  # Phase 2: k3s + Calico
+  # Phase 2: k3s (server or agent depending on role)
   log ""
-  log "── Phase 2: Kubernetes (k3s + Calico) ──"
+  log "── Phase 2: Kubernetes (k3s) ──"
   install_k3s
-  install_calico
 
-  # Phase 3: Platform components
-  log ""
-  log "── Phase 3: Platform Components ──"
-  install_helm
-  install_flux_cli
-  install_nginx_ingress
-  install_cert_manager
-  install_sealed_secrets
-  install_monitoring
-  install_flux
-  apply_platform_manifests
+  if [[ "$NODE_ROLE" == "server" ]]; then
+    # Calico + platform components only on the control plane
+    install_calico
 
-  # Phase 4: Verify
-  log ""
-  log "── Phase 4: Verification ──"
-  verify
-  print_summary
+    # Phase 3: Platform components
+    log ""
+    log "── Phase 3: Platform Components ──"
+    install_helm
+    install_flux_cli
+    install_nginx_ingress
+    install_cert_manager
+    install_sealed_secrets
+    install_monitoring
+    install_flux
+    apply_platform_manifests
+
+    # Phase 4: Verify
+    log ""
+    log "── Phase 4: Verification ──"
+    verify
+    print_summary
+  else
+    # Worker — just confirm agent is running
+    log ""
+    log "════════════════════════════════════════════════"
+    log "  WORKER NODE BOOTSTRAP COMPLETE"
+    log "════════════════════════════════════════════════"
+    log ""
+    log "  Joined control plane: ${K3S_SERVER_IP}"
+    log "  k3s agent status: $(systemctl is-active k3s-agent)"
+    log ""
+    log "  Verify from the control plane:"
+    log "    kubectl get nodes"
+    log ""
+    log "════════════════════════════════════════════════"
+  fi
 
   marker_set "bootstrap-complete"
 }
