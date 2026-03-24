@@ -12,7 +12,8 @@ set -euo pipefail
 #   --skip-flux        Skip Flux v2 installation
 #   --help             Show this help message
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
 KUBECONFIG_PATH=""
 SKIP_MONITORING=false

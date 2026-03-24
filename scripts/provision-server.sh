@@ -14,7 +14,7 @@ set -euo pipefail
 #   --k3s-version  k3s version to install (default: v1.31.4+k3s1)
 #   --help      Show this help message
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034
 readonly IDEMPOTENCY_MARKER="/var/lib/hosting-platform/.provisioned"
 
 # Defaults
