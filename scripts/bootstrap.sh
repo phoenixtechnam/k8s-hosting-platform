@@ -229,6 +229,13 @@ install_k3s() {
 
 install_k3s_server() {
   log "Installing k3s ${K3S_VERSION} (server)..."
+  # Collect all host IPs for TLS SAN (IPv4 + IPv6)
+  local tls_sans=""
+  for ip in $(hostname -I); do
+    tls_sans="${tls_sans} --tls-san=${ip}"
+  done
+
+  # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="server" \
@@ -238,7 +245,9 @@ install_k3s_server() {
       --disable=traefik \
       --disable=servicelb \
       --write-kubeconfig-mode=644 \
-      --tls-san="$(hostname -I | awk '{print $1}')"
+      --cluster-cidr=10.42.0.0/16,fd42::/48 \
+      --service-cidr=10.43.0.0/16,fd43::/112 \
+      ${tls_sans}
 
   log "Waiting for k3s API server..."
   local _attempt
@@ -300,6 +309,11 @@ spec:
       cidr: 10.42.0.0/16
       encapsulation: VXLANCrossSubnet
       natOutgoing: Enabled
+      nodeSelector: all()
+    - blockSize: 122
+      cidr: fd42::/48
+      encapsulation: None
+      natOutgoing: false
       nodeSelector: all()
 ---
 apiVersion: operator.tigera.io/v1

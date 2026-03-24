@@ -257,6 +257,13 @@ install_k3s() {
     # --disable-network-policy: disable built-in network policy controller (Calico provides it)
     # --disable=traefik: disable Traefik ingress (we use NGINX Ingress)
     # --disable=servicelb: disable ServiceLB (we use NGINX Ingress with hostPort)
+    # Build TLS SAN flags for all host IPs (IPv4 + IPv6)
+    TLS_SANS=""
+    for ip in $(hostname -I); do
+      TLS_SANS="${TLS_SANS} --tls-san=${ip}"
+    done
+
+    # shellcheck disable=SC2086
     curl -sfL https://get.k3s.io | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
@@ -266,7 +273,9 @@ install_k3s() {
         --disable=traefik \
         --disable=servicelb \
         --write-kubeconfig-mode=644 \
-        --tls-san="$(hostname -I | awk '{print $1}')"
+        --cluster-cidr=10.42.0.0/16,fd42::/48 \
+        --service-cidr=10.43.0.0/16,fd43::/112 \
+        ${TLS_SANS}
 
     # Wait for k3s to be ready (API server)
     echo "Waiting for k3s API server..."
@@ -321,6 +330,11 @@ spec:
       cidr: 10.42.0.0/16
       encapsulation: VXLANCrossSubnet
       natOutgoing: Enabled
+      nodeSelector: all()
+    - blockSize: 122
+      cidr: fd42::/48
+      encapsulation: None
+      natOutgoing: false
       nodeSelector: all()
 ---
 apiVersion: operator.tigera.io/v1
