@@ -1,0 +1,617 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bootstrap.sh — One-command server setup for the k8s hosting platform.
+# Run directly on a fresh Debian 12/13 or Ubuntu 22.04+ server.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform/main/scripts/bootstrap.sh | bash
+#   # or after cloning:
+#   ./scripts/bootstrap.sh
+#
+# Options:
+#   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
+#   --skip-monitoring      Skip Prometheus/Loki/Grafana
+#   --skip-flux            Skip Flux v2 GitOps controller
+#   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
+#   --help                 Show this help message
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+K3S_VERSION="v1.31.4+k3s1"
+CALICO_VERSION="v3.28.0"
+SKIP_MONITORING=false
+SKIP_FLUX=false
+SKIP_HARDENING=false
+MARKER_DIR="/var/lib/hosting-platform"
+KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+usage() {
+  sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  exit 0
+}
+
+log()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: $*" >&2; }
+error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
+
+marker_exists() { [[ -f "${MARKER_DIR}/.${1}" ]]; }
+marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
+      --skip-monitoring) SKIP_MONITORING=true; shift ;;
+      --skip-flux)       SKIP_FLUX=true; shift ;;
+      --skip-hardening)  SKIP_HARDENING=true; shift ;;
+      --help|-h)         usage ;;
+      *)                 error "Unknown option: $1" ;;
+    esac
+  done
+}
+
+check_root() {
+  [[ "$(id -u)" -eq 0 ]] || error "This script must be run as root."
+}
+
+check_os() {
+  if [[ ! -f /etc/os-release ]]; then
+    error "Cannot detect OS. This script requires Debian 12+ or Ubuntu 22.04+."
+  fi
+  # shellcheck source=/dev/null
+  source /etc/os-release
+  log "Detected OS: ${PRETTY_NAME}"
+}
+
+# ─── Phase 1: Server Hardening ───────────────────────────────────────────────
+
+harden_ssh() {
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping SSH hardening (--skip-hardening)."
+    return 0
+  fi
+  if marker_exists "ssh-hardened"; then
+    log "SSH already hardened, skipping."
+    return 0
+  fi
+
+  log "Hardening SSH configuration..."
+  local sshd_config="/etc/ssh/sshd_config"
+
+  cp "$sshd_config" "${sshd_config}.bak.$(date +%s)"
+
+  sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' "$sshd_config"
+  sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$sshd_config"
+  sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' "$sshd_config"
+  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' "$sshd_config"
+  sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$sshd_config"
+
+  sshd -t || { error "Invalid sshd_config after modification"; }
+  systemctl reload sshd
+
+  marker_set "ssh-hardened"
+  log "SSH hardened."
+}
+
+install_packages() {
+  log "Installing base packages..."
+  export DEBIAN_FRONTEND=noninteractive
+
+  apt-get update -qq
+  apt-get install -y -qq \
+    curl wget gnupg2 software-properties-common ca-certificates \
+    nftables fail2ban jq unzip git open-iscsi nfs-common \
+    >/dev/null 2>&1
+
+  log "Base packages installed."
+}
+
+configure_firewall() {
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping firewall (--skip-hardening)."
+    return 0
+  fi
+
+  log "Configuring nftables firewall..."
+  cat > /etc/nftables.conf <<'NFT'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+    tcp dport 80 accept      # HTTP
+    tcp dport 443 accept     # HTTPS
+    tcp dport 6443 accept    # k8s API
+    tcp dport 22 accept      # SSH
+    udp dport 51820 accept   # WireGuard (NetBird)
+
+    counter drop
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    ct state established,related accept
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}
+NFT
+
+  systemctl enable nftables
+  nft -f /etc/nftables.conf
+  log "Firewall configured."
+}
+
+configure_fail2ban() {
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping fail2ban (--skip-hardening)."
+    return 0
+  fi
+  if marker_exists "fail2ban-configured"; then
+    log "fail2ban already configured, skipping."
+    return 0
+  fi
+
+  log "Configuring fail2ban..."
+  cat > /etc/fail2ban/jail.local <<'EOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled = true
+port    = ssh
+filter  = sshd
+maxretry = 3
+EOF
+
+  systemctl enable fail2ban
+  systemctl restart fail2ban
+  marker_set "fail2ban-configured"
+  log "fail2ban configured."
+}
+
+# ─── Phase 2: k3s + Calico ───────────────────────────────────────────────────
+
+install_k3s() {
+  if command -v k3s &>/dev/null; then
+    local installed
+    installed="$(k3s --version | awk '{print $3}')"
+    log "k3s already installed: ${installed}"
+    if [[ "$installed" == "$K3S_VERSION" ]]; then
+      log "Correct version, skipping k3s install."
+      return 0
+    fi
+    log "Upgrading from ${installed} to ${K3S_VERSION}..."
+  fi
+
+  log "Installing k3s ${K3S_VERSION}..."
+  curl -sfL https://get.k3s.io | \
+    INSTALL_K3S_VERSION="$K3S_VERSION" \
+    INSTALL_K3S_EXEC="server" \
+    sh -s - \
+      --flannel-backend=none \
+      --disable-network-policy \
+      --disable=traefik \
+      --disable=servicelb \
+      --write-kubeconfig-mode=644 \
+      --tls-san="$(hostname -I | awk '{print $1}')"
+
+  log "Waiting for k3s API server..."
+  local _attempt
+  for _attempt in $(seq 1 60); do
+    if kubectl --kubeconfig="$KUBECONFIG" get nodes &>/dev/null; then
+      log "k3s API server is ready."
+      return 0
+    fi
+    sleep 2
+  done
+  error "k3s API server did not become ready within 120 seconds."
+}
+
+install_calico() {
+  export KUBECONFIG
+
+  if kubectl get namespace calico-system &>/dev/null 2>&1; then
+    log "Calico already installed, skipping."
+    return 0
+  fi
+
+  log "Installing Calico ${CALICO_VERSION}..."
+
+  kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" || true
+
+  log "Waiting for Calico operator..."
+  kubectl wait --for=condition=available --timeout=120s \
+    deployment/tigera-operator -n tigera-operator 2>/dev/null || true
+
+  cat <<'EOF' | kubectl apply -f -
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+    - blockSize: 26
+      cidr: 10.42.0.0/16
+      encapsulation: VXLANCrossSubnet
+      natOutgoing: Enabled
+      nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}
+EOF
+
+  log "Waiting for Calico pods..."
+  sleep 10
+  kubectl wait --for=condition=ready pod -l k8s-app=calico-node \
+    -n calico-system --timeout=180s 2>/dev/null \
+    || warn "Calico pods not ready yet — they may need more time."
+
+  marker_set "calico-installed"
+  log "Calico CNI installed."
+}
+
+# ─── Phase 3: Platform Components ────────────────────────────────────────────
+
+install_helm() {
+  if command -v helm &>/dev/null; then
+    log "Helm already installed: $(helm version --short)"
+    return 0
+  fi
+
+  log "Installing Helm..."
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  log "Helm installed."
+}
+
+install_flux_cli() {
+  if [[ "$SKIP_FLUX" == true ]]; then return 0; fi
+
+  if command -v flux &>/dev/null; then
+    log "Flux CLI already installed."
+    return 0
+  fi
+
+  log "Installing Flux CLI..."
+  curl -fsSL https://fluxcd.io/install.sh | bash
+  log "Flux CLI installed."
+}
+
+helm_cmd() {
+  helm --kubeconfig="$KUBECONFIG" "$@"
+}
+
+kctl() {
+  kubectl --kubeconfig="$KUBECONFIG" "$@"
+}
+
+install_nginx_ingress() {
+  if kctl get deployment -n ingress-nginx ingress-nginx-controller &>/dev/null 2>&1; then
+    log "NGINX Ingress already installed, skipping."
+    return 0
+  fi
+
+  log "Installing NGINX Ingress Controller..."
+  helm_cmd repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
+  helm_cmd repo update
+
+  helm_cmd upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx \
+    --create-namespace \
+    --set controller.kind=DaemonSet \
+    --set controller.hostPort.enabled=true \
+    --set controller.service.type=ClusterIP \
+    --set controller.metrics.enabled=true \
+    --set controller.allowSnippetAnnotations=false \
+    --wait \
+    --timeout 300s
+
+  log "NGINX Ingress Controller installed."
+}
+
+install_cert_manager() {
+  if kctl get deployment -n cert-manager cert-manager &>/dev/null 2>&1; then
+    log "cert-manager already installed, skipping."
+    return 0
+  fi
+
+  log "Installing cert-manager..."
+  helm_cmd repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+  helm_cmd repo update
+
+  helm_cmd upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager \
+    --create-namespace \
+    --set crds.enabled=true \
+    --set prometheus.enabled=true \
+    --wait \
+    --timeout 300s
+
+  kctl apply -f - <<'EOF'
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@phoenix-host.net
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@phoenix-host.net
+    privateKeySecretRef:
+      name: letsencrypt-production
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+EOF
+
+  log "cert-manager installed with Let's Encrypt issuers."
+}
+
+install_sealed_secrets() {
+  if kctl get deployment -n kube-system sealed-secrets-controller &>/dev/null 2>&1; then
+    log "Sealed Secrets already installed, skipping."
+    return 0
+  fi
+
+  log "Installing Sealed Secrets..."
+  helm_cmd repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets 2>/dev/null || true
+  helm_cmd repo update
+
+  helm_cmd upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+    --namespace kube-system \
+    --set fullnameOverride=sealed-secrets-controller \
+    --wait \
+    --timeout 300s
+
+  log "Sealed Secrets controller installed."
+}
+
+install_monitoring() {
+  if [[ "$SKIP_MONITORING" == true ]]; then
+    log "Skipping monitoring stack (--skip-monitoring)."
+    return 0
+  fi
+
+  if kctl get statefulset -n monitoring prometheus-kube-prometheus-prometheus &>/dev/null 2>&1; then
+    log "Prometheus already installed, skipping."
+  else
+    log "Installing kube-prometheus-stack..."
+    helm_cmd repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+    helm_cmd repo update
+
+    helm_cmd upgrade --install kube-prometheus prometheus-community/kube-prometheus-stack \
+      --namespace monitoring \
+      --create-namespace \
+      --set prometheus.prometheusSpec.retention=7d \
+      --set prometheus.prometheusSpec.resources.requests.memory=512Mi \
+      --set prometheus.prometheusSpec.resources.requests.cpu=250m \
+      --set prometheus.prometheusSpec.resources.limits.memory=1Gi \
+      --set grafana.enabled=true \
+      --set grafana.adminPassword=change-me \
+      --set alertmanager.enabled=true \
+      --wait \
+      --timeout 600s
+
+    log "kube-prometheus-stack installed."
+  fi
+
+  if kctl get statefulset -n monitoring loki &>/dev/null 2>&1; then
+    log "Loki already installed, skipping."
+  else
+    log "Installing Loki..."
+    helm_cmd repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+    helm_cmd repo update
+
+    helm_cmd upgrade --install loki grafana/loki-stack \
+      --namespace monitoring \
+      --create-namespace \
+      --set loki.persistence.enabled=true \
+      --set loki.persistence.size=5Gi \
+      --set promtail.enabled=true \
+      --wait \
+      --timeout 300s
+
+    log "Loki + Promtail installed."
+  fi
+}
+
+install_flux() {
+  if [[ "$SKIP_FLUX" == true ]]; then
+    log "Skipping Flux v2 (--skip-flux)."
+    return 0
+  fi
+
+  if kctl get deployment -n flux-system source-controller &>/dev/null 2>&1; then
+    log "Flux already installed, skipping."
+    return 0
+  fi
+
+  log "Installing Flux v2..."
+  flux install --kubeconfig="$KUBECONFIG" --timeout=300s
+  log "Flux v2 installed."
+}
+
+apply_platform_manifests() {
+  log "Applying platform manifests..."
+
+  # Clone repo if not already in it
+  local repo_dir=""
+  if [[ -f "k8s/base/kustomization.yaml" ]]; then
+    repo_dir="."
+  elif [[ -f "/opt/k8s-hosting-platform/k8s/base/kustomization.yaml" ]]; then
+    repo_dir="/opt/k8s-hosting-platform"
+  else
+    log "Cloning platform repository..."
+    git clone --depth 1 "$REPO_URL" /opt/k8s-hosting-platform 2>/dev/null || true
+    repo_dir="/opt/k8s-hosting-platform"
+  fi
+
+  if [[ -d "${repo_dir}/k8s/base" ]]; then
+    kctl apply -k "${repo_dir}/k8s/base"
+    log "Platform manifests applied."
+  else
+    warn "k8s/base directory not found, skipping manifest application."
+  fi
+}
+
+# ─── Phase 4: Verification ───────────────────────────────────────────────────
+
+verify() {
+  export KUBECONFIG
+  log ""
+  log "════════════════════════════════════════════════"
+  log "VERIFICATION"
+  log "════════════════════════════════════════════════"
+
+  log ""
+  log "── Node Status ──"
+  kubectl get nodes -o wide
+
+  log ""
+  log "── All Pods ──"
+  kubectl get pods -A --sort-by=.metadata.namespace
+
+  log ""
+  log "── k3s Version ──"
+  k3s --version
+
+  log ""
+  log "── Helm Releases ──"
+  helm_cmd list -A
+
+  log ""
+  log "── Ingress Controller ──"
+  kctl get svc -n ingress-nginx 2>/dev/null || echo "  (not found)"
+
+  log ""
+  log "── Certificates ──"
+  kctl get clusterissuer 2>/dev/null || echo "  (not found)"
+
+  log ""
+  log "── Firewall ──"
+  nft list ruleset 2>/dev/null | head -10 || echo "  (nftables not configured)"
+
+  log ""
+  log "════════════════════════════════════════════════"
+}
+
+print_summary() {
+  local server_ip
+  server_ip="$(hostname -I | awk '{print $1}')"
+
+  log ""
+  log "════════════════════════════════════════════════"
+  log "  BOOTSTRAP COMPLETE"
+  log "════════════════════════════════════════════════"
+  log ""
+  log "  Server IP:    ${server_ip}"
+  log "  Kubeconfig:   ${KUBECONFIG}"
+  log "  k3s version:  ${K3S_VERSION}"
+  log ""
+  log "  Installed:"
+  log "    - k3s + Calico CNI"
+  log "    - NGINX Ingress Controller (ports 80/443)"
+  log "    - cert-manager (Let's Encrypt staging + production)"
+  log "    - Sealed Secrets"
+  [[ "$SKIP_MONITORING" != true ]] && log "    - Prometheus + Grafana + Loki"
+  [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
+  log "    - Platform namespaces + RBAC + network policies"
+  log ""
+  log "  To use kubectl from another machine:"
+  log "    scp root@${server_ip}:${KUBECONFIG} ./kubeconfig.yaml"
+  log "    sed -i 's/127.0.0.1/${server_ip}/g' kubeconfig.yaml"
+  log "    export KUBECONFIG=./kubeconfig.yaml"
+  log "    kubectl get nodes"
+  log ""
+  log "  Grafana (if monitoring enabled):"
+  log "    kubectl port-forward -n monitoring svc/kube-prometheus-grafana 3000:80"
+  log "    User: admin / Password: change-me"
+  log ""
+  log "════════════════════════════════════════════════"
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+main() {
+  parse_args "$@"
+  check_root
+  check_os
+
+  log "════════════════════════════════════════════════"
+  log "  K8s Hosting Platform — Bootstrap"
+  log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
+  log "════════════════════════════════════════════════"
+  log ""
+
+  # Phase 1: Server hardening
+  log "── Phase 1: Server Hardening ──"
+  harden_ssh
+  install_packages
+  configure_firewall
+  configure_fail2ban
+
+  # Phase 2: k3s + Calico
+  log ""
+  log "── Phase 2: Kubernetes (k3s + Calico) ──"
+  install_k3s
+  install_calico
+
+  # Phase 3: Platform components
+  log ""
+  log "── Phase 3: Platform Components ──"
+  install_helm
+  install_flux_cli
+  install_nginx_ingress
+  install_cert_manager
+  install_sealed_secrets
+  install_monitoring
+  install_flux
+  apply_platform_manifests
+
+  # Phase 4: Verify
+  log ""
+  log "── Phase 4: Verification ──"
+  verify
+  print_summary
+
+  marker_set "bootstrap-complete"
+}
+
+main "$@"
