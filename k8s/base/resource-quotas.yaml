@@ -1,0 +1,57 @@
+# Resource quota for the hosting namespace (client workloads)
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: hosting-quota
+  namespace: hosting
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  hard:
+    requests.cpu: "16"
+    requests.memory: 32Gi
+    limits.cpu: "32"
+    limits.memory: 64Gi
+    persistentvolumeclaims: "200"
+    pods: "500"
+    services: "200"
+---
+# LimitRange for hosting namespace — default per-pod limits
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: hosting-limit-range
+  namespace: hosting
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      max:
+        cpu: "4"
+        memory: 8Gi
+      min:
+        cpu: 50m
+        memory: 64Mi
+---
+# Resource quota for platform namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "50"

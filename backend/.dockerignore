@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+*.test.ts
+test-helpers
+vitest.config*.ts
+docker-compose*.yml
+.env*
+scripts

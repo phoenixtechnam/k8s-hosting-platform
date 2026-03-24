@@ -1,0 +1,12 @@
+{
+  "name": "k8s-hosting-platform",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend/admin-panel",
+    "frontend/client-panel"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

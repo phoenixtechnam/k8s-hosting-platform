@@ -1,0 +1,11 @@
+# Hetzner Cloud API token (generate at https://console.hetzner.cloud)
+hcloud_token = "your-hetzner-cloud-api-token"
+
+# Name of the SSH key already registered in Hetzner Cloud
+ssh_key_name = "phoenix-host"
+
+# Hostname for the server
+server_name = "admin1"
+
+# Hetzner datacenter location (fsn1 = Falkenstein, nbg1 = Nuremberg, hel1 = Helsinki)
+location = "fsn1"

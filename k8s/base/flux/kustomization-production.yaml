@@ -1,0 +1,28 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hosting-platform-production
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./k8s/overlays/production
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: hosting-platform
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: platform-api
+      namespace: platform
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: admin-panel
+      namespace: platform
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: client-panel
+      namespace: platform
+  timeout: 5m
+  # Manual gate: requires annotation to reconcile
+  suspend: true

@@ -1,0 +1,25 @@
+name: Admin Panel CI
+
+on:
+  push:
+    branches: [main, staging]
+    paths: ['frontend/admin-panel/**']
+  pull_request:
+    branches: [main, staging]
+    paths: ['frontend/admin-panel/**']
+
+jobs:
+  lint-typecheck-test-build:
+    name: Lint, Typecheck, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint -w @k8s-hosting/admin-panel
+      - run: npm run typecheck -w @k8s-hosting/admin-panel
+      - run: npm run test -w @k8s-hosting/admin-panel
+      - run: npm run build -w @k8s-hosting/admin-panel

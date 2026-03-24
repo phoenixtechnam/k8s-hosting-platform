@@ -1,0 +1,13 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: hosting-platform
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/your-org/k8s-hosting-platform
+  ref:
+    branch: main
+  # For private repos, uncomment and create the secret:
+  # secretRef:
+  #   name: flux-github-auth

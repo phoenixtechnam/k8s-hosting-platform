@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: management
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hosting
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: client-workloads

@@ -1,0 +1,71 @@
+name: Infrastructure CI
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - 'terraform/**'
+      - 'k8s/**'
+      - 'scripts/**'
+      - 'catalog-images/**'
+  pull_request:
+    branches: [main, staging]
+    paths:
+      - 'terraform/**'
+      - 'k8s/**'
+      - 'scripts/**'
+      - 'catalog-images/**'
+
+jobs:
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+      - run: terraform -chdir=terraform init -backend=false
+      - run: terraform -chdir=terraform validate
+      - run: terraform -chdir=terraform fmt -check
+
+  kustomize-build:
+    name: Kustomize Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "Building base..."
+          kubectl kustomize k8s/base
+          echo "Building staging overlay..."
+          kubectl kustomize k8s/overlays/staging
+          echo "Building production overlay..."
+          kubectl kustomize k8s/overlays/production
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh
+
+  docker-build:
+    name: Docker Build (no push)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - nginx-php84
+          - apache-php84
+          - wordpress-php84
+          - static-nginx
+          - node22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: |
+          docker build \
+            --tag "hosting-catalog/${{ matrix.image }}:test" \
+            "catalog-images/${{ matrix.image }}"
