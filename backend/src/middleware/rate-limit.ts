@@ -16,7 +16,7 @@ export async function registerRateLimit(
     timeWindow: options?.timeWindow ?? '1 minute',
     keyGenerator: (request) => {
       // Use authenticated user ID if available, otherwise IP
-      const user = (request as any).user;
+      const user = (request as unknown as { user?: { sub: string } }).user;
       return user?.sub ?? request.ip;
     },
     errorResponseBuilder: (_request, context) => {

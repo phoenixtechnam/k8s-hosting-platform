@@ -1,11 +1,9 @@
 FROM node:22-alpine
 
-RUN adduser -D -u 1000 appuser
-
-RUN mkdir -p /app && chown appuser:appuser /app
+RUN mkdir -p /app && chown node:node /app
 WORKDIR /app
 
-USER appuser
+USER node
 
 EXPOSE 3000
 

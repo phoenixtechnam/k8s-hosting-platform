@@ -65,7 +65,7 @@ export function registerAuditHook(app: FastifyInstance, db: Database): void {
     if (!shouldAudit(request.method, request.url)) return;
 
     const { resourceType, resourceId, clientId } = extractResourceInfo(request.url);
-    const user = (request as any).user;
+    const user = (request as unknown as { user?: { sub: string; role: string } }).user;
 
     // Fire-and-forget — don't block the response
     db.insert(auditLogs)
