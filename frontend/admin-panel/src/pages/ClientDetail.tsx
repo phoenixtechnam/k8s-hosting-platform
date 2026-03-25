@@ -1,12 +1,41 @@
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Edit, Pause, Trash2, Loader2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useClient } from '@/hooks/use-clients';
+import EditClientModal from '@/components/EditClientModal';
+import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
+import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data, isLoading, error } = useClient(id);
   const client = data?.data;
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const deleteClient = useDeleteClient();
+  const updateClient = useUpdateClient(id ?? '');
+
+  const handleDelete = async () => {
+    if (!id) return;
+    try {
+      await deleteClient.mutateAsync(id);
+      navigate('/clients');
+    } catch {
+      // error stays visible in dialog
+    }
+  };
+
+  const handleSuspend = async () => {
+    if (!id) return;
+    try {
+      await updateClient.mutateAsync({ status: 'suspended' });
+    } catch {
+      // silently handled — status badge will reflect current state
+    }
+  };
 
   if (isLoading) {
     return (
@@ -48,13 +77,30 @@ export default function ClientDetail() {
           <p className="text-sm text-gray-500">{email}</p>
         </div>
         <div className="flex gap-2">
-          <button className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50">
+          <button
+            onClick={() => setEditOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            data-testid="edit-button"
+          >
             <Edit size={14} />
             <span className="hidden sm:inline">Edit</span>
           </button>
-          <button className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50">
-            <Pause size={14} />
+          <button
+            onClick={handleSuspend}
+            disabled={updateClient.isPending || client.status === 'suspended'}
+            className="inline-flex items-center gap-2 rounded-lg border border-orange-200 bg-white px-4 py-2 text-sm font-medium text-orange-600 shadow-sm hover:bg-orange-50 disabled:opacity-50"
+            data-testid="suspend-button"
+          >
+            {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
             <span className="hidden sm:inline">Suspend</span>
+          </button>
+          <button
+            onClick={() => setDeleteOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50"
+            data-testid="delete-button"
+          >
+            <Trash2 size={14} />
+            <span className="hidden sm:inline">Delete</span>
           </button>
         </div>
       </div>
@@ -122,6 +168,20 @@ export default function ClientDetail() {
           </div>
         </div>
       </div>
+
+      <EditClientModal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        client={client}
+      />
+
+      <DeleteConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={handleDelete}
+        clientName={name}
+        isPending={deleteClient.isPending}
+      />
     </div>
   );
 }

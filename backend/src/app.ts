@@ -14,6 +14,8 @@ import { cronJobRoutes } from './modules/cron-jobs/routes.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { planRoutes } from './modules/plans/routes.js';
 import { regionRoutes } from './modules/regions/routes.js';
+import { containerImageRoutes } from './modules/container-images/routes.js';
+import { dashboardRoutes } from './modules/dashboard/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -70,6 +72,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupRoutes, { prefix: '/api/v1' });
   await app.register(metricsRoutes, { prefix: '/api/v1' });
   await app.register(cronJobRoutes, { prefix: '/api/v1' });
+  await app.register(containerImageRoutes, { prefix: '/api/v1' });
+  await app.register(dashboardRoutes, { prefix: '/api/v1' });
 
   return app;
 }

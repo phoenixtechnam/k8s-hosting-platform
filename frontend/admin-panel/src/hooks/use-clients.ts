@@ -54,6 +54,29 @@ export function useCreateClient() {
   });
 }
 
+interface UpdateClientInput {
+  readonly company_name?: string;
+  readonly company_email?: string;
+  readonly contact_email?: string;
+  readonly status?: 'active' | 'suspended' | 'pending' | 'cancelled';
+}
+
+export function useUpdateClient(id: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: UpdateClientInput) =>
+      apiFetch<{ data: Client }>(`/api/v1/clients/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients', id] });
+    },
+  });
+}
+
 export function useDeleteClient() {
   const queryClient = useQueryClient();
 
