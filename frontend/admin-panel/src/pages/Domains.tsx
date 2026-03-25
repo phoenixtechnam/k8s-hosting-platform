@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Search, Loader2, Globe, Shield } from 'lucide-react';
+import { Plus, Search, Loader2, Globe, Shield, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import CreateDomainModal from '@/components/CreateDomainModal';
@@ -11,6 +11,7 @@ export default function Domains() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [expandedDomainId, setExpandedDomainId] = useState<string | null>(null);
 
   const { data: clientsData, isLoading: clientsLoading } = useClients({ limit: 200 });
   const clients = clientsData?.data ?? [];
@@ -126,36 +127,88 @@ export default function Domains() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {filteredDomains.map((domain) => (
-                      <tr key={domain.id} className="transition-colors hover:bg-gray-50">
-                        <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-2">
-                            <Globe size={14} className="text-gray-400" />
-                            <span className="font-medium text-gray-900">{domain.domainName}</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <StatusBadge status={domain.status} />
-                        </td>
-                        <td className="hidden px-5 py-3.5 text-sm text-gray-600 uppercase md:table-cell">
-                          {domain.dnsMode}
-                        </td>
-                        <td className="hidden px-5 py-3.5 lg:table-cell">
-                          <span className={clsx(
-                            'inline-flex items-center gap-1 text-xs font-medium',
-                            domain.sslAutoRenew ? 'text-green-600' : 'text-gray-400',
-                          )}>
-                            <Shield size={12} />
-                            {domain.sslAutoRenew ? 'Auto' : 'Off'}
-                          </span>
-                        </td>
-                        <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
-                          {domain.createdAt
-                            ? new Date(domain.createdAt).toLocaleDateString()
-                            : '\u2014'}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredDomains.map((domain) => {
+                      const isExpanded = expandedDomainId === domain.id;
+                      return (
+                        <tr
+                          key={domain.id}
+                          className="transition-colors hover:bg-gray-50 cursor-pointer"
+                          onClick={() => setExpandedDomainId(isExpanded ? null : domain.id)}
+                          data-testid={`domain-row-${domain.id}`}
+                        >
+                          <td colSpan={5} className="p-0">
+                            <div className="flex items-center">
+                              <div className="px-5 py-3.5 flex-1">
+                                <div className="flex items-center gap-2">
+                                  {isExpanded
+                                    ? <ChevronDown size={14} className="text-gray-400" />
+                                    : <ChevronRight size={14} className="text-gray-400" />}
+                                  <Globe size={14} className="text-gray-400" />
+                                  <span className="font-medium text-gray-900">{domain.domainName}</span>
+                                </div>
+                              </div>
+                              <div className="px-5 py-3.5">
+                                <StatusBadge status={domain.status} />
+                              </div>
+                              <div className="hidden px-5 py-3.5 text-sm text-gray-600 uppercase md:block">
+                                {domain.dnsMode}
+                              </div>
+                              <div className="hidden px-5 py-3.5 lg:block">
+                                <span className={clsx(
+                                  'inline-flex items-center gap-1 text-xs font-medium',
+                                  domain.sslAutoRenew ? 'text-green-600' : 'text-gray-400',
+                                )}>
+                                  <Shield size={12} />
+                                  {domain.sslAutoRenew ? 'Auto' : 'Off'}
+                                </span>
+                              </div>
+                              <div className="hidden px-5 py-3.5 text-sm text-gray-500 lg:block">
+                                {domain.createdAt
+                                  ? new Date(domain.createdAt).toLocaleDateString()
+                                  : '\u2014'}
+                              </div>
+                            </div>
+                            {isExpanded && (
+                              <div
+                                className="border-t border-gray-100 bg-gray-50 px-5 py-4"
+                                data-testid={`domain-detail-${domain.id}`}
+                              >
+                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                                  <div>
+                                    <h3 className="text-sm font-semibold text-gray-900" data-testid="domain-detail-name">
+                                      {domain.domainName}
+                                    </h3>
+                                    <p className="mt-0.5 text-xs text-gray-500">Domain Name</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium text-gray-900 uppercase" data-testid="domain-detail-dns-mode">
+                                      {domain.dnsMode}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-gray-500">DNS Mode</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium text-gray-900" data-testid="domain-detail-ssl">
+                                      {domain.sslAutoRenew ? 'Yes' : 'No'}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-gray-500">SSL Auto-Renew</p>
+                                  </div>
+                                  <div>
+                                    <StatusBadge status={domain.status} />
+                                    <p className="mt-1 text-xs text-gray-500">Status</p>
+                                  </div>
+                                </div>
+                                <div className="mt-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+                                  <Info size={16} className="mt-0.5 shrink-0 text-blue-500" />
+                                  <p className="text-sm text-blue-700" data-testid="domain-detail-dns-notice">
+                                    DNS records are managed via PowerDNS. Configure in the infrastructure project.
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {filteredDomains.length === 0 && (
                       <tr>
                         <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500">

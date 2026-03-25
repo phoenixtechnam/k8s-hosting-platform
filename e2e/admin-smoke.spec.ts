@@ -37,8 +37,8 @@ test.describe('Admin Panel Smoke Test', () => {
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
 
-    // Click Add Client
-    await page.getByText('Add Client').click();
+    // Click Add Client button
+    await page.getByRole('button', { name: 'Add Client' }).click();
     await expect(page.getByTestId('create-client-modal')).toBeVisible();
 
     // Fill form with unique name
@@ -46,8 +46,14 @@ test.describe('Admin Panel Smoke Test', () => {
     await page.getByTestId('company-name-input').fill(uniqueName);
     await page.getByTestId('company-email-input').fill('test@e2e.local');
 
-    // Select plan and region (first option)
+    // Wait for plan options to load before selecting
+    await page.getByTestId('plan-select').waitFor({ state: 'visible' });
+    await page.waitForTimeout(1000); // Wait for API data to populate options
     await page.getByTestId('plan-select').selectOption({ index: 1 });
+
+    // Wait for region options to load before selecting
+    await page.getByTestId('region-select').waitFor({ state: 'visible' });
+    await page.waitForTimeout(500);
     await page.getByTestId('region-select').selectOption({ index: 1 });
 
     // Submit
