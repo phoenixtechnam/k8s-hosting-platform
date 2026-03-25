@@ -6,6 +6,10 @@ import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Domains from '@/pages/Domains';
 import Databases from '@/pages/Databases';
+import Backups from '@/pages/Backups';
+import Email from '@/pages/Email';
+import Files from '@/pages/Files';
+import Settings from '@/pages/Settings';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -34,10 +38,10 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="domains" element={<Domains />} />
             <Route path="databases" element={<Databases />} />
-            <Route path="files" element={<Placeholder title="Files" />} />
-            <Route path="email" element={<Placeholder title="Email" />} />
-            <Route path="backups" element={<Placeholder title="Backups" />} />
-            <Route path="settings" element={<Placeholder title="Settings" />} />
+            <Route path="files" element={<Files />} />
+            <Route path="email" element={<Email />} />
+            <Route path="backups" element={<Backups />} />
+            <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>

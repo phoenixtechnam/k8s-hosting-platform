@@ -17,6 +17,18 @@ export interface Database {
   readonly createdAt: string;
 }
 
+export interface Backup {
+  readonly id: string;
+  readonly clientId: string;
+  readonly backupType: string;
+  readonly resourceType: string;
+  readonly status: string;
+  readonly storagePath: string | null;
+  readonly sizeBytes: number | null;
+  readonly expiresAt: string | null;
+  readonly createdAt: string;
+}
+
 export interface PaginatedResponse<T> {
   readonly data: readonly T[];
   readonly pagination: {
