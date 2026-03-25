@@ -46,7 +46,7 @@ services:
     ports:
       - "2012:3000"
     environment:
-      NODE_ENV: staging
+      NODE_ENV: production
       PORT: "3000"
       LOG_LEVEL: debug
       DATABASE_URL: mysql://platform:staging-password@mariadb:3306/hosting_platform
