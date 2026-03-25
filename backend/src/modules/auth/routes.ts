@@ -6,7 +6,42 @@ import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post('/auth/login', async (request, reply) => {
+  app.post('/auth/login', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Login with email and password',
+      body: {
+        type: 'object',
+        required: ['email', 'password'],
+        properties: {
+          email: { type: 'string', format: 'email' },
+          password: { type: 'string', minLength: 1 },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                token: { type: 'string' },
+                user: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    email: { type: 'string' },
+                    fullName: { type: 'string' },
+                    role: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError(

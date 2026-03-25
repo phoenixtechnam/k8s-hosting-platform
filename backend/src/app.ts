@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import fastifyCors from '@fastify/cors';
+import fastifySwagger from '@fastify/swagger';
+import fastifySwaggerUi from '@fastify/swagger-ui';
 import { errorHandler } from './middleware/error-handler.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
@@ -54,8 +56,59 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Audit logging (fire-and-forget on mutations)
   registerAuditHook(app, deps.db);
 
+  // OpenAPI / Swagger documentation
+  await app.register(fastifySwagger, {
+    openapi: {
+      info: {
+        title: 'K8s Hosting Platform API',
+        description: 'Management API for the Kubernetes web hosting platform',
+        version: '0.1.0',
+      },
+      servers: [
+        { url: 'http://localhost:3000', description: 'Development' },
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT',
+          },
+        },
+      },
+    },
+  });
+
+  await app.register(fastifySwaggerUi, {
+    routePrefix: '/api/docs',
+    uiConfig: {
+      docExpansion: 'list',
+      deepLinking: true,
+    },
+  });
+
   // Health check
-  app.get('/api/v1/admin/status', async () => ({
+  app.get('/api/v1/admin/status', {
+    schema: {
+      tags: ['Admin'],
+      summary: 'Health check / system status',
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', enum: ['healthy'] },
+                timestamp: { type: 'string', format: 'date-time' },
+                version: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async () => ({
     data: {
       status: 'healthy',
       timestamp: new Date().toISOString(),

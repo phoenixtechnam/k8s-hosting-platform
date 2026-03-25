@@ -12,7 +12,42 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requireRole('admin'));
 
   // POST /api/v1/clients
-  app.post('/clients', async (request, reply) => {
+  app.post('/clients', {
+    schema: {
+      tags: ['Clients'],
+      summary: 'Create a new client',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['company_name', 'company_email', 'plan_id', 'region_id'],
+        properties: {
+          company_name: { type: 'string', minLength: 1, maxLength: 255 },
+          company_email: { type: 'string', format: 'email' },
+          contact_email: { type: 'string', format: 'email' },
+          plan_id: { type: 'string', format: 'uuid' },
+          region_id: { type: 'string', format: 'uuid' },
+          subscription_expires_at: { type: 'string', format: 'date-time' },
+        },
+      },
+      response: {
+        201: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                companyName: { type: 'string' },
+                companyEmail: { type: 'string' },
+                status: { type: 'string' },
+                createdAt: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const parsed = createClientSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.errors[0];
@@ -29,7 +64,47 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/clients
-  app.get('/clients', async (request) => {
+  app.get('/clients', {
+    schema: {
+      tags: ['Clients'],
+      summary: 'List clients with cursor-based pagination',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          cursor: { type: 'string', description: 'Opaque pagination cursor' },
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+          search: { type: 'string', description: 'Search by company name or email' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  companyName: { type: 'string' },
+                  companyEmail: { type: 'string' },
+                  status: { type: 'string' },
+                },
+              },
+            },
+            pagination: {
+              type: 'object',
+              properties: {
+                hasMore: { type: 'boolean' },
+                nextCursor: { type: 'string', nullable: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
     const search = typeof query.search === 'string' ? query.search : undefined;

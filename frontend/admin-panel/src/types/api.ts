@@ -40,6 +40,17 @@ export interface PaginatedResponse<T> {
   };
 }
 
+export interface CronJob {
+  readonly id: string;
+  readonly name: string;
+  readonly schedule: string;
+  readonly command: string;
+  readonly enabled: boolean;
+  readonly lastRunAt: string | null;
+  readonly lastRunStatus: 'success' | 'failed' | 'running' | null;
+  readonly createdAt: string;
+}
+
 export interface DashboardMetrics {
   readonly total_clients: number;
   readonly active_clients: number;

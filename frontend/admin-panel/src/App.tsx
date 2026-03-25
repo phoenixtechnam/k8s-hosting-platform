@@ -9,6 +9,7 @@ import ClientDetail from '@/pages/ClientDetail';
 import Domains from '@/pages/Domains';
 import Monitoring from '@/pages/Monitoring';
 import Storage from '@/pages/Storage';
+import CronJobs from '@/pages/CronJobs';
 import Settings from '@/pages/Settings';
 import Workloads from '@/pages/Workloads';
 import Security from '@/pages/Security';
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="workloads" element={<Workloads />} />
             <Route path="storage" element={<Storage />} />
+            <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="security" element={<Security />} />
             <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Settings />} />
