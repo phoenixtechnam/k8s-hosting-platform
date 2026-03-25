@@ -3,6 +3,7 @@ import { Settings as SettingsIcon, User, Server, Lock } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
 import { ApiError } from '@/lib/api-client';
+import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -108,6 +109,9 @@ export default function Settings() {
           Configuration is managed via environment variables.
         </p>
       </div>
+
+      {/* Workload Repositories Section */}
+      <WorkloadRepoSettings />
 
       {/* Change Password Section */}
       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="change-password-section">

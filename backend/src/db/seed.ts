@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, containerImages, users } from './schema.js';
+import { rbacRoles, regions, hostingPlans, containerImages, users, workloadRepositories } from './schema.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -63,6 +63,17 @@ await db.insert(users).values([
   },
 ]).onDuplicateKeyUpdate({ set: { fullName: sql`VALUES(full_name)` } });
 console.log(`  Seeded default admin user (${adminEmail})`);
+
+// Workload Repositories
+await db.insert(workloadRepositories).values([{
+  id: crypto.randomUUID(),
+  name: 'Official Catalog',
+  url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+  branch: 'main',
+  syncIntervalMinutes: 60,
+  status: 'active',
+}]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+console.log('  Seeded workload repositories');
 
 console.log('Seed complete.');
 await closeDb();

@@ -171,6 +171,22 @@ export const usageMetrics = mysqlTable('usage_metrics', {
   index('usage_metrics_ts_idx').on(table.measurementTimestamp),
 ]);
 
+export const workloadRepositories = mysqlTable('workload_repositories', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  url: varchar('url', { length: 500 }).notNull(),
+  branch: varchar('branch', { length: 100 }).notNull().default('main'),
+  authToken: varchar('auth_token', { length: 500 }),
+  syncIntervalMinutes: int('sync_interval_minutes').notNull().default(60),
+  lastSyncedAt: timestamp('last_synced_at'),
+  status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('workload_repos_url_unique').on(table.url),
+]);
+
 export const containerImages = mysqlTable('container_images', {
   id: varchar('id', { length: 36 }).primaryKey(),
   code: varchar('code', { length: 50 }).notNull(),
@@ -180,6 +196,14 @@ export const containerImages = mysqlTable('container_images', {
   digest: varchar('digest', { length: 255 }),
   supportedVersions: json('supported_versions').$type<string[]>(),
   status: mysqlEnum('status', ['active', 'deprecated']).notNull().default('active'),
+  sourceRepoId: varchar('source_repo_id', { length: 36 }),
+  manifestUrl: varchar('manifest_url', { length: 500 }),
+  hasDockerfile: int('has_dockerfile').notNull().default(0),
+  minPlan: varchar('min_plan', { length: 50 }),
+  resourceCpu: varchar('resource_cpu', { length: 20 }),
+  resourceMemory: varchar('resource_memory', { length: 20 }),
+  envVars: json('env_vars').$type<Record<string, string>[]>(),
+  tags: json('tags').$type<string[]>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('container_images_code_unique').on(table.code),
@@ -239,3 +263,5 @@ export type ContainerImage = typeof containerImages.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
 export type NewCronJob = typeof cronJobs.$inferInsert;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type WorkloadRepository = typeof workloadRepositories.$inferSelect;
+export type NewWorkloadRepository = typeof workloadRepositories.$inferInsert;
