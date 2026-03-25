@@ -5,6 +5,8 @@ COPY package.json ./
 RUN npm install --ignore-scripts
 COPY index.html tsconfig.json vite.config.ts tailwind.config.js postcss.config.js ./
 COPY src/ src/
+ARG VITE_API_URL=http://localhost:3000
+ENV VITE_API_URL=$VITE_API_URL
 RUN npx vite build
 
 FROM nginx:1.27-alpine

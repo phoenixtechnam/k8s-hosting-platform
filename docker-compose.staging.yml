@@ -67,6 +67,8 @@ services:
   admin-panel:
     build:
       context: frontend/admin-panel
+      args:
+        VITE_API_URL: http://dind.local:2012
     ports:
       - "2010:80"
     healthcheck:
