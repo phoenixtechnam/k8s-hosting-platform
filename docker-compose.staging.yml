@@ -1,0 +1,90 @@
+version: "3.8"
+
+# Staging stack for dind.local
+# Usage:
+#   DOCKER_HOST=tcp://dind:2375 docker compose -f docker-compose.staging.yml up -d --build
+#
+# Endpoints:
+#   Admin Panel:  http://dind.local:2010
+#   Client Panel: http://dind.local:2011
+#   Backend API:  http://dind.local:2012
+#   MariaDB:      dind.local:2013 (user: platform / pw: staging-password)
+#   Redis:        dind.local:2014
+
+services:
+  mariadb:
+    image: mariadb:10.6
+    ports:
+      - "2013:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: staging-root-password
+      MARIADB_DATABASE: hosting_platform
+      MARIADB_USER: platform
+      MARIADB_PASSWORD: staging-password
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "2014:6379"
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  backend:
+    build:
+      context: backend
+    ports:
+      - "2012:3000"
+    environment:
+      NODE_ENV: staging
+      PORT: "3000"
+      LOG_LEVEL: debug
+      DATABASE_URL: mysql://platform:staging-password@mariadb:3306/hosting_platform
+      JWT_SECRET: staging-jwt-secret-not-for-production-use
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/v1/admin/status"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  admin-panel:
+    build:
+      context: frontend/admin-panel
+    ports:
+      - "2010:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  client-panel:
+    build:
+      context: frontend/client-panel
+    ports:
+      - "2011:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  mariadb-data:
