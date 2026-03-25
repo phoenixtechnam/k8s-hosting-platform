@@ -1,5 +1,5 @@
 import { Database as DatabaseIcon } from 'lucide-react';
-import { useAuth } from '@/hooks/use-auth';
+import { useClientContext } from '@/hooks/use-client-context';
 import { useDatabases } from '@/hooks/use-databases';
 
 function TypeBadge({ dbType }: { readonly dbType: string }) {
@@ -34,8 +34,8 @@ function StatusBadge({ status }: { readonly status: string }) {
 }
 
 export default function Databases() {
-  const { user } = useAuth();
-  const { data, isLoading, isError, error } = useDatabases(user?.id);
+  const { clientId } = useClientContext();
+  const { data, isLoading, isError, error } = useDatabases(clientId ?? undefined);
 
   const databases = data?.data ?? [];
 

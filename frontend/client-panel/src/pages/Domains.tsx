@@ -1,5 +1,5 @@
 import { Globe } from 'lucide-react';
-import { useAuth } from '@/hooks/use-auth';
+import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
 
 function StatusBadge({ status }: { readonly status: string }) {
@@ -19,8 +19,8 @@ function StatusBadge({ status }: { readonly status: string }) {
 }
 
 export default function Domains() {
-  const { user } = useAuth();
-  const { data, isLoading, isError, error } = useDomains(user?.id);
+  const { clientId } = useClientContext();
+  const { data, isLoading, isError, error } = useDomains(clientId ?? undefined);
 
   const domains = data?.data ?? [];
 
