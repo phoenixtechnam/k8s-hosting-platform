@@ -1,16 +1,17 @@
 import { Link } from 'react-router-dom';
-import { Users, Globe, Server, AlertTriangle, Loader2 } from 'lucide-react';
+import { Users, Globe, Server, Database, Loader2 } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useClients } from '@/hooks/use-clients';
-import { usePlatformStatus } from '@/hooks/use-dashboard';
+import { usePlatformStatus, useDashboardMetrics } from '@/hooks/use-dashboard';
 
 export default function Dashboard() {
   const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
   const { data: statusData } = usePlatformStatus();
+  const { data: metricsData, isLoading: metricsLoading } = useDashboardMetrics();
 
   const clients = clientsData?.data ?? [];
-  const totalClients = clientsData?.pagination?.total_count ?? 0;
+  const metrics = metricsData?.data;
   const platformStatus = statusData?.data?.status ?? 'unknown';
 
   return (
@@ -20,7 +21,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Total Clients"
-          value={clientsLoading ? '...' : totalClients}
+          value={metricsLoading ? '...' : (metrics?.total_clients ?? 0)}
+          subtitle={metrics ? `${metrics.active_clients} active` : undefined}
           icon={Users}
           accent="brand"
         />
@@ -33,16 +35,16 @@ export default function Dashboard() {
         />
         <StatCard
           title="Domains"
-          value="—"
-          subtitle="Coming soon"
+          value={metricsLoading ? '...' : (metrics?.total_domains ?? 0)}
           icon={Globe}
           accent="green"
         />
         <StatCard
-          title="Active Alerts"
-          value={0}
-          icon={AlertTriangle}
-          accent="red"
+          title="Databases"
+          value={metricsLoading ? '...' : (metrics?.total_databases ?? 0)}
+          subtitle={metrics ? `${metrics.total_backups} backups` : undefined}
+          icon={Database}
+          accent="amber"
         />
       </div>
 

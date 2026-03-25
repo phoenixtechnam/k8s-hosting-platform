@@ -16,3 +16,24 @@ export function usePlatformStatus() {
     refetchInterval: 30_000,
   });
 }
+
+interface DashboardMetrics {
+  readonly total_clients: number;
+  readonly active_clients: number;
+  readonly total_domains: number;
+  readonly total_databases: number;
+  readonly total_backups: number;
+  readonly platform_version: string;
+}
+
+interface DashboardMetricsResponse {
+  readonly data: DashboardMetrics;
+}
+
+export function useDashboardMetrics() {
+  return useQuery({
+    queryKey: ['dashboard-metrics'],
+    queryFn: () => apiFetch<DashboardMetricsResponse>('/api/v1/admin/dashboard'),
+    refetchInterval: 60_000,
+  });
+}

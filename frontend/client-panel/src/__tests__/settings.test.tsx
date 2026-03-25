@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
@@ -14,6 +15,13 @@ vi.mock('../hooks/use-auth', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     initialize: vi.fn(),
+  })),
+}));
+
+vi.mock('../hooks/use-password', () => ({
+  useChangePassword: vi.fn(() => ({
+    mutateAsync: vi.fn().mockResolvedValue({ data: { message: 'Password updated successfully' } }),
+    isPending: false,
   })),
 }));
 
@@ -46,25 +54,48 @@ describe('Client Settings page', () => {
     expect(screen.getByTestId('profile-role')).toHaveTextContent('client');
   });
 
-  it('shows Change Password form with all inputs', () => {
+  it('shows Change Password form with enabled inputs', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('change-password-section')).toBeInTheDocument();
     expect(screen.getByText('Change Password')).toBeInTheDocument();
-    expect(screen.getByTestId('current-password-input')).toBeInTheDocument();
-    expect(screen.getByTestId('new-password-input')).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-password-input')).toBeInTheDocument();
+    expect(screen.getByTestId('current-password-input')).toBeEnabled();
+    expect(screen.getByTestId('new-password-input')).toBeEnabled();
+    expect(screen.getByTestId('confirm-password-input')).toBeEnabled();
   });
 
-  it('has Update Password button disabled with coming soon note', () => {
+  it('has Update Password button enabled', () => {
     render(<Settings />, { wrapper: createWrapper() });
     const button = screen.getByTestId('update-password-button');
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
     expect(button).toHaveTextContent('Update Password');
-    expect(screen.getByText('Coming soon')).toBeInTheDocument();
   });
 
   it('does not show Platform Configuration section', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.queryByTestId('platform-config-section')).not.toBeInTheDocument();
+  });
+
+  it('shows mismatch error when passwords do not match', async () => {
+    const user = userEvent.setup();
+    render(<Settings />, { wrapper: createWrapper() });
+
+    await user.type(screen.getByTestId('current-password-input'), 'oldpass');
+    await user.type(screen.getByTestId('new-password-input'), 'newpass1');
+    await user.type(screen.getByTestId('confirm-password-input'), 'newpass2');
+    await user.click(screen.getByTestId('update-password-button'));
+
+    expect(screen.getByTestId('password-error-message')).toHaveTextContent('New passwords do not match');
+  });
+
+  it('shows success message after successful password change', async () => {
+    const user = userEvent.setup();
+    render(<Settings />, { wrapper: createWrapper() });
+
+    await user.type(screen.getByTestId('current-password-input'), 'oldpass');
+    await user.type(screen.getByTestId('new-password-input'), 'newpass123');
+    await user.type(screen.getByTestId('confirm-password-input'), 'newpass123');
+    await user.click(screen.getByTestId('update-password-button'));
+
+    expect(screen.getByTestId('password-success-message')).toHaveTextContent('Password updated successfully');
   });
 });
