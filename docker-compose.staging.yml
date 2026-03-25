@@ -74,6 +74,8 @@ services:
   client-panel:
     build:
       context: frontend/client-panel
+      args:
+        VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     ports:
       - "${PORT_CLIENT:-2011}:80"
     healthcheck:
