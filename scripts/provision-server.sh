@@ -171,6 +171,7 @@ table inet filter {
 
     # Allow WireGuard (NetBird peer)
     udp dport 51820 accept
+    udp dport 29899 accept   # NetBird direct connection
 
     # Log and drop everything else
     counter drop
@@ -229,6 +230,32 @@ EOF
     mkdir -p "$(dirname "$MARKER")"
     touch "$MARKER"
     echo "fail2ban configured."
+REMOTE_SCRIPT
+}
+
+install_vpn_tools() {
+  log "Installing VPN tools (WireGuard + NetBird)..."
+  remote bash -s <<'REMOTE_SCRIPT'
+    set -euo pipefail
+
+    # WireGuard
+    if command -v wg &>/dev/null; then
+      echo "WireGuard already installed."
+    else
+      echo "Installing WireGuard..."
+      apt-get install -y -qq wireguard-tools >/dev/null 2>&1
+      echo "WireGuard installed (not configured)."
+    fi
+
+    # NetBird
+    if command -v netbird &>/dev/null; then
+      echo "NetBird already installed."
+    else
+      echo "Installing NetBird client..."
+      curl -fsSL https://pkgs.netbird.io/install.sh | sh >/dev/null 2>&1
+      systemctl enable netbird 2>/dev/null || true
+      echo "NetBird installed (not configured — run 'netbird up --setup-key <KEY>' when ready)."
+    fi
 REMOTE_SCRIPT
 }
 
@@ -392,6 +419,7 @@ main() {
   install_packages
   configure_firewall
   configure_fail2ban
+  install_vpn_tools
   install_k3s
   install_calico
   verify_installation

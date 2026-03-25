@@ -17,6 +17,7 @@ set -euo pipefail
 #   --skip-monitoring      Skip Prometheus/Loki/Grafana
 #   --skip-flux            Skip Flux v2 GitOps controller
 #   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
+#   --skip-vpn             Skip WireGuard + NetBird client install
 #   --help                 Show this help message
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ CALICO_VERSION="v3.28.0"
 SKIP_MONITORING=false
 SKIP_FLUX=false
 SKIP_HARDENING=false
+SKIP_VPN=false
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
@@ -57,6 +59,7 @@ parse_args() {
       --skip-monitoring) SKIP_MONITORING=true; shift ;;
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
+      --skip-vpn)        SKIP_VPN=true; shift ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -155,6 +158,7 @@ table inet filter {
     tcp dport 6443 accept    # k8s API
     tcp dport 22 accept      # SSH
     udp dport 51820 accept   # WireGuard (NetBird)
+    udp dport 29899 accept   # NetBird direct connection
 
     counter drop
   }
@@ -204,6 +208,32 @@ EOF
   systemctl restart fail2ban
   marker_set "fail2ban-configured"
   log "fail2ban configured."
+}
+
+install_vpn_tools() {
+  if [[ "$SKIP_VPN" == true ]]; then
+    log "Skipping VPN tools (--skip-vpn)."
+    return 0
+  fi
+
+  # WireGuard
+  if command -v wg &>/dev/null; then
+    log "WireGuard already installed."
+  else
+    log "Installing WireGuard..."
+    apt-get install -y -qq wireguard-tools >/dev/null 2>&1
+    log "WireGuard installed (not configured — run 'wg-quick up <iface>' when ready)."
+  fi
+
+  # NetBird
+  if command -v netbird &>/dev/null; then
+    log "NetBird already installed."
+  else
+    log "Installing NetBird client..."
+    curl -fsSL https://pkgs.netbird.io/install.sh | sh >/dev/null 2>&1
+    systemctl enable netbird 2>/dev/null || true
+    log "NetBird installed (not configured — run 'netbird up --setup-key <KEY>' when ready)."
+  fi
 }
 
 # ─── Phase 2: k3s + Calico ───────────────────────────────────────────────────
@@ -612,6 +642,7 @@ print_summary() {
   log "    - Sealed Secrets"
   [[ "$SKIP_MONITORING" != true ]] && log "    - Prometheus + Grafana + Loki"
   [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
+  [[ "$SKIP_VPN" != true ]]        && log "    - WireGuard + NetBird (installed, not configured)"
   log "    - Platform namespaces + RBAC + network policies"
   log ""
   log "  To use kubectl from another machine:"
@@ -646,6 +677,7 @@ main() {
   install_packages
   configure_firewall
   configure_fail2ban
+  install_vpn_tools
 
   # Phase 2: k3s (server or agent depending on role)
   log ""
