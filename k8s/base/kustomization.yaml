@@ -6,6 +6,8 @@ resources:
   - rbac.yaml
   - network-policies.yaml
   - resource-quotas.yaml
+  - database.yaml
+  - redis.yaml
   - backend-deployment.yaml
   - admin-deployment.yaml
   - client-deployment.yaml

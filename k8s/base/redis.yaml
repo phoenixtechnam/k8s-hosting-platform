@@ -1,56 +1,55 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: admin-panel
+  name: redis
   namespace: platform
   labels:
-    app: admin-panel
+    app: redis
     app.kubernetes.io/part-of: hosting-platform
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: admin-panel
+      app: redis
   template:
     metadata:
       labels:
-        app: admin-panel
+        app: redis
     spec:
       containers:
-        - name: admin
-          image: ghcr.io/phoenixtechnam/hosting-platform/admin-panel:latest
+        - name: redis
+          image: redis:7-alpine
           ports:
-            - containerPort: 80
+            - containerPort: 6379
               protocol: TCP
+          args: ["--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
           resources:
             requests:
               cpu: 50m
-              memory: 32Mi
+              memory: 64Mi
             limits:
               cpu: 200m
-              memory: 128Mi
+              memory: 192Mi
           livenessProbe:
-            httpGet:
-              path: /health
-              port: 80
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 80
+            exec:
+              command: ["redis-cli", "ping"]
             periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: admin-panel
+  name: redis
   namespace: platform
   labels:
-    app: admin-panel
+    app: redis
 spec:
   selector:
-    app: admin-panel
+    app: redis
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 6379
+      targetPort: 6379
       protocol: TCP

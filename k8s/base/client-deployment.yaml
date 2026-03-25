@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: client
-          image: ghcr.io/hosting-platform/client-panel:latest
+          image: ghcr.io/phoenixtechnam/hosting-platform/client-panel:latest
           ports:
             - containerPort: 80
               protocol: TCP

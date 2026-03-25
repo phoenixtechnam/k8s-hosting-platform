@@ -558,6 +558,39 @@ install_flux() {
   log "Flux v2 installed."
 }
 
+generate_platform_secrets() {
+  log "Generating platform secrets..."
+
+  # Only create secrets if they don't already exist
+  if kctl get secret -n platform platform-db-credentials &>/dev/null 2>&1; then
+    log "DB credentials secret already exists, skipping."
+  else
+    local db_password
+    db_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+    local db_root_password
+    db_root_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+
+    kctl create secret generic platform-db-credentials \
+      --namespace=platform \
+      --from-literal=password="$db_password" \
+      --from-literal=root-password="$db_root_password" \
+      --from-literal=url="mysql://platform:${db_password}@mariadb.platform.svc.cluster.local:3306/hosting_platform"
+    log "DB credentials secret created."
+  fi
+
+  if kctl get secret -n platform platform-jwt-secret &>/dev/null 2>&1; then
+    log "JWT secret already exists, skipping."
+  else
+    local jwt_secret
+    jwt_secret="$(openssl rand -base64 48 | tr -d '/+=' | head -c 64)"
+
+    kctl create secret generic platform-jwt-secret \
+      --namespace=platform \
+      --from-literal=secret="$jwt_secret"
+    log "JWT secret created."
+  fi
+}
+
 apply_platform_manifests() {
   log "Applying platform manifests..."
 
@@ -698,6 +731,7 @@ main() {
     install_sealed_secrets
     install_monitoring
     install_flux
+    generate_platform_secrets
     apply_platform_manifests
 
     # Phase 4: Verify
