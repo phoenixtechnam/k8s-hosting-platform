@@ -14,7 +14,8 @@ COPY package.json ./
 RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=builder /app/dist/ dist/
-COPY src/db/migrations/ src/db/migrations/
+COPY src/db/migrations/ dist/db/migrations/
+COPY docker-entrypoint.sh ./
 
 USER node
 EXPOSE 3000
@@ -22,4 +23,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD wget -q --spider http://localhost:3000/api/v1/admin/status || exit 1
 
-CMD ["node", "dist/server.js"]
+ENTRYPOINT ["sh", "docker-entrypoint.sh"]
