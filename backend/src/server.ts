@@ -1,12 +1,14 @@
 import { loadConfig } from './config/index.js';
 import { getDb, closeDb } from './db/index.js';
 import { buildApp } from './app.js';
+import { suspendExpiredClients } from './modules/subscriptions/expiry-checker.js';
 
 const config = loadConfig();
 const db = getDb(config.DATABASE_URL);
 const app = await buildApp({ config, db });
 
 const shutdown = async () => {
+  clearInterval(expiryCheckTimer);
   await app.close();
   await closeDb();
   process.exit(0);
@@ -17,3 +19,21 @@ process.on('SIGTERM', shutdown);
 
 await app.listen({ port: config.PORT, host: '0.0.0.0' });
 console.log(`Server listening on port ${config.PORT}`);
+
+// Check for expired subscriptions every hour
+const EXPIRY_CHECK_INTERVAL = 60 * 60 * 1000;
+const expiryCheckTimer = setInterval(async () => {
+  try {
+    const count = await suspendExpiredClients(db);
+    if (count > 0) {
+      app.log.info(`Auto-suspended ${count} client(s) with expired subscriptions`);
+    }
+  } catch (err) {
+    app.log.error({ err }, 'Failed to check expired subscriptions');
+  }
+}, EXPIRY_CHECK_INTERVAL);
+
+// Run immediately on startup
+suspendExpiredClients(db).catch((err) => {
+  app.log.error({ err }, 'Failed initial expired subscription check');
+});

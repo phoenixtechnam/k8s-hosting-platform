@@ -13,6 +13,7 @@ export interface Database {
   readonly clientId: string;
   readonly name: string;
   readonly dbType: string;
+  readonly username: string;
   readonly status: string;
   readonly createdAt: string;
 }

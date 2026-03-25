@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSubscriptionSchema } from './schema.js';
 import * as service from './service.js';
+import { suspendExpiredClients } from './expiry-checker.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -31,5 +32,13 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
     }
     const updated = await service.updateSubscription(app.db, id, parsed.data);
     return success(updated);
+  });
+
+  // POST /api/v1/admin/check-expiry — manually trigger subscription expiry check
+  app.post('/admin/check-expiry', {
+    onRequest: [authenticate, requireRole('admin')],
+  }, async () => {
+    const suspendedCount = await suspendExpiredClients(app.db);
+    return success({ suspended_count: suspendedCount });
   });
 }

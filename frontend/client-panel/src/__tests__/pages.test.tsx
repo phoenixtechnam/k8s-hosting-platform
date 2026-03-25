@@ -32,6 +32,13 @@ vi.mock('../hooks/use-domains', () => ({
   })),
 }));
 
+const mockRotateCredentials = {
+  mutateAsync: vi.fn(),
+  isPending: false,
+  error: null,
+  reset: vi.fn(),
+};
+
 vi.mock('../hooks/use-databases', () => ({
   useDatabases: vi.fn(() => ({
     data: undefined,
@@ -39,6 +46,13 @@ vi.mock('../hooks/use-databases', () => ({
     isError: false,
     error: null,
   })),
+  useCreateDatabase: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+    error: null,
+    reset: vi.fn(),
+  })),
+  useRotateCredentials: vi.fn(() => mockRotateCredentials),
 }));
 
 import { useDomains } from '../hooks/use-domains';
@@ -274,8 +288,8 @@ describe('Databases', () => {
     mockedUseDatabases.mockReturnValue({
       data: {
         data: [
-          { id: '1', clientId: 'c1', name: 'wp_main', dbType: 'MariaDB', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
-          { id: '2', clientId: 'c1', name: 'cache_store', dbType: 'Redis', status: 'active', createdAt: '2025-03-01T00:00:00Z' },
+          { id: '1', clientId: 'c1', name: 'wp_main', dbType: 'MariaDB', username: 'db_wp_main_abc', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+          { id: '2', clientId: 'c1', name: 'cache_store', dbType: 'Redis', username: 'db_cache_xyz', status: 'active', createdAt: '2025-03-01T00:00:00Z' },
         ],
         pagination: { total_count: 2, cursor: null, has_more: false, page_size: 20 },
       },
@@ -289,5 +303,51 @@ describe('Databases', () => {
     expect(screen.getByText('cache_store')).toBeInTheDocument();
     expect(screen.getByText('MariaDB')).toBeInTheDocument();
     expect(screen.getByText('Redis')).toBeInTheDocument();
+  });
+
+  it('shows Create Database button', () => {
+    mockedUseDatabases.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useDatabases>);
+    renderWithProviders(<Databases />);
+    expect(screen.getByTestId('create-database-button')).toBeInTheDocument();
+    expect(screen.getByText('Create Database')).toBeInTheDocument();
+  });
+
+  it('shows username column in table', () => {
+    mockedUseDatabases.mockReturnValue({
+      data: {
+        data: [
+          { id: '1', clientId: 'c1', name: 'wp_main', dbType: 'mysql', username: 'db_wp_main_abc12345', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+        ],
+        pagination: { total_count: 1, cursor: null, has_more: false, page_size: 20 },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useDatabases>);
+    renderWithProviders(<Databases />);
+    expect(screen.getByText('Username')).toBeInTheDocument();
+    expect(screen.getByText('db_wp_main_abc12345')).toBeInTheDocument();
+  });
+
+  it('shows Rotate Password button for each database row', () => {
+    mockedUseDatabases.mockReturnValue({
+      data: {
+        data: [
+          { id: 'db-1', clientId: 'c1', name: 'app_db', dbType: 'mysql', username: 'db_app_db_x', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+        ],
+        pagination: { total_count: 1, cursor: null, has_more: false, page_size: 20 },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useDatabases>);
+    renderWithProviders(<Databases />);
+    expect(screen.getByTestId('rotate-password-db-1')).toBeInTheDocument();
+    expect(screen.getByText('Rotate Password')).toBeInTheDocument();
   });
 });

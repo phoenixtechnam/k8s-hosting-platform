@@ -51,6 +51,18 @@ export interface CronJob {
   readonly createdAt: string;
 }
 
+export interface Workload {
+  readonly id: string;
+  readonly clientId: string;
+  readonly name: string;
+  readonly imageId: string;
+  readonly status: 'running' | 'stopped' | 'pending' | 'error';
+  readonly replicas: number;
+  readonly cpu: string;
+  readonly memory: string;
+  readonly createdAt: string;
+}
+
 export interface DashboardMetrics {
   readonly total_clients: number;
   readonly active_clients: number;

@@ -102,9 +102,6 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   if (input.status !== undefined) updateValues.status = input.status;
   if (input.plan_id !== undefined) updateValues.planId = input.plan_id;
   if (input.subscription_expires_at !== undefined) {
-    // TODO: Implement background job (cron) to auto-suspend clients whose subscription has expired.
-    // The job should run daily, query clients where subscriptionExpiresAt < now() AND status = 'active',
-    // and set their status to 'suspended'.
     updateValues.subscriptionExpiresAt = new Date(input.subscription_expires_at);
   }
 
