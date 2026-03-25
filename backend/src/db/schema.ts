@@ -18,6 +18,7 @@ export const users = mysqlTable('users', {
   email: varchar('email', { length: 255 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }),
   fullName: varchar('full_name', { length: 255 }).notNull(),
+  roleName: varchar('role_name', { length: 50 }).notNull().default('read-only'),
   status: mysqlEnum('status', ['active', 'disabled', 'pending']).notNull().default('pending'),
   emailVerifiedAt: timestamp('email_verified_at'),
   lastLoginAt: timestamp('last_login_at'),

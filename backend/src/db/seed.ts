@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, containerImages } from './schema.js';
+import { rbacRoles, regions, hostingPlans, containerImages, users } from './schema.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -44,6 +45,21 @@ await db.insert(containerImages).values([
   { id: crypto.randomUUID(), code: 'node22', name: 'Node.js 22', imageType: 'nodejs', registryUrl: 'ghcr.io/hosting-platform/node22', status: 'active' },
 ]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded container images');
+
+// Default admin user (password: admin — change immediately in production)
+const adminPasswordHash = createHash('sha256').update('admin').digest('hex');
+await db.insert(users).values([
+  {
+    id: crypto.randomUUID(),
+    email: 'admin@platform.local',
+    passwordHash: adminPasswordHash,
+    fullName: 'Platform Admin',
+    roleName: 'admin',
+    status: 'active',
+    emailVerifiedAt: new Date(),
+  },
+]).onDuplicateKeyUpdate({ set: { fullName: sql`VALUES(full_name)` } });
+console.log('  Seeded default admin user (admin@platform.local / admin)');
 
 console.log('Seed complete.');
 await closeDb();

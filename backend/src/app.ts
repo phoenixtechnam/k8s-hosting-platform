@@ -11,6 +11,7 @@ import { subscriptionRoutes } from './modules/subscriptions/routes.js';
 import { backupRoutes } from './modules/backups/routes.js';
 import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
+import { authRoutes } from './modules/auth/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -58,6 +59,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   }));
 
   // Routes
+  await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(clientRoutes, { prefix: '/api/v1' });
   await app.register(domainRoutes, { prefix: '/api/v1' });
   await app.register(subscriptionRoutes, { prefix: '/api/v1' });
