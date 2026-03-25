@@ -1,11 +1,17 @@
 import { Link } from 'react-router-dom';
-import { Users, Globe, Database, AlertTriangle } from 'lucide-react';
+import { Users, Globe, Server, AlertTriangle, Loader2 } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { mockDashboardMetrics, mockClients } from '@/lib/mock-data';
+import { useClients } from '@/hooks/use-clients';
+import { usePlatformStatus } from '@/hooks/use-dashboard';
 
 export default function Dashboard() {
-  const m = mockDashboardMetrics;
+  const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
+  const { data: statusData } = usePlatformStatus();
+
+  const clients = clientsData?.data ?? [];
+  const totalClients = clientsData?.pagination?.total_count ?? 0;
+  const platformStatus = statusData?.data?.status ?? 'unknown';
 
   return (
     <div className="space-y-6">
@@ -14,27 +20,27 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Total Clients"
-          value={m.total_clients}
-          subtitle={`${m.active_clients} active`}
+          value={clientsLoading ? '...' : totalClients}
           icon={Users}
           accent="brand"
         />
         <StatCard
+          title="Platform"
+          value={platformStatus}
+          subtitle={statusData?.data?.version}
+          icon={Server}
+          accent={platformStatus === 'healthy' ? 'green' : 'amber'}
+        />
+        <StatCard
           title="Domains"
-          value={m.total_domains}
+          value="—"
+          subtitle="Coming soon"
           icon={Globe}
           accent="green"
         />
         <StatCard
-          title="Storage"
-          value={`${m.storage_used_gb} GB`}
-          subtitle={`of ${m.storage_total_gb} GB`}
-          icon={Database}
-          accent="amber"
-        />
-        <StatCard
           title="Active Alerts"
-          value={m.alerts_count}
+          value={0}
           icon={AlertTriangle}
           accent="red"
         />
@@ -50,49 +56,66 @@ export default function Dashboard() {
             View all
           </Link>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full" data-testid="clients-table">
-            <thead>
-              <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                <th className="px-5 py-3">Name</th>
-                <th className="px-5 py-3">Plan</th>
-                <th className="px-5 py-3">Status</th>
-                <th className="hidden px-5 py-3 md:table-cell">Domains</th>
-                <th className="hidden px-5 py-3 lg:table-cell">Storage</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {mockClients.slice(0, 5).map((client) => (
-                <tr
-                  key={client.id}
-                  className="transition-colors hover:bg-gray-50"
-                >
-                  <td className="px-5 py-3.5">
-                    <Link
-                      to={`/clients/${client.id}`}
-                      className="font-medium text-gray-900 hover:text-brand-500"
-                    >
-                      {client.name}
-                    </Link>
-                    <div className="text-xs text-gray-500">{client.email}</div>
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <span className="text-sm capitalize text-gray-700">{client.plan}</span>
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <StatusBadge status={client.status} />
-                  </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-700 md:table-cell">
-                    {client.usage.domains} / {client.quota.domains}
-                  </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-700 lg:table-cell">
-                    {client.usage.storage_gb} GB / {client.quota.storage_gb} GB
-                  </td>
+
+        {clientsLoading && (
+          <div className="flex items-center justify-center py-10">
+            <Loader2 size={24} className="animate-spin text-gray-400" />
+          </div>
+        )}
+
+        {clientsError && (
+          <div className="px-5 py-10 text-center text-sm text-red-500">
+            {clientsError instanceof Error ? clientsError.message : 'Failed to load clients'}
+          </div>
+        )}
+
+        {!clientsLoading && !clientsError && (
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="clients-table">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <th className="px-5 py-3">Name</th>
+                  <th className="px-5 py-3">Status</th>
+                  <th className="hidden px-5 py-3 md:table-cell">Namespace</th>
+                  <th className="hidden px-5 py-3 lg:table-cell">Created</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {clients.map((client) => (
+                  <tr key={client.id} className="transition-colors hover:bg-gray-50">
+                    <td className="px-5 py-3.5">
+                      <Link
+                        to={`/clients/${client.id}`}
+                        className="font-medium text-gray-900 hover:text-brand-500"
+                      >
+                        {client.companyName ?? client.name}
+                      </Link>
+                      <div className="text-xs text-gray-500">
+                        {client.companyEmail ?? client.email}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <StatusBadge status={client.status} />
+                    </td>
+                    <td className="hidden px-5 py-3.5 text-xs font-mono text-gray-500 md:table-cell">
+                      {client.kubernetesNamespace ?? '—'}
+                    </td>
+                    <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
+                      {(client.created_at ?? client.createdAt) ? new Date(client.created_at ?? client.createdAt!).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+                {clients.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-10 text-center text-sm text-gray-500">
+                      No clients yet. Create your first client to get started.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

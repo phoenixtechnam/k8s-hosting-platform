@@ -1,49 +1,42 @@
 export interface Client {
   readonly id: string;
-  readonly name: string;
-  readonly email: string;
-  readonly plan: 'starter' | 'business' | 'premium';
-  readonly status: 'active' | 'suspended' | 'pending';
-  readonly created_at: string;
-  readonly updated_at: string;
-  readonly subscription: {
-    readonly plan: string;
-    readonly expiry_date: string;
-    readonly status: string;
-  };
-  readonly quota: ResourceQuota;
-  readonly usage: ResourceUsage;
-}
-
-export interface ResourceQuota {
-  readonly domains: number;
-  readonly databases: number;
-  readonly storage_gb: number;
-  readonly monthly_bandwidth_gb: number;
-}
-
-export interface ResourceUsage {
-  readonly domains: number;
-  readonly databases: number;
-  readonly storage_gb: number;
-  readonly monthly_bandwidth_gb: number;
+  // API returns camelCase from Drizzle
+  readonly companyName?: string;
+  readonly companyEmail?: string;
+  readonly contactEmail?: string | null;
+  readonly kubernetesNamespace?: string;
+  readonly planId?: string;
+  readonly regionId?: string;
+  readonly createdBy?: string;
+  readonly subscriptionExpiresAt?: string | null;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+  // Legacy/mock fields (snake_case)
+  readonly name?: string;
+  readonly email?: string;
+  readonly plan?: string;
+  readonly status: 'active' | 'suspended' | 'pending' | 'cancelled';
+  readonly created_at?: string;
+  readonly updated_at?: string;
 }
 
 export interface Domain {
   readonly id: string;
-  readonly client_id: string;
-  readonly name: string;
+  readonly clientId: string;
+  readonly domainName: string;
   readonly status: 'active' | 'pending' | 'error';
-  readonly ssl_status: 'valid' | 'pending' | 'expired';
-  readonly created_at: string;
+  readonly sslAutoRenew: number;
+  readonly dnsMode: string;
+  readonly createdAt: string;
 }
 
 export interface PaginatedResponse<T> {
   readonly data: readonly T[];
   readonly pagination: {
-    readonly total: number;
+    readonly total_count: number;
     readonly cursor: string | null;
     readonly has_more: boolean;
+    readonly page_size: number;
   };
 }
 

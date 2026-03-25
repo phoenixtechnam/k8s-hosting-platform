@@ -1,11 +1,12 @@
 import clsx from 'clsx';
 
-type BadgeStatus = 'active' | 'suspended' | 'pending' | 'expired' | 'error' | 'healthy' | 'warning';
+type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' | 'error' | 'healthy' | 'warning';
 
 const statusStyles: Record<BadgeStatus, string> = {
   active: 'bg-green-100 text-green-800',
   healthy: 'bg-green-100 text-green-800',
   suspended: 'bg-red-100 text-red-800',
+  cancelled: 'bg-gray-100 text-gray-600',
   error: 'bg-red-100 text-red-800',
   expired: 'bg-gray-100 text-gray-800',
   pending: 'bg-amber-100 text-amber-800',
