@@ -1,26 +1,17 @@
-version: "3.8"
-
-# Staging stack for dind.local
-# Usage:
-#   DOCKER_HOST=tcp://dind:2375 docker compose -f docker-compose.staging.yml up -d --build
-#
-# Endpoints:
-#   Admin Panel:  http://dind.local:2010
-#   Client Panel: http://dind.local:2011
-#   Backend API:  http://dind.local:2012
-#   MariaDB:      dind.local:2013 (user: platform / pw: staging-password)
-#   Redis:        dind.local:2014
+# Local staging stack
+# Usage: ./scripts/staging.sh up
+# Or:    docker compose --env-file .env.staging -f docker-compose.staging.yml up -d --build
 
 services:
   mariadb:
     image: mariadb:10.6
     ports:
-      - "2013:3306"
+      - "${PORT_DB:-2013}:3306"
     environment:
-      MARIADB_ROOT_PASSWORD: staging-root-password
-      MARIADB_DATABASE: hosting_platform
-      MARIADB_USER: platform
-      MARIADB_PASSWORD: staging-password
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-staging-root-password}
+      MARIADB_DATABASE: ${DB_NAME:-hosting_platform}
+      MARIADB_USER: ${DB_USER:-platform}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-staging-password}
     volumes:
       - mariadb-data:/var/lib/mysql
     healthcheck:
@@ -32,7 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "2014:6379"
+      - "${PORT_REDIS:-2014}:6379"
     command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -44,13 +35,13 @@ services:
     build:
       context: backend
     ports:
-      - "2012:3000"
+      - "${PORT_API:-2012}:3000"
     environment:
       NODE_ENV: production
       PORT: "3000"
       LOG_LEVEL: debug
-      DATABASE_URL: mysql://platform:staging-password@mariadb:3306/hosting_platform
-      JWT_SECRET: staging-jwt-secret-not-for-production-use
+      DATABASE_URL: "mysql://${DB_USER:-platform}:${DB_PASSWORD:-staging-password}@mariadb:3306/${DB_NAME:-hosting_platform}"
+      JWT_SECRET: ${JWT_SECRET:-staging-jwt-secret-not-for-production-use}
       REDIS_URL: redis://redis:6379
     depends_on:
       mariadb:
@@ -68,9 +59,9 @@ services:
     build:
       context: frontend/admin-panel
       args:
-        VITE_API_URL: http://dind.local:2012
+        VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     ports:
-      - "2010:80"
+      - "${PORT_ADMIN:-2010}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
       interval: 15s
@@ -81,7 +72,7 @@ services:
     build:
       context: frontend/client-panel
     ports:
-      - "2011:80"
+      - "${PORT_CLIENT:-2011}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
       interval: 15s
