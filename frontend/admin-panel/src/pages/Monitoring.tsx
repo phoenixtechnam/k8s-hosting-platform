@@ -4,6 +4,7 @@ import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import ResourceBar from '@/components/ui/ResourceBar';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
+import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
 
 type Tab = 'active-alerts' | 'alert-history' | 'system-metrics';
 
@@ -15,60 +16,60 @@ interface Alert {
   readonly time: string;
 }
 
-const ACTIVE_ALERTS: readonly Alert[] = [
-  {
-    id: 'a1',
-    severity: 'critical',
-    message: 'Node memory usage exceeds 95%',
-    service: 'k8s-node-02',
-    time: '2 min ago',
-  },
-  {
-    id: 'a2',
-    severity: 'warning',
-    message: 'Certificate expiring in 7 days',
-    service: 'ingress-nginx',
-    time: '15 min ago',
-  },
-  {
-    id: 'a3',
-    severity: 'warning',
-    message: 'Pod restart count high',
-    service: 'client-ns-demo',
-    time: '1 hour ago',
-  },
-  {
-    id: 'a4',
-    severity: 'info',
-    message: 'Scheduled maintenance window approaching',
-    service: 'platform',
-    time: '3 hours ago',
-  },
-] as const;
+function deriveSeverity(httpStatus: number | null): 'critical' | 'warning' | 'info' {
+  if (httpStatus === null) return 'info';
+  if (httpStatus >= 500) return 'critical';
+  if (httpStatus >= 400) return 'warning';
+  return 'info';
+}
 
-const RESOLVED_ALERTS: readonly Alert[] = [
-  {
-    id: 'h1',
-    severity: 'critical',
-    message: 'Database connection pool exhausted',
-    service: 'mariadb-primary',
-    time: '1 day ago',
-  },
-  {
-    id: 'h2',
-    severity: 'warning',
-    message: 'Disk usage exceeded 80%',
-    service: 'k8s-node-01',
-    time: '2 days ago',
-  },
-  {
-    id: 'h3',
-    severity: 'info',
-    message: 'Flux reconciliation completed',
-    service: 'flux-system',
-    time: '3 days ago',
-  },
-] as const;
+function formatTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / 60_000);
+
+  if (diffMinutes < 1) return 'just now';
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+}
+
+function toAlert(entry: AuditLogEntry): Alert {
+  return {
+    id: entry.id,
+    severity: deriveSeverity(entry.httpStatus),
+    message: `${entry.actionType} ${entry.resourceType}`,
+    service: entry.httpPath ?? 'unknown',
+    time: formatTime(entry.createdAt),
+  };
+}
+
+const RECENT_THRESHOLD_HOURS = 24;
+
+function splitAlerts(entries: readonly AuditLogEntry[]): {
+  readonly recent: readonly Alert[];
+  readonly older: readonly Alert[];
+} {
+  const cutoff = new Date(Date.now() - RECENT_THRESHOLD_HOURS * 60 * 60 * 1000);
+  const recent: Alert[] = [];
+  const older: Alert[] = [];
+
+  for (const entry of entries) {
+    const alert = toAlert(entry);
+    if (new Date(entry.createdAt) >= cutoff) {
+      recent.push(alert);
+    } else {
+      older.push(alert);
+    }
+  }
+
+  return { recent, older };
+}
 
 const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'active-alerts', label: 'Active Alerts' },
@@ -85,10 +86,28 @@ const severityToBadgeStatus = {
 function AlertTable({
   alerts,
   resolved = false,
+  isLoading = false,
 }: {
   readonly alerts: readonly Alert[];
   readonly resolved?: boolean;
+  readonly isLoading?: boolean;
 }) {
+  if (isLoading) {
+    return (
+      <div className="p-8 text-center text-sm text-gray-500" data-testid="alerts-loading">
+        Loading audit logs...
+      </div>
+    );
+  }
+
+  if (alerts.length === 0) {
+    return (
+      <div className="p-8 text-center text-sm text-gray-500" data-testid="alerts-empty">
+        No audit log entries found.
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full" data-testid="alerts-table">
@@ -144,8 +163,12 @@ function SystemMetrics() {
 export default function Monitoring() {
   const [activeTab, setActiveTab] = useState<Tab>('active-alerts');
   const { data: statusData } = usePlatformStatus();
+  const { data: auditData, isLoading: auditLoading } = useAuditLogs(50);
 
   const platformStatus = statusData?.data?.status ?? 'unknown';
+  const entries = auditData?.data ?? [];
+  const { recent, older } = splitAlerts(entries);
+  const alertCount = recent.length;
 
   return (
     <div className="space-y-6">
@@ -160,9 +183,9 @@ export default function Monitoring() {
         />
         <StatCard
           title="Active Alerts"
-          value={ACTIVE_ALERTS.length}
+          value={alertCount}
           icon={AlertTriangle}
-          accent="red"
+          accent={alertCount > 0 ? 'red' : 'green'}
         />
         <StatCard
           title="Avg Response Time"
@@ -199,8 +222,12 @@ export default function Monitoring() {
           </nav>
         </div>
 
-        {activeTab === 'active-alerts' && <AlertTable alerts={ACTIVE_ALERTS} />}
-        {activeTab === 'alert-history' && <AlertTable alerts={RESOLVED_ALERTS} resolved />}
+        {activeTab === 'active-alerts' && (
+          <AlertTable alerts={recent} isLoading={auditLoading} />
+        )}
+        {activeTab === 'alert-history' && (
+          <AlertTable alerts={older} resolved isLoading={auditLoading} />
+        )}
         {activeTab === 'system-metrics' && <SystemMetrics />}
       </div>
     </div>

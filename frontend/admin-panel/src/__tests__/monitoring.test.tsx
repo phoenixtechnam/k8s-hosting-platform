@@ -2,8 +2,85 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Monitoring from '../pages/Monitoring';
+
+const MOCK_AUDIT_ENTRIES = [
+  {
+    id: 'log-1',
+    clientId: null,
+    actionType: 'create',
+    resourceType: 'client',
+    resourceId: 'c-1',
+    actorId: 'admin-1',
+    actorType: 'user',
+    httpMethod: 'POST',
+    httpPath: '/api/v1/clients',
+    httpStatus: 201,
+    changes: null,
+    ipAddress: '127.0.0.1',
+    createdAt: new Date().toISOString(),
+  },
+  {
+    id: 'log-2',
+    clientId: 'c-1',
+    actionType: 'update',
+    resourceType: 'domain',
+    resourceId: 'd-1',
+    actorId: 'admin-1',
+    actorType: 'user',
+    httpMethod: 'PATCH',
+    httpPath: '/api/v1/clients/c-1/domains/d-1',
+    httpStatus: 500,
+    changes: null,
+    ipAddress: '127.0.0.1',
+    createdAt: new Date().toISOString(),
+  },
+  {
+    id: 'log-3',
+    clientId: null,
+    actionType: 'delete',
+    resourceType: 'backup',
+    resourceId: 'b-1',
+    actorId: 'admin-1',
+    actorType: 'user',
+    httpMethod: 'DELETE',
+    httpPath: '/api/v1/backups/b-1',
+    httpStatus: 404,
+    changes: null,
+    ipAddress: '127.0.0.1',
+    createdAt: new Date().toISOString(),
+  },
+  {
+    id: 'log-old-1',
+    clientId: null,
+    actionType: 'create',
+    resourceType: 'region',
+    resourceId: 'r-1',
+    actorId: 'admin-1',
+    actorType: 'user',
+    httpMethod: 'POST',
+    httpPath: '/api/v1/regions',
+    httpStatus: 201,
+    changes: null,
+    ipAddress: '127.0.0.1',
+    createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), // 2 days ago
+  },
+];
+
+vi.mock('@/hooks/use-dashboard', () => ({
+  usePlatformStatus: () => ({
+    data: { data: { status: 'healthy', timestamp: '2026-03-25T00:00:00Z', version: '1.0.0' } },
+  }),
+}));
+
+vi.mock('@/hooks/use-audit-logs', () => ({
+  useAuditLogs: () => ({
+    data: { data: MOCK_AUDIT_ENTRIES },
+    isLoading: false,
+    error: null,
+  }),
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -38,10 +115,17 @@ describe('Monitoring page', () => {
     expect(screen.getByText('0.2%')).toBeInTheDocument();
   });
 
-  it('renders Active Alerts tab by default', () => {
+  it('shows Active Alerts count from audit log data', () => {
+    render(<Monitoring />, { wrapper: createWrapper() });
+    // 3 recent entries (within 24h), 1 old entry
+    expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders Active Alerts tab by default with audit log data', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tab-active-alerts')).toHaveClass('border-brand-500');
-    expect(screen.getByText('Node memory usage exceeds 95%')).toBeInTheDocument();
+    expect(screen.getByText('create client')).toBeInTheDocument();
+    expect(screen.getByText('update domain')).toBeInTheDocument();
   });
 
   it('renders all three tab buttons', () => {
@@ -58,8 +142,7 @@ describe('Monitoring page', () => {
     await user.click(screen.getByTestId('tab-alert-history'));
 
     expect(screen.getByTestId('tab-alert-history')).toHaveClass('border-brand-500');
-    expect(screen.getByText('Database connection pool exhausted')).toBeInTheDocument();
-    expect(screen.queryByText('Node memory usage exceeds 95%')).not.toBeInTheDocument();
+    expect(screen.getByText('create region')).toBeInTheDocument();
   });
 
   it('shows Resolved badges in Alert History tab', async () => {
@@ -85,10 +168,11 @@ describe('Monitoring page', () => {
     expect(screen.getByText('Network I/O')).toBeInTheDocument();
   });
 
-  it('displays alert severity badges in the active alerts table', () => {
+  it('displays alert severity badges derived from httpStatus', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
+    // httpStatus 201 -> info, 500 -> critical, 404 -> warning
     expect(screen.getByText('critical')).toBeInTheDocument();
-    expect(screen.getAllByText('warning').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('warning')).toBeInTheDocument();
     expect(screen.getByText('info')).toBeInTheDocument();
   });
 });
