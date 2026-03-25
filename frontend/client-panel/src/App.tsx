@@ -4,6 +4,8 @@ import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
+import Domains from '@/pages/Domains';
+import Databases from '@/pages/Databases';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -30,8 +32,8 @@ export default function App() {
             }
           >
             <Route index element={<Dashboard />} />
-            <Route path="domains" element={<Placeholder title="Domains" />} />
-            <Route path="databases" element={<Placeholder title="Databases" />} />
+            <Route path="domains" element={<Domains />} />
+            <Route path="databases" element={<Databases />} />
             <Route path="files" element={<Placeholder title="Files" />} />
             <Route path="email" element={<Placeholder title="Email" />} />
             <Route path="backups" element={<Placeholder title="Backups" />} />

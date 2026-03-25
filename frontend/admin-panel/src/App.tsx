@@ -7,6 +7,8 @@ import Dashboard from '@/pages/Dashboard';
 import Clients from '@/pages/Clients';
 import ClientDetail from '@/pages/ClientDetail';
 import Domains from '@/pages/Domains';
+import Monitoring from '@/pages/Monitoring';
+import Storage from '@/pages/Storage';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -37,9 +39,9 @@ export default function App() {
             <Route path="clients/:id" element={<ClientDetail />} />
             <Route path="domains" element={<Domains />} />
             <Route path="workloads" element={<Placeholder title="Workloads" />} />
-            <Route path="storage" element={<Placeholder title="Storage & DB" />} />
+            <Route path="storage" element={<Storage />} />
             <Route path="security" element={<Placeholder title="Security" />} />
-            <Route path="monitoring" element={<Placeholder title="Monitoring" />} />
+            <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Placeholder title="Settings" />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
