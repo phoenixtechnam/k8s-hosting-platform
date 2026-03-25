@@ -3,44 +3,51 @@ import { verifyPassword, hashNewPassword, authenticateUser } from './service.js'
 import { ApiError } from '../../shared/errors.js';
 
 describe('verifyPassword', () => {
-  it('should return true for matching password and hash', () => {
+  it('should return true for matching password and hash', async () => {
     const password = 'my-secret-password';
-    const hash = hashNewPassword(password);
-    expect(verifyPassword(password, hash)).toBe(true);
+    const hash = await hashNewPassword(password);
+    expect(await verifyPassword(password, hash)).toBe(true);
   });
 
-  it('should return false for wrong password', () => {
-    const hash = hashNewPassword('correct-password');
-    expect(verifyPassword('wrong-password', hash)).toBe(false);
+  it('should return false for wrong password', async () => {
+    const hash = await hashNewPassword('correct-password');
+    expect(await verifyPassword('wrong-password', hash)).toBe(false);
   });
 
-  it('should return false for empty password against valid hash', () => {
-    const hash = hashNewPassword('some-password');
-    expect(verifyPassword('', hash)).toBe(false);
+  it('should return false for empty password against valid hash', async () => {
+    const hash = await hashNewPassword('some-password');
+    expect(await verifyPassword('', hash)).toBe(false);
+  });
+
+  it('should verify legacy SHA-256 hashes for migration', async () => {
+    const { createHash } = await import('crypto');
+    const legacyHash = createHash('sha256').update('legacy-pass').digest('hex');
+    expect(await verifyPassword('legacy-pass', legacyHash)).toBe(true);
+    expect(await verifyPassword('wrong-pass', legacyHash)).toBe(false);
   });
 });
 
 describe('hashNewPassword', () => {
-  it('should produce a hex string', () => {
-    const hash = hashNewPassword('test');
-    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  it('should produce a bcrypt hash string', async () => {
+    const hash = await hashNewPassword('test');
+    expect(hash).toMatch(/^\$2[aby]\$/);
   });
 
-  it('should produce the same hash for the same input', () => {
-    const hash1 = hashNewPassword('deterministic');
-    const hash2 = hashNewPassword('deterministic');
-    expect(hash1).toBe(hash2);
+  it('should produce different hashes for the same input (salted)', async () => {
+    const hash1 = await hashNewPassword('deterministic');
+    const hash2 = await hashNewPassword('deterministic');
+    expect(hash1).not.toBe(hash2);
   });
 
-  it('should produce different hashes for different inputs', () => {
-    const hash1 = hashNewPassword('password-a');
-    const hash2 = hashNewPassword('password-b');
+  it('should produce different hashes for different inputs', async () => {
+    const hash1 = await hashNewPassword('password-a');
+    const hash2 = await hashNewPassword('password-b');
     expect(hash1).not.toBe(hash2);
   });
 });
 
 describe('authenticateUser', () => {
-  function createMockDb(users: Array<Record<string, unknown>>) {
+  async function createMockDb(usersList: Array<Record<string, unknown>>) {
     const updateSet = vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     });
@@ -50,7 +57,7 @@ describe('authenticateUser', () => {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(users),
+            limit: vi.fn().mockResolvedValue(usersList),
           }),
         }),
       }),
@@ -59,7 +66,7 @@ describe('authenticateUser', () => {
   }
 
   it('should throw INVALID_TOKEN when user not found', async () => {
-    const db = createMockDb([]);
+    const db = await createMockDb([]);
 
     await expect(authenticateUser(db, 'unknown@example.com', 'pass'))
       .rejects.toThrow(ApiError);
@@ -68,7 +75,7 @@ describe('authenticateUser', () => {
   });
 
   it('should throw INVALID_TOKEN when user has no password hash', async () => {
-    const db = createMockDb([{
+    const db = await createMockDb([{
       id: 'u1',
       email: 'user@example.com',
       passwordHash: null,
@@ -82,10 +89,10 @@ describe('authenticateUser', () => {
   });
 
   it('should throw INVALID_TOKEN when password is wrong', async () => {
-    const db = createMockDb([{
+    const db = await createMockDb([{
       id: 'u1',
       email: 'user@example.com',
-      passwordHash: hashNewPassword('correct-password'),
+      passwordHash: await hashNewPassword('correct-password'),
       fullName: 'Test User',
       roleName: 'admin',
       status: 'active',
@@ -97,10 +104,10 @@ describe('authenticateUser', () => {
 
   it('should throw INVALID_TOKEN when user is not active', async () => {
     const password = 'my-password';
-    const db = createMockDb([{
+    const db = await createMockDb([{
       id: 'u1',
       email: 'user@example.com',
-      passwordHash: hashNewPassword(password),
+      passwordHash: await hashNewPassword(password),
       fullName: 'Test User',
       roleName: 'admin',
       status: 'disabled',
@@ -123,7 +130,7 @@ describe('authenticateUser', () => {
             limit: vi.fn().mockResolvedValue([{
               id: 'u1',
               email: 'user@example.com',
-              passwordHash: hashNewPassword(password),
+              passwordHash: await hashNewPassword(password),
               fullName: 'Test User',
               roleName: 'admin',
               status: 'active',

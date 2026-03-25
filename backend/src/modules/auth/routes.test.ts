@@ -7,7 +7,7 @@ import { hashNewPassword } from './service.js';
 const mockUser = {
   id: 'u1',
   email: 'admin@example.com',
-  passwordHash: hashNewPassword('correct-password'),
+  passwordHash: await hashNewPassword('correct-password'),
   fullName: 'Admin User',
   roleName: 'admin',
   status: 'active',

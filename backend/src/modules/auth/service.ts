@@ -1,19 +1,22 @@
 import { eq } from 'drizzle-orm';
-import { createHash } from 'crypto';
+import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
 import { users } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
 
-function hashPassword(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
+const SALT_ROUNDS = 12;
+
+export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  // Support legacy SHA-256 hashes (64 char hex) for migration
+  if (hash.length === 64 && /^[a-f0-9]+$/.test(hash)) {
+    const { createHash } = await import('crypto');
+    return createHash('sha256').update(password).digest('hex') === hash;
+  }
+  return bcrypt.compare(password, hash);
 }
 
-export function verifyPassword(password: string, hash: string): boolean {
-  return hashPassword(password) === hash;
-}
-
-export function hashNewPassword(password: string): string {
-  return hashPassword(password);
+export async function hashNewPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, SALT_ROUNDS);
 }
 
 export async function authenticateUser(
@@ -35,7 +38,7 @@ export async function authenticateUser(
     throw invalidToken();
   }
 
-  if (!verifyPassword(password, user.passwordHash)) {
+  if (!await verifyPassword(password, user.passwordHash)) {
     throw invalidToken();
   }
 

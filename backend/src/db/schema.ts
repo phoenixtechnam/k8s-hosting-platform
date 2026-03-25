@@ -263,5 +263,7 @@ export type ContainerImage = typeof containerImages.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
 export type NewCronJob = typeof cronJobs.$inferInsert;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type Workload = typeof workloads.$inferSelect;
+export type NewWorkload = typeof workloads.$inferInsert;
 export type WorkloadRepository = typeof workloadRepositories.$inferSelect;
 export type NewWorkloadRepository = typeof workloadRepositories.$inferInsert;

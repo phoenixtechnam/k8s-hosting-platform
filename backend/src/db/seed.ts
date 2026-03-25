@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { createHash } from 'crypto';
+import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
 import { rbacRoles, regions, hostingPlans, containerImages, users, workloadRepositories } from './schema.js';
 
@@ -50,7 +50,7 @@ console.log('  Seeded container images');
 const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';
 const adminPassword = process.env.ADMIN_PASSWORD ?? 'admin';
 const adminName = process.env.ADMIN_NAME ?? 'Platform Admin';
-const adminPasswordHash = createHash('sha256').update(adminPassword).digest('hex');
+const adminPasswordHash = await bcrypt.hash(adminPassword, 12);
 await db.insert(users).values([
   {
     id: crypto.randomUUID(),

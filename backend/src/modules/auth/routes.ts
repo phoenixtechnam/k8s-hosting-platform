@@ -113,11 +113,11 @@ export async function authRoutes(app: FastifyInstance) {
       throw invalidToken();
     }
 
-    if (!verifyPassword(current_password, user.passwordHash)) {
+    if (!await verifyPassword(current_password, user.passwordHash)) {
       throw invalidToken();
     }
 
-    const newHash = hashNewPassword(new_password);
+    const newHash = await hashNewPassword(new_password);
 
     await app.db
       .update(users)
