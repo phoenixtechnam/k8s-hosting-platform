@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Search, Loader2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import CreateClientModal from '@/components/CreateClientModal';
 import { useClients } from '@/hooks/use-clients';
 
 export default function Clients() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
 
   const { data, isLoading, error } = useClients({
     search: debouncedSearch || undefined,
@@ -28,7 +30,10 @@ export default function Clients() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Clients</h1>
-        <button className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600">
+        <button
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
+        >
           <Plus size={16} />
           Add Client
         </button>
@@ -116,6 +121,8 @@ export default function Clients() {
           </>
         )}
       </div>
+
+      <CreateClientModal open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
   );
 }
