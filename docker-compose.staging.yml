@@ -43,6 +43,9 @@ services:
       DATABASE_URL: "mysql://${DB_USER:-platform}:${DB_PASSWORD:-staging-password}@mariadb:3306/${DB_NAME:-hosting_platform}"
       JWT_SECRET: ${JWT_SECRET:-staging-jwt-secret-not-for-production-use}
       REDIS_URL: redis://redis:6379
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@platform.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
     depends_on:
       mariadb:
         condition: service_healthy

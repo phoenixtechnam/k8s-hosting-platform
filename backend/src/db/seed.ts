@@ -46,20 +46,23 @@ await db.insert(containerImages).values([
 ]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded container images');
 
-// Default admin user (password: admin — change immediately in production)
-const adminPasswordHash = createHash('sha256').update('admin').digest('hex');
+// Default admin user
+const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';
+const adminPassword = process.env.ADMIN_PASSWORD ?? 'admin';
+const adminName = process.env.ADMIN_NAME ?? 'Platform Admin';
+const adminPasswordHash = createHash('sha256').update(adminPassword).digest('hex');
 await db.insert(users).values([
   {
     id: crypto.randomUUID(),
-    email: 'admin@platform.local',
+    email: adminEmail,
     passwordHash: adminPasswordHash,
-    fullName: 'Platform Admin',
+    fullName: adminName,
     roleName: 'admin',
     status: 'active',
     emailVerifiedAt: new Date(),
   },
 ]).onDuplicateKeyUpdate({ set: { fullName: sql`VALUES(full_name)` } });
-console.log('  Seeded default admin user (admin@platform.local / admin)');
+console.log(`  Seeded default admin user (${adminEmail})`);
 
 console.log('Seed complete.');
 await closeDb();
