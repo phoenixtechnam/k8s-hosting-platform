@@ -3,7 +3,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json ./
 RUN npm install --ignore-scripts
-COPY index.html tsconfig.json ./
+COPY index.html tsconfig.json vite.config.ts tailwind.config.js postcss.config.js ./
 COPY src/ src/
 RUN npx vite build
 
