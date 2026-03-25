@@ -32,6 +32,7 @@ export default function WorkloadRepoSettings() {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [branch, setBranch] = useState('main');
+  const [authToken, setAuthToken] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
 
@@ -42,10 +43,16 @@ export default function WorkloadRepoSettings() {
     if (!name.trim() || !url.trim()) return;
 
     try {
-      await addRepo.mutateAsync({ name: name.trim(), url: url.trim(), branch: branch.trim() || 'main' });
+      await addRepo.mutateAsync({
+        name: name.trim(),
+        url: url.trim(),
+        branch: branch.trim() || 'main',
+        auth_token: authToken.trim() || undefined,
+      });
       setName('');
       setUrl('');
       setBranch('main');
+      setAuthToken('');
       setShowForm(false);
     } catch {
       // Error is available via addRepo.error
@@ -96,7 +103,7 @@ export default function WorkloadRepoSettings() {
           onSubmit={handleAddSubmit}
           data-testid="add-repo-form"
         >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label htmlFor="repo-name" className="block text-sm font-medium text-gray-700">
                 Name
@@ -120,7 +127,7 @@ export default function WorkloadRepoSettings() {
                 id="repo-url"
                 type="text"
                 className={INPUT_CLASS}
-                placeholder="https://github.com/org/repo.git"
+                placeholder="https://github.com/org/repo"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 data-testid="repo-url-input"
@@ -139,6 +146,20 @@ export default function WorkloadRepoSettings() {
                 value={branch}
                 onChange={(e) => setBranch(e.target.value)}
                 data-testid="repo-branch-input"
+              />
+            </div>
+            <div>
+              <label htmlFor="repo-token" className="block text-sm font-medium text-gray-700">
+                Auth Token <span className="text-xs text-gray-400">(optional, for private repos)</span>
+              </label>
+              <input
+                id="repo-token"
+                type="password"
+                className={INPUT_CLASS}
+                placeholder="ghp_xxxxxxxxxxxx"
+                value={authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                data-testid="repo-token-input"
               />
             </div>
           </div>

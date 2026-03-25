@@ -21,6 +21,7 @@ interface AddWorkloadRepoInput {
   readonly name: string;
   readonly url: string;
   readonly branch?: string;
+  readonly auth_token?: string;
 }
 
 export function useWorkloadRepos() {
