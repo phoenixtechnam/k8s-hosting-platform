@@ -141,17 +141,25 @@ describe('updateClient', () => {
 });
 
 describe('deleteClient', () => {
-  it('should throw OPERATION_NOT_ALLOWED when client is not cancelled', async () => {
+  it('should delete client regardless of status', async () => {
     const client = { id: 'c1', status: 'active' };
-    const db = createMockDb({ selectResult: [client] });
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 
-    await expect(deleteClient(db, 'c1')).rejects.toMatchObject({
-      code: 'OPERATION_NOT_ALLOWED',
-      status: 403,
-    });
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = {
+      select: selectFn,
+      delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    await deleteClient(db, 'c1');
+    expect(deleteFn).toHaveBeenCalled();
   });
 
-  it('should delete when client is cancelled', async () => {
+  it('should delete cancelled client', async () => {
     const client = { id: 'c1', status: 'cancelled' };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });

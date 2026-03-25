@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './helpers';
 
 test.describe('Admin Panel Smoke Test', () => {
   test('login page loads', async ({ page }) => {
@@ -9,22 +10,11 @@ test.describe('Admin Panel Smoke Test', () => {
   });
 
   test('can login with admin credentials', async ({ page }) => {
-    await page.goto('/login');
-    await page.getByTestId('email-input').fill('admin@platform.local');
-    await page.getByTestId('password-input').fill('admin');
-    await page.getByTestId('login-button').click();
-
-    // Should redirect to dashboard
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10000 });
+    await loginAsAdmin(page);
   });
 
   test('dashboard shows stat cards', async ({ page }) => {
-    // Login first
-    await page.goto('/login');
-    await page.getByTestId('email-input').fill('admin@platform.local');
-    await page.getByTestId('password-input').fill('admin');
-    await page.getByTestId('login-button').click();
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10000 });
+    await loginAsAdmin(page);
 
     // Check stat cards
     await expect(page.getByText('Total Clients')).toBeVisible();
@@ -32,12 +22,7 @@ test.describe('Admin Panel Smoke Test', () => {
   });
 
   test('can navigate to clients page', async ({ page }) => {
-    // Login
-    await page.goto('/login');
-    await page.getByTestId('email-input').fill('admin@platform.local');
-    await page.getByTestId('password-input').fill('admin');
-    await page.getByTestId('login-button').click();
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10000 });
+    await loginAsAdmin(page);
 
     // Navigate to clients
     await page.getByRole('link', { name: 'Clients' }).click();
@@ -46,12 +31,7 @@ test.describe('Admin Panel Smoke Test', () => {
   });
 
   test('can create a client', async ({ page }) => {
-    // Login
-    await page.goto('/login');
-    await page.getByTestId('email-input').fill('admin@platform.local');
-    await page.getByTestId('password-input').fill('admin');
-    await page.getByTestId('login-button').click();
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10000 });
+    await loginAsAdmin(page);
 
     // Go to clients
     await page.getByRole('link', { name: 'Clients' }).click();
@@ -79,12 +59,7 @@ test.describe('Admin Panel Smoke Test', () => {
   });
 
   test('sidebar navigation works', async ({ page }) => {
-    // Login
-    await page.goto('/login');
-    await page.getByTestId('email-input').fill('admin@platform.local');
-    await page.getByTestId('password-input').fill('admin');
-    await page.getByTestId('login-button').click();
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10000 });
+    await loginAsAdmin(page);
 
     // Test each nav item
     for (const item of ['Domains', 'Workloads', 'Monitoring', 'Settings']) {

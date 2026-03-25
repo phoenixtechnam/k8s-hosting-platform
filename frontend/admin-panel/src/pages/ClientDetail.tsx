@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Trash2, Loader2 } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -32,6 +32,15 @@ export default function ClientDetail() {
     if (!id) return;
     try {
       await updateClient.mutateAsync({ status: 'suspended' });
+    } catch {
+      // silently handled — status badge will reflect current state
+    }
+  };
+
+  const handleReactivate = async () => {
+    if (!id) return;
+    try {
+      await updateClient.mutateAsync({ status: 'active' });
     } catch {
       // silently handled — status badge will reflect current state
     }
@@ -85,15 +94,27 @@ export default function ClientDetail() {
             <Edit size={14} />
             <span className="hidden sm:inline">Edit</span>
           </button>
-          <button
-            onClick={handleSuspend}
-            disabled={updateClient.isPending || client.status === 'suspended'}
-            className="inline-flex items-center gap-2 rounded-lg border border-orange-200 bg-white px-4 py-2 text-sm font-medium text-orange-600 shadow-sm hover:bg-orange-50 disabled:opacity-50"
-            data-testid="suspend-button"
-          >
-            {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
-            <span className="hidden sm:inline">Suspend</span>
-          </button>
+          {client.status === 'suspended' || client.status === 'cancelled' ? (
+            <button
+              onClick={handleReactivate}
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-green-200 bg-white px-4 py-2 text-sm font-medium text-green-600 shadow-sm hover:bg-green-50 disabled:opacity-50"
+              data-testid="reactivate-button"
+            >
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              <span className="hidden sm:inline">Reactivate</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleSuspend}
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-orange-200 bg-white px-4 py-2 text-sm font-medium text-orange-600 shadow-sm hover:bg-orange-50 disabled:opacity-50"
+              data-testid="suspend-button"
+            >
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
+              <span className="hidden sm:inline">Suspend</span>
+            </button>
+          )}
           <button
             onClick={() => setDeleteOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50"

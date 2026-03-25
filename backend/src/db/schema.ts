@@ -192,7 +192,7 @@ export const containerImages = mysqlTable('container_images', {
   code: varchar('code', { length: 50 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   imageType: varchar('image_type', { length: 50 }).notNull(),
-  registryUrl: varchar('registry_url', { length: 500 }).notNull(),
+  registryUrl: varchar('registry_url', { length: 500 }),
   digest: varchar('digest', { length: 255 }),
   supportedVersions: json('supported_versions').$type<string[]>(),
   status: mysqlEnum('status', ['active', 'deprecated']).notNull().default('active'),

@@ -4,6 +4,12 @@ import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { AddRepoInput } from './schema.js';
 
+interface CatalogFile {
+  readonly workloads?: readonly string[];
+}
+
+type CatalogInput = CatalogFile | readonly CatalogEntry[];
+
 interface CatalogEntry {
   readonly name: string;
 }
@@ -11,8 +17,12 @@ interface CatalogEntry {
 interface WorkloadManifest {
   readonly name: string;
   readonly code: string;
-  readonly image_type: string;
-  readonly registry_url: string;
+  /** Catalog manifests use "type", not "image_type" */
+  readonly type?: string;
+  readonly image_type?: string;
+  /** Catalog manifests use "image" (nullable) instead of "registry_url" */
+  readonly image?: string | null;
+  readonly registry_url?: string | null;
   readonly supported_versions?: string[];
   readonly has_dockerfile?: boolean;
   readonly min_plan?: string;
@@ -117,12 +127,16 @@ export async function syncRepo(db: Database, repoId: string) {
   try {
     const { owner, repo: repoName } = parseGithubUrl(repo.url);
 
-    // Fetch catalog.json
+    // Fetch catalog.json — supports both array-of-objects and {workloads:[...]} formats
     const catalogUrl = buildRawUrl(owner, repoName, repo.branch, 'catalog.json');
-    const catalog = await fetchJson<CatalogEntry[]>(catalogUrl, repo.authToken);
+    const catalogRaw = await fetchJson<CatalogInput>(catalogUrl, repo.authToken);
+
+    const entries: readonly CatalogEntry[] = Array.isArray(catalogRaw)
+      ? catalogRaw
+      : ((catalogRaw as CatalogFile).workloads ?? []).map((name: string) => ({ name }));
 
     // Fetch each workload manifest and upsert
-    for (const entry of catalog) {
+    for (const entry of entries) {
       const manifestUrl = buildRawUrl(owner, repoName, repo.branch, `${entry.name}/manifest.json`);
 
       let manifest: WorkloadManifest;
@@ -146,8 +160,8 @@ export async function syncRepo(db: Database, repoId: string) {
 
       const imageValues = {
         name: manifest.name,
-        imageType: manifest.image_type,
-        registryUrl: manifest.registry_url,
+        imageType: manifest.image_type ?? manifest.type ?? 'unknown',
+        registryUrl: manifest.registry_url ?? manifest.image ?? null,
         supportedVersions: manifest.supported_versions ?? null,
         sourceRepoId: repoId,
         manifestUrl,

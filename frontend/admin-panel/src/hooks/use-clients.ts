@@ -59,6 +59,7 @@ interface UpdateClientInput {
   readonly company_email?: string;
   readonly contact_email?: string;
   readonly status?: 'active' | 'suspended' | 'pending' | 'cancelled';
+  readonly subscription_expires_at?: string;
 }
 
 export function useUpdateClient(id: string) {

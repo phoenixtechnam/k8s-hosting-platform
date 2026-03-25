@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS `container_images` (
   `code` varchar(50) NOT NULL,
   `name` varchar(255) NOT NULL,
   `image_type` varchar(50) NOT NULL,
-  `registry_url` varchar(500) NOT NULL,
+  `registry_url` varchar(500),
   `digest` varchar(255),
   `supported_versions` json,
   `status` enum('active','deprecated') NOT NULL DEFAULT 'active',

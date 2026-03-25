@@ -102,6 +102,9 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   if (input.status !== undefined) updateValues.status = input.status;
   if (input.plan_id !== undefined) updateValues.planId = input.plan_id;
   if (input.subscription_expires_at !== undefined) {
+    // TODO: Implement background job (cron) to auto-suspend clients whose subscription has expired.
+    // The job should run daily, query clients where subscriptionExpiresAt < now() AND status = 'active',
+    // and set their status to 'suspended'.
     updateValues.subscriptionExpiresAt = new Date(input.subscription_expires_at);
   }
 
@@ -113,9 +116,9 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 }
 
 export async function deleteClient(db: Database, id: string) {
-  const client = await getClientById(db, id);
-  if (client.status !== 'cancelled') {
-    throw operationNotAllowed('Client must be in cancelled status before deletion');
-  }
+  // Verify client exists (throws CLIENT_NOT_FOUND if missing)
+  await getClientById(db, id);
+  // Allow deletion regardless of status — the UI delete confirmation dialog is sufficient safeguard.
+  // TODO: Future background job should clean up associated Kubernetes resources (namespace, secrets, etc.)
   await db.delete(clients).where(eq(clients.id, id));
 }
