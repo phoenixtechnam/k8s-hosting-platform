@@ -28,7 +28,7 @@ test.describe('Admin Panel Smoke Test', () => {
 
     // Check stat cards
     await expect(page.getByText('Total Clients')).toBeVisible();
-    await expect(page.getByText('Platform')).toBeVisible();
+    await expect(page.getByText('Databases')).toBeVisible();
   });
 
   test('can navigate to clients page', async ({ page }) => {
@@ -61,8 +61,9 @@ test.describe('Admin Panel Smoke Test', () => {
     await page.getByText('Add Client').click();
     await expect(page.getByTestId('create-client-modal')).toBeVisible();
 
-    // Fill form
-    await page.getByTestId('company-name-input').fill('E2E Test Corp');
+    // Fill form with unique name
+    const uniqueName = `E2E Corp ${Date.now()}`;
+    await page.getByTestId('company-name-input').fill(uniqueName);
     await page.getByTestId('company-email-input').fill('test@e2e.local');
 
     // Select plan and region (first option)
@@ -74,7 +75,7 @@ test.describe('Admin Panel Smoke Test', () => {
 
     // Modal should close and client should appear in list
     await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
-    await expect(page.getByText('E2E Test Corp')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 5000 });
   });
 
   test('sidebar navigation works', async ({ page }) => {
