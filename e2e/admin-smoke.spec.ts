@@ -27,7 +27,7 @@ test.describe('Admin Panel Smoke Test', () => {
     // Navigate to clients
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
-    await expect(page.getByText('Add Client')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add Client' })).toBeVisible();
   });
 
   test('can create a client', async ({ page }) => {
