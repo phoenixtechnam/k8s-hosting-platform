@@ -9,7 +9,7 @@ export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState('');
   const [showCreate, setShowCreate] = useState(false);
 
-  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 200 });
+  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 100 });
   const clients = clientsData?.data ?? [];
 
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs(

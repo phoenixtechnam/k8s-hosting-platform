@@ -31,7 +31,7 @@ export default function Storage() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [selectedClientId, setSelectedClientId] = useState('');
 
-  const { data: clientsData } = useClients({ limit: 200 });
+  const { data: clientsData } = useClients({ limit: 100 });
   const clients = clientsData?.data ?? [];
 
   const {

@@ -13,7 +13,7 @@ export default function Domains() {
   const [showCreate, setShowCreate] = useState(false);
   const [expandedDomainId, setExpandedDomainId] = useState<string | null>(null);
 
-  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 200 });
+  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 100 });
   const clients = clientsData?.data ?? [];
 
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
