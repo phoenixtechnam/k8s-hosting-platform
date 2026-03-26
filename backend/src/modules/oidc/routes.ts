@@ -45,8 +45,9 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     // Store PKCE verifier with 10 minute expiry
     pkceStore.set(state, { codeVerifier, expiresAt: Date.now() + 600_000 });
 
-    // Build the backend callback URL
-    const backendCallback = `${request.protocol}://${request.hostname}/api/v1/auth/oidc/callback?frontend_redirect=${encodeURIComponent(frontendCallback)}&state=${state}`;
+    // Build the backend callback URL using the full Host header (includes port)
+    const host = request.headers.host ?? request.hostname;
+    const backendCallback = `${request.protocol}://${host}/api/v1/auth/oidc/callback?frontend_redirect=${encodeURIComponent(frontendCallback)}&state=${state}`;
 
     const authUrl = await service.buildAuthorizationUrl(app.db, backendCallback, state, codeChallenge);
 
@@ -81,7 +82,8 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     pkceStore.delete(query.state);
 
     // Reconstruct the callback URL that was used for the authorization request
-    const callbackUrl = `${request.protocol}://${request.hostname}/api/v1/auth/oidc/callback?frontend_redirect=${encodeURIComponent(query.frontend_redirect ?? '/login')}&state=${query.state}`;
+    const host = request.headers.host ?? request.hostname;
+    const callbackUrl = `${request.protocol}://${host}/api/v1/auth/oidc/callback?frontend_redirect=${encodeURIComponent(query.frontend_redirect ?? '/login')}&state=${query.state}`;
 
     // Exchange code for tokens
     const { idToken } = await service.exchangeCodeForTokens(
