@@ -48,6 +48,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
       CORS_ORIGINS: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMIN:-2010},http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
+      OIDC_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     depends_on:
       mariadb:
         condition: service_healthy
@@ -88,5 +89,20 @@ services:
       timeout: 3s
       retries: 3
 
+  dex:
+    image: ghcr.io/dexidp/dex:v2.39.1
+    ports:
+      - "${PORT_DEX:-5556}:5556"
+    volumes:
+      - ./config/dex/config.yaml:/etc/dex/config.yaml:ro
+      - dex-data:/var/dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/.well-known/openid-configuration"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
 volumes:
   mariadb-data:
+  dex-data:

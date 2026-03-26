@@ -42,6 +42,10 @@ vi.mock('./service.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../oidc/service.js', () => ({
+  isLocalAuthDisabled: vi.fn().mockResolvedValue(false),
+}));
+
 const { authRoutes } = await import('./routes.js');
 
 describe('auth routes', () => {

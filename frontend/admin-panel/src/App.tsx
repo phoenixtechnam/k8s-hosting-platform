@@ -15,6 +15,7 @@ import Workloads from '@/pages/Workloads';
 import Security from '@/pages/Security';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
+import OidcSettings from '@/pages/OidcSettings';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="security" element={<Security />} />
             <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="settings/oidc" element={<OidcSettings />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

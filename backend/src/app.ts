@@ -27,6 +27,7 @@ import { hostingSettingsRoutes } from './modules/hosting-settings/routes.js';
 import { protectedDirectoryRoutes } from './modules/protected-directories/routes.js';
 import { sshKeyRoutes } from './modules/ssh-keys/routes.js';
 import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
+import { oidcRoutes } from './modules/oidc/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -38,6 +39,7 @@ export interface AppDependencies {
 declare module 'fastify' {
   interface FastifyInstance {
     db: Database;
+    config: Config;
   }
 }
 
@@ -62,6 +64,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Decorate
   app.decorate('db', deps.db);
+  app.decorate('config', deps.config);
   registerAuth(app);
 
   // Error handler
@@ -151,6 +154,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(protectedDirectoryRoutes, { prefix: '/api/v1' });
   await app.register(sshKeyRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
+  await app.register(oidcRoutes, { prefix: '/api/v1' });
 
   return app;
 }

@@ -7,6 +7,7 @@ const configSchema = z.object({
   JWT_SECRET: z.string().min(16),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGINS: z.string().optional(),
+  OIDC_ENCRYPTION_KEY: z.string().min(32).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

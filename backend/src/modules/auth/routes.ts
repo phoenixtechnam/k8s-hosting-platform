@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { loginSchema, changePasswordSchema, updateProfileSchema } from './schema.js';
 import { authenticateUser, verifyPassword, hashNewPassword } from './service.js';
+import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
 
@@ -55,6 +56,11 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
   }, async (request, reply) => {
+    // Check if local auth is disabled (OIDC-only mode)
+    if (await isLocalAuthDisabled(app.db)) {
+      throw new ApiError('LOCAL_AUTH_DISABLED', 'Local authentication is disabled. Please use SSO to sign in.', 403);
+    }
+
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError(

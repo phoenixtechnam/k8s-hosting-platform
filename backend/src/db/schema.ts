@@ -23,10 +23,28 @@ export const users = mysqlTable('users', {
   emailVerifiedAt: timestamp('email_verified_at'),
   lastLoginAt: timestamp('last_login_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
+  oidcSubject: varchar('oidc_subject', { length: 255 }),
+  oidcIssuer: varchar('oidc_issuer', { length: 500 }),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [
   uniqueIndex('users_email_unique').on(table.email),
+  uniqueIndex('users_oidc_unique').on(table.oidcIssuer, table.oidcSubject),
 ]);
+
+export const oidcSettings = mysqlTable('oidc_settings', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
+  clientId: varchar('client_id', { length: 255 }).notNull(),
+  clientSecretEncrypted: varchar('client_secret_encrypted', { length: 500 }).notNull(),
+  enabled: int('enabled').notNull().default(0),
+  disableLocalAuth: int('disable_local_auth').notNull().default(0),
+  discoveryMetadata: json('discovery_metadata').$type<Record<string, unknown>>(),
+  jwksCache: json('jwks_cache').$type<Record<string, unknown>>(),
+  jwksCachedAt: timestamp('jwks_cached_at'),
+  backchannelLogoutEnabled: int('backchannel_logout_enabled').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
 
 export const rbacRoles = mysqlTable('rbac_roles', {
   id: varchar('id', { length: 36 }).primaryKey(),
