@@ -3,12 +3,13 @@ import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
 export function useCronJobs(clientId: string | undefined) {
-  const path = `/api/v1/clients/${clientId}/cron-jobs`;
+  const path = clientId
+    ? `/api/v1/clients/${clientId}/cron-jobs`
+    : `/api/v1/admin/cron-jobs`;
 
   return useQuery({
-    queryKey: ['cron-jobs', clientId],
+    queryKey: ['cron-jobs', clientId ?? 'all'],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
-    enabled: !!clientId,
   });
 }
 

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { loginSchema, changePasswordSchema } from './schema.js';
+import { loginSchema, changePasswordSchema, updateProfileSchema } from './schema.js';
 import { authenticateUser, verifyPassword, hashNewPassword } from './service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
@@ -80,12 +80,66 @@ export async function authRoutes(app: FastifyInstance) {
     await request.jwtVerify();
     const payload = request.user as { sub: string; role: string };
 
+    const [user] = await app.db
+      .select()
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1);
+
+    if (!user) {
+      throw invalidToken();
+    }
+
     return {
       data: {
-        id: payload.sub,
-        role: payload.role,
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.roleName,
       },
     };
+  });
+
+  app.patch('/auth/profile', async (request, reply) => {
+    await request.jwtVerify();
+    const payload = request.user as { sub: string; role: string };
+
+    const parsed = updateProfileSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+        400,
+      );
+    }
+
+    const updateValues: Record<string, unknown> = {};
+    if (parsed.data.full_name !== undefined) updateValues.fullName = parsed.data.full_name;
+    if (parsed.data.email !== undefined) updateValues.email = parsed.data.email;
+
+    if (Object.keys(updateValues).length === 0) {
+      throw new ApiError('VALIDATION_ERROR', 'No fields provided to update', 400);
+    }
+
+    await app.db
+      .update(users)
+      .set(updateValues)
+      .where(eq(users.id, payload.sub));
+
+    const [updated] = await app.db
+      .select()
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1);
+
+    return reply.send({
+      data: {
+        id: updated.id,
+        email: updated.email,
+        fullName: updated.fullName,
+        role: updated.roleName,
+      },
+    });
   });
 
   app.patch('/auth/password', async (request, reply) => {

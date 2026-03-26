@@ -13,7 +13,7 @@ test.describe('Admin Settings Page', () => {
   });
 
   test('shows Platform Configuration', async ({ page }) => {
-    await expect(page.getByText('Platform Configuration').or(page.getByText('Platform Name'))).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Platform Configuration' })).toBeVisible({ timeout: 5000 });
   });
 
   test('shows Workload Repositories section', async ({ page }) => {

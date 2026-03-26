@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
-import { Menu, Bell, Search, UserCircle, KeyRound, LogOut } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Menu, Bell, Search, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
 import { ApiError } from '@/lib/api-client';
@@ -99,6 +100,15 @@ export default function Header({ onMenuClick }: HeaderProps) {
                 <ChangePasswordForm onClose={() => setShowPassword(false)} />
               ) : (
                 <div className="p-2">
+                  <Link
+                    to="/user-settings"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                    data-testid="user-settings-menu-item"
+                  >
+                    <Settings size={16} />
+                    Settings
+                  </Link>
                   <button
                     onClick={() => setShowPassword(true)}
                     className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"

@@ -72,25 +72,22 @@ test.describe('Client Panel Database Operations', () => {
     if (await nameInput.isVisible().catch(() => false)) {
       await nameInput.fill(uniqueDbName);
 
-      // Submit the form
-      const submitButton = page.getByTestId('submit-button')
-        .or(page.getByTestId('create-button'))
-        .or(page.getByRole('button', { name: 'Create' }))
-        .or(page.getByRole('button', { name: 'Submit' }));
+      // Submit the form — use the modal's specific submit button
+      const submitButton = page.getByTestId('submit-database-button')
+        .or(page.getByTestId('submit-button'));
       await submitButton.click();
 
       // Wait for result — either password modal, success toast, table update, or error
       await page.waitForTimeout(3000);
 
-      const passwordDisplay = page.getByTestId('database-password')
-        .or(page.getByText('Password'));
-      const successToast = page.getByText('created', { exact: false });
-      const dbInTable = page.getByText(uniqueDbName);
-      const errorMsg = page.getByTestId('error-message')
-        .or(page.getByText('error', { exact: false }));
+      // After creation, we should see one of: the database in the table, a password display, or a success message
+      const dbInTable = page.getByRole('cell', { name: uniqueDbName, exact: true });
+      const passwordAlert = page.getByText('Save this password', { exact: false });
+      const successToast = page.getByText('Database created', { exact: false });
+      const errorMsg = page.getByTestId('error-message');
 
-      const anyResult = passwordDisplay.or(successToast).or(dbInTable).or(errorMsg);
-      await expect(anyResult).toBeVisible({ timeout: 10000 });
+      // At least one of these should be visible after creation
+      await expect(dbInTable.or(passwordAlert).or(successToast).or(errorMsg).first()).toBeVisible({ timeout: 10000 });
     }
   });
 

@@ -46,11 +46,15 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
     
 
-    // 9. Logout
-    const logoutButton = page.getByTestId('user-menu-button');
-    await expect(logoutButton).toBeVisible();
-    await logoutButton.click();
-    await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 10000 });
+    // 9. Logout via user menu
+    const logoutMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
+    await logoutMenuBtn.click();
+    await page.waitForTimeout(500);
+    const signOutBtn = page.getByTestId('user-menu-sign-out')
+      .or(page.getByRole('button', { name: /sign out/i }))
+      .or(page.getByText('Sign Out'));
+    await signOutBtn.click();
+    await expect(page.getByTestId('login-button').or(page.getByRole('button', { name: 'Sign In' }))).toBeVisible({ timeout: 10000 });
   });
 
   test('dashboard Getting Started section is visible', async ({ page }) => {
@@ -132,15 +136,22 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByText('Coming Soon')).toBeVisible({ timeout: 5000 });
   });
 
-  test('Settings page shows profile and password sections', async ({ page }) => {
+  test('user menu shows profile info and change password option', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
-    
-    await expect(page.getByTestId('profile-email')).toBeVisible();
-    
-    await expect(page.getByTestId('update-password-button')).toBeVisible();
+    // Profile and password are now in the header user menu, not Settings page
+    const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
+    await userMenuBtn.click();
+    await page.waitForTimeout(500);
+
+    // User email should be displayed in the dropdown
+    await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 5000 });
+
+    // Change Password option should be available (as heading or clickable item)
+    const changePwOption = page.getByRole('heading', { name: 'Change Password' })
+      .or(page.getByTestId('change-password-menu-item'))
+      .or(page.getByText('Change Password'));
+    await expect(changePwOption.first()).toBeVisible({ timeout: 5000 });
   });
 
   test('multiple navigation cycles preserve session', async ({ page }) => {
@@ -164,9 +175,14 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   test('logout redirects to login page', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    const logoutButton = page.getByTestId('user-menu-button');
-    await expect(logoutButton).toBeVisible();
-    await logoutButton.click();
+    // Open user menu and click Sign Out
+    const menuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
+    await menuBtn.click();
+    await page.waitForTimeout(500);
+    const signOut = page.getByTestId('user-menu-sign-out')
+      .or(page.getByRole('button', { name: /sign out/i }))
+      .or(page.getByText('Sign Out'));
+    await signOut.click();
 
     await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('Client Portal')).toBeVisible();

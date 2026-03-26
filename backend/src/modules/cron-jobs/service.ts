@@ -35,6 +35,55 @@ export async function getCronJobById(db: Database, clientId: string, cronJobId: 
   return job;
 }
 
+export async function listAllCronJobs(
+  db: Database,
+  params: { limit: number; cursor?: string },
+): Promise<{ data: typeof cronJobs.$inferSelect[]; pagination: PaginationMeta }> {
+  const { limit, cursor } = params;
+
+  const conditions = [];
+  if (cursor) {
+    const decoded = decodeCursor(cursor);
+    conditions.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
+  }
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const rows = await db
+    .select()
+    .from(cronJobs)
+    .where(where)
+    .orderBy(desc(cronJobs.createdAt))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const data = rows.slice(0, limit);
+
+  let nextCursor: string | null = null;
+  if (hasMore && data.length > 0) {
+    const last = data[data.length - 1];
+    nextCursor = encodeCursor({
+      resource: 'cron_job',
+      sort: last.createdAt.toISOString(),
+      id: last.id,
+    });
+  }
+
+  const [countResult] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(cronJobs);
+
+  return {
+    data,
+    pagination: {
+      cursor: nextCursor,
+      has_more: hasMore,
+      page_size: data.length,
+      total_count: Number(countResult?.count ?? 0),
+    },
+  };
+}
+
 export async function listCronJobs(
   db: Database,
   clientId: string,

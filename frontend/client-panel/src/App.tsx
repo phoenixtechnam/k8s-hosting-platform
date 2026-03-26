@@ -10,6 +10,7 @@ import Backups from '@/pages/Backups';
 import Email from '@/pages/Email';
 import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
+import UserSettings from '@/pages/UserSettings';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="email" element={<Email />} />
             <Route path="backups" element={<Backups />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>

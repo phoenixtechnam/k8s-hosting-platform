@@ -88,13 +88,12 @@ describe('Domains page', () => {
   it('renders with client selector', () => {
     render(<Domains />, { wrapper: createWrapper() });
     expect(screen.getByTestId('client-selector')).toBeInTheDocument();
-    expect(screen.getByText('Select a client...')).toBeInTheDocument();
+    expect(screen.getByText('All Clients')).toBeInTheDocument();
   });
 
-  it('shows prompt to select client when none selected', () => {
+  it('shows all clients by default without a prompt to select', () => {
     render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
-    expect(screen.getByText('Select a client to view and manage their domains.')).toBeInTheDocument();
+    expect(screen.queryByTestId('select-client-prompt')).not.toBeInTheDocument();
   });
 
   it('disables add domain button when no client selected', () => {

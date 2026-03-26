@@ -10,6 +10,14 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('admin', 'support'));
 
+  // GET /api/v1/admin/cron-jobs — list all cron jobs across all clients
+  app.get('/admin/cron-jobs', async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const { limit, cursor } = parsePaginationParams(query);
+    const result = await service.listAllCronJobs(app.db, { limit, cursor });
+    return paginated(result.data, result.pagination);
+  });
+
   // GET /api/v1/clients/:id/cron-jobs
   app.get('/clients/:id/cron-jobs', async (request) => {
     const { id } = request.params as { id: string };

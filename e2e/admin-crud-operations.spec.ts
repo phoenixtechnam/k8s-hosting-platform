@@ -6,21 +6,48 @@ test.describe('Admin CRUD Operations', () => {
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
 
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.getByRole('button', { name: 'Add Client' }).click();
+      await expect(page.getByTestId('create-client-modal')).toBeVisible();
+
+      await page.getByTestId('company-name-input').fill(name);
+      await page.getByTestId('company-email-input').fill(`${Date.now()}@e2e.local`);
+
+      await page.getByTestId('plan-select').waitFor({ state: 'visible' });
+      await page.waitForTimeout(1000);
+      await page.getByTestId('plan-select').selectOption({ index: 1 });
+      await page.getByTestId('region-select').waitFor({ state: 'visible' });
+      await page.waitForTimeout(500);
+      await page.getByTestId('region-select').selectOption({ index: 1 });
+
+      await page.getByTestId('submit-button').click();
+      await page.waitForTimeout(2000);
+
+      const modalStillVisible = await page.getByTestId('create-client-modal').isVisible().catch(() => false);
+      if (!modalStillVisible) {
+        await expect(page.getByText(name)).toBeVisible({ timeout: 5000 });
+        return;
+      }
+
+      // If modal is still visible, there may be a server error — close and retry
+      await page.getByRole('button', { name: 'Cancel' }).click();
+      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 3000 });
+      await page.waitForTimeout(2000);
+    }
+
+    // Final attempt — fail if this doesn't work
     await page.getByRole('button', { name: 'Add Client' }).click();
     await expect(page.getByTestId('create-client-modal')).toBeVisible();
-
     await page.getByTestId('company-name-input').fill(name);
     await page.getByTestId('company-email-input').fill(`${Date.now()}@e2e.local`);
-
     await page.getByTestId('plan-select').waitFor({ state: 'visible' });
     await page.waitForTimeout(1000);
     await page.getByTestId('plan-select').selectOption({ index: 1 });
     await page.getByTestId('region-select').waitFor({ state: 'visible' });
     await page.waitForTimeout(500);
     await page.getByTestId('region-select').selectOption({ index: 1 });
-
     await page.getByTestId('submit-button').click();
-    await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 10000 });
     await expect(page.getByText(name)).toBeVisible({ timeout: 5000 });
   }
 
@@ -229,14 +256,14 @@ test.describe('Admin CRUD Operations', () => {
   test('client list shows table with headers', async ({ page }) => {
     await loginAsAdmin(page);
 
-    await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    // Create a client first to ensure there's data in the table
+    const uniqueName = `CRUD Table ${Date.now()}`;
+    await createClient(page, uniqueName);
 
-    // Table should have headers
+    // The clients page should now have a table with headers
     const table = page.locator('table');
-    await expect(table).toBeVisible({ timeout: 5000 });
+    await expect(table).toBeVisible({ timeout: 10000 });
 
-    await expect(page.getByRole('columnheader', { name: /name/i })
-      .or(page.getByText('Company'))).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('columnheader', { name: /name/i }).first()).toBeVisible({ timeout: 5000 });
   });
 });

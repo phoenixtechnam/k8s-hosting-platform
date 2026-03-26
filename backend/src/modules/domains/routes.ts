@@ -10,6 +10,16 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('admin', 'support'));
 
+  // GET /api/v1/admin/domains — list all domains across all clients
+  app.get('/admin/domains', async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const paginationParams = parsePaginationParams(query);
+    const search = typeof query.search === 'string' ? query.search : undefined;
+
+    const result = await service.listAllDomains(app.db, { ...paginationParams, search });
+    return paginated(result.data, result.pagination);
+  });
+
   // POST /api/v1/clients/:clientId/domains
   app.post('/clients/:clientId/domains', async (request, reply) => {
     const { clientId } = request.params as { clientId: string };

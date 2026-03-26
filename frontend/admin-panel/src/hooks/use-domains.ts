@@ -15,12 +15,13 @@ export function useDomains(clientId: string | undefined, params: ListDomainsPara
   if (params.cursor) searchParams.set('cursor', params.cursor);
 
   const qs = searchParams.toString();
-  const path = `/api/v1/clients/${clientId}/domains${qs ? `?${qs}` : ''}`;
+  const path = clientId
+    ? `/api/v1/clients/${clientId}/domains${qs ? `?${qs}` : ''}`
+    : `/api/v1/admin/domains${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['domains', clientId, params],
+    queryKey: ['domains', clientId ?? 'all', params],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
-    enabled: !!clientId,
   });
 }
 
