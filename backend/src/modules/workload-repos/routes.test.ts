@@ -24,6 +24,7 @@ vi.mock('./service.js', () => ({
   addRepo: vi.fn().mockResolvedValue({ ...mockRepo, id: 'new-repo-id' }),
   deleteRepo: vi.fn().mockResolvedValue(undefined),
   syncRepo: vi.fn().mockResolvedValue(undefined),
+  restoreDefaultRepo: vi.fn().mockResolvedValue(mockRepo),
 }));
 
 // Import routes AFTER mocking
@@ -153,5 +154,66 @@ describe('workload-repos routes', () => {
       },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('POST /api/v1/admin/workload-repos/restore-default should return 200 with repo data', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workload-repos/restore-default',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data).toBeDefined();
+    expect(body.data.name).toBe('Official Catalog');
+  });
+
+  it('POST /api/v1/admin/workload-repos/restore-default should require admin auth', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workload-repos/restore-default',
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('POST /api/v1/admin/workload-repos/restore-default should reject non-admin roles', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workload-repos/restore-default',
+      headers: { authorization: `Bearer ${readOnlyToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('DELETE /api/v1/admin/workload-repos/:id should call deleteRepo service', async () => {
+    const { deleteRepo } = await import('./service.js');
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/admin/workload-repos/repo-to-delete',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(deleteRepo).toHaveBeenCalledWith(expect.anything(), 'repo-to-delete');
+  });
+
+  it('POST /api/v1/admin/workload-repos should return 400 when addRepo throws validation error', async () => {
+    const { addRepo } = await import('./service.js');
+    const { ApiError } = await import('../../shared/errors.js');
+    vi.mocked(addRepo).mockRejectedValueOnce(
+      new ApiError('REPO_VALIDATION_FAILED', 'Cannot access repository: 404 Not Found. Verify the URL and auth token.', 400),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/workload-repos',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'Unreachable Repo',
+        url: 'https://github.com/org/nonexistent',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(body.error.code).toBe('REPO_VALIDATION_FAILED');
   });
 });

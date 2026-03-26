@@ -98,6 +98,36 @@ export async function workloadRepoRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success(repo));
   });
 
+  // POST /api/v1/admin/workload-repos/restore-default
+  app.post('/admin/workload-repos/restore-default', {
+    schema: {
+      tags: ['Workload Repos'],
+      summary: 'Restore the official default workload catalog repository',
+      security: [{ bearerAuth: [] }],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                url: { type: 'string' },
+                branch: { type: 'string' },
+                syncIntervalMinutes: { type: 'number' },
+                status: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async () => {
+    const repo = await service.restoreDefaultRepo(app.db);
+    return success(repo);
+  });
+
   // DELETE /api/v1/admin/workload-repos/:id
   app.delete('/admin/workload-repos/:id', {
     schema: {

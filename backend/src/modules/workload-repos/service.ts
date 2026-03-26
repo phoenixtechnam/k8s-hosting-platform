@@ -68,7 +68,78 @@ export async function listRepos(db: Database) {
   return db.select().from(workloadRepositories);
 }
 
+const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog';
+
+async function validateRepoAccess(url: string, branch: string, authToken?: string | null): Promise<void> {
+  const { owner, repo } = parseGithubUrl(url);
+  const catalogUrl = buildRawUrl(owner, repo, branch, 'catalog.json');
+
+  let response: Response;
+  try {
+    const headers: Record<string, string> = { 'Accept': 'application/json' };
+    if (authToken) {
+      headers['Authorization'] = `token ${authToken}`;
+    }
+    response = await fetch(catalogUrl, { headers });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new ApiError(
+      'REPO_VALIDATION_FAILED',
+      `Cannot access repository: ${errorMessage}. Verify the URL and auth token.`,
+      400,
+    );
+  }
+
+  if (!response.ok) {
+    throw new ApiError(
+      'REPO_VALIDATION_FAILED',
+      `Cannot access repository: ${response.status} ${response.statusText}. Verify the URL and auth token.`,
+      400,
+    );
+  }
+
+  let catalogData: unknown;
+  try {
+    catalogData = await response.json();
+  } catch {
+    throw new ApiError(
+      'INVALID_CATALOG',
+      'Repository has no catalog.json or it contains no workloads.',
+      400,
+    );
+  }
+
+  if (Array.isArray(catalogData)) {
+    if (catalogData.length === 0) {
+      throw new ApiError(
+        'INVALID_CATALOG',
+        'Repository has no catalog.json or it contains no workloads.',
+        400,
+      );
+    }
+  } else if (catalogData && typeof catalogData === 'object' && 'workloads' in catalogData) {
+    const workloads = (catalogData as CatalogFile).workloads;
+    if (!workloads || workloads.length === 0) {
+      throw new ApiError(
+        'INVALID_CATALOG',
+        'Repository has no catalog.json or it contains no workloads.',
+        400,
+      );
+    }
+  } else {
+    throw new ApiError(
+      'INVALID_CATALOG',
+      'Repository has no catalog.json or it contains no workloads.',
+      400,
+    );
+  }
+}
+
 export async function addRepo(db: Database, input: AddRepoInput) {
+  const branch = input.branch ?? 'main';
+
+  await validateRepoAccess(input.url, branch, input.auth_token);
+
   const id = crypto.randomUUID();
 
   await db.insert(workloadRepositories).values({
@@ -99,10 +170,9 @@ export async function deleteRepo(db: Database, id: string) {
     throw new ApiError('REPO_NOT_FOUND', `Workload repository '${id}' not found`, 404);
   }
 
-  // Unlink container images that came from this repo
+  // Delete container images that came from this repo
   await db
-    .update(containerImages)
-    .set({ sourceRepoId: null })
+    .delete(containerImages)
     .where(eq(containerImages.sourceRepoId, id));
 
   await db.delete(workloadRepositories).where(eq(workloadRepositories.id, id));
@@ -205,4 +275,35 @@ export async function syncRepo(db: Database, repoId: string) {
       .where(eq(workloadRepositories.id, repoId));
     throw error;
   }
+}
+
+export async function restoreDefaultRepo(db: Database) {
+  // Check if the official catalog repo already exists by URL
+  const [existing] = await db
+    .select()
+    .from(workloadRepositories)
+    .where(eq(workloadRepositories.url, OFFICIAL_CATALOG_URL));
+
+  if (existing) {
+    return existing;
+  }
+
+  const id = crypto.randomUUID();
+
+  await db.insert(workloadRepositories).values({
+    id,
+    name: 'Official Catalog',
+    url: OFFICIAL_CATALOG_URL,
+    branch: 'main',
+    authToken: null,
+    syncIntervalMinutes: 60,
+    status: 'active',
+  });
+
+  const [created] = await db
+    .select()
+    .from(workloadRepositories)
+    .where(eq(workloadRepositories.id, id));
+
+  return created;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listRepos, addRepo, deleteRepo, syncRepo } from './service.js';
+import { listRepos, addRepo, deleteRepo, syncRepo, restoreDefaultRepo } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
 // Mock global fetch for syncRepo tests
@@ -70,6 +70,11 @@ describe('addRepo', () => {
       status: 'active',
     };
 
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ workloads: ['wordpress'] }),
+    });
+
     const db = createMockDb({ selectResults: [[created]] });
 
     const result = await addRepo(db, {
@@ -83,6 +88,12 @@ describe('addRepo', () => {
 
   it('should use default branch and interval when not specified', async () => {
     const created = { id: 'r1', name: 'test', branch: 'main' };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ workloads: ['nginx'] }),
+    });
+
     const db = createMockDb({ selectResults: [[created]] });
 
     const result = await addRepo(db, {
@@ -144,5 +155,139 @@ describe('syncRepo', () => {
     await expect(syncRepo(db, 'r1')).rejects.toMatchObject({
       code: 'REPO_NOT_FOUND',
     });
+  });
+});
+
+describe('deleteRepo - container image cleanup', () => {
+  it('should call db.delete on containerImages when deleting a repo', async () => {
+    const repo = { id: 'r1', name: 'test' };
+    const db = createMockDb({ selectResults: [[repo]] });
+
+    await deleteRepo(db, 'r1');
+
+    // Verify db.delete was called (for containerImages and workloadRepositories)
+    expect(db.delete).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('addRepo - validation', () => {
+  it('should throw REPO_VALIDATION_FAILED when fetch returns 404', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+    });
+
+    const db = createMockDb({ selectResults: [[]] });
+
+    await expect(
+      addRepo(db, {
+        name: 'Bad Repo',
+        url: 'https://github.com/org/nonexistent',
+        branch: 'main',
+        sync_interval_minutes: 60,
+      }),
+    ).rejects.toMatchObject({
+      code: 'REPO_VALIDATION_FAILED',
+      status: 400,
+    });
+  });
+
+  it('should throw REPO_VALIDATION_FAILED on network error', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const db = createMockDb({ selectResults: [[]] });
+
+    await expect(
+      addRepo(db, {
+        name: 'Network Error Repo',
+        url: 'https://github.com/org/down',
+        branch: 'main',
+        sync_interval_minutes: 60,
+      }),
+    ).rejects.toMatchObject({
+      code: 'REPO_VALIDATION_FAILED',
+      status: 400,
+    });
+  });
+
+  it('should throw INVALID_CATALOG when catalog has no workloads', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ workloads: [] }),
+    });
+
+    const db = createMockDb({ selectResults: [[]] });
+
+    await expect(
+      addRepo(db, {
+        name: 'Empty Catalog',
+        url: 'https://github.com/org/empty',
+        branch: 'main',
+        sync_interval_minutes: 60,
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CATALOG',
+      status: 400,
+    });
+  });
+
+  it('should succeed when catalog has valid workloads', async () => {
+    const created = {
+      id: 'r1',
+      name: 'Valid Repo',
+      url: 'https://github.com/org/valid',
+      branch: 'main',
+      status: 'active',
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ workloads: ['wordpress', 'nginx'] }),
+    });
+
+    const db = createMockDb({ selectResults: [[created]] });
+
+    const result = await addRepo(db, {
+      name: 'Valid Repo',
+      url: 'https://github.com/org/valid',
+      branch: 'main',
+      sync_interval_minutes: 60,
+    });
+    expect(result).toEqual(created);
+  });
+});
+
+describe('restoreDefaultRepo', () => {
+  it('should return existing repo if official catalog URL exists', async () => {
+    const existing = {
+      id: 'r1',
+      name: 'Official Catalog',
+      url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+      branch: 'main',
+      status: 'active',
+    };
+    const db = createMockDb({ selectResults: [[existing]] });
+
+    const result = await restoreDefaultRepo(db);
+    expect(result).toEqual(existing);
+    // Should NOT have called insert
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('should create official catalog repo if not present', async () => {
+    const created = {
+      id: 'new-id',
+      name: 'Official Catalog',
+      url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+      branch: 'main',
+      status: 'active',
+    };
+    // First select returns empty (not found by URL), second returns created
+    const db = createMockDb({ selectResults: [[], [created]] });
+
+    const result = await restoreDefaultRepo(db);
+    expect(result).toEqual(created);
+    expect(db.insert).toHaveBeenCalled();
   });
 });
