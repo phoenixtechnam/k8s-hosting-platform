@@ -288,8 +288,8 @@ describe('Databases', () => {
     mockedUseDatabases.mockReturnValue({
       data: {
         data: [
-          { id: '1', clientId: 'c1', name: 'wp_main', dbType: 'MariaDB', username: 'db_wp_main_abc', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
-          { id: '2', clientId: 'c1', name: 'cache_store', dbType: 'Redis', username: 'db_cache_xyz', status: 'active', createdAt: '2025-03-01T00:00:00Z' },
+          { id: '1', clientId: 'c1', name: 'wp_main', databaseType: 'MariaDB', username: 'db_wp_main_abc', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+          { id: '2', clientId: 'c1', name: 'cache_store', databaseType: 'Redis', username: 'db_cache_xyz', status: 'active', createdAt: '2025-03-01T00:00:00Z' },
         ],
         pagination: { total_count: 2, cursor: null, has_more: false, page_size: 20 },
       },
@@ -321,7 +321,7 @@ describe('Databases', () => {
     mockedUseDatabases.mockReturnValue({
       data: {
         data: [
-          { id: '1', clientId: 'c1', name: 'wp_main', dbType: 'mysql', username: 'db_wp_main_abc12345', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+          { id: '1', clientId: 'c1', name: 'wp_main', databaseType: 'mysql', username: 'db_wp_main_abc12345', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
         ],
         pagination: { total_count: 1, cursor: null, has_more: false, page_size: 20 },
       },
@@ -338,7 +338,7 @@ describe('Databases', () => {
     mockedUseDatabases.mockReturnValue({
       data: {
         data: [
-          { id: 'db-1', clientId: 'c1', name: 'app_db', dbType: 'mysql', username: 'db_app_db_x', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
+          { id: 'db-1', clientId: 'c1', name: 'app_db', databaseType: 'mysql', username: 'db_app_db_x', status: 'active', createdAt: '2025-01-15T00:00:00Z' },
         ],
         pagination: { total_count: 1, cursor: null, has_more: false, page_size: 20 },
       },

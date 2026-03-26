@@ -1,5 +1,4 @@
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
@@ -45,57 +44,32 @@ describe('Client Settings page', () => {
     expect(screen.getByText('Account Settings')).toBeInTheDocument();
   });
 
-  it('shows Profile section with user info', () => {
+  it('shows Subscription section', () => {
     render(<Settings />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('profile-section')).toBeInTheDocument();
-    expect(screen.getByText('Profile')).toBeInTheDocument();
-    expect(screen.getByTestId('profile-name')).toHaveTextContent('Test User');
-    expect(screen.getByTestId('profile-email')).toHaveTextContent('test@example.com');
-    expect(screen.getByTestId('profile-role')).toHaveTextContent('client');
+    expect(screen.getByTestId('subscription-section')).toBeInTheDocument();
+    expect(screen.getByText('Subscription')).toBeInTheDocument();
+    expect(screen.getByText('Standard')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
-  it('shows Change Password form with enabled inputs', () => {
+  it('shows Notification Preferences section', () => {
     render(<Settings />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('change-password-section')).toBeInTheDocument();
-    expect(screen.getByText('Change Password')).toBeInTheDocument();
-    expect(screen.getByTestId('current-password-input')).toBeEnabled();
-    expect(screen.getByTestId('new-password-input')).toBeEnabled();
-    expect(screen.getByTestId('confirm-password-input')).toBeEnabled();
+    expect(screen.getByTestId('notification-prefs-section')).toBeInTheDocument();
+    expect(screen.getByText('Notification Preferences')).toBeInTheDocument();
   });
 
-  it('has Update Password button enabled', () => {
+  it('does not show Profile section (moved to user menu)', () => {
     render(<Settings />, { wrapper: createWrapper() });
-    const button = screen.getByTestId('update-password-button');
-    expect(button).toBeEnabled();
-    expect(button).toHaveTextContent('Update Password');
+    expect(screen.queryByTestId('profile-section')).not.toBeInTheDocument();
+  });
+
+  it('does not show Change Password section (moved to user menu)', () => {
+    render(<Settings />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('change-password-section')).not.toBeInTheDocument();
   });
 
   it('does not show Platform Configuration section', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.queryByTestId('platform-config-section')).not.toBeInTheDocument();
-  });
-
-  it('shows mismatch error when passwords do not match', async () => {
-    const user = userEvent.setup();
-    render(<Settings />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByTestId('current-password-input'), 'oldpass');
-    await user.type(screen.getByTestId('new-password-input'), 'newpass1');
-    await user.type(screen.getByTestId('confirm-password-input'), 'newpass2');
-    await user.click(screen.getByTestId('update-password-button'));
-
-    expect(screen.getByTestId('password-error-message')).toHaveTextContent('New passwords do not match');
-  });
-
-  it('shows success message after successful password change', async () => {
-    const user = userEvent.setup();
-    render(<Settings />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByTestId('current-password-input'), 'oldpass');
-    await user.type(screen.getByTestId('new-password-input'), 'newpass123');
-    await user.type(screen.getByTestId('confirm-password-input'), 'newpass123');
-    await user.click(screen.getByTestId('update-password-button'));
-
-    expect(screen.getByTestId('password-success-message')).toHaveTextContent('Password updated successfully');
   });
 });

@@ -8,10 +8,8 @@ import {
   Archive,
   Settings,
   X,
-  LogOut,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useAuth } from '@/hooks/use-auth';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -78,36 +76,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             </NavLink>
           ))}
         </nav>
-
-        <UserSection />
       </aside>
     </>
-  );
-}
-
-function UserSection() {
-  const { user, logout } = useAuth();
-  const initial = (user?.fullName ?? user?.email ?? 'U')[0].toUpperCase();
-
-  return (
-    <div className="border-t border-white/20 p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-sm font-medium text-white">
-          {initial}
-        </div>
-        <div className="min-w-0 flex-1 text-sm">
-          <div className="truncate font-medium text-white">{user?.fullName ?? 'User'}</div>
-          <div className="truncate text-xs text-white/60">{user?.email ?? ''}</div>
-        </div>
-        <button
-          onClick={logout}
-          className="rounded-md p-1 text-white/60 hover:bg-white/10 hover:text-white"
-          aria-label="Sign out"
-          data-testid="logout-button"
-        >
-          <LogOut size={16} />
-        </button>
-      </div>
-    </div>
   );
 }

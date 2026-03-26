@@ -1,12 +1,5 @@
-import { useState, type FormEvent } from 'react';
-import { Settings as SettingsIcon, User, Server, Lock } from 'lucide-react';
-import { useAuth } from '@/hooks/use-auth';
-import { useChangePassword } from '@/hooks/use-password';
-import { ApiError } from '@/lib/api-client';
+import { Settings as SettingsIcon, Server } from 'lucide-react';
 import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
-
-const INPUT_CLASS =
-  'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 const platformConfig = [
   { label: 'Platform Name', value: 'K8s Hosting Platform' },
@@ -17,78 +10,13 @@ const platformConfig = [
 ] as const;
 
 export default function Settings() {
-  const { user } = useAuth();
-  const changePassword = useChangePassword();
-
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
-
-  const handlePasswordSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSuccessMessage('');
-    setErrorMessage('');
-
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('New passwords do not match');
-      return;
-    }
-
-    try {
-      await changePassword.mutateAsync({
-        current_password: currentPassword,
-        new_password: newPassword,
-      });
-      setSuccessMessage('Password updated successfully');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-    } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : 'Failed to update password. Please try again.';
-      setErrorMessage(message);
-    }
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <SettingsIcon size={28} className="text-gray-700" />
         <h1 className="text-2xl font-bold text-gray-900" data-testid="settings-heading">
-          Settings
+          Platform Settings
         </h1>
-      </div>
-
-      {/* Profile Section */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="profile-section">
-        <div className="mb-4 flex items-center gap-2">
-          <User size={20} className="text-gray-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Profile</h2>
-        </div>
-        <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
-            <dt className="text-sm font-medium text-gray-500">Full Name</dt>
-            <dd className="mt-1 text-sm text-gray-900" data-testid="profile-name">
-              {user?.fullName ?? '—'}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm font-medium text-gray-500">Email</dt>
-            <dd className="mt-1 text-sm text-gray-900" data-testid="profile-email">
-              {user?.email ?? '—'}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-sm font-medium text-gray-500">Role</dt>
-            <dd className="mt-1 text-sm capitalize text-gray-900" data-testid="profile-role">
-              {user?.role ?? '—'}
-            </dd>
-          </div>
-        </dl>
       </div>
 
       {/* Platform Configuration Section */}
@@ -112,81 +40,6 @@ export default function Settings() {
 
       {/* Workload Repositories Section */}
       <WorkloadRepoSettings />
-
-      {/* Change Password Section */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="change-password-section">
-        <div className="mb-4 flex items-center gap-2">
-          <Lock size={20} className="text-gray-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Change Password</h2>
-        </div>
-        <form className="max-w-md space-y-4" onSubmit={handlePasswordSubmit}>
-          <div>
-            <label htmlFor="current-password" className="block text-sm font-medium text-gray-700">
-              Current Password
-            </label>
-            <input
-              id="current-password"
-              type="password"
-              autoComplete="current-password"
-              className={INPUT_CLASS}
-              placeholder="Enter current password"
-              data-testid="current-password-input"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor="new-password" className="block text-sm font-medium text-gray-700">
-              New Password
-            </label>
-            <input
-              id="new-password"
-              type="password"
-              autoComplete="new-password"
-              className={INPUT_CLASS}
-              placeholder="Enter new password"
-              data-testid="new-password-input"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-700">
-              Confirm New Password
-            </label>
-            <input
-              id="confirm-password"
-              type="password"
-              autoComplete="new-password"
-              className={INPUT_CLASS}
-              placeholder="Confirm new password"
-              data-testid="confirm-password-input"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-            />
-          </div>
-          {successMessage && (
-            <p className="text-sm text-green-600" data-testid="password-success-message">
-              {successMessage}
-            </p>
-          )}
-          {errorMessage && (
-            <p className="text-sm text-red-600" data-testid="password-error-message">
-              {errorMessage}
-            </p>
-          )}
-          <div>
-            <button
-              type="submit"
-              disabled={changePassword.isPending}
-              className="flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-              data-testid="update-password-button"
-            >
-              {changePassword.isPending ? 'Updating...' : 'Update Password'}
-            </button>
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

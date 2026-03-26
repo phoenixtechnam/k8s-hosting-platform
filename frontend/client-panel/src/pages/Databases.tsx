@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Database as DatabaseIcon, Plus, KeyRound, Copy, Check, AlertTriangle } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDatabases, useRotateCredentials } from '@/hooks/use-databases';
@@ -87,6 +88,7 @@ function RotatedPasswordAlert({
 
 export default function Databases() {
   const { clientId } = useClientContext();
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useDatabases(clientId ?? undefined);
   const rotateCredentials = useRotateCredentials(clientId ?? undefined);
 
@@ -183,7 +185,7 @@ export default function Databases() {
                   <tr key={db.id} className="border-b border-gray-100 last:border-0">
                     <td className="px-6 py-4 font-medium text-gray-900">{db.name}</td>
                     <td className="px-6 py-4">
-                      <TypeBadge dbType={db.dbType} />
+                      <TypeBadge dbType={db.databaseType} />
                     </td>
                     <td className="hidden px-6 py-4 font-mono text-sm text-gray-600 sm:table-cell">
                       {db.username}
@@ -217,7 +219,10 @@ export default function Databases() {
       {clientId && (
         <CreateDatabaseModal
           open={modalOpen}
-          onClose={() => setModalOpen(false)}
+          onClose={() => {
+            setModalOpen(false);
+            queryClient.invalidateQueries({ queryKey: ['databases', clientId] });
+          }}
           clientId={clientId}
         />
       )}

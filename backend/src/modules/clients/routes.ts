@@ -94,6 +94,8 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
                   planId: { type: 'string' },
                   regionId: { type: 'string' },
                   status: { type: 'string' },
+                  createdBy: { type: ['string', 'null'] },
+                  subscriptionExpiresAt: { type: ['string', 'null'] },
                   createdAt: { type: 'string' },
                   updatedAt: { type: 'string' },
                 },
@@ -150,6 +152,6 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   app.delete('/clients/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
     await service.deleteClient(app.db, id);
-    reply.status(204).send();
+    return reply.status(204).send();
   });
 }
