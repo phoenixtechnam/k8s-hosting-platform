@@ -60,7 +60,8 @@ services:
 
   admin-panel:
     build:
-      context: frontend/admin-panel
+      context: .
+      dockerfile: frontend/admin-panel/Dockerfile
       args:
         VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     ports:
@@ -73,7 +74,8 @@ services:
 
   client-panel:
     build:
-      context: frontend/client-panel
+      context: .
+      dockerfile: frontend/client-panel/Dockerfile
       args:
         VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     ports:
