@@ -102,7 +102,9 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   if (input.status !== undefined) updateValues.status = input.status;
   if (input.plan_id !== undefined) updateValues.planId = input.plan_id;
   if (input.subscription_expires_at !== undefined) {
-    updateValues.subscriptionExpiresAt = new Date(input.subscription_expires_at);
+    updateValues.subscriptionExpiresAt = input.subscription_expires_at
+      ? new Date(input.subscription_expires_at)
+      : null;
   }
 
   if (Object.keys(updateValues).length > 0) {

@@ -19,8 +19,8 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
 
   useEffect(() => {
     if (open) {
-      setCompanyName(client.companyName ?? client.name ?? '');
-      setCompanyEmail(client.companyEmail ?? client.email ?? '');
+      setCompanyName(client.companyName ?? '');
+      setCompanyEmail(client.companyEmail ?? '');
       setContactEmail(client.contactEmail ?? '');
       setSubscriptionExpiresAt(
         client.subscriptionExpiresAt

@@ -66,7 +66,7 @@ export default function CronJobs() {
               <option value="">All Clients</option>
               {clients.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.companyName ?? c.name}
+                  {c.companyName}
                 </option>
               ))}
             </select>

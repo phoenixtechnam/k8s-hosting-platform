@@ -1,35 +1,17 @@
-export interface Client {
-  readonly id: string;
-  // API returns camelCase from Drizzle
-  readonly companyName?: string;
-  readonly companyEmail?: string;
-  readonly contactEmail?: string | null;
-  readonly kubernetesNamespace?: string;
-  readonly planId?: string;
-  readonly regionId?: string;
-  readonly createdBy?: string;
-  readonly subscriptionExpiresAt?: string | null;
-  readonly createdAt?: string;
-  readonly updatedAt?: string;
-  // Legacy/mock fields (snake_case)
-  readonly name?: string;
-  readonly email?: string;
-  readonly plan?: string;
-  readonly status: 'active' | 'suspended' | 'pending' | 'cancelled';
-  readonly created_at?: string;
-  readonly updated_at?: string;
-}
+// Re-export shared contract types
+export type {
+  ClientResponse as Client,
+  ClientListResponse,
+  DomainResponse as Domain,
+  DomainListResponse,
+  DatabaseResponse,
+  DatabaseListResponse,
+  PaginationMeta,
+} from '@k8s-hosting/api-contracts';
 
-export interface Domain {
-  readonly id: string;
-  readonly clientId: string;
-  readonly domainName: string;
-  readonly status: 'active' | 'pending' | 'error';
-  readonly sslAutoRenew: number;
-  readonly dnsMode: string;
-  readonly createdAt: string;
-}
+export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
 
+// Generic paginated response for hooks that don't have a specific contract yet
 export interface PaginatedResponse<T> {
   readonly data: readonly T[];
   readonly pagination: {
@@ -40,6 +22,7 @@ export interface PaginatedResponse<T> {
   };
 }
 
+// Types not yet in shared contracts (will migrate incrementally)
 export interface CronJob {
   readonly id: string;
   readonly name: string;

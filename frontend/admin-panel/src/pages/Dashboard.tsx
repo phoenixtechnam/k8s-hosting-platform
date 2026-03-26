@@ -90,10 +90,10 @@ export default function Dashboard() {
                         to={`/clients/${client.id}`}
                         className="font-medium text-gray-900 hover:text-brand-500"
                       >
-                        {client.companyName ?? client.name}
+                        {client.companyName}
                       </Link>
                       <div className="text-xs text-gray-500">
-                        {client.companyEmail ?? client.email}
+                        {client.companyEmail}
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
@@ -103,7 +103,7 @@ export default function Dashboard() {
                       {client.kubernetesNamespace ?? '—'}
                     </td>
                     <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
-                      {(client.created_at ?? client.createdAt) ? new Date(client.created_at ?? client.createdAt!).toLocaleDateString() : '—'}
+                      {(client.createdAt ?? client.createdAt) ? new Date(client.createdAt ?? client.createdAt!).toLocaleDateString() : '—'}
                     </td>
                   </tr>
                 ))}

@@ -11,10 +11,14 @@ const mockClient: Client = {
   companyName: 'Acme Corp',
   companyEmail: 'admin@acme.com',
   contactEmail: 'support@acme.com',
+  kubernetesNamespace: 'client-acme-001',
   status: 'active',
   planId: 'plan-001',
   regionId: 'region-001',
+  createdBy: 'admin-001',
+  subscriptionExpiresAt: null,
   createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
 };
 
 function renderEditModal(open = true) {

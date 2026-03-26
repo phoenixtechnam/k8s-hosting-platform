@@ -80,9 +80,9 @@ export default function ClientDetail() {
     );
   }
 
-  const name = client.companyName ?? client.name ?? 'Unknown';
-  const email = client.companyEmail ?? client.email ?? '';
-  const created = client.createdAt ?? client.created_at;
+  const name = client.companyName ?? 'Unknown';
+  const email = client.companyEmail ?? '';
+  const created = client.createdAt;
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
   const databaseCount = databasesQuery.data?.data.length ?? 0;
@@ -314,7 +314,7 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
             <td className="py-2 font-medium text-gray-900">{d.domainName}</td>
             <td className="py-2 text-gray-600">{d.dnsMode}</td>
             <td className="py-2 text-gray-600">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
-            <td className="py-2"><StatusBadge status={d.status} /></td>
+            <td className="py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
             <td className="py-2 text-gray-500">{new Date(d.createdAt).toLocaleDateString()}</td>
           </tr>
         ))}

@@ -76,7 +76,7 @@ export default function Domains() {
               <option value="">All Clients</option>
               {clients.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.companyName ?? c.name}
+                  {c.companyName}
                 </option>
               ))}
             </select>
@@ -144,7 +144,7 @@ export default function Domains() {
                               </div>
                             </div>
                             <div className="px-5 py-3.5">
-                              <StatusBadge status={domain.status} />
+                              <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
                             </div>
                             <div className="hidden px-5 py-3.5 text-sm text-gray-600 uppercase md:block">
                               {domain.dnsMode}
@@ -189,7 +189,7 @@ export default function Domains() {
                                   <p className="mt-0.5 text-xs text-gray-500">SSL Auto-Renew</p>
                                 </div>
                                 <div>
-                                  <StatusBadge status={domain.status} />
+                                  <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
                                   <p className="mt-1 text-xs text-gray-500">Status</p>
                                 </div>
                               </div>
