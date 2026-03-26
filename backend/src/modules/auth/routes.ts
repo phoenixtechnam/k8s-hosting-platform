@@ -5,6 +5,13 @@ import { authenticateUser, verifyPassword, hashNewPassword } from './service.js'
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
 
+// In-memory token denylist (Phase 1). Replace with Redis in production.
+const tokenDenylist = new Set<string>();
+
+export function isTokenDenied(token: string): boolean {
+  return tokenDenylist.has(token);
+}
+
 export async function authRoutes(app: FastifyInstance) {
   app.post('/auth/login', {
     config: {
@@ -186,6 +193,59 @@ export async function authRoutes(app: FastifyInstance) {
 
     return reply.send({
       data: { message: 'Password updated successfully' },
+    });
+  });
+
+  // POST /auth/logout — revoke current token
+  app.post('/auth/logout', async (request, reply) => {
+    await request.jwtVerify();
+    const authHeader = request.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      tokenDenylist.add(authHeader.slice(7));
+    }
+    return reply.send({ data: { message: 'Logged out successfully' } });
+  });
+
+  // POST /auth/refresh — issue a new token and revoke the old one
+  app.post('/auth/refresh', async (request, reply) => {
+    await request.jwtVerify();
+    const payload = request.user as { sub: string; role: string };
+
+    // Verify user still exists and is active
+    const [user] = await app.db
+      .select()
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1);
+
+    if (!user) {
+      throw invalidToken();
+    }
+
+    // Revoke old token
+    const authHeader = request.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      tokenDenylist.add(authHeader.slice(7));
+    }
+
+    // Issue new token
+    const newToken = app.jwt.sign({
+      sub: user.id,
+      role: user.roleName as 'admin' | 'billing' | 'support' | 'read-only',
+      exp: Math.floor(Date.now() / 1000) + 86400,
+      iat: Math.floor(Date.now() / 1000),
+    });
+
+    return reply.send({
+      data: {
+        token: newToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          role: user.roleName,
+        },
+      },
     });
   });
 }

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { insufficientPermissions, missingToken, invalidToken } from '../shared/errors.js';
+import { isTokenDenied } from '../modules/auth/routes.js';
 
 export interface JwtPayload {
   readonly sub: string;
@@ -31,6 +32,12 @@ export function authenticate(
   }
 
   const token = authHeader.slice(7);
+
+  if (isTokenDenied(token)) {
+    done(invalidToken());
+    return;
+  }
+
   try {
     const decoded = request.server.jwt.verify<JwtPayload>(token);
     request.user = decoded;
