@@ -1,16 +1,32 @@
-import { Globe, Database, Archive, Mail } from 'lucide-react';
+import { Globe, Database, Archive, Server } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-
-const quickStats = [
-  { label: 'Domains', value: '--', icon: Globe, color: 'bg-blue-50 text-blue-600' },
-  { label: 'Databases', value: '--', icon: Database, color: 'bg-green-50 text-green-600' },
-  { label: 'Backups', value: '--', icon: Archive, color: 'bg-amber-50 text-amber-600' },
-  { label: 'Email Accounts', value: '--', icon: Mail, color: 'bg-purple-50 text-purple-600' },
-] as const;
+import { useClientContext } from '@/hooks/use-client-context';
+import { useDomains } from '@/hooks/use-domains';
+import { useDatabases } from '@/hooks/use-databases';
+import { useBackups } from '@/hooks/use-backups';
+import { useWorkloads } from '@/hooks/use-workloads';
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { clientId } = useClientContext();
   const displayName = user?.fullName ?? user?.email ?? 'there';
+
+  const { data: domainsData } = useDomains(clientId ?? undefined);
+  const { data: databasesData } = useDatabases(clientId ?? undefined);
+  const { data: backupsData } = useBackups(clientId ?? undefined);
+  const { data: workloadsData } = useWorkloads(clientId ?? undefined);
+
+  const domainCount = domainsData?.data?.length ?? 0;
+  const databaseCount = databasesData?.data?.length ?? 0;
+  const backupCount = backupsData?.data?.length ?? 0;
+  const workloadCount = workloadsData?.data?.length ?? 0;
+
+  const stats = [
+    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600' },
+    { label: 'Databases', value: databaseCount, icon: Database, color: 'bg-green-50 text-green-600' },
+    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600' },
+    { label: 'Workloads', value: workloadCount, icon: Server, color: 'bg-purple-50 text-purple-600' },
+  ];
 
   return (
     <div className="space-y-6">
@@ -24,7 +40,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" data-testid="quick-stats">
-        {quickStats.map(({ label, value, icon: Icon, color }) => (
+        {stats.map(({ label, value, icon: Icon, color }) => (
           <div
             key={label}
             className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
@@ -35,7 +51,7 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">{label}</p>
-                <p className="text-xl font-semibold text-gray-900">{value}</p>
+                <p className="text-xl font-semibold text-gray-900" data-testid={`stat-${label.toLowerCase()}`}>{value}</p>
               </div>
             </div>
           </div>
@@ -45,8 +61,7 @@ export default function Dashboard() {
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-gray-900">Getting Started</h2>
         <p className="mt-2 text-sm text-gray-500">
-          Use the sidebar navigation to manage your domains, databases, files, email accounts, and backups.
-          More features will be available soon.
+          Use the sidebar navigation to manage your domains, databases, workloads, cron jobs, and backups.
         </p>
       </div>
     </div>

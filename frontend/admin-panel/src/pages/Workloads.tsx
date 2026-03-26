@@ -1,13 +1,13 @@
-import { useState, useMemo } from 'react';
-import { Server, Container, Rocket, Search, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { useState, useMemo, type FormEvent } from 'react';
+import { Server, Container, Rocket, Search, Loader2, AlertCircle, RefreshCw, Plus, Trash2, X, Play, Square } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
-import { useContainerImages } from '@/hooks/use-container-images';
+import { useContainerImages, type ContainerImage } from '@/hooks/use-container-images';
 import { useWorkloadRepos, useSyncWorkloadRepo } from '@/hooks/use-workload-repos';
-import { useWorkloads } from '@/hooks/use-workloads';
+import { useWorkloads, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
 
 type Tab = 'deployed' | 'available' | 'repos';
 
@@ -57,8 +57,49 @@ export default function Workloads() {
 function DeployedWorkloadsTab() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const { data: response, isLoading, isError, error } = useWorkloads(selectedClientId ?? undefined);
+  const createWorkload = useCreateWorkload(selectedClientId ?? undefined);
+  const updateWorkload = useUpdateWorkload(selectedClientId ?? undefined);
+  const deleteWorkload = useDeleteWorkload(selectedClientId ?? undefined);
+  const { data: imagesResponse } = useContainerImages();
 
   const workloads = response?.data ?? [];
+  const images = imagesResponse?.data ?? [];
+
+  const [showDeploy, setShowDeploy] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deployForm, setDeployForm] = useState({
+    name: '',
+    image_id: '',
+    replica_count: '1',
+    cpu_request: '0.25',
+    memory_request: '256Mi',
+  });
+
+  const handleDeploy = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!deployForm.name.trim() || !deployForm.image_id) return;
+    try {
+      await createWorkload.mutateAsync({
+        name: deployForm.name.trim(),
+        image_id: deployForm.image_id,
+        replica_count: Number(deployForm.replica_count) || 1,
+        cpu_request: deployForm.cpu_request || '0.25',
+        memory_request: deployForm.memory_request || '256Mi',
+      });
+      setDeployForm({ name: '', image_id: '', replica_count: '1', cpu_request: '0.25', memory_request: '256Mi' });
+      setShowDeploy(false);
+    } catch { /* error via createWorkload.error */ }
+  };
+
+  const handleDelete = async (id: string) => {
+    try { await deleteWorkload.mutateAsync(id); setDeleteConfirmId(null); }
+    catch { /* error via deleteWorkload.error */ }
+  };
+
+  const handleToggleStatus = (id: string, currentStatus: string) => {
+    const newStatus = currentStatus === 'running' ? 'stopped' : 'running';
+    updateWorkload.mutate({ workloadId: id, status: newStatus as 'running' | 'stopped' });
+  };
 
   return (
     <div className="space-y-4" data-testid="deployed-tab">
@@ -68,7 +109,56 @@ function DeployedWorkloadsTab() {
           onSelect={setSelectedClientId}
           placeholder="Search clients..."
         />
+        {selectedClientId && (
+          <button
+            type="button"
+            onClick={() => setShowDeploy((p) => !p)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600"
+            data-testid="deploy-workload-button"
+          >
+            {showDeploy ? <X size={14} /> : <Plus size={14} />}
+            {showDeploy ? 'Cancel' : 'Deploy Workload'}
+          </button>
+        )}
       </div>
+
+      {showDeploy && selectedClientId && (
+        <form onSubmit={handleDeploy} className="rounded-lg border border-gray-200 bg-gray-50 p-4" data-testid="deploy-form">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+            <div>
+              <label htmlFor="wl-name" className="block text-xs font-medium text-gray-700">Name</label>
+              <input id="wl-name" type="text" className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="my-app" value={deployForm.name} onChange={(e) => setDeployForm({ ...deployForm, name: e.target.value })} required data-testid="deploy-name-input" />
+            </div>
+            <div>
+              <label htmlFor="wl-image" className="block text-xs font-medium text-gray-700">Image</label>
+              <select id="wl-image" className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" value={deployForm.image_id} onChange={(e) => setDeployForm({ ...deployForm, image_id: e.target.value })} required data-testid="deploy-image-select">
+                <option value="">Select image...</option>
+                {images.map((img) => <option key={img.id} value={img.id}>{img.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="wl-replicas" className="block text-xs font-medium text-gray-700">Replicas</label>
+              <input id="wl-replicas" type="number" min={1} max={10} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" value={deployForm.replica_count} onChange={(e) => setDeployForm({ ...deployForm, replica_count: e.target.value })} data-testid="deploy-replicas-input" />
+            </div>
+            <div>
+              <label htmlFor="wl-cpu" className="block text-xs font-medium text-gray-700">CPU</label>
+              <input id="wl-cpu" type="text" className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" value={deployForm.cpu_request} onChange={(e) => setDeployForm({ ...deployForm, cpu_request: e.target.value })} data-testid="deploy-cpu-input" />
+            </div>
+            <div className="flex items-end">
+              <button type="submit" disabled={createWorkload.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-deploy">
+                {createWorkload.isPending && <Loader2 size={14} className="animate-spin" />}
+                Deploy
+              </button>
+            </div>
+          </div>
+          {createWorkload.error && (
+            <div className="mt-3 flex items-center gap-2 text-sm text-red-600" data-testid="deploy-error">
+              <AlertCircle size={14} />
+              {createWorkload.error instanceof Error ? createWorkload.error.message : 'Failed to deploy'}
+            </div>
+          )}
+        </form>
+      )}
 
       {!selectedClientId && (
         <div className="rounded-lg border border-gray-200 bg-gray-50 px-5 py-10 text-center text-sm text-gray-500" data-testid="select-client-prompt">
@@ -102,7 +192,7 @@ function DeployedWorkloadsTab() {
                   <th className="px-5 py-3">Replicas</th>
                   <th className="hidden px-5 py-3 md:table-cell">CPU</th>
                   <th className="hidden px-5 py-3 md:table-cell">Memory</th>
-                  <th className="hidden px-5 py-3 lg:table-cell">Created</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -116,8 +206,29 @@ function DeployedWorkloadsTab() {
                     <td className="px-5 py-3.5 text-sm text-gray-600">{workload.replicaCount}</td>
                     <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.cpuRequest}</td>
                     <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.memoryRequest}</td>
-                    <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
-                      {new Date(workload.createdAt).toLocaleDateString()}
+                    <td className="px-5 py-3.5 text-right">
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStatus(workload.id, workload.status)}
+                          disabled={workload.status === 'pending' || workload.status === 'failed'}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          title={workload.status === 'running' ? 'Stop' : 'Start'}
+                          data-testid={`toggle-workload-${workload.id}`}
+                        >
+                          {workload.status === 'running' ? <Square size={12} /> : <Play size={12} />}
+                        </button>
+                        {deleteConfirmId === workload.id ? (
+                          <>
+                            <button type="button" onClick={() => handleDelete(workload.id)} disabled={deleteWorkload.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-wl-${workload.id}`}>Confirm</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteConfirmId(workload.id)} className="rounded-md border border-red-200 bg-white px-2 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-workload-${workload.id}`}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

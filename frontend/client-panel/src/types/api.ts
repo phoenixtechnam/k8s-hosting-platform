@@ -7,8 +7,15 @@ export type {
   BackupResponse as Backup,
   BackupListResponse,
   CronJobResponse as CronJob,
+  CronJobListResponse,
   WorkloadResponse as Workload,
+  WorkloadListResponse,
   PaginationMeta,
+  DnsRecordResponse,
+  HostingSettingsResponse,
+  ProtectedDirectoryResponse,
+  ProtectedDirectoryUserResponse,
+  ContainerImageResponse,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';

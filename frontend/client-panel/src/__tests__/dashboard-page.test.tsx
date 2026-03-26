@@ -17,6 +17,29 @@ vi.mock('../hooks/use-auth', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-client-context', () => ({
+  useClientContext: vi.fn(() => ({ clientId: 'c1', clientName: 'Test', isLoading: false })),
+}));
+
+vi.mock('../hooks/use-domains', () => ({
+  useDomains: vi.fn(() => ({ data: { data: [] } })),
+}));
+
+vi.mock('../hooks/use-databases', () => ({
+  useDatabases: vi.fn(() => ({ data: { data: [] } })),
+}));
+
+vi.mock('../hooks/use-backups', () => ({
+  useBackups: vi.fn(() => ({ data: { data: [] } })),
+}));
+
+vi.mock('../hooks/use-workloads', () => ({
+  useWorkloads: vi.fn(() => ({ data: { data: [] } })),
+  useContainerImages: vi.fn(() => ({ data: { data: [] } })),
+  useCreateWorkload: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useDeleteWorkload: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+}));
+
 import { useAuth } from '../hooks/use-auth';
 
 const mockedUseAuth = vi.mocked(useAuth);
@@ -57,13 +80,13 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('Databases')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('Email Accounts')).toBeInTheDocument();
+    expect(screen.getByText('Workloads')).toBeInTheDocument();
   });
 
-  it('shows placeholder values in stats cards', () => {
+  it('shows zero values in stats cards when no data', () => {
     renderWithProviders(<Dashboard />);
-    const placeholders = screen.getAllByText('--');
-    expect(placeholders.length).toBe(4);
+    const zeros = screen.getAllByText('0');
+    expect(zeros.length).toBe(4);
   });
 
   it('renders getting started section', () => {

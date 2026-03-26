@@ -14,6 +14,7 @@ import Settings from '@/pages/Settings';
 import Workloads from '@/pages/Workloads';
 import Security from '@/pages/Security';
 import UserSettings from '@/pages/UserSettings';
+import DomainDetail from '@/pages/DomainDetail';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="clients" element={<Clients />} />
             <Route path="clients/:id" element={<ClientDetail />} />
             <Route path="domains" element={<Domains />} />
+            <Route path="clients/:clientId/domains/:domainId" element={<DomainDetail />} />
             <Route path="workloads" element={<Workloads />} />
             <Route path="storage" element={<Storage />} />
             <Route path="cron-jobs" element={<CronJobs />} />

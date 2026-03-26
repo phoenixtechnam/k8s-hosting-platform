@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Plus, Search, Loader2, Globe, Shield, ChevronDown, ChevronRight, Info } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Plus, Search, Loader2, Globe, Shield, ChevronDown, ChevronRight, Info, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import CreateDomainModal from '@/components/CreateDomainModal';
@@ -165,11 +166,22 @@ export default function Domains() {
                                   <p className="mt-1 text-xs text-gray-500">Status</p>
                                 </div>
                               </div>
-                              <div className="mt-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
-                                <Info size={16} className="mt-0.5 shrink-0 text-blue-500" />
-                                <p className="text-sm text-blue-700" data-testid="domain-detail-dns-notice">
-                                  DNS records are managed via PowerDNS. Configure in the infrastructure project.
-                                </p>
+                              <div className="mt-4 flex items-center justify-between">
+                                <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 flex-1">
+                                  <Info size={16} className="mt-0.5 shrink-0 text-blue-500" />
+                                  <p className="text-sm text-blue-700" data-testid="domain-detail-dns-notice">
+                                    DNS records are managed via PowerDNS. Configure in the infrastructure project.
+                                  </p>
+                                </div>
+                                <Link
+                                  to={`/clients/${domain.clientId}/domains/${domain.id}`}
+                                  className="ml-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600"
+                                  data-testid={`manage-domain-${domain.id}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <ExternalLink size={14} />
+                                  Manage
+                                </Link>
                               </div>
                             </div>
                           )}

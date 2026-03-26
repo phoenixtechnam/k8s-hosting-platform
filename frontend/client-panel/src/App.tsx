@@ -6,11 +6,14 @@ import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Domains from '@/pages/Domains';
 import Databases from '@/pages/Databases';
+import Workloads from '@/pages/Workloads';
+import CronJobs from '@/pages/CronJobs';
 import Backups from '@/pages/Backups';
 import Email from '@/pages/Email';
 import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
 import UserSettings from '@/pages/UserSettings';
+import DomainDetail from '@/pages/DomainDetail';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -38,7 +41,10 @@ export default function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="domains" element={<Domains />} />
+            <Route path="domains/:domainId" element={<DomainDetail />} />
             <Route path="databases" element={<Databases />} />
+            <Route path="workloads" element={<Workloads />} />
+            <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="files" element={<Files />} />
             <Route path="email" element={<Email />} />
             <Route path="backups" element={<Backups />} />

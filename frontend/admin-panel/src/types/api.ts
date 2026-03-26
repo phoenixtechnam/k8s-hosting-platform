@@ -19,6 +19,10 @@ export type {
   MetricsResponse,
   SubscriptionResponse,
   HostingPlan,
+  DnsRecordResponse,
+  HostingSettingsResponse,
+  ProtectedDirectoryResponse,
+  ProtectedDirectoryUserResponse,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';

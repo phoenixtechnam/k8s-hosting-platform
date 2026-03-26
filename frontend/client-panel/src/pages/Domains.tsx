@@ -1,4 +1,5 @@
-import { Globe } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Globe, ExternalLink } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
 
@@ -74,6 +75,7 @@ export default function Domains() {
                   <th className="hidden px-6 py-3 font-medium text-gray-500 md:table-cell">DNS Mode</th>
                   <th className="hidden px-6 py-3 font-medium text-gray-500 sm:table-cell">SSL</th>
                   <th className="hidden px-6 py-3 font-medium text-gray-500 lg:table-cell">Created</th>
+                  <th className="px-6 py-3 font-medium text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -91,6 +93,16 @@ export default function Domains() {
                     </td>
                     <td className="hidden px-6 py-4 text-gray-500 lg:table-cell">
                       {new Date(domain.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="px-6 py-4">
+                      <Link
+                        to={`/domains/${domain.id}`}
+                        className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                        data-testid={`manage-domain-${domain.id}`}
+                      >
+                        <ExternalLink size={12} />
+                        Manage
+                      </Link>
                     </td>
                   </tr>
                 ))}
