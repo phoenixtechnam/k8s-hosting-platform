@@ -13,7 +13,6 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
   const [companyName, setCompanyName] = useState('');
   const [companyEmail, setCompanyEmail] = useState('');
   const [contactEmail, setContactEmail] = useState('');
-  const [subscriptionExpiresAt, setSubscriptionExpiresAt] = useState('');
 
   const updateClient = useUpdateClient(client.id);
 
@@ -22,11 +21,6 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
       setCompanyName(client.companyName ?? '');
       setCompanyEmail(client.companyEmail ?? '');
       setContactEmail(client.contactEmail ?? '');
-      setSubscriptionExpiresAt(
-        client.subscriptionExpiresAt
-          ? new Date(client.subscriptionExpiresAt).toISOString().split('T')[0]
-          : '',
-      );
       updateClient.reset();
     }
   }, [open, client]);
@@ -42,9 +36,6 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
         company_name: companyName,
         company_email: companyEmail,
         contact_email: contactEmail || undefined,
-        subscription_expires_at: subscriptionExpiresAt
-          ? new Date(subscriptionExpiresAt).toISOString()
-          : undefined,
       });
       handleClose();
     } catch {
@@ -121,21 +112,6 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
               placeholder="support@acme.com (optional)"
               data-testid="edit-contact-email-input"
             />
-          </div>
-
-          <div>
-            <label htmlFor="edit-subscription-expires" className="block text-sm font-medium text-gray-700">
-              Subscription Expires
-            </label>
-            <input
-              id="edit-subscription-expires"
-              type="date"
-              value={subscriptionExpiresAt}
-              onChange={(e) => setSubscriptionExpiresAt(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              data-testid="edit-subscription-expires-input"
-            />
-            <p className="mt-1 text-xs text-gray-500">Leave empty for no expiration</p>
           </div>
 
           <div className="flex justify-end gap-3 pt-2">

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { Server, Plus, Loader2, AlertCircle, Trash2, X } from 'lucide-react';
+import { Server, Plus, Loader2, AlertCircle, Trash2, X, Play, Square } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useWorkloads, useContainerImages, useCreateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
+import { useWorkloads, useContainerImages, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -25,6 +25,7 @@ export default function Workloads() {
   const { data: response, isLoading, isError, error } = useWorkloads(clientId ?? undefined);
   const { data: imagesResponse } = useContainerImages();
   const createWorkload = useCreateWorkload(clientId ?? undefined);
+  const updateWorkload = useUpdateWorkload(clientId ?? undefined);
   const deleteWorkload = useDeleteWorkload(clientId ?? undefined);
 
   const workloads = response?.data ?? [];
@@ -154,16 +155,28 @@ export default function Workloads() {
                     <td className="hidden px-6 py-4 text-gray-600 md:table-cell">{w.cpuRequest}</td>
                     <td className="hidden px-6 py-4 text-gray-600 md:table-cell">{w.memoryRequest}</td>
                     <td className="px-6 py-4">
-                      {deleteConfirmId === w.id ? (
-                        <div className="inline-flex items-center gap-1">
-                          <button type="button" onClick={() => handleDelete(w.id)} disabled={deleteWorkload.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-wl-${w.id}`}>Confirm</button>
-                          <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
-                        </div>
-                      ) : (
-                        <button type="button" onClick={() => setDeleteConfirmId(w.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-workload-${w.id}`}>
-                          <Trash2 size={12} /> Delete
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => updateWorkload.mutate({ workloadId: w.id, status: w.status === 'running' ? 'stopped' : 'running' })}
+                          disabled={w.status === 'pending' || w.status === 'failed'}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                          title={w.status === 'running' ? 'Stop' : 'Start'}
+                          data-testid={`toggle-workload-${w.id}`}
+                        >
+                          {w.status === 'running' ? <Square size={12} /> : <Play size={12} />}
                         </button>
-                      )}
+                        {deleteConfirmId === w.id ? (
+                          <>
+                            <button type="button" onClick={() => handleDelete(w.id)} disabled={deleteWorkload.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-wl-${w.id}`}>Confirm</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteConfirmId(w.id)} className="rounded-md border border-red-200 bg-white px-2 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-workload-${w.id}`}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

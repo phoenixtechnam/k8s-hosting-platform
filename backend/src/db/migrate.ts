@@ -28,7 +28,20 @@ for (const file of files) {
     .filter((s) => s.length > 0);
 
   for (const stmt of statements) {
-    await db.execute(sql.raw(stmt));
+    try {
+      await db.execute(sql.raw(stmt));
+    } catch (err: unknown) {
+      const mysqlErr = err as { errno?: number; code?: string };
+      // Tolerate "already exists" errors for idempotent migrations:
+      // 1050 = Table already exists, 1060 = Duplicate column name,
+      // 1061 = Duplicate key name, 1062 = Duplicate entry
+      const toleratedErrors = [1050, 1060, 1061, 1062];
+      if (toleratedErrors.includes(mysqlErr.errno ?? 0)) {
+        console.log(`    (skipped: ${mysqlErr.code ?? 'already exists'})`);
+      } else {
+        throw err;
+      }
+    }
   }
 }
 

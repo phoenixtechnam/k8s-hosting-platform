@@ -177,14 +177,6 @@ export default function ClientDetail() {
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Subscription Expires</dt>
-              <dd className="mt-1 text-sm text-gray-900">
-                {client.subscriptionExpiresAt
-                  ? new Date(client.subscriptionExpiresAt).toLocaleDateString()
-                  : 'Not set'}
-              </dd>
-            </div>
-            <div>
               <dt className="text-xs font-medium uppercase text-gray-500">Contact Email</dt>
               <dd className="mt-1 text-sm text-gray-900">
                 {client.contactEmail ?? 'Not set'}

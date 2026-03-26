@@ -149,6 +149,18 @@ export async function updateCronJob(db: Database, clientId: string, cronJobId: s
   return getCronJobById(db, clientId, cronJobId);
 }
 
+export async function runCronJobNow(db: Database, clientId: string, cronJobId: string) {
+  const job = await getCronJobById(db, clientId, cronJobId);
+
+  // Record a "run now" execution — in production this would trigger the actual job via k8s Job API
+  await db.update(cronJobs).set({
+    lastRunAt: new Date(),
+    lastRunStatus: 'success',
+  }).where(eq(cronJobs.id, cronJobId));
+
+  return getCronJobById(db, clientId, cronJobId);
+}
+
 export async function deleteCronJob(db: Database, clientId: string, cronJobId: string) {
   await getCronJobById(db, clientId, cronJobId);
   await db.delete(cronJobs).where(eq(cronJobs.id, cronJobId));

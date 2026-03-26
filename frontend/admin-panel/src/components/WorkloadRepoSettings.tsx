@@ -37,6 +37,7 @@ export default function WorkloadRepoSettings() {
   const [authToken, setAuthToken] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<{ id: string; message: string } | null>(null);
 
   const repos = response?.data ?? [];
   const hasDefaultRepo = repos.some((r) =>
@@ -75,10 +76,12 @@ export default function WorkloadRepoSettings() {
 
   const handleSync = async (id: string) => {
     setSyncingId(id);
+    setSyncError(null);
     try {
       await syncRepo.mutateAsync(id);
-    } catch {
-      // Error is available via syncRepo.error
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sync failed';
+      setSyncError({ id, message });
     } finally {
       setSyncingId(null);
     }
@@ -248,6 +251,11 @@ export default function WorkloadRepoSettings() {
                     {repo.status === 'error' && repo.lastError && (
                       <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={repo.lastError}>
                         {repo.lastError}
+                      </p>
+                    )}
+                    {syncError?.id === repo.id && (
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-500" data-testid={`sync-error-${repo.id}`} title={syncError.message}>
+                        {syncError.message}
                       </p>
                     )}
                   </td>

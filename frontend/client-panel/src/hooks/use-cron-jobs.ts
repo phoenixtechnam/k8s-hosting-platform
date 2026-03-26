@@ -31,6 +31,33 @@ export function useCreateCronJob(clientId: string | undefined) {
   });
 }
 
+export function useUpdateCronJob(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ cronJobId, ...input }: { cronJobId: string; enabled?: boolean }) =>
+      apiFetch<{ data: CronJob }>(`/api/v1/clients/${clientId}/cron-jobs/${cronJobId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cron-jobs', clientId] });
+    },
+  });
+}
+
+export function useRunCronJob(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (cronJobId: string) =>
+      apiFetch<{ data: CronJob }>(`/api/v1/clients/${clientId}/cron-jobs/${cronJobId}/run`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cron-jobs', clientId] });
+    },
+  });
+}
+
 export function useDeleteCronJob(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

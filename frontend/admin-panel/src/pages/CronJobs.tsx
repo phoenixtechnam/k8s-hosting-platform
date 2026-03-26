@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Plus, Loader2, Clock } from 'lucide-react';
+import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
-import { useCronJobs } from '@/hooks/use-cron-jobs';
+import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 
 export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -12,6 +12,10 @@ export default function CronJobs() {
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs(
     selectedClientId ?? undefined,
   );
+  const updateCronJob = useUpdateCronJob(selectedClientId ?? undefined);
+  const runCronJob = useRunCronJob(selectedClientId ?? undefined);
+  const deleteCronJob = useDeleteCronJob(selectedClientId ?? undefined);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const cronJobs = cronJobsData?.data ?? [];
   const totalCount = cronJobsData?.pagination?.total_count ?? 0;
@@ -71,6 +75,7 @@ export default function CronJobs() {
                     <th className="px-5 py-3">Enabled</th>
                     <th className="hidden px-5 py-3 lg:table-cell">Last Run</th>
                     <th className="hidden px-5 py-3 lg:table-cell">Status</th>
+                    <th className="px-5 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -122,11 +127,43 @@ export default function CronJobs() {
                           <span className="text-sm text-gray-400">{'\u2014'}</span>
                         )}
                       </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => updateCronJob.mutate({ cronJobId: job.id, enabled: !job.enabled })}
+                            className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                            title={job.enabled ? 'Stop (disable)' : 'Start (enable)'}
+                            data-testid={`toggle-cron-${job.id}`}
+                          >
+                            {job.enabled ? <Pause size={12} /> : <Play size={12} />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => runCronJob.mutate(job.id)}
+                            className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                            title="Run Now"
+                            data-testid={`run-cron-${job.id}`}
+                          >
+                            <RotateCw size={12} />
+                          </button>
+                          {deleteConfirmId === job.id ? (
+                            <>
+                              <button type="button" onClick={async () => { await deleteCronJob.mutateAsync(job.id); setDeleteConfirmId(null); }} disabled={deleteCronJob.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-cron-${job.id}`}>Confirm</button>
+                              <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
+                            </>
+                          ) : (
+                            <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="rounded-md border border-red-200 bg-white px-2 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-cron-${job.id}`}>
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {cronJobs.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500">
+                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500">
                         {selectedClientId
                           ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
                           : 'No cron jobs found across any client.'}

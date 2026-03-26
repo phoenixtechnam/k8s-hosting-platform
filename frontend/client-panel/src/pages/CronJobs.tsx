@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { Clock, Plus, Loader2, AlertCircle, Trash2, X } from 'lucide-react';
+import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, RotateCw } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useCronJobs, useCreateCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -23,6 +23,8 @@ export default function CronJobs() {
   const { clientId } = useClientContext();
   const { data: response, isLoading, isError, error } = useCronJobs(clientId ?? undefined);
   const createJob = useCreateCronJob(clientId ?? undefined);
+  const updateJob = useUpdateCronJob(clientId ?? undefined);
+  const runJob = useRunCronJob(clientId ?? undefined);
   const deleteJob = useDeleteCronJob(clientId ?? undefined);
 
   const jobs = response?.data ?? [];
@@ -153,16 +155,36 @@ export default function CronJobs() {
                       {job.lastRunStatus ? <StatusBadge status={job.lastRunStatus} /> : <span className="text-gray-400">Never</span>}
                     </td>
                     <td className="px-6 py-4">
-                      {deleteConfirmId === job.id ? (
-                        <div className="inline-flex items-center gap-1">
-                          <button type="button" onClick={() => handleDelete(job.id)} disabled={deleteJob.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-cj-${job.id}`}>Confirm</button>
-                          <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
-                        </div>
-                      ) : (
-                        <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-cron-${job.id}`}>
-                          <Trash2 size={12} /> Delete
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => updateJob.mutate({ cronJobId: job.id, enabled: !job.enabled })}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                          title={job.enabled ? 'Stop (disable)' : 'Start (enable)'}
+                          data-testid={`toggle-cron-${job.id}`}
+                        >
+                          {job.enabled ? <Pause size={12} /> : <Play size={12} />}
                         </button>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => runJob.mutate(job.id)}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                          title="Run Now"
+                          data-testid={`run-cron-${job.id}`}
+                        >
+                          <RotateCw size={12} />
+                        </button>
+                        {deleteConfirmId === job.id ? (
+                          <>
+                            <button type="button" onClick={() => handleDelete(job.id)} disabled={deleteJob.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-cj-${job.id}`}>Confirm</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="rounded-md border border-red-200 bg-white px-2 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-cron-${job.id}`}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

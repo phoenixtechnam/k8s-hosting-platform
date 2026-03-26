@@ -206,7 +206,7 @@ export const containerImages = mysqlTable('container_images', {
   tags: json('tags').$type<string[]>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  uniqueIndex('container_images_code_unique').on(table.code),
+  uniqueIndex('container_images_code_repo_unique').on(table.code, table.sourceRepoId),
 ]);
 
 // ─── Cron Jobs & Audit Tables ───

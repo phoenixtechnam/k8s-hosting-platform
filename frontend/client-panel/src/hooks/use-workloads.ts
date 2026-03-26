@@ -40,6 +40,24 @@ export function useCreateWorkload(clientId: string | undefined) {
   });
 }
 
+interface UpdateWorkloadInput {
+  readonly status?: 'running' | 'stopped';
+}
+
+export function useUpdateWorkload(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workloadId, ...input }: UpdateWorkloadInput & { readonly workloadId: string }) =>
+      apiFetch<{ data: Workload }>(`/api/v1/clients/${clientId}/workloads/${workloadId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workloads', clientId] });
+    },
+  });
+}
+
 export function useDeleteWorkload(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

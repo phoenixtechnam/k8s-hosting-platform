@@ -68,6 +68,13 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
+  // POST /api/v1/clients/:id/cron-jobs/:cronJobId/run
+  app.post('/clients/:id/cron-jobs/:cronJobId/run', async (request) => {
+    const { id, cronJobId } = request.params as { id: string; cronJobId: string };
+    const job = await service.runCronJobNow(app.db, id, cronJobId);
+    return success(job);
+  });
+
   // DELETE /api/v1/clients/:id/cron-jobs/:cronJobId
   app.delete('/clients/:id/cron-jobs/:cronJobId', async (request, reply) => {
     const { id, cronJobId } = request.params as { id: string; cronJobId: string };

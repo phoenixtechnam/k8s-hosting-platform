@@ -47,6 +47,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@platform.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
+      CORS_ORIGINS: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMIN:-2010},http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
     depends_on:
       mariadb:
         condition: service_healthy

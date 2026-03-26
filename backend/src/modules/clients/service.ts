@@ -1,5 +1,5 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
-import { clients } from '../../db/schema.js';
+import { clients, domains, workloads, cronJobs } from '../../db/schema.js';
 import { clientNotFound, duplicateEntry, operationNotAllowed } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
@@ -109,6 +109,13 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
+  }
+
+  // Cascade suspension to related resources
+  if (input.status === 'suspended') {
+    await db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, id));
+    await db.update(workloads).set({ status: 'stopped' }).where(eq(workloads.clientId, id));
+    await db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, id));
   }
 
   return getClientById(db, id);
