@@ -7,6 +7,12 @@ import { users } from '../../db/schema.js';
 
 export async function authRoutes(app: FastifyInstance) {
   app.post('/auth/login', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
     schema: {
       tags: ['Auth'],
       summary: 'Login with email and password',

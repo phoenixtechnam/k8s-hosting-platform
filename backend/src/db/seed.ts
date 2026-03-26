@@ -48,7 +48,10 @@ console.log('  Seeded container images');
 
 // Default admin user
 const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';
-const adminPassword = process.env.ADMIN_PASSWORD ?? 'admin';
+const adminPassword = process.env.ADMIN_PASSWORD;
+if (!adminPassword) {
+  throw new Error('ADMIN_PASSWORD environment variable is required for seeding. Set a strong password.');
+}
 const adminName = process.env.ADMIN_NAME ?? 'Platform Admin';
 const adminPasswordHash = await bcrypt.hash(adminPassword, 12);
 await db.insert(users).values([

@@ -65,7 +65,9 @@ async function fetchJson<T>(url: string, authToken?: string | null): Promise<T> 
 }
 
 export async function listRepos(db: Database) {
-  return db.select().from(workloadRepositories);
+  const repos = await db.select().from(workloadRepositories);
+  // Strip authToken — never expose stored secrets via API
+  return repos.map(({ authToken: _token, ...rest }) => rest);
 }
 
 const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog';

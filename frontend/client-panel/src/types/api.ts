@@ -1,35 +1,19 @@
-export interface Domain {
-  readonly id: string;
-  readonly clientId: string;
-  readonly domainName: string;
-  readonly status: string;
-  readonly dnsMode: string;
-  readonly sslAutoRenew: number;
-  readonly createdAt: string;
-}
+// Re-export shared contract types (single source of truth)
+export type {
+  DomainResponse as Domain,
+  DomainListResponse,
+  DatabaseResponse as Database,
+  DatabaseListResponse,
+  BackupResponse as Backup,
+  BackupListResponse,
+  CronJobResponse as CronJob,
+  WorkloadResponse as Workload,
+  PaginationMeta,
+} from '@k8s-hosting/api-contracts';
 
-export interface Database {
-  readonly id: string;
-  readonly clientId: string;
-  readonly name: string;
-  readonly databaseType: string;
-  readonly username: string;
-  readonly status: string;
-  readonly createdAt: string;
-}
+export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
 
-export interface Backup {
-  readonly id: string;
-  readonly clientId: string;
-  readonly backupType: string;
-  readonly resourceType: string;
-  readonly status: string;
-  readonly storagePath: string | null;
-  readonly sizeBytes: number | null;
-  readonly expiresAt: string | null;
-  readonly createdAt: string;
-}
-
+// Generic paginated response wrapper
 export interface PaginatedResponse<T> {
   readonly data: readonly T[];
   readonly pagination: {

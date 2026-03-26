@@ -22,6 +22,9 @@ import { auditLogRoutes } from './modules/audit-logs/routes.js';
 import { workloadRepoRoutes } from './modules/workload-repos/routes.js';
 import { workloadRoutes } from './modules/workloads/routes.js';
 import { databaseRoutes } from './modules/databases/routes.js';
+import { dnsRecordRoutes } from './modules/dns-records/routes.js';
+import { hostingSettingsRoutes } from './modules/hosting-settings/routes.js';
+import { protectedDirectoryRoutes } from './modules/protected-directories/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -45,7 +48,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   });
 
   // Plugins
-  await app.register(fastifyCors, { origin: true });
+  // CORS — restrict to known origins; fallback to permissive in development only
+  const allowedOrigins = deps.config.CORS_ORIGINS
+    ? deps.config.CORS_ORIGINS.split(',').map((s) => s.trim())
+    : deps.config.NODE_ENV === 'production'
+      ? [] // No open CORS in production — must be configured
+      : true; // Permissive in development/test
+  await app.register(fastifyCors, { origin: allowedOrigins });
   await app.register(fastifyJwt, { secret: deps.config.JWT_SECRET });
   await registerRateLimit(app);
 
@@ -135,6 +144,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(workloadRepoRoutes, { prefix: '/api/v1' });
   await app.register(workloadRoutes, { prefix: '/api/v1' });
   await app.register(databaseRoutes, { prefix: '/api/v1' });
+  await app.register(dnsRecordRoutes, { prefix: '/api/v1' });
+  await app.register(hostingSettingsRoutes, { prefix: '/api/v1' });
+  await app.register(protectedDirectoryRoutes, { prefix: '/api/v1' });
 
   return app;
 }

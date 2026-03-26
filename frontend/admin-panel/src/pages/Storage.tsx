@@ -6,6 +6,7 @@ import ResourceBar from '@/components/ui/ResourceBar';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useDatabases, useBackups } from '@/hooks/use-databases';
+import type { DatabaseResponse, BackupResponse } from '@k8s-hosting/api-contracts';
 
 type Tab = 'overview' | 'databases' | 'backups';
 
@@ -165,14 +166,7 @@ function DataTab({ selectedClientId, onClientChange, isLoading, error, children 
 }
 
 interface DatabasesTableProps {
-  readonly databases: readonly {
-    readonly id: string;
-    readonly name: string;
-    readonly type: 'mariadb' | 'postgresql';
-    readonly status: 'active' | 'suspended' | 'pending' | 'error';
-    readonly sizeBytes: number;
-    readonly createdAt: string;
-  }[];
+  readonly databases: readonly DatabaseResponse[];
 }
 
 function DatabasesTable({ databases }: DatabasesTableProps) {
@@ -199,13 +193,13 @@ function DatabasesTable({ databases }: DatabasesTableProps) {
                   </div>
                 </td>
                 <td className="px-5 py-3.5 text-sm text-gray-600">
-                  {db.type === 'mariadb' ? 'MariaDB' : 'PostgreSQL'}
+                  {db.databaseType === 'mysql' ? 'MariaDB' : 'PostgreSQL'}
                 </td>
                 <td className="px-5 py-3.5">
-                  <StatusBadge status={db.status} />
+                  <StatusBadge status={db.status as 'active' | 'pending' | 'failed'} />
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">
-                  {formatBytes(db.sizeBytes)}
+                  {db.sizeBytes ? formatBytes(db.sizeBytes) : '—'}
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
                   {new Date(db.createdAt).toLocaleDateString()}
@@ -227,14 +221,7 @@ function DatabasesTable({ databases }: DatabasesTableProps) {
 }
 
 interface BackupsTableProps {
-  readonly backups: readonly {
-    readonly id: string;
-    readonly type: 'auto' | 'manual';
-    readonly resource: string;
-    readonly sizeBytes: number;
-    readonly createdAt: string;
-    readonly expiresAt: string;
-  }[];
+  readonly backups: readonly BackupResponse[];
 }
 
 function BackupsTable({ backups }: BackupsTableProps) {
@@ -262,23 +249,23 @@ function BackupsTable({ backups }: BackupsTableProps) {
                   <span
                     className={clsx(
                       'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize',
-                      backup.type === 'auto'
+                      backup.backupType === 'auto'
                         ? 'bg-blue-100 text-blue-800'
                         : 'bg-purple-100 text-purple-800',
                     )}
                   >
-                    {backup.type}
+                    {backup.backupType}
                   </span>
                 </td>
-                <td className="px-5 py-3.5 text-sm text-gray-600">{backup.resource}</td>
+                <td className="px-5 py-3.5 text-sm text-gray-600">{backup.resourceType}</td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">
-                  {formatBytes(backup.sizeBytes)}
+                  {backup.sizeBytes ? formatBytes(backup.sizeBytes) : '—'}
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
                   {new Date(backup.createdAt).toLocaleDateString()}
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
-                  {new Date(backup.expiresAt).toLocaleDateString()}
+                  {backup.expiresAt ? new Date(backup.expiresAt).toLocaleDateString() : '—'}
                 </td>
               </tr>
             ))}

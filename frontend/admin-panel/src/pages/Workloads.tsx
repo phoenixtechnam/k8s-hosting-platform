@@ -109,13 +109,13 @@ function DeployedWorkloadsTab() {
                 {workloads.map((workload) => (
                   <tr key={workload.id} className="transition-colors hover:bg-gray-50">
                     <td className="px-5 py-3.5 font-medium text-gray-900">{workload.name}</td>
-                    <td className="px-5 py-3.5 text-sm text-gray-600">{workload.imageId}</td>
+                    <td className="px-5 py-3.5 text-sm text-gray-600">{workload.containerImageId ?? '—'}</td>
                     <td className="px-5 py-3.5">
-                      <StatusBadge status={workload.status as 'running' | 'stopped' | 'pending' | 'error'} />
+                      <StatusBadge status={workload.status} />
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-gray-600">{workload.replicas}</td>
-                    <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.cpu}</td>
-                    <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.memory}</td>
+                    <td className="px-5 py-3.5 text-sm text-gray-600">{workload.replicaCount}</td>
+                    <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.cpuRequest}</td>
+                    <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">{workload.memoryRequest}</td>
                     <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
                       {new Date(workload.createdAt).toLocaleDateString()}
                     </td>

@@ -32,6 +32,21 @@ export function useWorkloadRepos() {
   });
 }
 
+export function useRestoreDefaultRepo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: WorkloadRepo }>('/api/v1/admin/workload-repos/restore-default', {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workload-repos'] });
+      queryClient.invalidateQueries({ queryKey: ['container-images'] });
+    },
+  });
+}
+
 export function useAddWorkloadRepo() {
   const queryClient = useQueryClient();
 
@@ -55,6 +70,7 @@ export function useDeleteWorkloadRepo() {
       apiFetch<void>(`/api/v1/admin/workload-repos/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workload-repos'] });
+      queryClient.invalidateQueries({ queryKey: ['container-images'] });
     },
   });
 }
@@ -69,6 +85,7 @@ export function useSyncWorkloadRepo() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workload-repos'] });
+      queryClient.invalidateQueries({ queryKey: ['container-images'] });
     },
   });
 }

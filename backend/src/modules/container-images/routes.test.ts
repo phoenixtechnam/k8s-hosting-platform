@@ -80,6 +80,27 @@ describe('container-images routes', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/container-images' });
     expect(res.statusCode).toBe(200);
   });
+
+  it('should return image objects with expected fields', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/container-images' });
+    const body = res.json();
+    const image = body.data[0];
+    expect(image).toHaveProperty('id');
+    expect(image).toHaveProperty('code');
+    expect(image).toHaveProperty('name');
+    expect(image).toHaveProperty('imageType');
+    expect(image).toHaveProperty('registryUrl');
+    expect(image).toHaveProperty('supportedVersions');
+    expect(image).toHaveProperty('status');
+  });
+
+  it('should return images with correct status', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/container-images' });
+    const body = res.json();
+    for (const image of body.data) {
+      expect(image.status).toBe('active');
+    }
+  });
 });
 
 describe('container-images routes (fallback path)', () => {

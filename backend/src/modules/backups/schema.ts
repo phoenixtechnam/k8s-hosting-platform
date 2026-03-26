@@ -1,10 +1,5 @@
-import { z } from 'zod';
-
-export const createBackupSchema = z.object({
-  backup_type: z.enum(['manual', 'scheduled']).default('manual'),
-  resource_type: z.string().max(50).default('full'),
-  resource_id: z.string().uuid().optional(),
-  notes: z.string().max(1000).optional(),
-});
-
-export type CreateBackupInput = z.infer<typeof createBackupSchema>;
+// Re-export from shared api-contracts (single source of truth)
+export {
+  createBackupSchema,
+  type CreateBackupInput,
+} from '@k8s-hosting/api-contracts';

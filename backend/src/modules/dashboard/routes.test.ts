@@ -103,4 +103,39 @@ describe('dashboard routes', () => {
     expect(body.data.total_backups).toBe(42);
     expect(body.data.platform_version).toBe('0.1.0');
   });
+
+  it('should return numeric values for all metric fields', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/dashboard',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const body = res.json();
+    expect(typeof body.data.total_clients).toBe('number');
+    expect(typeof body.data.active_clients).toBe('number');
+    expect(typeof body.data.total_domains).toBe('number');
+    expect(typeof body.data.total_databases).toBe('number');
+    expect(typeof body.data.total_backups).toBe('number');
+  });
+
+  it('should return 403 for billing role', async () => {
+    const billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', iat: Math.floor(Date.now() / 1000) });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/dashboard',
+      headers: { authorization: `Bearer ${billingToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should include platform_version as a string', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/dashboard',
+      headers: { authorization: `Bearer ${readOnlyToken}` },
+    });
+    const body = res.json();
+    expect(typeof body.data.platform_version).toBe('string');
+    expect(body.data.platform_version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
 });

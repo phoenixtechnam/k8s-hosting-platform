@@ -118,4 +118,53 @@ describe('audit-logs routes', () => {
     });
     expect(res.statusCode).toBe(200);
   });
+
+  it('should return data with expected audit log fields', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/audit-logs',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const body = res.json();
+    const entry = body.data[0];
+    expect(entry).toHaveProperty('id');
+    expect(entry).toHaveProperty('actionType');
+    expect(entry).toHaveProperty('resourceType');
+    expect(entry).toHaveProperty('resourceId');
+    expect(entry).toHaveProperty('actorId');
+    expect(entry).toHaveProperty('httpMethod');
+    expect(entry).toHaveProperty('httpPath');
+    expect(entry).toHaveProperty('httpStatus');
+  });
+
+  it('should return 403 for billing role', async () => {
+    const billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', iat: Math.floor(Date.now() / 1000) });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/audit-logs',
+      headers: { authorization: `Bearer ${billingToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should return 403 for support role', async () => {
+    const supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', iat: Math.floor(Date.now() / 1000) });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/audit-logs',
+      headers: { authorization: `Bearer ${supportToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('should handle missing limit gracefully (uses default)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/audit-logs',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data).toBeDefined();
+  });
 });

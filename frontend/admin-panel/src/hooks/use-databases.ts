@@ -1,31 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
+import type { DatabaseResponse, BackupResponse } from '@k8s-hosting/api-contracts';
 
-export interface Database {
-  readonly id: string;
-  readonly name: string;
-  readonly type: 'mariadb' | 'postgresql';
-  readonly status: 'active' | 'suspended' | 'pending' | 'error';
-  readonly sizeBytes: number;
-  readonly createdAt: string;
-}
-
-export interface Backup {
-  readonly id: string;
-  readonly type: 'auto' | 'manual';
-  readonly resource: string;
-  readonly sizeBytes: number;
-  readonly createdAt: string;
-  readonly expiresAt: string;
-}
+export type { DatabaseResponse as Database, BackupResponse as Backup } from '@k8s-hosting/api-contracts';
 
 export function useDatabases(clientId: string | undefined) {
   const path = `/api/v1/clients/${clientId}/databases`;
 
   return useQuery({
     queryKey: ['databases', clientId],
-    queryFn: () => apiFetch<PaginatedResponse<Database>>(path),
+    queryFn: () => apiFetch<PaginatedResponse<DatabaseResponse>>(path),
     enabled: !!clientId,
   });
 }
@@ -35,7 +20,7 @@ export function useBackups(clientId: string | undefined) {
 
   return useQuery({
     queryKey: ['backups', clientId],
-    queryFn: () => apiFetch<PaginatedResponse<Backup>>(path),
+    queryFn: () => apiFetch<PaginatedResponse<BackupResponse>>(path),
     enabled: !!clientId,
   });
 }

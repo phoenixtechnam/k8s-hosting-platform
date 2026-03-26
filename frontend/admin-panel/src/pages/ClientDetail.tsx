@@ -344,9 +344,9 @@ function DatabasesTab({ data, isLoading, error }: TabContentProps<Database>) {
         {items.map((db) => (
           <tr key={db.id} className="border-b border-gray-50">
             <td className="py-2 font-medium text-gray-900">{db.name}</td>
-            <td className="py-2 text-gray-600">{db.type}</td>
-            <td className="py-2 text-gray-600">{formatBytes(db.sizeBytes)}</td>
-            <td className="py-2"><StatusBadge status={db.status} /></td>
+            <td className="py-2 text-gray-600">{db.databaseType}</td>
+            <td className="py-2 text-gray-600">{db.sizeBytes ? formatBytes(db.sizeBytes) : '—'}</td>
+            <td className="py-2"><StatusBadge status={db.status as 'active' | 'pending' | 'failed'} /></td>
             <td className="py-2 text-gray-500">{new Date(db.createdAt).toLocaleDateString()}</td>
           </tr>
         ))}
@@ -377,9 +377,9 @@ function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
         {items.map((w) => (
           <tr key={w.id} className="border-b border-gray-50">
             <td className="py-2 font-medium text-gray-900">{w.name}</td>
-            <td className="py-2 text-gray-600">{w.replicas}</td>
-            <td className="py-2 text-gray-600">{w.cpu}</td>
-            <td className="py-2 text-gray-600">{w.memory}</td>
+            <td className="py-2 text-gray-600">{w.replicaCount}</td>
+            <td className="py-2 text-gray-600">{w.cpuRequest}</td>
+            <td className="py-2 text-gray-600">{w.memoryRequest}</td>
             <td className="py-2"><StatusBadge status={w.status} /></td>
             <td className="py-2 text-gray-500">{new Date(w.createdAt).toLocaleDateString()}</td>
           </tr>
@@ -409,11 +409,11 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
       <tbody>
         {items.map((b) => (
           <tr key={b.id} className="border-b border-gray-50">
-            <td className="py-2 font-medium text-gray-900">{b.resource}</td>
-            <td className="py-2 text-gray-600">{b.type}</td>
-            <td className="py-2 text-gray-600">{formatBytes(b.sizeBytes)}</td>
+            <td className="py-2 font-medium text-gray-900">{b.resourceType}</td>
+            <td className="py-2 text-gray-600">{b.backupType}</td>
+            <td className="py-2 text-gray-600">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
             <td className="py-2 text-gray-500">{new Date(b.createdAt).toLocaleDateString()}</td>
-            <td className="py-2 text-gray-500">{new Date(b.expiresAt).toLocaleDateString()}</td>
+            <td className="py-2 text-gray-500">{b.expiresAt ? new Date(b.expiresAt).toLocaleDateString() : '—'}</td>
           </tr>
         ))}
       </tbody>

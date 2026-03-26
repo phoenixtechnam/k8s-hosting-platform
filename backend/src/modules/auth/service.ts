@@ -46,10 +46,16 @@ export async function authenticateUser(
     throw invalidToken();
   }
 
-  // Update last login
+  // Re-hash legacy SHA-256 passwords to bcrypt on successful login
+  const isLegacyHash = user.passwordHash.length === 64 && /^[a-f0-9]+$/.test(user.passwordHash);
+  const updateValues: Record<string, unknown> = { lastLoginAt: new Date() };
+  if (isLegacyHash) {
+    updateValues.passwordHash = await hashNewPassword(password);
+  }
+
   await db
     .update(users)
-    .set({ lastLoginAt: new Date() })
+    .set(updateValues)
     .where(eq(users.id, user.id));
 
   return {

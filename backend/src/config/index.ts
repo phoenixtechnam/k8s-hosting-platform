@@ -6,6 +6,7 @@ const configSchema = z.object({
   DATABASE_URL: z.string().url().or(z.string().startsWith('mysql://')),
   JWT_SECRET: z.string().min(16),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  CORS_ORIGINS: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

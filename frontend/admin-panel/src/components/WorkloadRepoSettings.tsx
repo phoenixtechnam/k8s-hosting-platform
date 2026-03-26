@@ -6,6 +6,7 @@ import {
   useAddWorkloadRepo,
   useDeleteWorkloadRepo,
   useSyncWorkloadRepo,
+  useRestoreDefaultRepo,
 } from '@/hooks/use-workload-repos';
 
 const INPUT_CLASS =
@@ -27,6 +28,7 @@ export default function WorkloadRepoSettings() {
   const addRepo = useAddWorkloadRepo();
   const deleteRepo = useDeleteWorkloadRepo();
   const syncRepo = useSyncWorkloadRepo();
+  const restoreDefault = useRestoreDefaultRepo();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
@@ -37,6 +39,9 @@ export default function WorkloadRepoSettings() {
   const [syncingId, setSyncingId] = useState<string | null>(null);
 
   const repos = response?.data ?? [];
+  const hasDefaultRepo = repos.some((r) =>
+    r.url.includes('phoenixtechnam/hosting-platform-workload-catalog'),
+  );
 
   const handleAddSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -86,15 +91,29 @@ export default function WorkloadRepoSettings() {
           <GitBranch size={20} className="text-gray-600" />
           <h2 className="text-lg font-semibold text-gray-900">Workload Repositories</h2>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowForm((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600"
-          data-testid="add-repo-button"
-        >
-          {showForm ? <X size={14} /> : <Plus size={14} />}
-          {showForm ? 'Cancel' : 'Add Repository'}
-        </button>
+        <div className="flex items-center gap-2">
+          {!hasDefaultRepo && !isLoading && (
+            <button
+              type="button"
+              onClick={() => restoreDefault.mutate()}
+              disabled={restoreDefault.isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              data-testid="restore-default-repo-button"
+            >
+              {restoreDefault.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Restore Default
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowForm((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600"
+            data-testid="add-repo-button"
+          >
+            {showForm ? <X size={14} /> : <Plus size={14} />}
+            {showForm ? 'Cancel' : 'Add Repository'}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -164,9 +183,12 @@ export default function WorkloadRepoSettings() {
             </div>
           </div>
           {addRepo.error && (
-            <p className="mt-2 text-sm text-red-600" data-testid="add-repo-error">
-              {addRepo.error instanceof Error ? addRepo.error.message : 'Failed to add repository'}
-            </p>
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5" data-testid="add-repo-error">
+              <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-500" />
+              <p className="text-sm text-red-700">
+                {addRepo.error instanceof Error ? addRepo.error.message : 'Failed to add repository. Check the URL, branch, and auth token.'}
+              </p>
+            </div>
           )}
           <div className="mt-3 flex justify-end">
             <button
@@ -223,6 +245,11 @@ export default function WorkloadRepoSettings() {
                       status={mapRepoStatusToBadge(repo.status)}
                       label={repo.status === 'syncing' ? 'Syncing' : undefined}
                     />
+                    {repo.status === 'error' && repo.lastError && (
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={repo.lastError}>
+                        {repo.lastError}
+                      </p>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">

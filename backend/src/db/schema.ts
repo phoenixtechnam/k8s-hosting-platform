@@ -247,6 +247,141 @@ export const auditLogs = mysqlTable('audit_logs', {
   index('audit_logs_created_idx').on(table.createdAt),
 ]);
 
+// ─── Protected Directories ───
+
+export const protectedDirectories = mysqlTable('protected_directories', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  path: varchar('path', { length: 500 }).notNull(),
+  realm: varchar('realm', { length: 255 }).notNull().default('Restricted Area'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  index('protected_dirs_domain_idx').on(table.domainId),
+]);
+
+export const protectedDirectoryUsers = mysqlTable('protected_directory_users', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  directoryId: varchar('directory_id', { length: 36 }).notNull(),
+  username: varchar('username', { length: 255 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  enabled: int('enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('protected_dir_users_unique').on(table.directoryId, table.username),
+  index('protected_dir_users_dir_idx').on(table.directoryId),
+]);
+
+// ─── Hosting Settings ───
+
+export const hostingSettings = mysqlTable('hosting_settings', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  redirectWww: int('redirect_www').notNull().default(0),
+  redirectHttps: int('redirect_https').notNull().default(1),
+  forwardExternal: varchar('forward_external', { length: 500 }),
+  webrootPath: varchar('webroot_path', { length: 500 }).notNull().default('/var/www/html'),
+  hostingEnabled: int('hosting_enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('hosting_settings_domain_unique').on(table.domainId),
+]);
+
+// ─── User Roles (RBAC Association) ───
+
+export const userRoles = mysqlTable('user_roles', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  roleId: varchar('role_id', { length: 36 }).notNull(),
+  scopeType: mysqlEnum('scope_type', ['global', 'region', 'client']).notNull().default('global'),
+  scopeId: varchar('scope_id', { length: 36 }),
+  assignedBy: varchar('assigned_by', { length: 36 }),
+  assignedAt: timestamp('assigned_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uk_user_role_scope').on(table.userId, table.roleId, table.scopeType, table.scopeId),
+  index('user_roles_user_idx').on(table.userId),
+  index('user_roles_role_idx').on(table.roleId),
+]);
+
+// ─── DNS Records ───
+
+export const dnsRecords = mysqlTable('dns_records', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  recordType: mysqlEnum('record_type', ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS']).notNull(),
+  recordName: varchar('record_name', { length: 253 }),
+  recordValue: varchar('record_value', { length: 1000 }),
+  ttl: int('ttl').notNull().default(3600),
+  priority: int('priority'),
+  weight: int('weight'),
+  port: int('port'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  index('dns_records_domain_idx').on(table.domainId),
+  index('dns_records_type_idx').on(table.recordType),
+]);
+
+// ─── SSH Keys ───
+
+export const sshKeys = mysqlTable('ssh_keys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  publicKey: text('public_key').notNull(),
+  keyFingerprint: varchar('key_fingerprint', { length: 255 }).notNull(),
+  keyAlgorithm: varchar('key_algorithm', { length: 50 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('ssh_keys_fingerprint_unique').on(table.keyFingerprint),
+  uniqueIndex('ssh_keys_client_name_unique').on(table.clientId, table.name),
+  index('ssh_keys_client_idx').on(table.clientId),
+]);
+
+// ─── Subscription Billing Cycles ───
+
+export const subscriptionBillingCycles = mysqlTable('subscription_billing_cycles', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  billingCycleStart: timestamp('billing_cycle_start').notNull(),
+  billingCycleEnd: timestamp('billing_cycle_end').notNull(),
+  planId: varchar('plan_id', { length: 36 }).notNull(),
+  basePriceUsd: decimal('base_price_usd', { precision: 10, scale: 2 }),
+  overagesPriceUsd: decimal('overages_price_usd', { precision: 10, scale: 2 }).default('0'),
+  totalPriceUsd: decimal('total_price_usd', { precision: 10, scale: 2 }).notNull(),
+  status: mysqlEnum('status', ['draft', 'invoiced', 'paid', 'failed']).notNull().default('draft'),
+  externalBillingId: varchar('external_billing_id', { length: 255 }),
+  invoiceNumber: varchar('invoice_number', { length: 50 }),
+  paidAt: timestamp('paid_at'),
+  invoicedAt: timestamp('invoiced_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('uk_client_cycle').on(table.clientId, table.billingCycleStart),
+  index('billing_cycles_client_idx').on(table.clientId),
+  index('billing_cycles_status_idx').on(table.status),
+]);
+
+// ─── Resource Quotas ───
+
+export const resourceQuotas = mysqlTable('resource_quotas', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  cpuCoresLimit: decimal('cpu_cores_limit', { precision: 5, scale: 2 }),
+  memoryGbLimit: int('memory_gb_limit'),
+  storageGbLimit: int('storage_gb_limit'),
+  bandwidthGbLimit: int('bandwidth_gb_limit'),
+  cpuCoresCurrent: decimal('cpu_cores_current', { precision: 5, scale: 2 }).default('0'),
+  memoryGbCurrent: int('memory_gb_current').default(0),
+  storageGbCurrent: int('storage_gb_current').default(0),
+  cpuWarningThreshold: decimal('cpu_warning_threshold', { precision: 5, scale: 2 }).default('80'),
+  memoryWarningThreshold: int('memory_warning_threshold').default(80),
+  storageWarningThreshold: int('storage_warning_threshold').default(80),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('resource_quotas_client_unique').on(table.clientId),
+]);
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -267,3 +402,10 @@ export type Workload = typeof workloads.$inferSelect;
 export type NewWorkload = typeof workloads.$inferInsert;
 export type WorkloadRepository = typeof workloadRepositories.$inferSelect;
 export type NewWorkloadRepository = typeof workloadRepositories.$inferInsert;
+export type UserRole = typeof userRoles.$inferSelect;
+export type DnsRecord = typeof dnsRecords.$inferSelect;
+export type NewDnsRecord = typeof dnsRecords.$inferInsert;
+export type SshKey = typeof sshKeys.$inferSelect;
+export type NewSshKey = typeof sshKeys.$inferInsert;
+export type BillingCycle = typeof subscriptionBillingCycles.$inferSelect;
+export type ResourceQuota = typeof resourceQuotas.$inferSelect;

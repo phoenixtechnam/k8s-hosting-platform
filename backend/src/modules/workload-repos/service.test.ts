@@ -58,6 +58,35 @@ describe('listRepos', () => {
     const result = await listRepos(db);
     expect(result).toEqual(repos);
   });
+
+  it('should strip authToken from results', async () => {
+    const repos = [
+      { id: 'r1', name: 'repo1', url: 'https://github.com/org/repo1', authToken: 'secret-token-123' },
+      { id: 'r2', name: 'repo2', url: 'https://github.com/org/repo2', authToken: null },
+    ];
+    const fromFn = vi.fn().mockResolvedValue(repos);
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = { select: selectFn } as unknown as Parameters<typeof listRepos>[0];
+
+    const result = await listRepos(db);
+    expect(result).toHaveLength(2);
+    // Verify authToken is not present on any result
+    for (const repo of result) {
+      expect(repo).not.toHaveProperty('authToken');
+    }
+    // Verify other fields are preserved
+    expect(result[0]).toEqual({ id: 'r1', name: 'repo1', url: 'https://github.com/org/repo1' });
+    expect(result[1]).toEqual({ id: 'r2', name: 'repo2', url: 'https://github.com/org/repo2' });
+  });
+
+  it('should return empty array when no repos exist', async () => {
+    const fromFn = vi.fn().mockResolvedValue([]);
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = { select: selectFn } as unknown as Parameters<typeof listRepos>[0];
+
+    const result = await listRepos(db);
+    expect(result).toEqual([]);
+  });
 });
 
 describe('addRepo', () => {
@@ -156,6 +185,67 @@ describe('syncRepo', () => {
       code: 'REPO_NOT_FOUND',
     });
   });
+
+  it('should sync repo and upsert container images from catalog', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    // selectResults: [repo lookup], then for each workload entry [existing image lookup]
+    const db = createMockDb({ selectResults: [[repo], []] });
+
+    // First fetch: catalog.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'wordpress' }]),
+    });
+    // Second fetch: wordpress/manifest.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          name: 'WordPress',
+          code: 'wordpress',
+          type: 'cms',
+          image: 'ghcr.io/hosting/wordpress:6.4',
+          supported_versions: ['6.4', '6.3'],
+        }),
+    });
+
+    await syncRepo(db, 'r1');
+
+    // Verify update was called to mark syncing, then active
+    expect(db.update).toHaveBeenCalled();
+    // Verify insert was called for the new container image
+    expect(db.insert).toHaveBeenCalled();
+  });
+
+  it('should mark repo as error when sync fails mid-process', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    const db = createMockDb({ selectResults: [[repo]] });
+
+    // catalog.json fetch fails
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+    });
+
+    await expect(syncRepo(db, 'r1')).rejects.toThrow();
+    // db.update should have been called to set status='error'
+    expect(db.update).toHaveBeenCalled();
+  });
 });
 
 describe('deleteRepo - container image cleanup', () => {
@@ -230,6 +320,65 @@ describe('addRepo - validation', () => {
       code: 'INVALID_CATALOG',
       status: 400,
     });
+  });
+
+  it('should throw INVALID_REPO_URL for non-GitHub URLs', async () => {
+    const db = createMockDb({ selectResults: [[]] });
+
+    await expect(
+      addRepo(db, {
+        name: 'Bad URL',
+        url: 'https://gitlab.com/org/repo',
+        branch: 'main',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REPO_URL',
+      status: 400,
+    });
+  });
+
+  it('should throw INVALID_CATALOG when catalog is empty array', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    });
+
+    const db = createMockDb({ selectResults: [[]] });
+
+    await expect(
+      addRepo(db, {
+        name: 'Empty Array Catalog',
+        url: 'https://github.com/org/empty-array',
+        branch: 'main',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CATALOG',
+      status: 400,
+    });
+  });
+
+  it('should succeed with array-format catalog', async () => {
+    const created = {
+      id: 'r1',
+      name: 'Array Catalog',
+      url: 'https://github.com/org/array-catalog',
+      branch: 'main',
+      status: 'active',
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'wordpress' }, { name: 'nginx' }]),
+    });
+
+    const db = createMockDb({ selectResults: [[created]] });
+
+    const result = await addRepo(db, {
+      name: 'Array Catalog',
+      url: 'https://github.com/org/array-catalog',
+      branch: 'main',
+    });
+    expect(result).toEqual(created);
   });
 
   it('should succeed when catalog has valid workloads', async () => {

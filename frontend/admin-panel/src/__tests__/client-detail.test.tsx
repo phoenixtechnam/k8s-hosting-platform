@@ -46,23 +46,23 @@ const MOCK_DOMAINS = {
 
 const MOCK_DATABASES = {
   data: [
-    { id: 'db1', name: 'acme_prod', type: 'mariadb', status: 'active', sizeBytes: 1048576, createdAt: '2026-01-05T00:00:00Z' },
+    { id: 'db1', clientId: 'client-001', name: 'acme_prod', databaseType: 'mysql', username: 'acme_usr', status: 'active', port: 3306, sizeBytes: 1048576, createdAt: '2026-01-05T00:00:00Z', updatedAt: '2026-01-05T00:00:00Z' },
   ],
   pagination: { total_count: 1, cursor: null, has_more: false, page_size: 25 },
 };
 
 const MOCK_WORKLOADS = {
   data: [
-    { id: 'w1', clientId: 'client-001', name: 'web-app', imageId: 'img-1', status: 'running', replicas: 2, cpu: '500m', memory: '256Mi', createdAt: '2026-02-01T00:00:00Z' },
-    { id: 'w2', clientId: 'client-001', name: 'worker', imageId: 'img-2', status: 'stopped', replicas: 1, cpu: '250m', memory: '128Mi', createdAt: '2026-02-05T00:00:00Z' },
-    { id: 'w3', clientId: 'client-001', name: 'cron-runner', imageId: 'img-1', status: 'pending', replicas: 1, cpu: '100m', memory: '64Mi', createdAt: '2026-02-10T00:00:00Z' },
+    { id: 'w1', clientId: 'client-001', name: 'web-app', containerImageId: 'img-1', status: 'running', replicaCount: 2, cpuRequest: '500m', memoryRequest: '256Mi', createdAt: '2026-02-01T00:00:00Z', updatedAt: '2026-02-01T00:00:00Z' },
+    { id: 'w2', clientId: 'client-001', name: 'worker', containerImageId: 'img-2', status: 'stopped', replicaCount: 1, cpuRequest: '250m', memoryRequest: '128Mi', createdAt: '2026-02-05T00:00:00Z', updatedAt: '2026-02-05T00:00:00Z' },
+    { id: 'w3', clientId: 'client-001', name: 'cron-runner', containerImageId: 'img-1', status: 'pending', replicaCount: 1, cpuRequest: '100m', memoryRequest: '64Mi', createdAt: '2026-02-10T00:00:00Z', updatedAt: '2026-02-10T00:00:00Z' },
   ],
   pagination: { total_count: 3, cursor: null, has_more: false, page_size: 25 },
 };
 
 const MOCK_BACKUPS = {
   data: [
-    { id: 'b1', type: 'auto', resource: 'acme_prod', sizeBytes: 5242880, createdAt: '2026-03-01T00:00:00Z', expiresAt: '2026-04-01T00:00:00Z' },
+    { id: 'b1', clientId: 'client-001', backupType: 'auto', resourceType: 'database', resourceId: 'db1', storagePath: null, sizeBytes: 5242880, status: 'completed', completedAt: '2026-03-01T00:01:00Z', expiresAt: '2026-04-01T00:00:00Z', notes: null, createdAt: '2026-03-01T00:00:00Z' },
   ],
   pagination: { total_count: 1, cursor: null, has_more: false, page_size: 25 },
 };
@@ -146,7 +146,7 @@ describe('ClientDetail resource tabs', () => {
       expect(screen.getByTestId('databases-table')).toBeInTheDocument();
     });
     expect(screen.getByText('acme_prod')).toBeInTheDocument();
-    expect(screen.getByText('mariadb')).toBeInTheDocument();
+    expect(screen.getByText('mysql')).toBeInTheDocument();
   });
 
   it('switches to workloads tab on click and shows workload data', async () => {
@@ -178,7 +178,7 @@ describe('ClientDetail resource tabs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('backups-table')).toBeInTheDocument();
     });
-    expect(screen.getByText('acme_prod')).toBeInTheDocument();
+    expect(screen.getByText('database')).toBeInTheDocument();
   });
 
   it('still shows client account info alongside tabs', async () => {

@@ -1,4 +1,4 @@
-// Re-export shared contract types
+// Re-export shared contract types (single source of truth)
 export type {
   ClientResponse as Client,
   ClientListResponse,
@@ -7,11 +7,26 @@ export type {
   DatabaseResponse,
   DatabaseListResponse,
   PaginationMeta,
+  WorkloadResponse as Workload,
+  WorkloadListResponse,
+  CronJobResponse as CronJob,
+  CronJobListResponse,
+  BackupResponse as Backup,
+  BackupListResponse,
+  ContainerImageResponse as ContainerImage,
+  WorkloadRepoResponse as WorkloadRepo,
+  DashboardResponse as DashboardMetrics,
+  MetricsResponse,
+  SubscriptionResponse,
+  HostingPlan,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
 
-// Generic paginated response for hooks that don't have a specific contract yet
+// Generic paginated response for hooks — also from contracts
+export type { PaginationMeta as PaginationInfo } from '@k8s-hosting/api-contracts';
+
+// Generic paginated response wrapper for hooks that need it
 export interface PaginatedResponse<T> {
   readonly data: readonly T[];
   readonly pagination: {
@@ -20,37 +35,4 @@ export interface PaginatedResponse<T> {
     readonly has_more: boolean;
     readonly page_size: number;
   };
-}
-
-// Types not yet in shared contracts (will migrate incrementally)
-export interface CronJob {
-  readonly id: string;
-  readonly name: string;
-  readonly schedule: string;
-  readonly command: string;
-  readonly enabled: boolean;
-  readonly lastRunAt: string | null;
-  readonly lastRunStatus: 'success' | 'failed' | 'running' | null;
-  readonly createdAt: string;
-}
-
-export interface Workload {
-  readonly id: string;
-  readonly clientId: string;
-  readonly name: string;
-  readonly imageId: string;
-  readonly status: 'running' | 'stopped' | 'pending' | 'error';
-  readonly replicas: number;
-  readonly cpu: string;
-  readonly memory: string;
-  readonly createdAt: string;
-}
-
-export interface DashboardMetrics {
-  readonly total_clients: number;
-  readonly active_clients: number;
-  readonly total_domains: number;
-  readonly storage_used_gb: number;
-  readonly storage_total_gb: number;
-  readonly alerts_count: number;
 }
