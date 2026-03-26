@@ -52,14 +52,14 @@ describe('Storage page', () => {
     render(<Storage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('tab-databases'));
     expect(screen.getByTestId('tab-databases')).toHaveClass('border-brand-500');
-    expect(screen.getByTestId('client-selector')).toBeInTheDocument();
+    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
   });
 
   it('switches to Backups tab', () => {
     render(<Storage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('tab-backups'));
     expect(screen.getByTestId('tab-backups')).toHaveClass('border-brand-500');
-    expect(screen.getByTestId('client-selector')).toBeInTheDocument();
+    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
   });
 
   it('shows select-client prompt when no client is selected on Databases tab', () => {

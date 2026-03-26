@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Bell, Search, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
+import { Menu, Search, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
 import { ApiError } from '@/lib/api-client';
+import NotificationDropdown from '@/components/NotificationDropdown';
 
 interface HeaderProps {
   readonly onMenuClick: () => void;
@@ -64,13 +65,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <button
-          className="relative rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-          aria-label="Notifications"
-        >
-          <Bell size={20} />
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
-        </button>
+        <NotificationDropdown />
 
         <div className="relative" ref={menuRef}>
           <button

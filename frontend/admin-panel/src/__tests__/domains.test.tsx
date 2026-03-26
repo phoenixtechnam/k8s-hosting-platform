@@ -64,10 +64,23 @@ function createWrapper() {
 
 function setupMockApi() {
   mockApiFetch.mockImplementation((url: string) => {
+    // Single client fetch for selected client display
+    if (typeof url === 'string' && url.match(/\/clients\/client-\d+$/)) {
+      const id = url.split('/').pop();
+      const client = MOCK_CLIENTS.find((c) => c.id === id);
+      return Promise.resolve({ data: client ?? null });
+    }
+    // Client search
     if (typeof url === 'string' && url.includes('/clients') && !url.includes('/domains')) {
+      if (url.includes('search=')) {
+        return Promise.resolve({
+          data: MOCK_CLIENTS,
+          pagination: { total_count: 2, cursor: null, has_more: false, page_size: 20 },
+        });
+      }
       return Promise.resolve({
-        data: MOCK_CLIENTS,
-        pagination: { total_count: 2, cursor: null, has_more: false, page_size: 200 },
+        data: [],
+        pagination: { total_count: 0, cursor: null, has_more: false, page_size: 0 },
       });
     }
     if (typeof url === 'string' && url.includes('/domains')) {
@@ -85,10 +98,10 @@ beforeEach(() => {
 });
 
 describe('Domains page', () => {
-  it('renders with client selector', () => {
+  it('renders with searchable client selector', () => {
     render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('client-selector')).toBeInTheDocument();
-    expect(screen.getByText('All Clients')).toBeInTheDocument();
+    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search clients...')).toBeInTheDocument();
   });
 
   it('shows all clients by default without a prompt to select', () => {
@@ -168,13 +181,17 @@ describe('Domain row expansion', () => {
     setupMockApi();
     render(<Domains />, { wrapper: createWrapper() });
 
-    // Wait for clients to load so the select has options
+    // Type in the searchable client select to find a client
+    const searchInput = screen.getByTestId('client-search-input');
+    await user.type(searchInput, 'Acme');
+
+    // Wait for search results to appear
     await waitFor(() => {
-      expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+      expect(screen.getByTestId('client-option-client-1')).toBeInTheDocument();
     });
 
-    // Select a client to trigger domain loading
-    await user.selectOptions(screen.getByTestId('client-selector'), 'client-1');
+    // Click on the client to select it
+    await user.click(screen.getByTestId('client-option-client-1'));
 
     // Wait for domain rows to appear
     await waitFor(() => {

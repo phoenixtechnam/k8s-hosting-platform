@@ -1,19 +1,16 @@
 import { useState } from 'react';
-import { Plus, Loader2, Clock, RefreshCw } from 'lucide-react';
+import { Plus, Loader2, Clock } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
+import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useCronJobs } from '@/hooks/use-cron-jobs';
-import { useClients } from '@/hooks/use-clients';
 
 export default function CronJobs() {
-  const [selectedClientId, setSelectedClientId] = useState('');
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
-  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 100 });
-  const clients = clientsData?.data ?? [];
-
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs(
-    selectedClientId || undefined,
+    selectedClientId ?? undefined,
   );
 
   const cronJobs = cronJobsData?.data ?? [];
@@ -43,39 +40,14 @@ export default function CronJobs() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="w-full max-w-xs">
-          {clientsError ? (
-            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2" data-testid="client-selector-error">
-              <p className="text-sm text-red-600">Failed to load clients</p>
-              <button
-                onClick={() => refetchClients()}
-                className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
-                data-testid="retry-clients-button"
-              >
-                <RefreshCw size={12} />
-                Retry
-              </button>
-            </div>
-          ) : (
-            <select
-              value={selectedClientId}
-              onChange={(e) => setSelectedClientId(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              data-testid="client-selector"
-            >
-              <option value="">All Clients</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.companyName}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        <SearchableClientSelect
+          selectedClientId={selectedClientId}
+          onSelect={setSelectedClientId}
+        />
       </div>
 
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        {(cronJobsLoading || clientsLoading) && (
+        {cronJobsLoading && (
           <div className="flex items-center justify-center py-10">
             <Loader2 size={24} className="animate-spin text-gray-400" />
           </div>

@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import ResourceBar from '@/components/ui/ResourceBar';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useClients } from '@/hooks/use-clients';
+import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useDatabases, useBackups } from '@/hooks/use-databases';
 
 type Tab = 'overview' | 'databases' | 'backups';
@@ -29,22 +29,19 @@ function truncateId(id: string): string {
 
 export default function Storage() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [selectedClientId, setSelectedClientId] = useState('');
-
-  const { data: clientsData } = useClients({ limit: 100 });
-  const clients = clientsData?.data ?? [];
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
   const {
     data: databasesData,
     isLoading: databasesLoading,
     error: databasesError,
-  } = useDatabases(selectedClientId || undefined);
+  } = useDatabases(selectedClientId ?? undefined);
 
   const {
     data: backupsData,
     isLoading: backupsLoading,
     error: backupsError,
-  } = useBackups(selectedClientId || undefined);
+  } = useBackups(selectedClientId ?? undefined);
 
   const databases = databasesData?.data ?? [];
   const backups = backupsData?.data ?? [];
@@ -91,7 +88,6 @@ export default function Storage() {
         <DataTab
           selectedClientId={selectedClientId}
           onClientChange={setSelectedClientId}
-          clients={clients}
           isLoading={databasesLoading}
           error={databasesError}
         >
@@ -102,7 +98,6 @@ export default function Storage() {
         <DataTab
           selectedClientId={selectedClientId}
           onClientChange={setSelectedClientId}
-          clients={clients}
           isLoading={backupsLoading}
           error={backupsError}
         >
@@ -127,32 +122,21 @@ function OverviewTab() {
 }
 
 interface DataTabProps {
-  readonly selectedClientId: string;
-  readonly onClientChange: (id: string) => void;
-  readonly clients: readonly { readonly id: string; readonly companyName?: string; readonly name?: string }[];
+  readonly selectedClientId: string | null;
+  readonly onClientChange: (id: string | null) => void;
   readonly isLoading: boolean;
   readonly error: Error | null;
   readonly children: React.ReactNode;
 }
 
-function DataTab({ selectedClientId, onClientChange, clients, isLoading, error, children }: DataTabProps) {
+function DataTab({ selectedClientId, onClientChange, isLoading, error, children }: DataTabProps) {
   return (
     <div className="space-y-4">
-      <div className="w-full max-w-xs">
-        <select
-          value={selectedClientId}
-          onChange={(e) => onClientChange(e.target.value)}
-          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-          data-testid="client-selector"
-        >
-          <option value="">Select a client...</option>
-          {clients.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.companyName ?? c.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <SearchableClientSelect
+        selectedClientId={selectedClientId}
+        onSelect={onClientChange}
+        placeholder="Search clients..."
+      />
 
       {!selectedClientId && (
         <div className="rounded-xl border border-gray-200 bg-white px-5 py-16 text-center shadow-sm">

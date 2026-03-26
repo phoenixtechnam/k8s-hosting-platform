@@ -1,23 +1,20 @@
 import { useState } from 'react';
-import { Plus, Search, Loader2, Globe, Shield, ChevronDown, ChevronRight, Info, RefreshCw } from 'lucide-react';
+import { Plus, Search, Loader2, Globe, Shield, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import CreateDomainModal from '@/components/CreateDomainModal';
+import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useDomains } from '@/hooks/use-domains';
-import { useClients } from '@/hooks/use-clients';
 
 export default function Domains() {
-  const [selectedClientId, setSelectedClientId] = useState('');
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [expandedDomainId, setExpandedDomainId] = useState<string | null>(null);
 
-  const { data: clientsData, isLoading: clientsLoading, error: clientsError, refetch: refetchClients } = useClients({ limit: 100 });
-  const clients = clientsData?.data ?? [];
-
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
-    selectedClientId || undefined,
+    selectedClientId ?? undefined,
     { search: debouncedSearch || undefined, limit: 50 },
   );
 
@@ -53,35 +50,10 @@ export default function Domains() {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="w-full max-w-xs">
-          {clientsError ? (
-            <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2" data-testid="client-selector-error">
-              <p className="text-sm text-red-600">Failed to load clients</p>
-              <button
-                onClick={() => refetchClients()}
-                className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
-                data-testid="retry-clients-button"
-              >
-                <RefreshCw size={12} />
-                Retry
-              </button>
-            </div>
-          ) : (
-            <select
-              value={selectedClientId}
-              onChange={(e) => setSelectedClientId(e.target.value)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              data-testid="client-selector"
-            >
-              <option value="">All Clients</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.companyName}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        <SearchableClientSelect
+          selectedClientId={selectedClientId}
+          onSelect={setSelectedClientId}
+        />
 
         <div className="relative flex-1 max-w-sm">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -97,7 +69,7 @@ export default function Domains() {
       </div>
 
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        {(domainsLoading || clientsLoading) && (
+        {domainsLoading && (
           <div className="flex items-center justify-center py-10">
             <Loader2 size={24} className="animate-spin text-gray-400" />
           </div>

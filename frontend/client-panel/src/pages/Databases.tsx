@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Database as DatabaseIcon, Plus, KeyRound, Copy, Check, AlertTriangle } from 'lucide-react';
+import { Database as DatabaseIcon, Plus, KeyRound } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDatabases, useRotateCredentials } from '@/hooks/use-databases';
 import CreateDatabaseModal from '@/components/CreateDatabaseModal';
+import PasswordModal from '@/components/PasswordModal';
 
 function TypeBadge({ dbType }: { readonly dbType: string }) {
   const colorMap: Record<string, string> = {
@@ -37,55 +38,6 @@ function StatusBadge({ status }: { readonly status: string }) {
   );
 }
 
-function RotatedPasswordAlert({
-  password,
-  onDismiss,
-}: {
-  readonly password: string;
-  readonly onDismiss: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(password);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4" data-testid="rotated-password-alert">
-      <div className="flex items-start gap-3">
-        <AlertTriangle size={20} className="mt-0.5 shrink-0 text-amber-600" />
-        <div className="flex-1">
-          <p className="text-sm font-medium text-amber-800">New password generated</p>
-          <p className="mt-1 text-sm text-amber-700">
-            Save this password now. It will not be shown again.
-          </p>
-          <div className="mt-2 flex items-center gap-2 rounded-md border border-amber-200 bg-white px-3 py-2">
-            <code className="text-sm font-mono text-gray-900 break-all" data-testid="rotated-password">
-              {password}
-            </code>
-            <button
-              onClick={handleCopy}
-              className="ml-auto shrink-0 rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-              aria-label="Copy password"
-              data-testid="copy-rotated-password"
-            >
-              {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
-            </button>
-          </div>
-        </div>
-        <button
-          onClick={onDismiss}
-          className="shrink-0 text-sm text-amber-700 underline hover:text-amber-900"
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function Databases() {
   const { clientId } = useClientContext();
   const queryClient = useQueryClient();
@@ -93,16 +45,16 @@ export default function Databases() {
   const rotateCredentials = useRotateCredentials(clientId ?? undefined);
 
   const [modalOpen, setModalOpen] = useState(false);
-  const [rotatedPassword, setRotatedPassword] = useState<{ databaseId: string; password: string } | null>(null);
+  const [rotatedPassword, setRotatedPassword] = useState<{ databaseName: string; password: string } | null>(null);
   const [rotatingId, setRotatingId] = useState<string | null>(null);
 
   const databases = data?.data ?? [];
 
-  const handleRotate = async (databaseId: string) => {
+  const handleRotate = async (databaseId: string, databaseName: string) => {
     setRotatingId(databaseId);
     try {
       const result = await rotateCredentials.mutateAsync(databaseId);
-      setRotatedPassword({ databaseId, password: result.data.password });
+      setRotatedPassword({ databaseName, password: result.data.password });
     } catch {
       // error can be shown via rotateCredentials.error
     } finally {
@@ -133,13 +85,6 @@ export default function Databases() {
           Create Database
         </button>
       </div>
-
-      {rotatedPassword && (
-        <RotatedPasswordAlert
-          password={rotatedPassword.password}
-          onDismiss={() => setRotatedPassword(null)}
-        />
-      )}
 
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
         {isLoading && (
@@ -198,7 +143,7 @@ export default function Databases() {
                     </td>
                     <td className="px-6 py-4">
                       <button
-                        onClick={() => handleRotate(db.id)}
+                        onClick={() => handleRotate(db.id, db.name)}
                         disabled={rotatingId === db.id}
                         className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                         data-testid={`rotate-password-${db.id}`}
@@ -226,6 +171,13 @@ export default function Databases() {
           clientId={clientId}
         />
       )}
+
+      <PasswordModal
+        open={rotatedPassword !== null}
+        onClose={() => setRotatedPassword(null)}
+        databaseName={rotatedPassword?.databaseName ?? ''}
+        password={rotatedPassword?.password ?? ''}
+      />
     </div>
   );
 }

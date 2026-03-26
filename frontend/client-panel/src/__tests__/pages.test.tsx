@@ -8,6 +8,7 @@ import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';
 import Domains from '../pages/Domains';
 import Databases from '../pages/Databases';
+import PasswordModal from '../components/PasswordModal';
 import { ApiError } from '../lib/api-client';
 
 vi.mock('../hooks/use-auth', () => ({
@@ -349,5 +350,38 @@ describe('Databases', () => {
     renderWithProviders(<Databases />);
     expect(screen.getByTestId('rotate-password-db-1')).toBeInTheDocument();
     expect(screen.getByText('Rotate Password')).toBeInTheDocument();
+  });
+});
+
+describe('PasswordModal', () => {
+  it('renders when open', () => {
+    renderWithProviders(
+      <PasswordModal open={true} onClose={vi.fn()} databaseName="my_db" password="s3cret123" />,
+    );
+    expect(screen.getByTestId('password-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('password-modal-value')).toHaveTextContent('s3cret123');
+    expect(screen.getByTestId('password-modal-close')).toBeInTheDocument();
+    expect(screen.getByTestId('password-modal-copy')).toBeInTheDocument();
+  });
+
+  it('is hidden when closed', () => {
+    renderWithProviders(
+      <PasswordModal open={false} onClose={vi.fn()} databaseName="my_db" password="s3cret123" />,
+    );
+    expect(screen.queryByTestId('password-modal')).not.toBeInTheDocument();
+  });
+
+  it('shows database name in title', () => {
+    renderWithProviders(
+      <PasswordModal open={true} onClose={vi.fn()} databaseName="wp_production" password="abc" />,
+    );
+    expect(screen.getByText(/wp_production/)).toBeInTheDocument();
+  });
+
+  it('shows warning text about saving the password', () => {
+    renderWithProviders(
+      <PasswordModal open={true} onClose={vi.fn()} databaseName="test_db" password="pw123" />,
+    );
+    expect(screen.getByText('Save this password now. It cannot be retrieved again.')).toBeInTheDocument();
   });
 });

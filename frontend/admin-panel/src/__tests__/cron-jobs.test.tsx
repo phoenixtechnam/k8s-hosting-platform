@@ -24,10 +24,10 @@ describe('CronJobs page', () => {
     expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
   });
 
-  it('renders client selector', () => {
+  it('renders searchable client selector', () => {
     render(<CronJobs />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('client-selector')).toBeInTheDocument();
-    expect(screen.getByText('All Clients')).toBeInTheDocument();
+    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search clients...')).toBeInTheDocument();
   });
 
   it('shows all clients by default without a prompt to select', () => {
