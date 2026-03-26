@@ -216,10 +216,11 @@ export async function exchangeCodeForTokens(
 
   const row = rows[0];
   const clientSecret = decrypt(row.clientSecretEncrypted, encryptionKey);
-  const discovery = row.discoveryMetadata as OidcDiscovery | null;
 
+  // Prefer cached metadata, fall back to live fetch
+  let discovery = row.discoveryMetadata as OidcDiscovery | null;
   if (!discovery?.token_endpoint) {
-    throw new ApiError('OIDC_NO_DISCOVERY', 'Token endpoint not available', 500);
+    discovery = await fetchDiscovery(row.issuerUrl);
   }
 
   const body = new URLSearchParams({
