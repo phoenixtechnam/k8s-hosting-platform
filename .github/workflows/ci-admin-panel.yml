@@ -3,10 +3,10 @@ name: Admin Panel CI
 on:
   push:
     branches: [main, staging]
-    paths: ['frontend/admin-panel/**']
+    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**']
   pull_request:
     branches: [main, staging]
-    paths: ['frontend/admin-panel/**']
+    paths: ['frontend/admin-panel/**', 'packages/api-contracts/**']
 
 jobs:
   lint-typecheck-test-build:
@@ -19,6 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run build -w @k8s-hosting/api-contracts
       - run: npm run lint -w @k8s-hosting/admin-panel
       - run: npm run typecheck -w @k8s-hosting/admin-panel
       - run: npm run test -w @k8s-hosting/admin-panel

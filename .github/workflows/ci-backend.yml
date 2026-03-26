@@ -3,10 +3,10 @@ name: Backend CI
 on:
   push:
     branches: [main, staging]
-    paths: ['backend/**']
+    paths: ['backend/**', 'packages/api-contracts/**']
   pull_request:
     branches: [main, staging]
-    paths: ['backend/**']
+    paths: ['backend/**', 'packages/api-contracts/**']
 
 jobs:
   lint-typecheck:
@@ -19,8 +19,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint -w backend
-      - run: npm run typecheck -w backend
+      - run: npm run build -w @k8s-hosting/api-contracts
+      - run: npm run lint -w @k8s-hosting/backend
+      - run: npm run typecheck -w @k8s-hosting/backend
 
   test:
     name: Test
@@ -61,7 +62,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run test:coverage -w backend
+      - run: npm run build -w @k8s-hosting/api-contracts
+      - run: npm run test:coverage -w @k8s-hosting/backend
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -80,4 +82,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w backend
+      - run: npm run build -w @k8s-hosting/api-contracts
+      - run: npm run build -w @k8s-hosting/backend

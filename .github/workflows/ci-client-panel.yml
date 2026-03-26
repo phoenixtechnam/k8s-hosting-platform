@@ -3,10 +3,10 @@ name: Client Panel CI
 on:
   push:
     branches: [main, staging]
-    paths: ['frontend/client-panel/**']
+    paths: ['frontend/client-panel/**', 'packages/api-contracts/**']
   pull_request:
     branches: [main, staging]
-    paths: ['frontend/client-panel/**']
+    paths: ['frontend/client-panel/**', 'packages/api-contracts/**']
 
 jobs:
   lint-typecheck-test-build:
@@ -19,6 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run build -w @k8s-hosting/api-contracts
       - run: npm run lint -w @k8s-hosting/client-panel
       - run: npm run typecheck -w @k8s-hosting/client-panel
       - run: npm run test -w @k8s-hosting/client-panel
