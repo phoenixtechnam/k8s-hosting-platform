@@ -8,6 +8,7 @@ RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
 
 # Build client panel
 COPY frontend/client-panel/package.json ./package.json
+RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN npm install --ignore-scripts
 COPY frontend/client-panel/index.html frontend/client-panel/tsconfig.json frontend/client-panel/vite.config.ts frontend/client-panel/tailwind.config.js frontend/client-panel/postcss.config.js ./
 COPY frontend/client-panel/src/ src/

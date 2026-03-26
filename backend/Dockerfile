@@ -8,6 +8,7 @@ RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
 
 # Build backend
 COPY backend/package.json backend/tsconfig.json ./
+RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN npm install --ignore-scripts
 COPY backend/src/ src/
 RUN npx tsc
