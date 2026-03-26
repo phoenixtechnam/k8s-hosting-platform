@@ -9,6 +9,8 @@ Kubernetes-based web hosting platform replacing Plesk. Targets 50-100 clients in
 ## Monorepo Structure
 
 ```
+packages/
+  api-contracts/          # Shared Zod schemas + TypeScript types (SINGLE SOURCE OF TRUTH)
 backend/                  # Node.js/Fastify management API (port 3000)
 frontend/
   admin-panel/            # React 18 + Vite + shadcn/ui (port 5173)
@@ -51,6 +53,11 @@ npm run db:migrate       # Run database migrations
 npm run db:generate      # Generate migration from schema changes
 ```
 
+### Smoke Tests (after deploy)
+```bash
+./scripts/smoke-test.sh          # Run against staging stack
+```
+
 ### Frontend Admin (`frontend/admin-panel/`)
 ```bash
 npm run dev              # Vite dev server (port 5173)
@@ -75,16 +82,41 @@ docker compose up -d     # Start MariaDB, Redis, MailHog
 docker compose down      # Stop services
 ```
 
+## Shared API Contracts (CRITICAL)
+
+**All API types are defined in `packages/api-contracts/`** — the single source of truth.
+
+```
+packages/api-contracts/src/
+  shared.ts     # PaginationParams (limit max: 100), response envelopes
+  auth.ts       # Login, password change, profile update schemas
+  clients.ts    # Client CRUD schemas + response types
+  domains.ts    # Domain CRUD schemas + response types
+  databases.ts  # Database CRUD schemas + response types
+  index.ts      # Re-exports everything
+```
+
+**Rules:**
+1. ALL API input/output types MUST be defined in `@k8s-hosting/api-contracts`
+2. Backend validates with Zod schemas imported from this package
+3. Frontend uses `z.infer<typeof schema>` types from this package
+4. NEVER define API types locally in backend `schema.ts` or frontend `types/api.ts`
+5. `PaginationParams` enforces `limit <= 100` — frontends import MAX_PAGE_LIMIT
+6. Response field names are camelCase (Drizzle ORM convention)
+7. `apiFetch` only sets `Content-Type: application/json` when `options.body` exists
+
+**After deploy, run `./scripts/smoke-test.sh` to verify API compatibility.**
+
 ## Conventions
 
 - **API prefix:** `/api/v1/`
 - **API response envelope:** `{ data, pagination, error }` (see docs/04-deployment/API_ERROR_HANDLING.md)
-- **Pagination:** Cursor-based (base64-encoded opaque cursors)
+- **Pagination:** Cursor-based, limit max 100 (enforced by `MAX_PAGE_LIMIT` in api-contracts)
 - **Error codes:** SCREAMING_SNAKE_CASE (see docs/04-deployment/API_ERROR_HANDLING.md)
 - **Auth:** JWT Bearer tokens with claims: sub, role (admin|billing|support|read-only), exp, iat
 - **File organization:** Feature/module-based (`backend/src/modules/<feature>/`)
 - **Immutability:** Prefer new objects over mutation
-- **Test coverage target:** 80%+ (Phase 1: 60%+)
+- **Test coverage target:** 80%+ (Phase 1: 70%+)
 
 ## External Dependencies (ADR-022)
 

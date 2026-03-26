@@ -2,6 +2,7 @@
   "name": "k8s-hosting-platform",
   "private": true,
   "workspaces": [
+    "packages/api-contracts",
     "backend",
     "frontend/admin-panel",
     "frontend/client-panel"
