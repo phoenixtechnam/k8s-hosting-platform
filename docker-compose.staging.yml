@@ -92,7 +92,7 @@ services:
   dex:
     image: ghcr.io/dexidp/dex:v2.39.1
     ports:
-      - "${PORT_DEX:-5556}:5556"
+      - "${PORT_DEX:-2015}:5556"
     volumes:
       - ./config/dex/config.yaml:/etc/dex/config.yaml:ro
       - dex-data:/var/dex
