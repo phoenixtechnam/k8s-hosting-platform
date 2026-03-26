@@ -1,6 +1,12 @@
 FROM node:22-alpine AS builder
 
 WORKDIR /app
+
+# Build shared API contracts first
+COPY packages/api-contracts/ ./packages/api-contracts/
+RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
+
+# Build backend
 COPY backend/package.json backend/tsconfig.json ./
 RUN npm install --ignore-scripts
 COPY backend/src/ src/
@@ -10,6 +16,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+COPY --from=builder /app/packages/api-contracts/ ./packages/api-contracts/
 COPY backend/package.json ./
 RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 

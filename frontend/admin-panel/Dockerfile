@@ -2,13 +2,12 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Copy shared API contracts package first
+# Build shared API contracts first
 COPY packages/api-contracts/ ./packages/api-contracts/
+RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
 
-# Copy admin panel
+# Build admin panel
 COPY frontend/admin-panel/package.json ./package.json
-# Replace workspace dependency with file reference for Docker build
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN npm install --ignore-scripts
 COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/tailwind.config.js frontend/admin-panel/postcss.config.js ./
 COPY frontend/admin-panel/src/ src/
