@@ -156,9 +156,14 @@ export async function buildAuthorizationUrl(
     throw new ApiError('OIDC_NOT_ENABLED', 'OIDC is not enabled', 400);
   }
 
-  const discovery = settings.discoveryMetadata as OidcDiscovery | null;
+  // Prefer cached metadata, fall back to live fetch
+  let discovery = settings.discoveryMetadata as OidcDiscovery | null;
   if (!discovery?.authorization_endpoint) {
-    throw new ApiError('OIDC_NO_DISCOVERY', 'OIDC discovery metadata not available', 500);
+    try {
+      discovery = await fetchDiscovery(settings.issuerUrl);
+    } catch {
+      throw new ApiError('OIDC_NO_DISCOVERY', 'OIDC discovery metadata not available. Check the issuer URL is reachable from the server.', 500);
+    }
   }
 
   const params = new URLSearchParams({
