@@ -193,7 +193,7 @@ test.describe('Admin Form Interactions', () => {
       await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Settings' }).click();
-      await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
       // Look for workload repos section
       const workloadSection = page.getByTestId('workload-repos-section')
@@ -207,7 +207,7 @@ test.describe('Admin Form Interactions', () => {
       await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Settings' }).click();
-      await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
       // Fill password form with mismatched passwords
       await page.getByTestId('current-password-input').fill('admin');
@@ -223,14 +223,14 @@ test.describe('Admin Form Interactions', () => {
         .or(page.getByTestId('password-error'));
       const hasError = await errorMessage.isVisible().catch(() => false);
       // If no explicit error UI, the form at least shouldn't navigate away
-      await expect(page.getByTestId('settings-heading')).toBeVisible();
+      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible();
     });
 
     test('profile section displays current user info', async ({ page }) => {
       await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Settings' }).click();
-      await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
       await expect(page.getByTestId('profile-email')).toContainText('admin@platform.local');
       await expect(page.getByTestId('profile-role')).toBeVisible();

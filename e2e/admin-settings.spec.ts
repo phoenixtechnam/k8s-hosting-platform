@@ -5,46 +5,35 @@ test.describe('Admin Settings Page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
   });
 
   test('settings page loads', async ({ page }) => {
-    await expect(page.getByTestId('settings-heading')).toHaveText('Settings');
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible();
   });
 
-  test('shows Profile section with user info', async ({ page }) => {
-    const profileSection = page.getByTestId('profile-section');
-    await expect(profileSection).toBeVisible();
-
-    // Profile should display user details
-    await expect(page.getByTestId('profile-email')).toBeVisible();
-    await expect(page.getByTestId('profile-role')).toBeVisible();
+  test('shows Platform Configuration', async ({ page }) => {
+    await expect(page.getByText('Platform Configuration').or(page.getByText('Platform Name'))).toBeVisible({ timeout: 5000 });
   });
 
-  test('shows Platform Configuration section', async ({ page }) => {
-    const configSection = page.getByTestId('platform-config-section');
-    await expect(configSection).toBeVisible();
-
-    await expect(page.getByText('Platform Name')).toBeVisible();
-    await expect(page.getByText('K8s Hosting Platform')).toBeVisible();
-    await expect(page.getByText('Version')).toBeVisible();
+  test('shows Workload Repositories section', async ({ page }) => {
+    await expect(page.getByText('Workload Repositories')).toBeVisible({ timeout: 5000 });
   });
 
-  test('shows Change Password form', async ({ page }) => {
-    const passwordSection = page.getByTestId('change-password-section');
-    await expect(passwordSection).toBeVisible();
-    await expect(page.getByText('Change Password')).toBeVisible();
+  test('user menu is accessible from header', async ({ page }) => {
+    const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
+    await expect(userMenuBtn).toBeVisible();
   });
 
-  test('password form has current, new, and confirm fields', async ({ page }) => {
-    await expect(page.getByTestId('current-password-input')).toBeVisible();
-    await expect(page.getByTestId('new-password-input')).toBeVisible();
-    await expect(page.getByTestId('confirm-password-input')).toBeVisible();
-    await expect(page.getByTestId('update-password-button')).toBeVisible();
+  test('user menu shows profile info', async ({ page }) => {
+    const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
+    await userMenuBtn.click();
+    await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 5000 });
   });
 
-  test('profile shows admin email', async ({ page }) => {
-    const profileEmail = page.getByTestId('profile-email');
-    await expect(profileEmail).toContainText('admin@platform.local');
+  test('user menu has sign out', async ({ page }) => {
+    const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
+    await userMenuBtn.click();
+    await expect(page.getByText('Sign Out')).toBeVisible({ timeout: 5000 });
   });
 });

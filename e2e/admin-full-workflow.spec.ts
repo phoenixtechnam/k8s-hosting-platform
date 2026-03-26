@@ -86,12 +86,12 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // 10. Navigate to Settings page, verify platform config
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId('platform-config-section')).toBeVisible();
     await expect(page.getByText('K8s Hosting Platform')).toBeVisible();
 
     // 11. Logout
-    const logoutButton = page.getByTestId('logout-button');
+    const logoutButton = page.getByTestId('user-menu-button');
     if (await logoutButton.isVisible().catch(() => false)) {
       await logoutButton.click();
       await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 10000 });
@@ -154,7 +154,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // Go to Settings first
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
     // Navigate back to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();

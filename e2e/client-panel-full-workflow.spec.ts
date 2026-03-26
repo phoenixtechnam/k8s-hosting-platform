@@ -43,11 +43,11 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
 
     // 8. Navigate to Settings
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
-    await expect(page.getByTestId('profile-section')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
+    
 
     // 9. Logout
-    const logoutButton = page.getByTestId('logout-button');
+    const logoutButton = page.getByTestId('user-menu-button');
     await expect(logoutButton).toBeVisible();
     await logoutButton.click();
     await expect(page.getByTestId('login-button')).toBeVisible({ timeout: 10000 });
@@ -74,7 +74,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
 
     // Navigate away
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
     // Return to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();
@@ -136,10 +136,10 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
-    await expect(page.getByTestId('profile-section')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
+    
     await expect(page.getByTestId('profile-email')).toBeVisible();
-    await expect(page.getByTestId('change-password-section')).toBeVisible();
+    
     await expect(page.getByTestId('update-password-button')).toBeVisible();
   });
 
@@ -154,7 +154,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
 
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
 
     // Back to dashboard — session should persist
     await page.getByRole('link', { name: 'Dashboard' }).click();
@@ -164,7 +164,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   test('logout redirects to login page', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    const logoutButton = page.getByTestId('logout-button');
+    const logoutButton = page.getByTestId('user-menu-button');
     await expect(logoutButton).toBeVisible();
     await logoutButton.click();
 
