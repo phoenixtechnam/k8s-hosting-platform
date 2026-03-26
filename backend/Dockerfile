@@ -1,14 +1,7 @@
 FROM node:22-alpine AS builder
 
 WORKDIR /app
-
-# Copy shared API contracts package
-COPY packages/api-contracts/ ./packages/api-contracts/
-
-# Copy backend
 COPY backend/package.json backend/tsconfig.json ./
-# Replace workspace dependency with file reference for Docker build
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN npm install --ignore-scripts
 COPY backend/src/ src/
 RUN npx tsc
@@ -17,9 +10,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY packages/api-contracts/ ./packages/api-contracts/
 COPY backend/package.json ./
-RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=builder /app/dist/ dist/
