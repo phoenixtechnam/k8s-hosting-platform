@@ -1,5 +1,4 @@
 import { Settings as SettingsIcon, Server } from 'lucide-react';
-import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
 
 const platformConfig = [
   { label: 'Platform Name', value: 'K8s Hosting Platform' },
@@ -37,9 +36,6 @@ export default function Settings() {
           Configuration is managed via environment variables.
         </p>
       </div>
-
-      {/* Workload Repositories Section */}
-      <WorkloadRepoSettings />
     </div>
   );
 }

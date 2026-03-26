@@ -65,58 +65,78 @@ describe('Workloads page', () => {
     expect(screen.getByRole('heading', { name: 'Workloads' })).toBeInTheDocument();
   });
 
-  it('shows loading state initially', () => {
-    mockApiFetch.mockReturnValue(new Promise(() => {})); // never resolves
-
+  it('renders all three tabs', () => {
     render(<Workloads />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-deployed')).toHaveTextContent('Deployed Workloads');
+    expect(screen.getByTestId('tab-available')).toHaveTextContent('Available Workloads');
+    expect(screen.getByTestId('tab-repos')).toHaveTextContent('Repositories');
   });
 
-  it('shows all three stat cards', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
-
+  it('defaults to "Deployed Workloads" tab', () => {
     render(<Workloads />, { wrapper: createWrapper() });
-    await waitFor(() => {
-      expect(screen.getByText('Total Images')).toBeInTheDocument();
+    expect(screen.getByTestId('deployed-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('available-tab')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repos-tab')).not.toBeInTheDocument();
+  });
+
+  it('shows "Select a client" prompt on Deployed tab when no client selected', () => {
+    render(<Workloads />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
+    expect(screen.getByText('Select a client to view their deployed workloads.')).toBeInTheDocument();
+  });
+
+  it('switches to "Available Workloads" tab', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
     });
-    expect(screen.getByText('Active Workloads')).toBeInTheDocument();
-    expect(screen.getByText('Deployments Today')).toBeInTheDocument();
-    const statCards = screen.getAllByTestId('stat-card');
-    expect(statCards).toHaveLength(3);
-  });
-
-  it('shows search input for filtering images', () => {
-    render(<Workloads />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('image-search')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search images...')).toBeInTheDocument();
-  });
-
-  it('renders container images from API', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
 
     render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-available'));
+
+    expect(screen.getByTestId('available-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('deployed-tab')).not.toBeInTheDocument();
 
     await waitFor(() => {
       expect(screen.getByTestId('images-table')).toBeInTheDocument();
     });
     expect(screen.getByText('NGINX + PHP 8.4')).toBeInTheDocument();
-    expect(screen.getByText('WordPress (PHP 8.4)')).toBeInTheDocument();
   });
 
-  it('displays real image count in Total Images stat', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
-
+  it('switches to "Repositories" tab', () => {
     render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-repos'));
 
-    await waitFor(() => {
-      expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByTestId('repos-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('deployed-tab')).not.toBeInTheDocument();
+    expect(screen.getByTestId('workload-repos-section')).toBeInTheDocument();
+  });
+
+  it('shows search input on Available Workloads tab', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
     });
-  });
-
-  it('filters images based on search input', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
 
     render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-available'));
+
+    expect(screen.getByTestId('image-search')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search images...')).toBeInTheDocument();
+  });
+
+  it('filters images by search on Available Workloads tab', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-available'));
 
     await waitFor(() => {
       expect(screen.getByText('NGINX + PHP 8.4')).toBeInTheDocument();
@@ -129,25 +149,28 @@ describe('Workloads page', () => {
     expect(screen.queryByText('NGINX + PHP 8.4')).not.toBeInTheDocument();
   });
 
-  it('shows empty state when no images match search', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
-
-    render(<Workloads />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByText('NGINX + PHP 8.4')).toBeInTheDocument();
+  it('shows stat cards on Available Workloads tab', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: [] });
     });
 
-    const searchInput = screen.getByTestId('image-search');
-    fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
+    render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-available'));
 
-    expect(screen.getByText('No images found matching your search.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Total Images')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Active Workloads')).toBeInTheDocument();
+    expect(screen.getByText('Deployments Today')).toBeInTheDocument();
   });
 
-  it('shows error state when API fails', async () => {
+  it('shows error state on Available Workloads tab when API fails', async () => {
     mockApiFetch.mockRejectedValue(new Error('Network error'));
 
     render(<Workloads />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('tab-available'));
 
     await waitFor(() => {
       expect(screen.getByTestId('error-message')).toBeInTheDocument();
@@ -155,13 +178,8 @@ describe('Workloads page', () => {
     expect(screen.getByText(/Failed to load container images/)).toBeInTheDocument();
   });
 
-  it('shows image count footer', async () => {
-    mockApiFetch.mockResolvedValue({ data: MOCK_IMAGES });
-
+  it('renders client search on Deployed tab', () => {
     render(<Workloads />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByText('2 images')).toBeInTheDocument();
-    });
+    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
   });
 });
