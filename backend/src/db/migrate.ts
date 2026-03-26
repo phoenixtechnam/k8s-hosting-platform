@@ -32,10 +32,11 @@ for (const file of files) {
       await db.execute(sql.raw(stmt));
     } catch (err: unknown) {
       const mysqlErr = err as { errno?: number; code?: string };
-      // Tolerate "already exists" errors for idempotent migrations:
+      // Tolerate "already exists" / "already dropped" errors for idempotent migrations:
       // 1050 = Table already exists, 1060 = Duplicate column name,
-      // 1061 = Duplicate key name, 1062 = Duplicate entry
-      const toleratedErrors = [1050, 1060, 1061, 1062];
+      // 1061 = Duplicate key name, 1062 = Duplicate entry,
+      // 1091 = Can't DROP (key/column doesn't exist)
+      const toleratedErrors = [1050, 1060, 1061, 1062, 1091];
       if (toleratedErrors.includes(mysqlErr.errno ?? 0)) {
         console.log(`    (skipped: ${mysqlErr.code ?? 'already exists'})`);
       } else {
