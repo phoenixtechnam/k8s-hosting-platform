@@ -1,21 +1,27 @@
 FROM node:22-alpine AS builder
 
 WORKDIR /app
-COPY package.json tsconfig.json ./
+
+# Copy shared API contracts package
+COPY packages/api-contracts/ ./packages/api-contracts/
+
+# Copy backend
+COPY backend/package.json backend/tsconfig.json ./
 RUN npm install --ignore-scripts
-COPY src/ src/
+COPY backend/src/ src/
 RUN npx tsc
 
 FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json ./
+COPY packages/api-contracts/ ./packages/api-contracts/
+COPY backend/package.json ./
 RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=builder /app/dist/ dist/
-COPY src/db/migrations/ dist/db/migrations/
-COPY docker-entrypoint.sh ./
+COPY backend/src/db/migrations/ dist/db/migrations/
+COPY backend/docker-entrypoint.sh ./
 
 USER node
 EXPOSE 3000

@@ -33,7 +33,8 @@ services:
 
   backend:
     build:
-      context: backend
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "${PORT_API:-2012}:3000"
     environment:
