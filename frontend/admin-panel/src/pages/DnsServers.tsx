@@ -7,11 +7,11 @@ const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 t
 
 const PROVIDERS = [
   { value: 'powerdns', label: 'PowerDNS (API v4/v5)' },
+  { value: 'rndc', label: 'BIND9 (rndc + nsupdate)' },
+  { value: 'cloudflare', label: 'Cloudflare' },
+  { value: 'route53', label: 'AWS Route53' },
+  { value: 'hetzner', label: 'Hetzner DNS' },
   { value: 'mock', label: 'Mock (Testing)' },
-  { value: 'rndc', label: 'BIND9 (rndc) — Planned' },
-  { value: 'cloudflare', label: 'Cloudflare — Planned' },
-  { value: 'route53', label: 'AWS Route53 — Planned' },
-  { value: 'hetzner', label: 'Hetzner DNS — Planned' },
 ] as const;
 
 export default function DnsServers() {
@@ -55,14 +55,30 @@ function AddServerForm({ onClose }: { readonly onClose: () => void }) {
   const create = useCreateDnsServer();
   const [form, setForm] = useState({
     display_name: '', provider_type: 'powerdns', zone_default_kind: 'Native' as 'Native' | 'Master',
+    // PowerDNS
     api_url: '', api_key: '', server_id: 'localhost', api_version: 'v4',
+    // RNDC
+    server_host: '', rndc_port: '953', rndc_key_name: '', rndc_key_algorithm: 'hmac-sha256', rndc_key_secret: '',
+    // Cloudflare / Hetzner
+    api_token: '',
+    // Route53
+    access_key_id: '', secret_access_key: '', region: 'us-east-1', hosted_zone_id: '',
   });
+
+  const buildConfig = (): Record<string, unknown> => {
+    switch (form.provider_type) {
+      case 'powerdns': return { api_url: form.api_url, api_key: form.api_key, server_id: form.server_id, api_version: form.api_version };
+      case 'rndc': return { server_host: form.server_host, rndc_port: Number(form.rndc_port), rndc_key_name: form.rndc_key_name, rndc_key_algorithm: form.rndc_key_algorithm, rndc_key_secret: form.rndc_key_secret };
+      case 'cloudflare': return { api_token: form.api_token };
+      case 'hetzner': return { api_token: form.api_token };
+      case 'route53': return { access_key_id: form.access_key_id, secret_access_key: form.secret_access_key, region: form.region, hosted_zone_id: form.hosted_zone_id || undefined };
+      default: return {};
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const connectionConfig = form.provider_type === 'mock' ? {} : {
-      api_url: form.api_url, api_key: form.api_key, server_id: form.server_id, api_version: form.api_version,
-    };
+    const connectionConfig = buildConfig();
     try {
       await create.mutateAsync({ display_name: form.display_name, provider_type: form.provider_type, connection_config: connectionConfig, zone_default_kind: form.zone_default_kind });
       onClose();
@@ -75,7 +91,7 @@ function AddServerForm({ onClose }: { readonly onClose: () => void }) {
         <div><label className="block text-xs font-medium text-gray-700">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Primary DNS" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="dns-server-name-input" /></div>
         <div><label className="block text-xs font-medium text-gray-700">Provider</label>
           <select className={INPUT_CLASS} value={form.provider_type} onChange={(e) => setForm({ ...form, provider_type: e.target.value })} data-testid="dns-provider-select">
-            {PROVIDERS.filter((p) => !p.label.includes('Planned')).map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            {PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
         </div>
         <div><label className="block text-xs font-medium text-gray-700">Zone Default Kind</label>
@@ -94,6 +110,33 @@ function AddServerForm({ onClose }: { readonly onClose: () => void }) {
               <option value="v4">v4</option><option value="v5">v5</option>
             </select>
           </div>
+        </div>
+      )}
+      {form.provider_type === 'rndc' && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div><label className="block text-xs font-medium text-gray-700">Server Host</label><input type="text" className={INPUT_CLASS} placeholder="dns.example.com" value={form.server_host} onChange={(e) => setForm({ ...form, server_host: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">rndc Port</label><input type="number" className={INPUT_CLASS} value={form.rndc_port} onChange={(e) => setForm({ ...form, rndc_port: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Key Name</label><input type="text" className={INPUT_CLASS} placeholder="platform-key" value={form.rndc_key_name} onChange={(e) => setForm({ ...form, rndc_key_name: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Key Algorithm</label>
+            <select className={INPUT_CLASS} value={form.rndc_key_algorithm} onChange={(e) => setForm({ ...form, rndc_key_algorithm: e.target.value })}>
+              <option value="hmac-sha256">HMAC-SHA256</option><option value="hmac-sha512">HMAC-SHA512</option><option value="hmac-md5">HMAC-MD5</option>
+            </select>
+          </div>
+          <div className="sm:col-span-2"><label className="block text-xs font-medium text-gray-700">Key Secret (Base64)</label><input type="password" className={INPUT_CLASS} value={form.rndc_key_secret} onChange={(e) => setForm({ ...form, rndc_key_secret: e.target.value })} required /></div>
+        </div>
+      )}
+      {(form.provider_type === 'cloudflare' || form.provider_type === 'hetzner') && (
+        <div>
+          <label className="block text-xs font-medium text-gray-700">API Token</label>
+          <input type="password" className={INPUT_CLASS} placeholder="Bearer token" value={form.api_token} onChange={(e) => setForm({ ...form, api_token: e.target.value })} required />
+        </div>
+      )}
+      {form.provider_type === 'route53' && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div><label className="block text-xs font-medium text-gray-700">Access Key ID</label><input type="text" className={INPUT_CLASS} value={form.access_key_id} onChange={(e) => setForm({ ...form, access_key_id: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Secret Access Key</label><input type="password" className={INPUT_CLASS} value={form.secret_access_key} onChange={(e) => setForm({ ...form, secret_access_key: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Region</label><input type="text" className={INPUT_CLASS} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Hosted Zone ID (optional)</label><input type="text" className={INPUT_CLASS} value={form.hosted_zone_id} onChange={(e) => setForm({ ...form, hosted_zone_id: e.target.value })} /></div>
         </div>
       )}
       {create.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{create.error instanceof Error ? create.error.message : 'Failed'}</div>}

@@ -1,10 +1,18 @@
-export type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig, RndcConfig, MockConfig } from './types.js';
+export type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig, RndcConfig, CloudflareConfig, Route53Config, HetznerDnsConfig, MockConfig } from './types.js';
 export { MockDnsProvider } from './mock.js';
 export { PowerDnsProvider } from './powerdns.js';
+export { RndcDnsProvider } from './rndc.js';
+export { CloudflareDnsProvider } from './cloudflare.js';
+export { Route53DnsProvider } from './route53.js';
+export { HetznerDnsProvider } from './hetzner.js';
 
 import type { DnsProviderAdapter } from './types.js';
 import { MockDnsProvider } from './mock.js';
 import { PowerDnsProvider } from './powerdns.js';
+import { RndcDnsProvider } from './rndc.js';
+import { CloudflareDnsProvider } from './cloudflare.js';
+import { Route53DnsProvider } from './route53.js';
+import { HetznerDnsProvider } from './hetzner.js';
 
 export function createProvider(providerType: string, config: Record<string, unknown>): DnsProviderAdapter {
   switch (providerType) {
@@ -13,13 +21,13 @@ export function createProvider(providerType: string, config: Record<string, unkn
     case 'powerdns':
       return new PowerDnsProvider(config as any);
     case 'rndc':
-      throw new Error('RNDC provider not yet implemented — planned for Phase 2');
+      return new RndcDnsProvider(config as any);
     case 'cloudflare':
-      throw new Error('Cloudflare provider not yet implemented — planned for Phase 2');
+      return new CloudflareDnsProvider(config as any);
     case 'route53':
-      throw new Error('Route53 provider not yet implemented — planned for Phase 2');
+      return new Route53DnsProvider(config as any);
     case 'hetzner':
-      throw new Error('Hetzner DNS provider not yet implemented — planned for Phase 2');
+      return new HetznerDnsProvider(config as any);
     default:
       throw new Error(`Unknown DNS provider type: ${providerType}`);
   }

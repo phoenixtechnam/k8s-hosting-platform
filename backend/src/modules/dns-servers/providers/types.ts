@@ -57,6 +57,21 @@ export interface RndcConfig {
   readonly rndc_key_secret: string;
 }
 
+export interface CloudflareConfig {
+  readonly api_token: string;
+}
+
+export interface Route53Config {
+  readonly access_key_id: string;
+  readonly secret_access_key: string;
+  readonly region: string;
+  readonly hosted_zone_id?: string;
+}
+
+export interface HetznerDnsConfig {
+  readonly api_token: string;
+}
+
 export interface MockConfig {
   readonly latency_ms?: number;
 }
