@@ -1,9 +1,14 @@
 # Shared Pod Implementation Guide
 
-**Document Version:** 1.0  
-**Last Updated:** 2026-03-01  
-**Status:** DRAFT — Ready for implementation  
-**Audience:** Backend developers, DevOps engineers, platform architects
+> **⛔ SUPERSEDED by ADR-024 (2026-03-27):** This document describes the shared pod architecture
+> that has been replaced by the dedicated-pod-for-all-clients model. All clients now get dedicated
+> pods in their own `client-{id}` namespace regardless of plan tier. This document is retained as
+> historical reference only. See `ARCHITECTURE_DECISION_RECORDS.md` → ADR-024 for rationale.
+
+**Document Version:** 1.0
+**Last Updated:** 2026-03-01
+**Status:** ~~DRAFT — Ready for implementation~~ **SUPERSEDED** (ADR-024, 2026-03-27)
+**Audience:** Historical reference only
 
 ---
 

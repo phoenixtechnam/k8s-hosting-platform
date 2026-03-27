@@ -2060,6 +2060,103 @@ Additionally, the platform already documents zero-downtime web server switching 
 
 ---
 
+## ADR-024: Dedicated Workloads Only — Remove Shared Pods, Database as Premium Add-On
+
+**Date:** 2026-03-27
+**Status:** ACCEPTED
+**Deciders:** Platform Owner
+
+### Context
+
+The original architecture used a **hybrid workload model**: Starter-plan clients shared NGINX+PHP-FPM pods (20-50 clients per pod) with application-level isolation, while Business/Premium clients got dedicated pods with full namespace isolation. Database services (MariaDB, PostgreSQL, Redis) were shared instances with per-client database/user isolation and ProxySQL connection pooling.
+
+This hybrid model optimized for density but introduced significant complexity:
+
+1. **Two provisioning paths** — shared pod assignment vs. dedicated namespace creation
+2. **Application-level isolation** for shared pods — PHP-FPM `open_basedir`, `chroot`, `disable_functions`, POSIX permissions, per-client FPM pools, ConfigMap-based VirtualHost management
+3. **Explicit security risk acceptance** — a kernel-level container escape in a shared pod would expose all co-tenant clients
+4. **ProxySQL connection pooling** — 10:1 multiplexing layer between application pods and shared MariaDB
+5. **Redis ACL management** — per-client key prefix restrictions on shared Redis
+6. **Complex plan upgrade path** — migrating a client from a shared pod to a dedicated pod required multi-step orchestration (provision new pod → remount PV → remove VirtualHost → update Ingress)
+7. **Shared pod rebalancing** — monitoring client density, migrating clients between pools at capacity
+8. **Two namespace strategies** — Starter clients in shared `hosting` namespace vs. Business/Premium in `client-{id}` namespaces
+
+Additionally, real-world client data shows that **~90% of clients (45/50) do not use databases at all**. The 5 clients who use databases are already on higher-paying plans. Provisioning shared database infrastructure for all clients is unnecessary overhead.
+
+### Decision
+
+1. **Eliminate shared pods entirely.** Every client — regardless of plan — gets a dedicated pod in their own `client-{id}` namespace with full Kubernetes-native isolation (ResourceQuota, NetworkPolicy, RBAC).
+
+2. **Make database services a premium add-on.** Database (MariaDB) is not included in the base Starter plan. Clients who need a database pay for the add-on, which provisions a dedicated MariaDB StatefulSet (~100-150Mi RAM) in their namespace.
+
+3. **Eliminate ProxySQL, shared Redis ACLs, and shared database user hierarchy.** Each database client gets their own MariaDB instance — no shared connection pooling or multi-tenant database isolation needed.
+
+4. **Plan differentiation shifts to resource limits and features**, not workload isolation model. Starter gets lower CPU/memory limits; Business/Premium get higher limits plus included database and other features.
+
+### Rationale
+
+1. **Complexity reduction.** Removing shared pods eliminates ~60% of the provisioning codebase: VirtualHost generation, PHP-FPM pool management, ConfigMap reload orchestration, shared pod rebalancing, and the dual-path provisioning logic. One provisioning path instead of two.
+
+2. **Security posture.** Every client gets full namespace isolation. The explicit risk acceptance for shared-pod container escape is eliminated. No cross-tenant blast radius.
+
+3. **Operational simplicity.** Plan upgrades become ResourceQuota edits, not multi-step pod migrations. Backup/restore is per-namespace. Monitoring is per-namespace.
+
+4. **Database reality.** With only 5/50 clients using databases, provisioning shared MariaDB + ProxySQL + Redis for all clients wastes resources and adds complexity for a feature most clients don't use. A dedicated MariaDB StatefulSet per database client costs ~100-150Mi RAM each — negligible at 5 instances (~750Mi total).
+
+5. **Resource impact is acceptable.** 50 dedicated web pods at 0.1vCPU/128Mi each = 5vCPU/6.4Gi. Combined with platform overhead (~2vCPU/4Gi), the total fits on 2× CX31 nodes (4vCPU/8Gi, ~$10/month each) = ~$20/month for compute. Well within the <$200/month budget.
+
+6. **Implementation timing.** The shared pod implementation was fully specified but never built (all implementation checklists were unchecked). This decision removes planned complexity before it's coded, not after.
+
+### Consequences
+
+**Positive:**
+- Single provisioning path for all clients
+- Full namespace isolation for every client (security improvement)
+- No shared pod ConfigMap management, FPM pool generation, or VirtualHost orchestration
+- Plan upgrades are resource limit changes, not pod migrations
+- ProxySQL, shared Redis ACLs, and shared database user hierarchy eliminated
+- Simpler backup strategy (per-namespace snapshots)
+- Simpler monitoring (per-namespace metrics)
+
+**Negative:**
+- Higher per-client resource consumption (~128Mi per web pod vs. near-zero marginal cost in shared pod)
+- Starter plan marginal cost increases (dedicated pod vs. shared resource slice)
+- More Kubernetes objects to manage (50 namespaces × ~8 objects each vs. 1 shared namespace)
+- Database is no longer "included" in all plans — clients who assumed they'd get a database may need education
+
+**Mitigations:**
+- Resource overcommit (Burstable QoS, low requests/higher limits) keeps actual node utilization efficient
+- Scale-to-zero via KEDA for inactive dedicated pods reduces idle resource consumption
+- At 50-100 clients, the k3s API server handles 50-100 namespaces with ease (<500 namespace concern threshold)
+- Database add-on provisioning is automated and instant — no manual steps for clients who need it
+
+### Documents Affected
+
+| Document | Change |
+|----------|--------|
+| `PLATFORM_ARCHITECTURE.md` | Remove shared pod references; update workload model to dedicated-only; update data/storage to reflect DB-as-add-on |
+| `HOSTING_PLANS.md` | Remove shared pod workload model; revise plan defaults (all dedicated, DB as add-on); update key differences table |
+| `INFRASTRUCTURE_SIZING.md` | Remove `hosting` namespace; all clients get `client-{id}`; revise resource budget and cost estimates |
+| `SHARED_POD_IMPLEMENTATION.md` | Mark as **SUPERSEDED** by this ADR (retain as historical reference) |
+| `STORAGE_DATABASES.md` | Simplify — remove shared DB user hierarchy, ProxySQL, Redis ACL sections |
+| `DATABASE_ACCESS_CONTROL.md` | Simplify — per-client dedicated DB model replaces shared privilege matrix |
+
+### Alternatives Considered
+
+1. **Keep hybrid model (shared + dedicated)** — Maximum cost efficiency, but highest complexity. Rejected because the shared pod was never implemented and the complexity cost outweighs the density benefit at 50-100 client scale.
+
+2. **Dedicated pods, shared database** — Eliminates shared pod complexity but keeps ProxySQL and shared DB user management. Considered viable but rejected because only 5/50 clients use databases — the shared DB infrastructure is wasted on 90% of clients.
+
+3. **Shared database as default, dedicated DB as upgrade** — Middle ground where all clients get a database on a shared instance, with dedicated DB as premium upgrade. Rejected because provisioning shared MariaDB + ProxySQL for 45 clients who don't use databases adds unnecessary infrastructure.
+
+### Related ADRs
+
+- **ADR-001:** Multi-Tenancy via Kubernetes Namespaces — now applies uniformly to all clients, not just Business/Premium
+- **ADR-003:** Database Selection — MariaDB remains the primary database engine, but deployment model changes from shared instance to per-client StatefulSet
+- **ADR-023:** NGINX Default, Apache Optional — still applies; shared pod references in ADR-023 consequences are superseded
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/

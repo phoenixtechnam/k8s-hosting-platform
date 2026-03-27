@@ -1,7 +1,7 @@
 # Platform Architecture - Kubernetes Web Hosting Platform
 
 > **Status:** Draft (Finalized 2026-02-27)
-> **Last Updated:** 2026-03-24
+> **Last Updated:** 2026-03-27
 > **Platform:** Self-managed Kubernetes on bare metal / VPS
 > **Orchestration:** Kubernetes + Docker
 > **Migration From:** Plesk-based manually configured servers
@@ -66,9 +66,9 @@
 | --------------------------- | ----------------------------------------- | ----------------------------------------- |
 | **Block Storage**           | **Longhorn** (self-hosted distributed storage) | Replicated PVs, snapshots, S3 backup capability, no external dependency |
 | **Media/Branding Storage**  | **Longhorn PV** (local persistent volume) | Logo uploads, favicons, platform branding assets. See ADR-015. |
-| **Shared MariaDB**            | **1 single instance** → replica for HA    | Per-client isolation via separate databases + dedicated users |
-| **Shared PostgreSQL**       | **1 single instance** → replica for HA    | Alternative/parallel to MariaDB; clients choose |
-| **Shared Redis**            | **1 single instance** → Redis Sentinel for HA | Session cache, PHP object cache, fail2ban ban list |
+| **MariaDB (add-on)**          | **Per-client dedicated StatefulSet** (provisioned on demand) | Database is a premium add-on; ~90% of clients don't use databases. Each DB client gets their own instance (~100-150Mi RAM). See ADR-024. |
+| **PostgreSQL (platform)**     | **1 single instance** → replica for HA    | Platform metadata only; not offered as client-facing service in Phase 1 |
+| **Redis (platform)**          | **1 single instance** → Redis Sentinel for HA | Platform cache, fail2ban ban list. Per-client Redis available as premium add-on. |
 | **Offsite Backups**         | **SFTP/SSH to external server**          | Daily uploads to separate provider; disaster recovery |
 
 ### 0.5 Email Stack
@@ -147,7 +147,7 @@ automation.
 | Hosting panel       | Custom management API + web UI                     |
 | Server management   | Declarative, automated via Kubernetes              |
 | Client isolation    | Namespace-per-client with resource quotas + network policies |
-| Workload model      | **Hybrid**: shared NGINX+PHP-FPM pods (default) for Starter plans; dedicated pods for Business/Premium. Apache+PHP-FPM available per domain. |
+| Workload model      | **Dedicated pods for all clients** — every client gets their own pod in a `client-{id}` namespace. NGINX+PHP-FPM default, Apache+PHP-FPM available per domain. See ADR-024. |
 | Container catalog   | Centrally managed, standardized images — admin controls lifecycle |
 | Scaling             | Horizontal (add nodes), auto-scaling workloads     |
 | Deployment          | SFTP, Git-based file sync, web file manager (no per-client builds) |
@@ -160,12 +160,13 @@ automation.
 ### 1.4 Key Objectives
 
 - [ ] Eliminate manual server provisioning — all client onboarding automated
-- [ ] Namespace-per-client isolation with enforced resource quotas
+- [ ] Namespace-per-client isolation with enforced resource quotas — every client gets a `client-{id}` namespace (ADR-024)
 - [ ] Centrally managed workload container catalog — admin controls all available runtime images
 - [ ] Clients select from pre-approved containers only (e.g., "NGINX PHP 8.4")
 - [ ] Admin can publish new container versions, deprecate old ones, and migrate clients
-- [ ] **Hybrid workload model**: shared NGINX+PHP-FPM pods (default) for Starter; dedicated pods for Business/Premium. Apache+PHP-FPM available per domain.
-- [ ] Minimize server resource usage and infrastructure costs through shared services and density optimization
+- [ ] **Dedicated pod for every client** — full namespace isolation regardless of plan. NGINX+PHP-FPM default, Apache+PHP-FPM available per domain. See ADR-024.
+- [ ] **Database as premium add-on** — not included in base plans; provisioned on demand as a dedicated MariaDB StatefulSet per client (ADR-024)
+- [ ] Minimize server resource usage and infrastructure costs through resource overcommit, scale-to-zero, and image layer sharing
 - [ ] **All HA features optional** — start with minimal single-instance deployment, enable HA incrementally
 - [ ] Provide a self-service control panel comparable to Plesk functionality
 - [ ] Automated SSL/TLS certificate provisioning via Let's Encrypt
@@ -216,23 +217,19 @@ Instead of allowing clients to run arbitrary containers or build custom images, 
 provides a **curated catalog of workload containers**. Each container is a pre-built,
 hardened, tested runtime image maintained by the platform admin.
 
-**Two deployment modes exist:**
+**Deployment model (ADR-024):**
 
-| Mode              | How It Works                                          | Plans         |
-| ----------------- | ----------------------------------------------------- | ------------- |
-| **Shared pods**   | Multiple Starter clients share a pool of NGINX+PHP-FPM pods (default) or Apache+PHP-FPM pods (per-domain option). NGINX server block / Apache VirtualHost config routes requests to each client's document root on their PV. | Starter |
-| **Dedicated pods**| Client gets their own pod running a catalog image. Full resource isolation. | Business, Premium, Custom |
+Every client — regardless of plan — gets a **dedicated pod** in their own `client-{id}` namespace running a catalog image with full Kubernetes-native isolation (ResourceQuota, NetworkPolicy, RBAC).
 
-> The default experience for most clients is **shared NGINX+PHP-FPM** — this mirrors
-> traditional shared hosting and is the most resource-efficient model. Apache+PHP-FPM
-> is available as a per-domain option for clients who need `.htaccess` support. Clients on
-> Business/Premium plans get dedicated pods for better performance and isolation.
+> NGINX+PHP-FPM is the default web server (ADR-023). Apache+PHP-FPM is available as
+> a per-domain option for clients who need `.htaccess` support. Plan differentiation
+> is based on resource limits and features, not isolation model.
 
 **Benefits:**
-- **Security**: Every image is scanned, hardened, and patched centrally
+- **Security**: Every image is scanned, hardened, and patched centrally; full namespace isolation for every client
 - **Consistency**: All clients on the same runtime get identical environments
 - **Efficient updates**: Upgrade PHP 8.3 -> 8.4 for all clients in one operation
-- **Extreme density**: Shared pods serve 20-50 Starter clients per pod (like traditional shared hosting)
+- **Simplicity**: Single provisioning path for all plans — no shared pod management
 - **Lower resource usage**: Shared base layers across clients (Docker layer caching on nodes)
 - **Simplified support**: Known environments reduce debugging complexity
 - **No build infrastructure needed**: Eliminates per-client CI/CD pipelines
@@ -261,39 +258,36 @@ version combination.
 | `static-nginx`           | nginx:alpine            | Nginx      | Static only | Active      |
 | `static-caddy`           | caddy:alpine            | Caddy      | Static only | Active      |
 
-### 2.3 Shared Pod Architecture (Starter Plan)
+### 2.3 Dedicated Pod Provisioning (All Plans)
 
-Shared pods host multiple Starter-plan clients within a single NGINX+PHP-FPM container (default) or Apache+PHP-FPM container (per-domain option),
-similar to how traditional shared hosting works.
+> **Note (ADR-024):** The previous shared pod architecture has been superseded. All clients
+> now get dedicated pods. See `SHARED_POD_IMPLEMENTATION.md` for historical reference only.
 
-**Shared pod pool design:**
-
-| Parameter                    | Value                                         |
-| ---------------------------- | --------------------------------------------- |
-| Clients per shared pod       | 20-50 (configurable, based on resource usage)  |
-| Shared pod replicas          | 2-4 pods per pool (for load distribution)      |
-| Web server config injection  | ConfigMap mounted into pod, reloaded on change (NGINX reload / Apache graceful restart) |
-| Client file isolation        | Each client's PV mounted at unique subpath     |
-| PHP process isolation        | PHP-FPM pools per client with `open_basedir` restriction |
-| Resource limits (per pod)    | 2 vCPU / 4Gi RAM (serves 20-50 clients)        |
-| Scale trigger                | New pool pod added when existing pods reach client capacity |
+Every client gets a dedicated pod in their own `client-{id}` namespace:
 
 **How it works:**
-1. Management API assigns new Starter client to a shared pod pool with capacity
-2. Client's PV mounted into the shared pod at `/storage/customers/{id}/` (per ADR-016)
-3. NGINX server block (or Apache VirtualHost) config generated and added to ConfigMap
-4. Web server gracefully reloaded to pick up new config
-5. Ingress rule created pointing client's domain to the shared pod pool service
-6. PHP-FPM pool created for client with `open_basedir` enforced to their directory only
+1. Management API creates `client-{id}` namespace with ResourceQuota, NetworkPolicy, and RBAC
+2. Dedicated pod provisioned with selected catalog image (default: `nginx-php84`)
+3. Client's PVC created and mounted at `/var/www/html`
+4. Ingress rule created pointing client's domain to the client's pod Service
+5. Secrets created for SFTP credentials (and DB credentials if database add-on is enabled)
+6. If database add-on is enabled: dedicated MariaDB StatefulSet provisioned in the same namespace
 
-**Plan upgrade (admin-managed):**
-- Admin initiates plan change via Management API (customer cannot self-service upgrade)
-- Management API provisions a dedicated pod in client namespace with selected catalog image
-- Client's PV remounted from shared pod to dedicated pod
-- VirtualHost removed from shared pod ConfigMap
-- Ingress updated to point to new dedicated pod
-- Zero downtime — switch happens via ingress routing
-- Admin updates customer subscription in external billing platform and syncs to platform
+**Plan upgrades:**
+- Plan changes are **ResourceQuota edits** — no pod migration required
+- Admin updates resource limits (CPU, memory, storage) via Management API
+- Pod restarts with new limits; PVC and Ingress remain unchanged
+- Database add-on can be enabled/disabled at any time (provisions or removes MariaDB StatefulSet)
+
+**Resource defaults by plan:**
+
+| Parameter | Starter | Business | Premium |
+| --- | --- | --- | --- |
+| CPU Request / Limit | 50m / 500m | 100m / 1000m | 200m / 2000m |
+| Memory Request / Limit | 64Mi / 256Mi | 256Mi / 1Gi | 512Mi / 4Gi |
+| Storage | 5Gi | 20Gi | 50Gi |
+| Database | Add-on ($) | Add-on ($) | Included |
+| Redis | None | Add-on ($) | Dedicated pod |
 
 ### 2.4 Image Build & Maintenance
 

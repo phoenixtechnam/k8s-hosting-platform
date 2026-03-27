@@ -34,9 +34,9 @@ The following resource budget validates that all platform services fit on a sing
 | **Calico** | 150m | 128Mi | 300m | 256Mi | CNI + NetworkPolicy enforcement |
 | **cert-manager** | 50m | 64Mi | 200m | 128Mi | |
 | **Sealed Secrets** | 50m | 32Mi | 100m | 64Mi | |
-| **MariaDB (shared)** | 250m | 512Mi | 1000m | 2Gi | Serves all clients; right-sized for Phase 1 |
+| **MariaDB (platform only)** | 100m | 256Mi | 500m | 1Gi | Platform admin data only; client DBs are per-client StatefulSets (add-on). See ADR-024. |
 | **PostgreSQL (platform)** | 100m | 128Mi | 500m | 512Mi | Platform metadata only |
-| **Redis** | 50m | 64Mi | 200m | 256Mi | Caching + session + fail2ban bans |
+| **Redis (platform)** | 50m | 64Mi | 200m | 256Mi | Platform cache + fail2ban bans only. Client Redis is per-client add-on. |
 | **Management API** | 100m | 128Mi | 500m | 512Mi | Node.js Fastify |
 | **Admin Panel** | 50m | 64Mi | 200m | 128Mi | Static React SPA |
 | **Client Panel** | 50m | 64Mi | 200m | 128Mi | Static React SPA |
@@ -45,25 +45,25 @@ The following resource budget validates that all platform services fit on a sing
 | **Grafana** | 50m | 64Mi | 200m | 256Mi | |
 | **Docker-Mailserver** | 200m | 256Mi | 500m | 1Gi | Postfix + Dovecot + Rspamd |
 | **Roundcube** | 50m | 64Mi | 200m | 128Mi | |
-| **Shared Web Pod (1 replica)** | 200m | 256Mi | 1000m | 2Gi | NGINX + PHP-FPM, 10-20 clients initially |
+| **Client web pods (10 initial)** | 500m | 640Mi | 5000m | 2560Mi | 10 dedicated pods × 50m/64Mi request each (ADR-024) |
 | **SFTP Gateway** | 50m | 64Mi | 200m | 256Mi | |
 | **Flux v2** | 50m | 64Mi | 200m | 128Mi | GitOps controller |
-| **TOTALS** | **2300m** | **2848Mi** | — | — | |
+| **TOTALS** | **2450m** | **3076Mi** | — | — | With 10 initial client pods |
 | **Node capacity** | **4000m** | **8192Mi** | — | — | |
-| **Remaining headroom** | **1700m** | **5344Mi** | — | — | For bursting + additional client pods |
+| **Remaining headroom** | **1550m** | **5116Mi** | — | — | For additional client pods (~50m/64Mi each) + DB add-ons (~100m/150Mi each) |
 
 **Key Phase 1 decisions:**
 - **No Harbor** — Use GitHub Container Registry or pre-built images imported via `ctr image import`. Harbor deferred to Phase 2 (saves ~1Gi RAM, 500m CPU).
 - **No Longhorn** — Use k3s built-in `local-path` provisioner. Longhorn replication is pointless on single node (saves ~512Mi RAM, 250m CPU).
-- **1 shared pod replica** (not 2) — HA is irrelevant on single node. Scale to 2 replicas when adding second worker.
+- **Dedicated pods for all clients** (ADR-024) — no shared pod management. Each client gets ~50m CPU / 64Mi memory request. Scale-to-zero via KEDA for idle sites.
 - **Prometheus 7-day retention** — Reduced from 15 days. Saves disk space on 80GB NVMe.
 - **Grafana optional** — Can be omitted initially and accessed via port-forward when needed.
 
 **Phase 2 additions** (when expanding to 2+ nodes):
 - Longhorn (replicated storage)
 - Harbor (container registry)
-- Second shared pod replica
-- Scaled MariaDB resources
+- Additional worker nodes for client pod capacity
+- Scaled platform MariaDB resources
 - Tempo (distributed tracing)
 
 ### HA Upgrade Path (Optional)
@@ -86,20 +86,19 @@ Enable incrementally as the business grows or cost justifies investment. For ste
 
 | Namespace | Purpose | Who Lives Here |
 | --- | --- | --- |
-| `platform` | Management API/UI, catalog service, DNS API client, Git deploy, shared DB/Redis | Core platform services |
-| `hosting` | Shared web pods (NGINX+PHP-FPM / Apache+PHP-FPM), shared storage PV | **Starter clients** — they do NOT get individual namespaces |
+| `platform` | Management API/UI, catalog service, DNS API client, Git deploy, platform DB/Redis | Core platform services |
 | `ingress` | Ingress controller, WAF, fail2ban controller | Traffic routing |
 | `auth` | OIDC token validation proxy (oauth2-proxy or similar) | Relays to external OIDC provider per ADR-022 |
 | `monitoring` | Prometheus, Grafana, Loki, Alertmanager | Observability stack |
 | `mail` | Docker-Mailserver, Roundcube webmail, app password service | Email stack |
 | `backup` | Velero, backup CronJobs | Backup operations |
 | `sftp` | SFTP gateway service | File access |
-| `client-{id}` | One namespace per **Business/Premium** client (auto-provisioned) | Dedicated pods, per-client PVCs, secrets, NetworkPolicies |
+| `client-{id}` | One namespace per client — **all plans** (auto-provisioned, ADR-024) | Dedicated pod, PVC, secrets, NetworkPolicies, optional MariaDB StatefulSet (DB add-on) |
 | `app-{appid}-{instance}` | Application instances from Application Catalog | Catalog apps (Nextcloud, Jitsi, etc.) |
 
-> **Starter clients do NOT get their own namespace.** Their PHP-FPM pools, PV subpaths, and ConfigMap entries live in the `hosting` namespace alongside the shared pod pools. Isolation is enforced at the application level (PHP-FPM chroot, open_basedir, POSIX permissions) and at the pod level (seccomp, AppArmor). Network-level isolation between Starter clients is not possible since they share a pod.
+> **Every client gets a `client-{id}` namespace** (ADR-024) with their own dedicated pod, PVC, secrets, and NetworkPolicies. This provides full Kubernetes-native isolation regardless of plan tier. The previous `hosting` shared namespace has been eliminated.
 >
-> **Business/Premium clients each get a `client-{id}` namespace** with their own dedicated pod, PVC, secrets, and NetworkPolicies. This provides full Kubernetes-native isolation.
+> Clients with the database add-on also have a MariaDB StatefulSet in their namespace (~100-150Mi RAM each).
 
 ## Networking Configuration
 
@@ -116,22 +115,22 @@ Enable incrementally as the business grows or cost justifies investment. For ste
 
 ## Cost Optimization Strategies
 
-### 1. Shared Everything for Starter Plan (Largest Cost Saver)
+### 1. Dedicated Pods with Resource Overcommit (ADR-024)
 
-The Starter plan shares **pods, databases, and cache** — Starter clients consume almost no dedicated resources:
+All clients get dedicated pods. Cost efficiency comes from low resource requests (Burstable QoS), scale-to-zero, and database-as-add-on:
 
-| Service | Dedicated Model | Shared Model (Starter) | Savings |
-| --- | --- | --- | --- |
-| **Web server** | 200 pods, 200 x 128Mi RAM | 2 shared Apache+PHP pods per pool (max 2 replicas per pool; add new pools at capacity) | ~97% fewer web pods |
-| **MariaDB** | 200 pods, 200 PVCs, ~100Gi RAM | 1 instance, per-client databases | ~99% fewer DB pods |
-| **PostgreSQL** | Separate pod per client | 1 instance, per-client databases | ~99% fewer DB pods |
-| **Redis** | Per-client pod | 1 instance, per-client key prefixes | ~99% fewer Redis pods |
+| Strategy | How It Saves |
+| --- | --- |
+| **Low CPU/memory requests** | Starter pods request only 50m CPU / 64Mi RAM — node can fit ~60 Starter pods per 4vCPU/8Gi worker |
+| **Scale-to-zero (KEDA)** | Idle dedicated pods scale to zero after configurable timeout, freeing resources |
+| **Database as add-on** | ~90% of clients don't use databases; no MariaDB overhead for them. DB clients get dedicated StatefulSet (~100-150Mi each) |
+| **No shared infrastructure overhead** | No ProxySQL, no shared Redis ACLs, no shared pod pool management |
 
-**At 200 Starter clients:**
-- **Shared model: ~10 pods** (2-4 shared web pods across pools + 1 MariaDB + 1 PG + 1 Redis + platform services)
-- **Dedicated model: ~600+ pods**
-
-Isolation is maintained at the VirtualHost/database/user level (separate document roots, separate DB credentials, separate databases within the shared instance). Business/Premium clients still get dedicated pods.
+**At 50 clients (45 without DB, 5 with DB add-on):**
+- **Web pods:** 50 × 50m/64Mi = 2.5vCPU / 3.2Gi requests
+- **DB add-ons:** 5 × 100m/150Mi = 0.5vCPU / 0.75Gi requests
+- **Platform services:** ~2vCPU / 3Gi
+- **Total:** ~5vCPU / 7Gi requests → fits on 2× CX31 nodes (4vCPU/8Gi, ~$10/month each)
 
 ### 2. Resource Overcommit & Density
 
@@ -142,39 +141,38 @@ Most web hosting clients use a fraction of their allocated resources most of the
 | **Low requests, higher limits** | Set CPU request to 50m, limit to 500m-2000m. Pods get burst capacity without reserving resources. |
 | **Memory request < limit** | Request 128Mi, limit 512Mi. Allows node-level overcommit. |
 | **QoS class: Burstable** | All client pods run as Burstable (not Guaranteed). Platform services run as Guaranteed. |
-| **Shared web pods for Starter** | Max 2 replicas per pool; each pool serves up to 50 clients. Scale by adding pools, not replicas. Higher replica counts multiply Longhorn PV mount overhead. |
-| **No resource waste on DB pods** | Shared DB eliminates hundreds of idle DB pods |
+| **Scale-to-zero (KEDA)** | Idle dedicated pods scale to zero after configurable timeout, reducing active pod count by 30-50% during off-peak. |
+| **Database as add-on** | Only ~10% of clients need databases. Per-client MariaDB StatefulSet (~100-150Mi) provisioned only when add-on is enabled. See ADR-024. |
 
 ### 3. Deployment Sizing Examples
 
-| Deployment Stage | Nodes | Starter Clients | Dedicated Clients | Total Pods | Est. Monthly Cost |
+| Deployment Stage | Nodes | Total Clients | DB Add-on Clients | Total Pods | Est. Monthly Cost |
 | --- | --- | --- | --- | --- | --- |
-| **Minimal (initial)** | 1 CP + 1 worker (4vCPU/8Gi) | Up to 50 | Up to 10 | ~25-35 | ~$30-60 |
-| **Small** | 1 CP + 2 workers (4vCPU/8Gi) | Up to 100 | Up to 30 | ~50-70 | ~$60-100 |
-| **Medium** | 1 CP + 2 workers (8vCPU/16Gi) | Up to 200 | Up to 50 | ~80-120 | ~$100-200 |
-| **HA-enabled** | 3 CP + 3 workers (8vCPU/16Gi) | 200+ | 100+ | ~150+ | ~$300-500 |
+| **Minimal (initial)** | 1 CP + 1 worker (4vCPU/8Gi) | Up to 50 | Up to 10 | ~65-75 | ~$30-60 |
+| **Small** | 1 CP + 2 workers (4vCPU/8Gi) | Up to 100 | Up to 20 | ~130-150 | ~$60-100 |
+| **Medium** | 1 CP + 2 workers (8vCPU/16Gi) | Up to 200 | Up to 40 | ~260-300 | ~$100-200 |
+| **HA-enabled** | 3 CP + 3 workers (8vCPU/16Gi) | 300+ | 50+ | ~400+ | ~$300-500 |
 
-**Recommendation:** Start with the **Minimal** deployment (1 control plane + 1 worker). A single 4 vCPU / 8Gi node can comfortably host:
-- 50 Starter clients (via shared pods)
-- 10 dedicated-pod clients
-- All platform services
+**Recommendation:** Start with the **Minimal** deployment (1 control plane + 1 worker). A single 4 vCPU / 8Gi worker node can comfortably host:
+- 50 dedicated client pods (50m/64Mi request each = 2.5vCPU/3.2Gi total)
+- 5-10 database add-on StatefulSets (~100m/150Mi each)
+- All platform services (~2vCPU/3Gi)
+- Scale-to-zero reduces active pod count during off-peak
 
 Scale by adding worker nodes. Enable HA only when business justifies the cost.
 
 ### 4. Scale-to-Zero for Inactive Dedicated Sites
 
-**Note:** Scale-to-zero only applies to **dedicated pod clients** (Business/Premium). Starter clients on shared pods already consume no dedicated resources when idle.
-
-Many dedicated-pod client sites receive little to no traffic for extended periods. Scale-to-zero eliminates resource consumption for idle sites.
+Since all clients now have dedicated pods (ADR-024), scale-to-zero is a key cost optimization strategy. Many client sites receive little to no traffic for extended periods — scale-to-zero eliminates resource consumption for idle sites.
 
 | Component | Implementation |
 | --- | --- |
-| **Applies to** | **Optional per plan and per application** (configurable by admin/client) |
+| **Applies to** | **All plans** — optional per client (configurable by admin/client) |
 | **Scale-to-zero tool** | **KEDA** (Kubernetes Event-Driven Autoscaling) with HTTP trigger |
 | **Idle threshold** | Configurable: 15-30 minutes of no HTTP requests (admin-set default) |
 | **Wake-up trigger** | Ingress controller routes request to activator; pod spins up in 2-5 seconds |
 | **Cold start latency** | First request after idle: ~2-5 seconds (acceptable for low-traffic sites) |
-| **Exclusions** | Premium plan clients can disable scale-to-zero if desired; Starter uses shared pods |
+| **Exclusions** | Premium plan clients can disable scale-to-zero if desired (always-on) |
 | **Savings estimate** | Reduces dedicated pod count during off-peak hours by 30-50% |
 | **Configuration** | Admin sets global scale-to-zero defaults; clients can opt-in/opt-out per application |
 
@@ -194,7 +192,7 @@ Because all clients use images from the same catalog:
 | **Loki over ELK** | 10x less memory than Elasticsearch |
 | **Prometheus with retention limits** | 15-day local retention; long-term to offsite backup server if needed |
 | **Alpine-based images** | 5-50MB vs. 200-800MB for Debian/Ubuntu-based |
-| **Single shared Redis** | 50Mi RAM vs. 200 x 64Mi = 12.5Gi for per-client |
+| **Redis as add-on only** | Platform Redis ~50Mi; per-client Redis only for Premium/add-on clients |
 
 ## Cost Estimation Framework
 
@@ -223,38 +221,32 @@ Because all clients use images from the same catalog:
 - Price out on Hetzner (primary), OVH, and Linode for cost comparison
 - **Target:** Keep initial deployment under $200/mo budget; scale HA only when business justifies it
 
-## Per-Client Resource Stack
+## Per-Client Resource Stack (ADR-024)
 
-Resources vary by hosting plan — Starter clients consume almost no per-namespace resources.
+All clients get the same resource stack structure. Plan differentiation is via resource limits and add-ons.
 
-### Starter Plan (Shared Pod)
-
-| Resource | Description |
-| --- | --- |
-| **PersistentVolumeClaim** | Site files (mounted into shared pod at `/storage/customers/{id}/`) |
-| **Ingress rules** | Per-domain routing (points to shared pod pool Service) |
-| **NetworkPolicy** | Default-deny + allow ingress controller |
-| **ConfigMap** | Client-specific PHP settings |
-| **Secret** | DB credentials, SFTP credentials (auto-generated) |
-
-Starter clients do **not** have their own pod — they are served by the shared Apache+PHP pod pool in the `platform` namespace. This means a Starter client consumes virtually zero CPU/memory in their own namespace.
-
-### Business / Premium / Custom Plan (Dedicated Pod)
+### All Plans (Dedicated Pod)
 
 | Resource | Description |
 | --- | --- |
-| **Web runtime pod** | Dedicated pod running a catalog container image (e.g., `apache-php84`) |
+| **Web runtime pod** | Dedicated pod running a catalog container image (e.g., `nginx-php84`) |
 | **PersistentVolumeClaim** | Site files mounted at `/var/www/html` |
 | **Ingress rules** | Per-domain routing with TLS certificates |
 | **ResourceQuota** | CPU, memory, storage limits per hosting plan |
-| **NetworkPolicy** | Default-deny + allow ingress controller + shared services |
+| **NetworkPolicy** | Default-deny + allow ingress controller + platform services |
 | **ServiceAccount** | Scoped to client namespace only |
 | **ConfigMap** | Client-specific config (PHP settings, vhost overrides) |
-| **Secret** | DB credentials, SFTP credentials (auto-generated) |
-| **Optional: Dedicated Redis** | Premium plan only (256Mi) |
-| **Optional: Dedicated DB** | Premium/Custom plan only |
+| **Secret** | SFTP credentials (auto-generated); DB credentials if add-on enabled |
+| **Optional: MariaDB StatefulSet** | Database add-on (~100m CPU, ~150Mi RAM). Included in Premium; paid add-on for Starter/Business. |
+| **Optional: Dedicated Redis** | Redis add-on (~50m CPU, ~64Mi RAM). Included in Premium; paid add-on for Business. |
 
-**Note:** Databases and Redis are **shared services** by default — not per-client pods. Dedicated instances are optional for Premium/Custom plans.
+**Resource requests by plan:**
+
+| Plan | CPU Request | Memory Request | Estimated pods per 4vCPU/8Gi worker |
+| --- | --- | --- | --- |
+| Starter | 50m | 64Mi | ~60 (web pod only) |
+| Business | 100m | 256Mi | ~30 (web pod only) |
+| Premium | 200m + 100m (DB) + 50m (Redis) | 512Mi + 150Mi + 64Mi | ~10 (full stack) |
 
 ## Related Documentation
 
