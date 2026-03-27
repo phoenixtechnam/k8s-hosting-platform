@@ -21,9 +21,10 @@ A **Kubernetes-based web hosting platform** that replaces Plesk with:
 **Budget:** < $200/month for initial cluster (50-100 clients)
 **Cluster:** Single-node k3s, expanding to HA as the business grows
 
-> **Note (ADR-022):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC) are **external services**
-> provided by a separate infrastructure project. This platform consumes their APIs and exposes
-> configuration in the admin panel. See `archived/` for outsourced documentation.
+> **Note (ADR-022, ADR-025):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC) are **external services**
+> provided by a separate infrastructure project. Workload catalog definitions (Dockerfiles, manifests)
+> live in **external GitHub repositories** synced via the workload repository integration (ADR-025).
+> This platform consumes their APIs and syncs their catalogs. See `archived/` for outsourced documentation.
 
 ---
 

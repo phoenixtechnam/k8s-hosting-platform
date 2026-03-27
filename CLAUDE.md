@@ -88,12 +88,14 @@ docker compose down      # Stop services
 
 ```
 packages/api-contracts/src/
-  shared.ts     # PaginationParams (limit max: 100), response envelopes
-  auth.ts       # Login, password change, profile update schemas
-  clients.ts    # Client CRUD schemas + response types
-  domains.ts    # Domain CRUD schemas + response types
-  databases.ts  # Database CRUD schemas + response types
-  index.ts      # Re-exports everything
+  shared.ts           # PaginationParams (limit max: 100), response envelopes
+  auth.ts             # Login, password change, profile update schemas
+  clients.ts          # Client CRUD schemas + response types
+  domains.ts          # Domain CRUD schemas + response types
+  databases.ts        # Database CRUD schemas + response types
+  workload-repos.ts   # Workload catalog repository management (ADR-025)
+  container-images.ts # Container image definitions synced from catalog repos
+  index.ts            # Re-exports everything
 ```
 
 **Rules:**
@@ -118,12 +120,13 @@ packages/api-contracts/src/
 - **Immutability:** Prefer new objects over mutation
 - **Test coverage target:** 80%+ (Phase 1: 70%+)
 
-## External Dependencies (ADR-022)
+## External Dependencies (ADR-022, ADR-025)
 
-These services are managed by a **separate infrastructure project** — this platform consumes their APIs:
-- **DNS:** PowerDNS REST API
-- **VPN Mesh:** NetBird
-- **IAM/Auth:** Dex OIDC provider
+These services are managed by **separate projects** — this platform consumes their APIs:
+- **DNS:** PowerDNS REST API (ADR-022)
+- **VPN Mesh:** NetBird (ADR-022)
+- **IAM/Auth:** Dex OIDC provider (ADR-022)
+- **Workload Catalog:** External GitHub repos with `catalog.json` + `manifest.json` (ADR-025) — default: `https://github.com/phoenixtechnam/hosting-platform-workload-catalog`
 
 ## Key Documentation
 

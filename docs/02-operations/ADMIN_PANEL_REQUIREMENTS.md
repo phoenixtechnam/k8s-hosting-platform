@@ -422,9 +422,38 @@ New disk capacity visible in Capacity Dashboard within ~60 seconds.
 
 ## Workload Catalog Management
 
+### W.0 Workload Catalog Repository Management (ADR-025)
+
+**Requirement:** Manage external GitHub repositories that supply workload container definitions. Container images are synced from these repos into the platform — they are not built or uploaded directly.
+
+See also: `WORKLOAD_DEPLOYMENT.md` (catalog repo structure), `DATABASE_SCHEMA.md` (`workload_repositories`, `container_images` tables), ADR-025.
+
+**Features:**
+
+| Feature | Specification | Phase |
+|---------|---|---|
+| **List Repos** | Show all registered catalog repos with sync status, last sync time, error state | 1 |
+| **Add Repo** | Register a new GitHub catalog repo (URL, branch, auth token, sync interval) | 1 |
+| **Remove Repo** | Unregister a repo and delete its synced container images | 1 |
+| **Manual Sync** | Trigger on-demand sync of a repo's `catalog.json` + manifests | 1 |
+| **Sync Status** | View sync state (`active` / `syncing` / `error`), last error message | 1 |
+| **Restore Default** | Re-register the official platform catalog repo | 1 |
+| **Edit Repo** | Update branch, auth token, or sync interval | 1 |
+| **Sync History** | View past sync timestamps and outcomes | 2 |
+
+**API Endpoints (implemented):**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/admin/workload-repos` | List all registered workload catalog repositories (excludes auth tokens) |
+| `POST` | `/api/v1/admin/workload-repos` | Register a new catalog repo (`name`, `url`, `branch`, `auth_token`, `sync_interval_minutes`); validates repo access and `catalog.json` presence |
+| `DELETE` | `/api/v1/admin/workload-repos/{id}` | Remove a catalog repo and its synced container images |
+| `POST` | `/api/v1/admin/workload-repos/{id}/sync` | Trigger manual sync — fetches `catalog.json`, then each workload's `manifest.json`, upserts `container_images` |
+| `POST` | `/api/v1/admin/workload-repos/restore-default` | Restore the official default catalog repo (`https://github.com/phoenixtechnam/hosting-platform-workload-catalog`) |
+
 ### W.1 Container Image Management
 
-**Requirement:** Manage Kubernetes workload container images (Apache+PHP, Node, Python, Ruby, Java, .NET, static).
+**Requirement:** Manage workload container images synced from catalog repositories (Apache+PHP, Node, Python, Ruby, Java, .NET, static). Images are sourced from external workload catalog repos (see W.0); this section covers viewing, enabling/disabling, and deprecating images after sync.
 
 **Dashboard:**
 
@@ -432,9 +461,8 @@ New disk capacity visible in Capacity Dashboard within ~60 seconds.
 
 | Feature | Specification | Phase |
 |---------|---|---|
-| **List All Images** | Show all workload types, status, usage | 1 |
-| **Image Details** | Base image, extensions, dependencies | 1 |
-| **Build/Publish** | Upload new image version | 2 |
+| **List All Images** | Show all workload types, status, usage, source repo | 1 |
+| **Image Details** | Base image, extensions, dependencies, source repo, manifest URL | 1 |
 | **Enable/Disable** | Control which workloads are available | 1 |
 | **Deprecate** | Mark old versions as deprecated (no new deployments) | 1 |
 | **Force Migration** | Migrate all clients from one version to another | 2 |
@@ -446,8 +474,8 @@ New disk capacity visible in Capacity Dashboard within ~60 seconds.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/admin/catalog/images` | List all catalog images (filter: `runtime`, `status`, `deprecated`; includes active client count per image) |
-| `GET` | `/api/v1/admin/catalog/images/{image_id}` | Image detail: base image tag, runtime version, PHP/Node/Python version, included extensions, Harbor digest, Trivy scan status, clients using this image |
+| `GET` | `/api/v1/admin/catalog/images` | List all catalog images (filter: `runtime`, `status`, `deprecated`; includes active client count per image and `sourceRepoId`) |
+| `GET` | `/api/v1/admin/catalog/images/{image_id}` | Image detail: base image tag, runtime version, included extensions, registry URL, manifest URL, source repo, Trivy scan status, clients using this image |
 | `PATCH` | `/api/v1/admin/catalog/images/{image_id}` | Update image metadata: `enabled` (true/false), `deprecated` (true/false), `display_name`, `description` |
 | `GET` | `/api/v1/admin/catalog/images/{image_id}/clients` | List all clients currently using this image (paginated; for impact assessment before deprecation) |
 | `GET` | `/api/v1/admin/catalog/images/{image_id}/scan` | Get latest Trivy vulnerability scan report for this image (severity counts, CVE list) |

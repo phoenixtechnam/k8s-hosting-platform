@@ -251,19 +251,45 @@ spec:
 │ created_at           │
 └──────────────────────┘
 
-┌──────────────────────┐
-│ container_images     │
-│                      │
-│ id (PK)              │
-│ code (UQ)            │ ← 'php-8.1', 'nodejs-18'
-│ name                 │
-│ description          │
-│ registry_url         │
-│ digest               │
-│ supported_versions   │ ← JSON array
-│ status               │ ← 'active', 'deprecated'
-│ created_at           │
-└──────────────────────┘
+┌──────────────────────────┐
+│ workload_repositories    │
+│                          │
+│ id (PK)                  │
+│ name                     │
+│ url (UQ)                 │ ← GitHub repo URL
+│ branch                   │ ← default 'main'
+│ auth_token               │ ← nullable, for private repos
+│ sync_interval_minutes    │ ← default 60
+│ last_synced_at           │
+│ status                   │ ← 'active', 'syncing', 'error'
+│ last_error               │
+│ created_at               │
+│ updated_at               │
+└──────────┬───────────────┘
+           │ 1:N
+           ▼
+┌──────────────────────────┐
+│ container_images         │
+│                          │
+│ id (PK)                  │
+│ code                     │ ← 'apache-php84', 'node22'
+│ name                     │
+│ image_type               │ ← 'runtime', 'database', 'service'
+│ registry_url             │
+│ digest                   │
+│ supported_versions       │ ← JSON array
+│ source_repo_id (FK)      │ → workload_repositories.id
+│ manifest_url             │ ← raw GitHub manifest URL
+│ has_dockerfile           │
+│ min_plan                 │
+│ resource_cpu             │
+│ resource_memory          │
+│ env_vars                 │ ← JSON
+│ tags                     │ ← JSON array
+│ status                   │ ← 'active', 'deprecated'
+│ created_at               │
+│ UQ(code, source_repo_id) │
+└──────────────────────────┘
 
 ┌──────────────────────┐
 │ application_catalog  │
@@ -601,27 +627,56 @@ CREATE TABLE hosting_plans (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================
--- CONTAINER IMAGES & APPLICATION CATALOG
+-- WORKLOAD REPOSITORIES, CONTAINER IMAGES & APPLICATION CATALOG
 -- ============================================================================
 
-CREATE TABLE container_images (
-  id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-  code VARCHAR(100) NOT NULL UNIQUE COMMENT 'php-8.1, nodejs-18',
+-- Workload catalog repositories (ADR-025)
+-- External GitHub repos that supply workload container definitions.
+-- The platform syncs catalog.json + per-workload manifest.json from these repos
+-- and upserts the results into container_images.
+CREATE TABLE workload_repositories (
+  id VARCHAR(36) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  description TEXT,
-  image_type ENUM('runtime', 'database', 'service') DEFAULT 'runtime',
-  registry_url VARCHAR(500) NOT NULL,
-  digest VARCHAR(255),
-  supported_versions JSON COMMENT 'Array of version strings',
-  environment_variables JSON COMMENT 'Predefined env vars',
-  ports_config JSON COMMENT 'Exposed ports configuration',
-  status ENUM('active', 'deprecated', 'hidden') DEFAULT 'active',
+  url VARCHAR(500) NOT NULL COMMENT 'GitHub repo URL (https://github.com/owner/repo)',
+  branch VARCHAR(100) NOT NULL DEFAULT 'main',
+  auth_token VARCHAR(500) COMMENT 'GitHub token for private repos (nullable)',
+  sync_interval_minutes INT NOT NULL DEFAULT 60,
+  last_synced_at TIMESTAMP NULL,
+  status ENUM('active', 'error', 'syncing') NOT NULL DEFAULT 'active',
+  last_error TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  
-  UNIQUE KEY uk_code (code),
+
+  UNIQUE KEY uk_url (url)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Container images synced from workload catalog repositories.
+-- Each image is linked to its source repo via source_repo_id FK.
+-- Unique constraint (code, source_repo_id) allows the same workload code
+-- from different repos without collision.
+CREATE TABLE container_images (
+  id VARCHAR(36) PRIMARY KEY,
+  code VARCHAR(50) NOT NULL COMMENT 'apache-php84, node22, wordpress-php84',
+  name VARCHAR(255) NOT NULL,
+  image_type VARCHAR(50) NOT NULL DEFAULT 'runtime' COMMENT 'runtime, database, service',
+  registry_url VARCHAR(500) COMMENT 'Container registry URL (nullable if repo supplies Dockerfile)',
+  digest VARCHAR(255),
+  supported_versions JSON COMMENT 'Array of version strings',
+  status ENUM('active', 'deprecated') NOT NULL DEFAULT 'active',
+  source_repo_id VARCHAR(36) COMMENT 'FK to workload_repositories — which repo this image was synced from',
+  manifest_url VARCHAR(500) COMMENT 'Raw GitHub URL of the manifest.json',
+  has_dockerfile INT NOT NULL DEFAULT 0,
+  min_plan VARCHAR(50) COMMENT 'Minimum hosting plan required',
+  resource_cpu VARCHAR(20) COMMENT 'Default CPU request from manifest',
+  resource_memory VARCHAR(20) COMMENT 'Default memory request from manifest',
+  env_vars JSON COMMENT 'Default environment variables from manifest',
+  tags JSON COMMENT 'Tags for filtering/search',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_code_repo (code, source_repo_id),
   KEY idx_status (status),
-  KEY idx_image_type (image_type)
+  KEY idx_source_repo (source_repo_id),
+  FOREIGN KEY (source_repo_id) REFERENCES workload_repositories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE application_catalog (

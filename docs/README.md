@@ -12,8 +12,9 @@
 
 All documentation has been reorganized into topic-based directories. See **[QUICKSTART.md](QUICKSTART.md)** for role-based navigation paths.
 
-> **Note (ADR-022):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC) are **external services**
-> provided by a separate infrastructure project. This platform consumes their APIs.
+> **Note (ADR-022, ADR-025):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC) are **external services**
+> provided by a separate infrastructure project. Workload catalog definitions (Dockerfiles, manifests) live in
+> **external GitHub repositories** (ADR-025). This platform consumes their APIs and syncs their catalogs.
 
 | Directory | Contents | Files |
 |-----------|----------|-------|

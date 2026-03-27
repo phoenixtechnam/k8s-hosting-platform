@@ -2157,6 +2157,90 @@ Additionally, real-world client data shows that **~90% of clients (45/50) do not
 
 ---
 
+## ADR-025: Workload Catalog Sourced from External GitHub Repositories
+
+**Date:** 2026-03-27
+**Status:** ACCEPTED
+**Deciders:** Platform Owner
+
+### Context
+
+The original architecture assumed workload container images (Dockerfiles, build pipelines, catalog metadata) were maintained **inside this monorepo** under a `catalog-images/` directory, built by an internal CI pipeline, and pushed to Harbor by the platform admin (see PLATFORM_ARCHITECTURE.md Section 2.4, WORKLOAD_DEPLOYMENT.md "Image Build & Maintenance").
+
+This approach tightly couples workload definition maintenance to the platform release cycle:
+
+1. **Slow iteration** — adding or updating a workload image (e.g., PHP 8.5, a new Node.js LTS) requires a commit to the platform repo, a platform CI run, and a platform release
+2. **Single maintainer bottleneck** — only platform repo committers can add or update images
+3. **Monorepo bloat** — Dockerfiles, test fixtures, and image build tooling add noise to a codebase focused on API, frontend, and infrastructure
+4. **No third-party catalogs** — community or vendor-maintained workload sets cannot be consumed without forking
+
+### Decision
+
+**Workload definitions live in external GitHub repositories** ("workload catalog repos"). The platform syncs them on demand and stores the results in the `container_images` table.
+
+**Catalog repository structure:**
+
+```
+<repo-root>/
+├── catalog.json              # Index: array of workload entries or { workloads: [...] }
+├── apache-php84/
+│   └── manifest.json         # Per-workload manifest (name, code, image, type, resources, env_vars, tags)
+├── nginx-php84/
+│   └── manifest.json
+├── node22/
+│   └── manifest.json
+└── ...
+```
+
+**Platform behavior:**
+
+1. Admins register workload catalog repos via `POST /api/v1/admin/workload-repos` (GitHub URL, branch, optional auth token, sync interval)
+2. The platform fetches `catalog.json` from the repo's raw GitHub URL, then fetches each workload's `manifest.json`
+3. Container images are upserted into the `container_images` table with a `source_repo_id` FK back to `workload_repositories`
+4. Unique constraint `(code, source_repo_id)` allows the same workload code from different repos without collision
+5. An official default catalog (`https://github.com/phoenixtechnam/hosting-platform-workload-catalog`) is pre-registered and can be restored via `POST /api/v1/admin/workload-repos/restore-default`
+6. Admins can trigger manual sync via `POST /api/v1/admin/workload-repos/:id/sync`; automatic sync runs on the configured interval
+
+**Database tables:**
+
+- `workload_repositories` — stores registered repos (URL, branch, auth token, sync interval, sync status, last error)
+- `container_images` — stores synced workload definitions (code, name, image type, registry URL, manifest URL, resources, env vars, tags); FK `source_repo_id` → `workload_repositories.id`
+
+### Rationale
+
+1. **Decoupled release cycles** — workload image updates (new PHP version, security patch) ship independently of platform releases
+2. **Multiple maintainers** — different teams or vendors can maintain their own catalog repos; the platform admin curates which repos to trust
+3. **Community catalogs** — third-party or open-source workload sets can be consumed by registering their repo URL
+4. **Clean monorepo** — the platform repo focuses on API, frontend, infrastructure, and k8s manifests; no Dockerfiles or image build tooling
+5. **Proven pattern** — similar to Helm chart repositories, Homebrew taps, and VS Code extension registries
+
+### Consequences
+
+**Positive:**
+- Platform repo stays focused; workload definitions evolve independently
+- Adding a new workload type is a PR to the catalog repo, not the platform repo
+- Multiple catalog repos can coexist (e.g., official + custom client-specific)
+- Sync status and errors are visible in the admin panel
+
+**Negative:**
+- External dependency on GitHub raw content API for sync (mitigated by caching synced data in DB)
+- Auth token management required for private repos
+- Catalog format (`catalog.json` + `manifest.json`) is a custom convention that must be documented
+- Sync failures are not immediately visible to clients (only to admins)
+
+**Neutral:**
+- The `catalog-images/` directory referenced in PHASE_1_ROADMAP.md is superseded — Dockerfiles live in the external catalog repo
+- Image build and push to registry still happens in the catalog repo's own CI, not in the platform CI
+- The admin panel container lifecycle management (enable/disable/deprecate/force-migrate) remains unchanged — it operates on `container_images` rows regardless of source
+
+### Related ADRs
+
+- **ADR-022:** Architectural Separation — established the pattern of consuming external services via API; this ADR extends the same pattern to workload definitions
+- **ADR-023:** NGINX Default, Apache Optional — catalog repos include both `nginx-php*` and `apache-php*` workload manifests
+- **ADR-024:** Dedicated Workloads Only — all clients get dedicated pods running images sourced from catalog repos
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/

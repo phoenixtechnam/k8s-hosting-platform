@@ -124,34 +124,69 @@ Plan upgrades are ResourceQuota edits — no pod migration required:
 3. Pod resource limits adjusted if needed (triggers rolling restart)
 4. No data migration, no namespace change, no downtime
 
-## Image Build & Maintenance
+## Workload Catalog Repositories (ADR-025)
 
-### Build Pipeline
+Workload definitions (Dockerfiles, manifests, metadata) are maintained in **external GitHub repositories**, not in this monorepo. The platform syncs them into the `container_images` table via the workload repository integration.
 
-Platform admin builds and maintains all catalog images in a central CI pipeline:
+### Catalog Repository Structure
 
-1. Admin updates Dockerfile in platform Git repo
-2. CI builds image, runs tests (smoke test with sample app)
-3. Trivy scans for vulnerabilities
-4. Image pushed to Harbor registry with tag: `catalog/<id>:<version>-<date>`
-5. Admin enables new image in catalog via Management API
-6. Old image marked as deprecated (existing clients keep running until migrated)
+Each catalog repo contains a `catalog.json` index and per-workload `manifest.json` files:
+
+```
+<repo-root>/
+├── catalog.json              # Index: array of entries or { workloads: ["apache-php84", ...] }
+├── apache-php84/
+│   └── manifest.json         # { name, code, type, image, supported_versions, resources, ... }
+├── nginx-php84/
+│   └── manifest.json
+└── ...
+```
+
+### Sync Flow
+
+1. Admin registers a catalog repo via `POST /api/v1/admin/workload-repos` (GitHub URL, branch, optional auth token)
+2. Platform fetches `catalog.json` → then each workload's `manifest.json` from raw GitHub URLs
+3. Container images upserted into `container_images` with `source_repo_id` FK to `workload_repositories`
+4. Unique constraint `(code, source_repo_id)` prevents collisions across repos
+5. Manual sync: `POST /api/v1/admin/workload-repos/:id/sync`; automatic sync on configured interval (default: 60 min)
+
+**Default catalog:** `https://github.com/phoenixtechnam/hosting-platform-workload-catalog`
+
+### Image Build Pipeline
+
+Image building happens in the **catalog repo's own CI** (not in this platform's CI):
+
+1. Catalog maintainer updates Dockerfile in the catalog repo
+2. Catalog repo CI builds, tests (smoke test), and scans (Trivy)
+3. Image pushed to registry; `manifest.json` updated with registry URL/tag
+4. Platform syncs updated manifest on next interval or manual trigger
 
 ### Security & Patching
 
-- Every image is scanned, hardened, and patched centrally
+- Every image is scanned, hardened, and patched by the catalog repo maintainer
 - All clients on the same runtime get identical environments
-- Upgrade PHP 8.3 → 8.4 for all clients in one operation
+- Upgrade PHP 8.3 → 8.4 for all clients in one operation (update manifest, sync, force-migrate)
 - Shared base layers across clients (Docker layer caching on nodes)
 - Minimal attack surface due to curated, well-tested images
 
-## Admin Container Lifecycle Management
+### Admin Container Lifecycle Management
 
-The admin panel provides full lifecycle control over the catalog:
+The admin panel provides full lifecycle control over catalog repos and images:
+
+**Repository management:**
 
 | Action | Description |
 | --- | --- |
-| **Add new container** | Publish a new runtime to the catalog (e.g., PHP 8.5 when released) |
+| **Add repo** | Register an external workload catalog repository |
+| **Remove repo** | Unregister a catalog repo and remove its synced images |
+| **Sync repo** | Trigger manual sync to fetch latest catalog |
+| **View sync status** | Monitor sync state (`active` / `syncing` / `error`) and last error |
+| **Restore default** | Re-register the official platform catalog repo |
+
+**Container image management:**
+
+| Action | Description |
+| --- | --- |
 | **Enable / Disable** | Control which containers are available for new client selection |
 | **Deprecate** | Mark a container as end-of-life; show warning to clients using it |
 | **Force migrate** | Rolling-update all clients on a deprecated container to a specified replacement |

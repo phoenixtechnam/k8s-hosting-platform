@@ -289,34 +289,68 @@ Every client gets a dedicated pod in their own `client-{id}` namespace:
 | Database | Add-on ($) | Add-on ($) | Included |
 | Redis | None | Add-on ($) | Dedicated pod |
 
-### 2.4 Image Build & Maintenance
+### 2.4 Workload Catalog Repositories (ADR-025)
 
-Platform admin builds and maintains all catalog images in a central CI pipeline.
+Workload definitions are **not maintained in this monorepo**. They live in **external GitHub repositories** ("workload catalog repos") and are synced into the platform on demand.
 
-**Each image includes:**
-- Runtime (PHP, Node, Python, etc.) at a pinned version
-- Web server (Apache, Nginx, Gunicorn, etc.)
-- Common extensions/modules pre-installed (e.g., PHP: mysqli, gd, curl, mbstring, opcache)
-- Security hardening (non-root user, minimal packages, no dev tools)
-- Health check endpoint (`/healthz` or TCP probe)
-- Log output to stdout/stderr (for Loki collection)
-- Volume mount point at `/var/www/html` (or equivalent) for client files
+**Each catalog repo contains:**
 
-**Image build pipeline:**
-1. Admin updates Dockerfile in platform Git repo
-2. CI builds image, runs tests (smoke test with sample app)
+```
+<repo-root>/
+├── catalog.json              # Index of available workloads
+├── apache-php84/
+│   └── manifest.json         # Per-workload manifest
+├── nginx-php84/
+│   └── manifest.json
+├── node22/
+│   └── manifest.json
+└── ...
+```
+
+**Each workload manifest defines:**
+- Runtime name, code, and image type
+- Registry URL (or null if the repo supplies a Dockerfile)
+- Supported versions
+- Minimum plan requirement
+- Default resource requests (CPU, memory)
+- Environment variables and tags
+
+**Sync flow:**
+1. Admin registers a catalog repo via `POST /api/v1/admin/workload-repos` (GitHub URL, branch, optional auth token, sync interval)
+2. Platform fetches `catalog.json` from the repo's raw GitHub URL
+3. For each entry, platform fetches `<workload>/manifest.json`
+4. Container images are upserted into the `container_images` table with `source_repo_id` FK
+5. Unique constraint `(code, source_repo_id)` prevents collisions across repos
+6. Admin can trigger manual sync via `POST /api/v1/admin/workload-repos/:id/sync`
+
+**Default catalog:** `https://github.com/phoenixtechnam/hosting-platform-workload-catalog` is pre-registered and can be restored via `POST /api/v1/admin/workload-repos/restore-default`.
+
+**Image build pipeline** runs in the catalog repo's own CI (not in this platform):
+1. Maintainer updates Dockerfile in the catalog repo
+2. Catalog repo CI builds image, runs tests (smoke test with sample app)
 3. Trivy scans for vulnerabilities
-4. Image pushed to Harbor registry with tag: `catalog/<id>:<version>-<date>`
-5. Admin enables new image in catalog via Management API
-6. Old image marked as deprecated (existing clients keep running until migrated)
+4. Image pushed to registry with tag referenced in `manifest.json`
+5. Platform syncs updated manifest on next sync interval (or manual trigger)
+6. Old image marked as deprecated in `container_images` (existing clients keep running until migrated)
 
 ### 2.5 Admin Container Lifecycle Management
 
-The admin panel provides full lifecycle control over the catalog:
+The admin panel provides full lifecycle control over catalog repos and container images:
+
+**Repository management:**
 
 | Action                    | Description                                           |
 | ------------------------- | ----------------------------------------------------- |
-| **Add new container**     | Publish a new runtime to the catalog (e.g., PHP 8.5 when released) |
+| **Add repo**              | Register an external workload catalog repository (GitHub URL, branch, auth token) |
+| **Remove repo**           | Unregister a catalog repo and remove its synced images |
+| **Sync repo**             | Trigger manual sync to fetch latest catalog from repo |
+| **View sync status**      | Monitor sync state (`active`, `syncing`, `error`) and last error |
+| **Restore default**       | Re-register the official platform catalog repo        |
+
+**Container image management:**
+
+| Action                    | Description                                           |
+| ------------------------- | ----------------------------------------------------- |
 | **Enable / Disable**      | Control which containers are available for new client selection |
 | **Deprecate**             | Mark a container as end-of-life; show warning to clients using it |
 | **Force migrate**         | Rolling-update all clients on a deprecated container to a specified replacement |

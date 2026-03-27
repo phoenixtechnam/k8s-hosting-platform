@@ -46,7 +46,7 @@ hosting-platform/
 │       └── production/
 ├── helm/                     # Helm charts for platform services
 ├── terraform/                # Hetzner VPS provisioning
-├── catalog-images/           # Dockerfiles for workload catalog images
+├── # catalog-images/ removed — workload Dockerfiles live in external catalog repos (ADR-025)
 └── scripts/                  # Utility shell scripts
 ```
 
