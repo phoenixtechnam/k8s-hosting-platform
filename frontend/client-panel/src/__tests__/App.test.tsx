@@ -1,8 +1,24 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Layout from '../components/layout/Layout';
+
+vi.mock('../hooks/use-auth', () => ({
+  useAuth: vi.fn(() => ({
+    user: { id: '1', email: 'a@b.com', fullName: 'Test', role: 'client' },
+    token: 't', isAuthenticated: true, isLoading: false, error: null,
+    login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
+  })),
+}));
+
+vi.mock('../hooks/use-dark-mode', () => ({
+  useDarkMode: vi.fn(() => ({ theme: 'system', isDark: false, setTheme: vi.fn(), cycle: vi.fn() })),
+}));
+
+vi.mock('../hooks/use-password', () => ({
+  useChangePassword: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}));
 import Placeholder from '../pages/Placeholder';
 import Dashboard from '../pages/Dashboard';
 import Login from '../pages/Login';

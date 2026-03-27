@@ -27,6 +27,10 @@ vi.mock('../hooks/use-password', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-dark-mode', () => ({
+  useDarkMode: vi.fn(() => ({ theme: 'system', isDark: false, setTheme: vi.fn(), cycle: vi.fn() })),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },

@@ -125,7 +125,9 @@ export const domains = mysqlTable('domains', {
   workloadId: varchar('workload_id', { length: 36 }),
   status: mysqlEnum('status', ['active', 'pending', 'suspended', 'deleted']).notNull().default('pending'),
   dnsMode: mysqlEnum('dns_mode', ['primary', 'cname', 'secondary']).notNull().default('cname'),
+  masterIp: varchar('master_ip', { length: 45 }),
   verifiedAt: timestamp('verified_at'),
+  lastVerifiedAt: timestamp('last_verified_at'),
   sslAutoRenew: int('ssl_auto_renew').notNull().default(1),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
@@ -182,6 +184,51 @@ export const databases = mysqlTable('databases', {
   uniqueIndex('databases_name_unique').on(table.name),
   index('databases_client_idx').on(table.clientId),
 ]);
+
+// ─── Notifications ───
+
+export const notifications = mysqlTable('notifications', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  type: mysqlEnum('type', ['info', 'warning', 'error', 'success']).notNull().default('info'),
+  title: varchar('title', { length: 255 }).notNull(),
+  message: text('message').notNull(),
+  resourceType: varchar('resource_type', { length: 50 }),
+  resourceId: varchar('resource_id', { length: 36 }),
+  isRead: int('is_read').notNull().default(0),
+  readAt: timestamp('read_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('notifications_user_idx').on(table.userId),
+  index('notifications_read_idx').on(table.isRead),
+  index('notifications_created_idx').on(table.createdAt),
+]);
+
+// ─── Backup Configurations ───
+
+export const backupConfigurations = mysqlTable('backup_configurations', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  storageType: mysqlEnum('storage_type', ['ssh', 's3']).notNull(),
+  sshHost: varchar('ssh_host', { length: 255 }),
+  sshPort: int('ssh_port').default(22),
+  sshUser: varchar('ssh_user', { length: 100 }),
+  sshKeyEncrypted: text('ssh_key_encrypted'),
+  sshPath: varchar('ssh_path', { length: 500 }),
+  s3Endpoint: varchar('s3_endpoint', { length: 500 }),
+  s3Bucket: varchar('s3_bucket', { length: 255 }),
+  s3Region: varchar('s3_region', { length: 50 }),
+  s3AccessKeyEncrypted: varchar('s3_access_key_encrypted', { length: 500 }),
+  s3SecretKeyEncrypted: varchar('s3_secret_key_encrypted', { length: 500 }),
+  s3Prefix: varchar('s3_prefix', { length: 255 }),
+  retentionDays: int('retention_days').notNull().default(30),
+  scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
+  enabled: int('enabled').notNull().default(1),
+  lastTestedAt: timestamp('last_tested_at'),
+  lastTestStatus: varchar('last_test_status', { length: 50 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
 
 // ─── Backup & Metrics Tables ───
 
@@ -454,3 +501,7 @@ export type SshKey = typeof sshKeys.$inferSelect;
 export type NewSshKey = typeof sshKeys.$inferInsert;
 export type BillingCycle = typeof subscriptionBillingCycles.$inferSelect;
 export type ResourceQuota = typeof resourceQuotas.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;
+export type NewNotification = typeof notifications.$inferInsert;
+export type BackupConfiguration = typeof backupConfigurations.$inferSelect;
+export type NewBackupConfiguration = typeof backupConfigurations.$inferInsert;

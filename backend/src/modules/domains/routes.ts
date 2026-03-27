@@ -1,7 +1,10 @@
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { domains } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
+import { verifyDomain, getPlatformConfig } from './verification.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -80,5 +83,25 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
     await service.deleteDomain(app.db, clientId, domainId);
     reply.status(204).send();
+  });
+
+  // POST /api/v1/clients/:clientId/domains/:domainId/verify
+  app.post('/clients/:clientId/domains/:domainId/verify', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const domain = await service.getDomainById(app.db, clientId, domainId);
+
+    const platformConfig = getPlatformConfig();
+    const dnsMode = domain.dnsMode as 'primary' | 'cname' | 'secondary';
+    const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
+
+    // Update verification timestamps
+    const now = new Date();
+    const updateValues: Record<string, unknown> = { lastVerifiedAt: now };
+    if (result.verified && !domain.verifiedAt) {
+      updateValues.verifiedAt = now;
+    }
+    await app.db.update(domains).set(updateValues).where(eq(domains.id, domainId));
+
+    return success({ ...result, domainId, domainName: domain.domainName });
   });
 }

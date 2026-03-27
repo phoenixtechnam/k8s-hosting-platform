@@ -1,17 +1,33 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Activity } from 'lucide-react';
-import { useNotifications } from '@/hooks/use-notifications';
+import { Bell, Info, AlertTriangle, XCircle, CheckCircle, Check } from 'lucide-react';
+import { useNotifications, useUnreadCount, useMarkNotificationsRead } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format-relative-time';
+
+const typeIcons = {
+  info: Info,
+  warning: AlertTriangle,
+  error: XCircle,
+  success: CheckCircle,
+} as const;
+
+const typeColors = {
+  info: 'text-blue-400',
+  warning: 'text-amber-400',
+  error: 'text-red-400',
+  success: 'text-green-400',
+} as const;
 
 export default function NotificationDropdown() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const { data, isLoading } = useNotifications(10);
+  const { data: unreadData } = useUnreadCount();
+  const markRead = useMarkNotificationsRead();
   const navigate = useNavigate();
 
   const notifications = data?.data ?? [];
-  const count = notifications.length;
+  const unreadCount = unreadData?.data?.count ?? 0;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -25,68 +41,92 @@ export default function NotificationDropdown() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
 
+  const handleMarkAllRead = () => {
+    const unreadIds = notifications.filter((n) => !n.isRead).map((n) => n.id);
+    if (unreadIds.length > 0) {
+      markRead.mutate(unreadIds);
+    }
+  };
+
   return (
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="relative rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+        className="relative rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700"
         aria-label="Notifications"
         data-testid="notification-bell"
       >
         <Bell size={20} />
-        {count > 0 && (
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
+        {unreadCount > 0 && (
+          <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
         )}
       </button>
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50"
+          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50 dark:border-gray-700 dark:bg-gray-800"
           data-testid="notification-dropdown"
         >
-          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-            <h3 className="text-sm font-semibold text-gray-900">Notifications</h3>
-            {count > 0 && (
-              <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">
-                {count}
-              </span>
-            )}
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Notifications</h3>
+            <div className="flex items-center gap-2">
+              {unreadCount > 0 && (
+                <>
+                  <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-900 dark:text-brand-300">
+                    {unreadCount}
+                  </span>
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="rounded p-1 text-gray-400 hover:text-brand-500"
+                    title="Mark all as read"
+                    data-testid="mark-all-read"
+                  >
+                    <Check size={14} />
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="max-h-72 overflow-y-auto">
             {isLoading && (
               <div className="px-4 py-6 text-center text-sm text-gray-400">Loading...</div>
             )}
-            {!isLoading && count === 0 && (
-              <div className="px-4 py-6 text-center text-sm text-gray-400">No notifications</div>
+            {!isLoading && notifications.length === 0 && (
+              <div className="px-4 py-6 text-center text-sm text-gray-400 dark:text-gray-500">No notifications</div>
             )}
             {!isLoading &&
-              notifications.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50"
-                >
-                  <Activity size={16} className="mt-0.5 shrink-0 text-gray-400" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-gray-700">
-                      {item.actionType} {item.resourceType}
-                    </p>
-                    <p className="text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
+              notifications.map((item) => {
+                const Icon = typeIcons[item.type] ?? Info;
+                const color = typeColors[item.type] ?? 'text-gray-400';
+                return (
+                  <div
+                    key={item.id}
+                    className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-750 ${!item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''}`}
+                  >
+                    <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.title}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
+                      <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
           </div>
 
-          <div className="border-t border-gray-100 px-4 py-2">
+          <div className="border-t border-gray-100 px-4 py-2 dark:border-gray-700">
             <button
               onClick={() => {
                 setOpen(false);
                 navigate('/monitoring');
               }}
-              className="w-full rounded-lg py-1.5 text-center text-xs font-medium text-brand-600 hover:bg-brand-50"
+              className="w-full rounded-lg py-1.5 text-center text-xs font-medium text-brand-600 hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-900/20"
               data-testid="notification-view-all"
             >
-              View all
+              View all activity
             </button>
           </div>
         </div>

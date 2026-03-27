@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2 } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 
 export default function Settings() {
@@ -56,6 +56,38 @@ export default function Settings() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><CreditCard size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900">Hosting Plans</h2><p className="text-sm text-gray-500">Manage hosting plans and resource limits</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/backups" className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors" data-testid="backup-settings-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600"><HardDrive size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900">Backup Configuration</h2><p className="text-sm text-gray-500">Configure SSH and S3 backup storage targets</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/users" className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors" data-testid="admin-users-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 text-cyan-600"><Users size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900">Admin Users</h2><p className="text-sm text-gray-500">Manage admin, support, billing, and read-only users</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/monitoring/health" className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors" data-testid="health-settings-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-600"><Heart size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900">System Health</h2><p className="text-sm text-gray-500">Database, DNS, and OIDC provider health checks</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/export-import" className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors" data-testid="export-import-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-50 text-teal-600"><Download size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900">Export / Import</h2><p className="text-sm text-gray-500">Export or import platform data as JSON</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>

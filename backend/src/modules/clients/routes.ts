@@ -5,6 +5,7 @@ import { authenticate, requireRole, requireClientAccess } from '../../middleware
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
 import * as service from './service.js';
+import { bulkUpdateClientStatus } from './bulk.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -322,5 +323,25 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     await app.db.delete(users).where(eq(users.id, userId));
     reply.status(204).send();
+  });
+
+  // ─── Bulk Operations ────────────────────────────────────────────────────────
+
+  // POST /api/v1/admin/clients/bulk
+  app.post('/admin/clients/bulk', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const body = request.body as { client_ids?: string[]; action?: string };
+
+    if (!Array.isArray(body.client_ids) || !body.action) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'client_ids (array) and action are required', 400);
+    }
+
+    if (body.action !== 'suspend' && body.action !== 'reactivate') {
+      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'suspend' or 'reactivate'", 400, { field: 'action' });
+    }
+
+    const result = await bulkUpdateClientStatus(app.db, body.client_ids, body.action);
+    return success(result);
   });
 }

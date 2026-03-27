@@ -1,14 +1,17 @@
 import { Link } from 'react-router-dom';
-import { Users, Globe, Server, Database, Loader2 } from 'lucide-react';
+import { Users, Globe, Server, Database, Loader2, Activity } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useClients } from '@/hooks/use-clients';
 import { usePlatformStatus, useDashboardMetrics } from '@/hooks/use-dashboard';
+import { useAuditLogs } from '@/hooks/use-audit-logs';
 
 export default function Dashboard() {
   const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
   const { data: statusData } = usePlatformStatus();
   const { data: metricsData, isLoading: metricsLoading } = useDashboardMetrics();
+  const { data: auditData, isLoading: auditLoading } = useAuditLogs(10);
+  const recentActivity = auditData?.data ?? [];
 
   const clients = clientsData?.data ?? [];
   const metrics = metricsData?.data;
@@ -116,6 +119,40 @@ export default function Dashboard() {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+      {/* Recent Activity Feed */}
+      <div className="rounded-xl border border-gray-200 bg-white shadow-sm" data-testid="recent-activity">
+        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">Recent Activity</h2>
+          <Link to="/monitoring" className="text-sm font-medium text-brand-500 hover:text-brand-600">View all</Link>
+        </div>
+        {auditLoading && (
+          <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
+        )}
+        {!auditLoading && recentActivity.length === 0 && (
+          <div className="px-5 py-8 text-center text-sm text-gray-500">No recent activity.</div>
+        )}
+        {!auditLoading && recentActivity.length > 0 && (
+          <div className="divide-y divide-gray-100">
+            {recentActivity.map((entry) => (
+              <div key={entry.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50">
+                <Activity size={14} className="shrink-0 text-gray-400" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm text-gray-700">
+                    <span className="font-medium">{entry.httpMethod ?? entry.actionType}</span>{' '}
+                    {entry.resourceType}
+                  </span>
+                  {entry.httpPath && (
+                    <span className="ml-2 text-xs text-gray-400 font-mono truncate">{entry.httpPath}</span>
+                  )}
+                </div>
+                <span className="shrink-0 text-xs text-gray-400">
+                  {new Date(entry.createdAt).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

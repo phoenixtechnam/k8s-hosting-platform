@@ -95,4 +95,37 @@ export class MockDnsProvider implements DnsProviderAdapter {
     if (idx === -1) throw new Error(`Record '${recordId}' not found`);
     entry.records.splice(idx, 1);
   }
+
+  async createSlaveZone(name: string, _masterIp: string): Promise<DnsZone> {
+    const normalized = name.endsWith('.') ? name : `${name}.`;
+    if (this.zones.has(normalized)) {
+      return this.zones.get(normalized)!.zone;
+    }
+    const zone: DnsZone = { name: normalized, kind: 'Slave', serial: Date.now() };
+    // Store a SOA record to simulate AXFR sync
+    const soaRecord: DnsRecord = {
+      id: `mock-${this.nextRecordId++}`,
+      type: 'SOA',
+      name: normalized,
+      content: `ns1.${normalized} hostmaster.${normalized} ${Date.now()} 3600 900 604800 86400`,
+      ttl: 3600,
+      priority: null,
+    };
+    this.zones.set(normalized, { zone, records: [soaRecord] });
+    return zone;
+  }
+
+  async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
+    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const entry = this.zones.get(normalized);
+    if (!entry) return { synced: false };
+
+    const soaRecord = entry.records.find((r) => r.type === 'SOA');
+    if (!soaRecord) return { synced: false };
+
+    // Parse SOA serial from content (3rd space-separated field)
+    const parts = soaRecord.content.split(/\s+/);
+    const serial = parts.length >= 3 ? parseInt(parts[2], 10) : undefined;
+    return { synced: true, lastSoaSerial: serial };
+  }
 }

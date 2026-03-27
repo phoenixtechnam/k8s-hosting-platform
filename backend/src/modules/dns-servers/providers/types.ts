@@ -38,6 +38,10 @@ export interface DnsProviderAdapter {
   createRecord(zone: string, record: DnsRecordInput): Promise<DnsRecord>;
   updateRecord(zone: string, recordId: string, record: Partial<DnsRecordInput>): Promise<DnsRecord>;
   deleteRecord(zone: string, recordId: string): Promise<void>;
+
+  // Optional — secondary/slave DNS support
+  createSlaveZone?(name: string, masterIp: string): Promise<DnsZone>;
+  getZoneAxfrStatus?(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }>;
 }
 
 // ─── Provider Config Types ───────────────────────────────────────────────────

@@ -24,6 +24,14 @@ vi.mock('../hooks/use-auth', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-dark-mode', () => ({
+  useDarkMode: vi.fn(() => ({ theme: 'system', isDark: false, setTheme: vi.fn(), cycle: vi.fn() })),
+}));
+
+vi.mock('../hooks/use-password', () => ({
+  useChangePassword: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}));
+
 vi.mock('../hooks/use-domains', () => ({
   useDomains: vi.fn(() => ({
     data: undefined,

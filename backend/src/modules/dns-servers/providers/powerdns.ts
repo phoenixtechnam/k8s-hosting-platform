@@ -174,6 +174,42 @@ export class PowerDnsProvider implements DnsProviderAdapter {
       }),
     });
   }
+
+  async createSlaveZone(name: string, masterIp: string): Promise<DnsZone> {
+    const normalized = name.endsWith('.') ? name : `${name}.`;
+
+    // Check if zone already exists
+    const existing = await this.getZone(normalized);
+    if (existing) return existing;
+
+    const zone = await this.request<PdnsZone>('/zones', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: normalized,
+        kind: 'Slave',
+        masters: [masterIp],
+      }),
+    });
+    return toZone(zone);
+  }
+
+  async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
+    const normalized = name.endsWith('.') ? name : `${name}.`;
+    try {
+      const zoneData = await this.request<PdnsZoneDetail>(`/zones/${normalized}`);
+      const soaRrset = zoneData.rrsets?.find((rrset) => rrset.type === 'SOA');
+      if (!soaRrset || soaRrset.records.length === 0) {
+        return { synced: false };
+      }
+      // Parse serial from SOA content (format: "primary rname serial refresh retry expire minimum")
+      const soaContent = soaRrset.records[0].content;
+      const parts = soaContent.split(/\s+/);
+      const serial = parts.length >= 3 ? parseInt(parts[2], 10) : undefined;
+      return { synced: true, lastSoaSerial: serial };
+    } catch {
+      return { synced: false };
+    }
+  }
 }
 
 // ─── PowerDNS API Types ──────────────────────────────────────────────────────

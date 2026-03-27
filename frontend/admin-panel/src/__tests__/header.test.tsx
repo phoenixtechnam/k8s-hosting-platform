@@ -27,6 +27,17 @@ vi.mock('../hooks/use-password', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-notifications', () => ({
+  useNotifications: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useUnreadCount: vi.fn(() => ({ data: { data: { count: 0 } } })),
+  useMarkNotificationsRead: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useDeleteNotification: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}));
+
+vi.mock('../hooks/use-dark-mode', () => ({
+  useDarkMode: vi.fn(() => ({ theme: 'system', isDark: false, setTheme: vi.fn(), cycle: vi.fn() })),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },

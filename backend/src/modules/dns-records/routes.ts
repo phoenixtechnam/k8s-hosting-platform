@@ -1,9 +1,22 @@
+import { eq, and } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { domains } from '../../db/schema.js';
 import { createDnsRecordSchema, updateDnsRecordSchema } from './schema.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+
+async function assertNotSecondaryDns(app: FastifyInstance, clientId: string, domainId: string): Promise<void> {
+  const [domain] = await app.db
+    .select()
+    .from(domains)
+    .where(and(eq(domains.id, domainId), eq(domains.clientId, clientId)));
+
+  if (domain?.dnsMode === 'secondary') {
+    throw new ApiError('DNS_READONLY', 'Secondary DNS zones are read-only', 403);
+  }
+}
 
 export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -20,6 +33,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/clients/:clientId/domains/:domainId/dns-records
   app.post('/clients/:clientId/domains/:domainId/dns-records', async (request, reply) => {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    await assertNotSecondaryDns(app, clientId, domainId);
     const parsed = createDnsRecordSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.errors[0];
@@ -40,6 +54,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, domainId, recordId } = request.params as {
       clientId: string; domainId: string; recordId: string;
     };
+    await assertNotSecondaryDns(app, clientId, domainId);
     const parsed = updateDnsRecordSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.errors[0];
@@ -60,6 +75,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, domainId, recordId } = request.params as {
       clientId: string; domainId: string; recordId: string;
     };
+    await assertNotSecondaryDns(app, clientId, domainId);
     await service.deleteDnsRecord(app.db, clientId, domainId, recordId);
     reply.status(204).send();
   });

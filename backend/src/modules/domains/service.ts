@@ -1,6 +1,7 @@
 import { eq, and, like, desc, asc, lt, gt, sql } from 'drizzle-orm';
 import { domains } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
+import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
@@ -8,9 +9,19 @@ import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
-export async function createDomain(db: Database, clientId: string, input: CreateDomainInput) {
+export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string }) {
   // Verify client exists
   await getClientById(db, clientId);
+
+  // Secondary DNS mode requires master_ip
+  if (input.dns_mode === 'secondary' && !input.master_ip) {
+    throw new ApiError(
+      'MISSING_REQUIRED_FIELD',
+      'master_ip is required when dns_mode is secondary',
+      400,
+      { field: 'master_ip' },
+    );
+  }
 
   // Check for duplicate domain name
   const [existing] = await db.select().from(domains).where(eq(domains.domainName, input.domain_name));
@@ -24,6 +35,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
     clientId,
     domainName: input.domain_name,
     dnsMode: input.dns_mode,
+    masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
     workloadId: input.workload_id ?? null,
     status: 'pending',
   });
@@ -37,8 +49,12 @@ export async function createDomain(db: Database, clientId: string, input: Create
     for (const server of activeServers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
-        const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
-        await provider.createZone(input.domain_name, zoneKind);
+        if (input.dns_mode === 'secondary' && input.master_ip && provider.createSlaveZone) {
+          await provider.createSlaveZone(input.domain_name, input.master_ip);
+        } else {
+          const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
+          await provider.createZone(input.domain_name, zoneKind);
+        }
       } catch {
         // DNS provisioning failure shouldn't block domain creation — log and continue
       }

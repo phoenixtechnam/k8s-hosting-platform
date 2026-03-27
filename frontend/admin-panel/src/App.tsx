@@ -18,6 +18,10 @@ import DomainDetail from '@/pages/DomainDetail';
 import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
+import BackupSettings from '@/pages/BackupSettings';
+import AdminUsers from '@/pages/AdminUsers';
+import HealthDashboard from '@/pages/HealthDashboard';
+import ExportImport from '@/pages/ExportImport';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -57,6 +61,10 @@ export default function App() {
             <Route path="settings/oidc" element={<OidcSettings />} />
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />
+            <Route path="settings/backups" element={<BackupSettings />} />
+            <Route path="settings/users" element={<AdminUsers />} />
+            <Route path="settings/export-import" element={<ExportImport />} />
+            <Route path="monitoring/health" element={<HealthDashboard />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
