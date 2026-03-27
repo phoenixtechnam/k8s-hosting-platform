@@ -278,7 +278,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
         </div>
       </div>
       <p className="mt-1 text-xs font-mono text-gray-500">{provider.issuerUrl}</p>
-      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600"><CheckCircle size={12} /> Connected ({(test.data as any)?.data?.keys_count} keys)</div>}
+      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600"><CheckCircle size={12} /> Connected ({(test.data as { data?: { keys_count?: number } })?.data?.keys_count} keys)</div>}
       {test.isError && <div className="mt-2 flex items-center gap-1 text-xs text-red-600"><AlertCircle size={12} /> {test.error instanceof Error ? test.error.message : 'Failed'}</div>}
     </div>
   );

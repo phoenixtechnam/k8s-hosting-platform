@@ -5,7 +5,7 @@ import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
-import { useContainerImages, type ContainerImage } from '@/hooks/use-container-images';
+import { useContainerImages } from '@/hooks/use-container-images';
 import { useWorkloadRepos, useSyncWorkloadRepo } from '@/hooks/use-workload-repos';
 import { useWorkloads, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
 

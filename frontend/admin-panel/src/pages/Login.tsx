@@ -56,7 +56,7 @@ export default function Login() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ data: { token: string; user: any } }>('/api/v1/auth/break-glass', {
+      const res = await apiFetch<{ data: { token: string; user: { id: string; email: string; fullName: string; role: string } } }>('/api/v1/auth/break-glass', {
         method: 'POST',
         body: JSON.stringify({ email, password, break_glass_secret: breakGlassSecret }),
       });

@@ -269,7 +269,7 @@ function ServerRow({ server }: { readonly server: DnsServer }) {
         </div>
       </div>
       {server.lastHealthCheck && <p className="mt-1 text-xs text-gray-500">Last check: {new Date(server.lastHealthCheck).toLocaleString()} — {server.lastHealthStatus}</p>}
-      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600"><CheckCircle size={12} /> {(test.data as any)?.data?.message ?? 'Connected'} {(test.data as any)?.data?.version ? `(${(test.data as any).data.version})` : ''}</div>}
+      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600"><CheckCircle size={12} /> {(test.data as { data?: { message?: string; version?: string } })?.data?.message ?? 'Connected'} {(test.data as { data?: { message?: string; version?: string } })?.data?.version ? `(${(test.data as { data?: { message?: string; version?: string } }).data?.version})` : ''}</div>}
       {test.isError && <div className="mt-2 flex items-center gap-1 text-xs text-red-600"><AlertCircle size={12} /> {test.error instanceof Error ? test.error.message : 'Failed'}</div>}
     </div>
   );

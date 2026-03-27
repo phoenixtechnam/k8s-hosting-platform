@@ -2,12 +2,12 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
-  RefreshCw, Users, Lock, ChevronDown, ChevronRight,
+  Users, Lock, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useDomains } from '@/hooks/use-domains';
-import { useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
+import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useHostingSettings, useUpdateHostingSettings } from '@/hooks/use-hosting-settings';
 import {
   useProtectedDirectories, useCreateProtectedDirectory, useDeleteProtectedDirectory,
