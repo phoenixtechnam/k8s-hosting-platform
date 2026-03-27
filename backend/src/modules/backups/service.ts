@@ -1,6 +1,6 @@
 import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { backups } from '../../db/schema.js';
-import { clientNotFound, ApiError } from '../../shared/errors.js';
+import { ApiError } from '../../shared/errors.js';
 import { getClientById } from '../clients/service.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';

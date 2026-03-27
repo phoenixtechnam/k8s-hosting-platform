@@ -31,5 +31,6 @@ export function generateToken(app: FastifyInstance, payload: {
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 3600,
     jti: crypto.randomUUID(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
 }

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
+import type { SaveProviderInput, SaveGlobalSettingsInput } from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -79,6 +80,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       jti: crypto.randomUUID(),
     };
     if (user.clientId) jwtPayload.clientId = user.clientId;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const token = app.jwt.sign(jwtPayload as any);
 
     const frontendRedirect = pkce.frontendRedirect;
@@ -125,6 +127,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       exp: Math.floor(Date.now() / 1000) + 86400,
       iat: Math.floor(Date.now() / 1000), jti: crypto.randomUUID(),
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const token = app.jwt.sign(jwtPayload as any);
 
     return reply.send(success({ token, user, breakGlass: true }));
@@ -139,7 +142,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/oidc/providers', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
-    const input = request.body as any;
+    const input = request.body as unknown as SaveProviderInput;
     if (!input.display_name || !input.issuer_url || !input.client_id || !input.client_secret || !input.panel_scope) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, client_id, client_secret, and panel_scope are required', 400);
     }
@@ -151,7 +154,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const input = request.body as any;
+    const input = request.body as unknown as Partial<SaveProviderInput>;
     const updated = await service.updateProvider(app.db, id, input, encryptionKey);
     return success(updated);
   });
@@ -181,7 +184,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   app.put('/admin/oidc/settings', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const input = request.body as any;
+    const input = request.body as unknown as SaveGlobalSettingsInput;
     const settings = await service.saveGlobalSettings(app.db, input);
     return success(settings);
   });

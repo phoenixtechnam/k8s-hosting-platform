@@ -48,7 +48,7 @@ export async function getGlobalSettings(db: Database) {
   };
 }
 
-interface SaveGlobalSettingsInput {
+export interface SaveGlobalSettingsInput {
   readonly disable_local_auth_admin?: boolean;
   readonly disable_local_auth_client?: boolean;
   readonly break_glass_secret?: string;
@@ -78,7 +78,7 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (rows.length > 0) {
     await db.update(oidcGlobalSettings).set(updateValues).where(eq(oidcGlobalSettings.id, rows[0].id));
   } else {
-    await db.insert(oidcGlobalSettings).values({ id: crypto.randomUUID(), ...updateValues } as any);
+    await db.insert(oidcGlobalSettings).values({ id: crypto.randomUUID(), ...updateValues } as typeof oidcGlobalSettings.$inferInsert);
   }
 
   return getGlobalSettings(db);
@@ -109,7 +109,7 @@ export async function getProviderById(db: Database, id: string) {
   return provider;
 }
 
-interface SaveProviderInput {
+export interface SaveProviderInput {
   readonly display_name: string;
   readonly issuer_url: string;
   readonly client_id: string;

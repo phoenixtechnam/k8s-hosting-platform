@@ -1,7 +1,7 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { clients, domains, workloads, cronJobs, users } from '../../db/schema.js';
-import { clientNotFound, duplicateEntry, operationNotAllowed } from '../../shared/errors.js';
+import { clientNotFound } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateClientInput, UpdateClientInput } from './schema.js';

@@ -150,7 +150,7 @@ export async function updateCronJob(db: Database, clientId: string, cronJobId: s
 }
 
 export async function runCronJobNow(db: Database, clientId: string, cronJobId: string) {
-  const job = await getCronJobById(db, clientId, cronJobId);
+  await getCronJobById(db, clientId, cronJobId);
 
   // Record a "run now" execution — in production this would trigger the actual job via k8s Job API
   await db.update(cronJobs).set({

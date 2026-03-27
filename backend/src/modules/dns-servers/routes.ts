@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
+import type { CreateDnsServerInput } from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -17,7 +18,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/dns-servers
   app.post('/admin/dns-servers', async (request, reply) => {
-    const input = request.body as any;
+    const input = request.body as unknown as CreateDnsServerInput;
     if (!input.display_name || !input.provider_type || !input.connection_config) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, provider_type, and connection_config are required', 400);
     }
@@ -28,7 +29,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/v1/admin/dns-servers/:id
   app.patch('/admin/dns-servers/:id', async (request) => {
     const { id } = request.params as { id: string };
-    const input = request.body as any;
+    const input = request.body as unknown as Partial<CreateDnsServerInput>;
     const updated = await service.updateDnsServer(app.db, id, input, encryptionKey);
     return success(updated);
   });

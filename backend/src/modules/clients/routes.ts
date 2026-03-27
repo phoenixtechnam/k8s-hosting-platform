@@ -255,7 +255,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Check sub-user limit from hosting plan
-    const client = await service.getClientById(app.db, clientId);
+    await service.getClientById(app.db, clientId);
     const existingUsers = await app.db
       .select({ id: users.id })
       .from(users)

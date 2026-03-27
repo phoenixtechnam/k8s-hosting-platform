@@ -85,6 +85,7 @@ export async function authRoutes(app: FastifyInstance) {
     };
     if (user.clientId) jwtPayload.clientId = user.clientId;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const token = app.jwt.sign(jwtPayload as any);
 
     return reply.send({
@@ -251,6 +252,7 @@ export async function authRoutes(app: FastifyInstance) {
       jti: crypto.randomUUID(),
     };
     if (user.clientId) refreshPayload.clientId = user.clientId;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newToken = app.jwt.sign(refreshPayload as any);
 
     return reply.send({

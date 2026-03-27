@@ -1,4 +1,4 @@
-import { eq, and, gte, sql } from 'drizzle-orm';
+import { eq, and, gte } from 'drizzle-orm';
 import { usageMetrics } from '../../db/schema.js';
 import { getClientById } from '../clients/service.js';
 import type { Database } from '../../db/index.js';

@@ -1,6 +1,5 @@
 import { eq } from 'drizzle-orm';
 import { resourceQuotas } from '../../db/schema.js';
-import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 
 export async function getResourceQuota(db: Database, clientId: string) {

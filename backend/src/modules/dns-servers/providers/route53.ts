@@ -66,7 +66,7 @@ export class Route53DnsProvider implements DnsProviderAdapter {
     return [];
   }
 
-  async getZone(name: string): Promise<DnsZone | null> {
+  async getZone(_name: string): Promise<DnsZone | null> {
     // Simplified — would use ListHostedZonesByName
     return null;
   }
@@ -84,7 +84,7 @@ export class Route53DnsProvider implements DnsProviderAdapter {
     return { name: normalized, kind: 'Native', serial: 0 };
   }
 
-  async deleteZone(name: string): Promise<void> {
+  async deleteZone(_name: string): Promise<void> {
     // Would need hosted zone ID — simplified
   }
 
@@ -115,7 +115,7 @@ export class Route53DnsProvider implements DnsProviderAdapter {
     return this.createRecord(zone, input as DnsRecordInput); // UPSERT
   }
 
-  async deleteRecord(_zone: string, recordId: string): Promise<void> {
+  async deleteRecord(_zone: string, _recordId: string): Promise<void> {
     // Would need CHANGE batch with DELETE action
     const hostedZoneId = this.config.hosted_zone_id;
     if (!hostedZoneId) throw new Error('hosted_zone_id required');

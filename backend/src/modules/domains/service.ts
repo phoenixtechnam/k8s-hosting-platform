@@ -1,6 +1,6 @@
 import { eq, and, like, desc, asc, lt, gt, sql } from 'drizzle-orm';
 import { domains } from '../../db/schema.js';
-import { domainNotFound, duplicateEntry, clientNotFound } from '../../shared/errors.js';
+import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import type { Database } from '../../db/index.js';

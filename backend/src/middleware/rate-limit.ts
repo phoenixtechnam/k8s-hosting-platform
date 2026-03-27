@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import fastifyRateLimit from '@fastify/rate-limit';
-import { errorResponse } from '../shared/response.js';
 
 interface RateLimitOptions {
   max?: number;

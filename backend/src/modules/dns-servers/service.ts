@@ -28,7 +28,7 @@ export async function getDnsServerById(db: Database, id: string) {
   return server;
 }
 
-interface CreateDnsServerInput {
+export interface CreateDnsServerInput {
   readonly display_name: string;
   readonly provider_type: string;
   readonly connection_config: Record<string, unknown>;
@@ -53,9 +53,9 @@ export async function createDnsServer(db: Database, input: CreateDnsServerInput,
   await db.insert(dnsServers).values({
     id,
     displayName: input.display_name,
-    providerType: input.provider_type as any,
+    providerType: input.provider_type as typeof dnsServers.$inferInsert['providerType'],
     connectionConfigEncrypted: configEncrypted,
-    zoneDefaultKind: (input.zone_default_kind ?? 'Native') as any,
+    zoneDefaultKind: (input.zone_default_kind ?? 'Native') as typeof dnsServers.$inferInsert['zoneDefaultKind'],
     isDefault: input.is_default ? 1 : 0,
     enabled: input.enabled !== false ? 1 : 0,
     lastHealthCheck: new Date(),
