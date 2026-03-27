@@ -1,32 +1,15 @@
-import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-client';
-
-interface Client {
-  readonly id: string;
-  readonly companyName: string;
-}
-
-interface ClientsResponse {
-  readonly data: readonly Client[];
-}
+import { useAuth } from '@/hooks/use-auth';
 
 /**
- * Returns the current client context for the client panel.
- * In Phase 1, this fetches the first client from the API.
- * In Phase 2, this will be derived from the logged-in user's client association.
+ * Returns the current client context from the authenticated user's JWT claims.
+ * Client panel users have a clientId in their token.
  */
 export function useClientContext() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['client-context'],
-    queryFn: () => apiFetch<ClientsResponse>('/api/v1/clients?limit=1'),
-    staleTime: 300_000,
-  });
-
-  const client = data?.data?.[0] ?? null;
+  const { user, isLoading } = useAuth();
 
   return {
-    clientId: client?.id ?? null,
-    clientName: client?.companyName ?? null,
+    clientId: user?.clientId ?? null,
+    clientName: user?.fullName ?? null,
     isLoading,
   };
 }

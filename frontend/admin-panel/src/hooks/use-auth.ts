@@ -6,6 +6,8 @@ interface AuthUser {
   readonly email: string;
   readonly fullName: string;
   readonly role: string;
+  readonly panel?: string;
+  readonly clientId?: string | null;
 }
 
 interface AuthState {

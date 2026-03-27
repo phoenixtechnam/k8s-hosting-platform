@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -9,6 +9,7 @@ import { useDomains } from '@/hooks/use-domains';
 import { useDatabases, useBackups } from '@/hooks/use-databases';
 import { useWorkloads } from '@/hooks/use-workloads';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
+import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
 import type { Domain, PaginatedResponse, Workload } from '@/types/api';
 import type { Database, Backup } from '@/hooks/use-databases';
@@ -33,6 +34,7 @@ export default function ClientDetail() {
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
+  const impersonate = useImpersonate();
 
   const handleDelete = async () => {
     if (!id) return;
@@ -114,6 +116,24 @@ export default function ClientDetail() {
           <p className="text-sm text-gray-500">{email}</p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              if (!id) return;
+              try {
+                const res = await impersonate.mutateAsync(id);
+                const data = res.data;
+                const clientPanelUrl = import.meta.env.VITE_CLIENT_PANEL_URL ?? 'http://localhost:5174';
+                const userJson = encodeURIComponent(JSON.stringify(data.user));
+                window.open(`${clientPanelUrl}/login?token=${data.token}&user=${userJson}`, '_blank');
+              } catch { /* error shown via impersonate.error */ }
+            }}
+            disabled={impersonate.isPending}
+            className="inline-flex items-center gap-2 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-medium text-brand-700 shadow-sm hover:bg-brand-100 disabled:opacity-50"
+            data-testid="impersonate-button"
+          >
+            {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
+            <span className="hidden sm:inline">Login as Client</span>
+          </button>
           <button
             onClick={() => setEditOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"

@@ -13,7 +13,9 @@ RUN npm install --ignore-scripts
 COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/tailwind.config.js frontend/admin-panel/postcss.config.js ./
 COPY frontend/admin-panel/src/ src/
 ARG VITE_API_URL=http://localhost:3000
+ARG VITE_CLIENT_PANEL_URL=http://localhost:5174
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_CLIENT_PANEL_URL=$VITE_CLIENT_PANEL_URL
 RUN npx vite build
 
 FROM nginx:1.27-alpine

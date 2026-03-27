@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Workloads from '../pages/Workloads';
 import { apiFetch } from '@/lib/api-client';
 
+vi.mock('@/hooks/use-client-context', () => ({
+  useClientContext: vi.fn(() => ({ clientId: 'c1', clientName: 'Test Corp', isLoading: false })),
+}));
+
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
@@ -35,7 +39,6 @@ function createWrapper() {
 
 function setupMocks() {
   mockApiFetch.mockImplementation((url: string) => {
-    if (url.includes('/clients?limit=1')) return Promise.resolve({ data: [MOCK_CLIENT] });
     if (url.includes('/workloads')) return Promise.resolve({ data: MOCK_WORKLOADS, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
     if (url.includes('/container-images')) return Promise.resolve({ data: MOCK_IMAGES });
     return Promise.resolve({ data: [] });
@@ -91,7 +94,6 @@ describe('Client Workloads page', () => {
 
   it('shows empty state when no workloads', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/clients?limit=1')) return Promise.resolve({ data: [MOCK_CLIENT] });
       if (url.includes('/workloads')) return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } });
       if (url.includes('/container-images')) return Promise.resolve({ data: MOCK_IMAGES });
       return Promise.resolve({ data: [] });

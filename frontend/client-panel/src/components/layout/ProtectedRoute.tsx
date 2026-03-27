@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
 export default function ProtectedRoute({ children }: { readonly children: React.ReactNode }) {
-  const { isAuthenticated, isLoading, initialize } = useAuth();
+  const { isAuthenticated, isLoading, initialize, user } = useAuth();
   const location = useLocation();
 
   useEffect(() => {
@@ -21,6 +21,16 @@ export default function ProtectedRoute({ children }: { readonly children: React.
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  // Reject admin panel users from client panel (unless impersonating)
+  if (user?.panel === 'admin') {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 p-8">
+        <p className="text-lg font-medium text-gray-900">Access Denied</p>
+        <p className="text-sm text-gray-500">This portal is for clients only. Admins can use the impersonation feature from the admin panel.</p>
+      </div>
+    );
   }
 
   return <>{children}</>;

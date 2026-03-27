@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CronJobs from '../pages/CronJobs';
 import { apiFetch } from '@/lib/api-client';
 
+vi.mock('@/hooks/use-client-context', () => ({
+  useClientContext: vi.fn(() => ({ clientId: 'c1', clientName: 'Test Corp', isLoading: false })),
+}));
+
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
@@ -32,7 +36,6 @@ function createWrapper() {
 
 function setupMocks() {
   mockApiFetch.mockImplementation((url: string) => {
-    if (url.includes('/clients?limit=1')) return Promise.resolve({ data: [MOCK_CLIENT] });
     if (url.includes('/cron-jobs')) return Promise.resolve({ data: MOCK_JOBS, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
     return Promise.resolve({ data: [] });
   });
@@ -94,7 +97,6 @@ describe('Client CronJobs page', () => {
 
   it('shows empty state when no cron jobs', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/clients?limit=1')) return Promise.resolve({ data: [MOCK_CLIENT] });
       if (url.includes('/cron-jobs')) return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
