@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Workloads Page', () => {
   test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
+    await injectAdminAuth(page);
     await page.getByRole('link', { name: 'Workloads' }).click();
-    await expect(page.getByRole('heading', { name: 'Workloads' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Workloads' })).toBeVisible({ timeout: 2000 });
   });
 
   test('workloads page loads', async ({ page }) => {
@@ -13,7 +13,7 @@ test.describe('Admin Workloads Page', () => {
   });
 
   test('shows stat cards', async ({ page }) => {
-    await expect(page.getByText('Total Images')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Total Images')).toBeVisible({ timeout: 2000 });
     await expect(page.getByText('Active Workloads')).toBeVisible();
     await expect(page.getByText('Deployments Today')).toBeVisible();
   });
@@ -34,6 +34,6 @@ test.describe('Admin Workloads Page', () => {
   test('workloads page renders content', async ({ page }) => {
     // Page should render something — heading is already verified in beforeEach
     // Check for any text content on the page
-    await expect(page.getByText('Total Images')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Total Images')).toBeVisible({ timeout: 2000 });
   });
 });

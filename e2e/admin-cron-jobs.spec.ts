@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Cron Jobs Page', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
     await page.goto('/cron-jobs');
-    await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
   });
 
   test('cron jobs page loads', async ({ page }) => {

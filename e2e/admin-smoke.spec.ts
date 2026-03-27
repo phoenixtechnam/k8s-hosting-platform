@@ -54,7 +54,7 @@ test.describe('Admin Panel Smoke Test', () => {
 
     // Wait for region options to load before selecting
     await page.getByTestId('region-select').waitFor({ state: 'visible' });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(200);
     await page.getByTestId('region-select').selectOption({ index: 1 });
 
     // Submit
@@ -67,10 +67,10 @@ test.describe('Admin Panel Smoke Test', () => {
     if (modalStillOpen) {
       // Transient server error — close modal and verify page is functional
       await page.getByRole('button', { name: 'Cancel' }).click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
       await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
     } else {
-      await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 5000 });
+      await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 2000 });
     }
   });
 

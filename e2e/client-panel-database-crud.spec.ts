@@ -6,14 +6,14 @@ test.describe('Client Panel Database Operations', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('create database button is visible', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
     await expect(page.getByTestId('create-database-button')).toBeVisible();
   });
 
@@ -21,26 +21,26 @@ test.describe('Client Panel Database Operations', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByTestId('create-database-button').click();
 
     const modal = page.getByTestId('create-database-modal')
       .or(page.getByTestId('database-modal'));
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 2000 });
   });
 
   test('create database modal has name input field', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByTestId('create-database-button').click();
 
     const modal = page.getByTestId('create-database-modal')
       .or(page.getByTestId('database-modal'));
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 2000 });
 
     // Should have a name input
     const nameInput = page.getByTestId('database-name-input')
@@ -54,13 +54,13 @@ test.describe('Client Panel Database Operations', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByTestId('create-database-button').click();
 
     const modal = page.getByTestId('create-database-modal')
       .or(page.getByTestId('database-modal'));
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 2000 });
 
     // Fill in database name
     const uniqueDbName = `testdb_${Date.now()}`;
@@ -87,7 +87,7 @@ test.describe('Client Panel Database Operations', () => {
       const errorMsg = page.getByTestId('error-message');
 
       // At least one of these should be visible after creation
-      await expect(dbInTable.or(passwordAlert).or(successToast).or(errorMsg).first()).toBeVisible({ timeout: 10000 });
+      await expect(dbInTable.or(passwordAlert).or(successToast).or(errorMsg).first()).toBeVisible({ timeout: 2000 });
     }
   });
 
@@ -95,20 +95,20 @@ test.describe('Client Panel Database Operations', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     const content = page.getByTestId('databases-empty')
       .or(page.getByTestId('databases-table'))
       .or(page.getByTestId('databases-loading'))
       .or(page.getByTestId('databases-error'));
-    await expect(content).toBeVisible({ timeout: 10000 });
+    await expect(content).toBeVisible({ timeout: 2000 });
   });
 
   test('database table shows rotate password button for each row', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     await page.waitForTimeout(3000);
 
@@ -128,7 +128,7 @@ test.describe('Client Panel Database Operations', () => {
         const actionButton = rows.first().getByTestId('action-button')
           .or(rows.first().getByRole('button'));
 
-        await expect(rotateButton.or(actionButton)).toBeVisible({ timeout: 5000 });
+        await expect(rotateButton.or(actionButton)).toBeVisible({ timeout: 2000 });
       }
     }
   });
@@ -137,20 +137,20 @@ test.describe('Client Panel Database Operations', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByTestId('create-database-button').click();
 
     const modal = page.getByTestId('create-database-modal')
       .or(page.getByTestId('database-modal'));
-    await expect(modal).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 2000 });
 
     // Cancel
     const cancelButton = page.getByTestId('cancel-button')
       .or(page.getByRole('button', { name: 'Cancel' }));
     if (await cancelButton.isVisible().catch(() => false)) {
       await cancelButton.click();
-      await expect(modal).not.toBeVisible({ timeout: 5000 });
+      await expect(modal).not.toBeVisible({ timeout: 2000 });
     }
   });
 
@@ -159,7 +159,7 @@ test.describe('Client Panel Database Operations', () => {
 
     await page.getByRole('link', { name: 'Databases' }).click();
     const heading = page.getByTestId('databases-heading');
-    await expect(heading).toBeVisible({ timeout: 5000 });
+    await expect(heading).toBeVisible({ timeout: 2000 });
     await expect(heading).toHaveText(/Databases/);
   });
 
@@ -168,15 +168,15 @@ test.describe('Client Panel Database Operations', () => {
 
     // Go to Databases
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     // Navigate away
     await page.getByRole('link', { name: 'Domains' }).click();
-    await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
 
     // Come back
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
     await expect(page.getByTestId('create-database-button')).toBeVisible();
   });
 });

@@ -1,15 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Client Detail — Resource Tabs', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   async function navigateToFirstClientDetail(page: import('@playwright/test').Page) {
-    await loginAsAdmin(page);
 
     await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     // Wait for client data to load
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(200);
 
     const clientLink = page.locator('table tbody tr a').first();
     const hasClients = await clientLink.isVisible().catch(() => false);
@@ -27,11 +27,11 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
       await page.waitForTimeout(1000);
       await page.getByTestId('plan-select').selectOption({ index: 1 });
       await page.getByTestId('region-select').waitFor({ state: 'visible' });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
       await page.getByTestId('region-select').selectOption({ index: 1 });
 
       await page.getByTestId('submit-button').click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
       await page.waitForTimeout(1000);
     }
 
@@ -42,7 +42,7 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
     const editButton = page.getByTestId('edit-button');
     const errorMessage = page.getByText('Client not found');
     const backLink = page.getByText('Back to clients');
-    await expect(editButton.or(errorMessage).or(backLink)).toBeVisible({ timeout: 10000 });
+    await expect(editButton.or(errorMessage).or(backLink)).toBeVisible({ timeout: 2000 });
   }
 
   test('client detail page shows resource tabs', async ({ page }) => {
@@ -74,7 +74,7 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
 
     await expect(
       domainsTable.or(emptyState).or(loading).or(error)
-    ).toBeVisible({ timeout: 10000 });
+    ).toBeVisible({ timeout: 2000 });
   });
 
   test('can click Databases tab and see content', async ({ page }) => {
@@ -92,7 +92,7 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
 
     await expect(
       table.or(emptyState).or(loading).or(error)
-    ).toBeVisible({ timeout: 10000 });
+    ).toBeVisible({ timeout: 2000 });
   });
 
   test('can click Workloads tab and see content', async ({ page }) => {
@@ -110,7 +110,7 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
 
     await expect(
       table.or(emptyState).or(loading).or(error)
-    ).toBeVisible({ timeout: 10000 });
+    ).toBeVisible({ timeout: 2000 });
   });
 
   test('can click Backups tab and see content', async ({ page }) => {
@@ -128,7 +128,7 @@ test.describe('Admin Client Detail — Resource Tabs', () => {
 
     await expect(
       table.or(emptyState).or(loading).or(error)
-    ).toBeVisible({ timeout: 10000 });
+    ).toBeVisible({ timeout: 2000 });
   });
 
   test('tabs show counts in their labels', async ({ page }) => {

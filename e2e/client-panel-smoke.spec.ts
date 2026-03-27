@@ -19,7 +19,7 @@ test.describe('Client Panel Smoke Tests', () => {
 
     // The dashboard should show the quick stats grid
     const statsGrid = page.getByTestId('quick-stats');
-    await expect(statsGrid).toBeVisible({ timeout: 10000 });
+    await expect(statsGrid).toBeVisible({ timeout: 2000 });
 
     // Verify stat labels within the grid (not sidebar links)
     await expect(statsGrid.getByText('Domains')).toBeVisible();
@@ -30,28 +30,28 @@ test.describe('Client Panel Smoke Tests', () => {
   test('dashboard shows getting started section', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await expect(page.getByText('Getting Started')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Getting Started')).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Domains page', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Domains' }).click();
-    await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
 
     // Should show loading, empty state, error, or table
     const content = page.getByTestId('domains-loading')
       .or(page.getByTestId('domains-empty'))
       .or(page.getByTestId('domains-error'))
       .or(page.getByTestId('domains-table'));
-    await expect(content).toBeVisible({ timeout: 10000 });
+    await expect(content).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Databases page', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
 
     // Should show create button
     await expect(page.getByTestId('create-database-button')).toBeVisible();
@@ -61,14 +61,14 @@ test.describe('Client Panel Smoke Tests', () => {
       .or(page.getByTestId('databases-empty'))
       .or(page.getByTestId('databases-error'))
       .or(page.getByTestId('databases-table'));
-    await expect(content).toBeVisible({ timeout: 10000 });
+    await expect(content).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Settings page', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });
   });
 
   test('sidebar navigation items are present', async ({ page }) => {

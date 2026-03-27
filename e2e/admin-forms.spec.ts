@@ -1,13 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Form Interactions', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test.describe('Create Client Modal', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
     test('fill all fields and submit creates client', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
       await page.getByRole('button', { name: 'Add Client' }).click();
       await expect(page.getByTestId('create-client-modal')).toBeVisible();
@@ -22,7 +23,7 @@ test.describe('Admin Form Interactions', () => {
       await page.getByTestId('plan-select').selectOption({ index: 1 });
 
       await page.getByTestId('region-select').waitFor({ state: 'visible' });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
       await page.getByTestId('region-select').selectOption({ index: 1 });
 
       await page.getByTestId('submit-button').click();
@@ -36,18 +37,17 @@ test.describe('Admin Form Interactions', () => {
         // Server error occurred — this is a transient API issue, not a test failure
         // Close the modal and verify the page is still functional
         await page.getByRole('button', { name: 'Cancel' }).click();
-        await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+        await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
         await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
       } else {
-        await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 5000 });
+        await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 2000 });
       }
     });
 
     test('cancel button closes modal without creating client', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
       await page.getByRole('button', { name: 'Add Client' }).click();
       await expect(page.getByTestId('create-client-modal')).toBeVisible();
@@ -61,7 +61,7 @@ test.describe('Admin Form Interactions', () => {
       await cancelButton.click();
 
       // Modal should close
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
 
       // Client should NOT be created
       await page.waitForTimeout(1000);
@@ -69,10 +69,9 @@ test.describe('Admin Form Interactions', () => {
     });
 
     test('modal has all required form fields', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
       await page.getByRole('button', { name: 'Add Client' }).click();
       await expect(page.getByTestId('create-client-modal')).toBeVisible();
@@ -86,10 +85,9 @@ test.describe('Admin Form Interactions', () => {
     });
 
     test('opening and closing modal preserves page state', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Clients' }).click();
-      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
       // Open modal
       await page.getByRole('button', { name: 'Add Client' }).click();
@@ -99,7 +97,7 @@ test.describe('Admin Form Interactions', () => {
       const cancelButton = page.getByTestId('cancel-button')
         .or(page.getByRole('button', { name: 'Cancel' }));
       await cancelButton.click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
 
       // Page state should be intact
       await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
@@ -108,18 +106,18 @@ test.describe('Admin Form Interactions', () => {
   });
 
   test.describe('Create Domain Modal', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
     test('domain modal opens with client selector and domain input', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Domains' }).click();
-      await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
 
       // Select a client first to enable the add button
       const clientSelector = page.getByTestId('client-selector');
       await expect(clientSelector).toBeVisible();
 
       // Try selecting a client from dropdown
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(200);
       const options = clientSelector.locator('option');
       const optionCount = await options.count();
 
@@ -134,45 +132,44 @@ test.describe('Admin Form Interactions', () => {
 
           const modal = page.getByTestId('add-domain-modal')
             .or(page.getByTestId('create-domain-modal'));
-          await expect(modal).toBeVisible({ timeout: 5000 });
+          await expect(modal).toBeVisible({ timeout: 2000 });
         }
       }
     });
 
     test('domain page shows domains for selected client', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Domains' }).click();
-      await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
 
       const clientSelector = page.getByTestId('client-selector');
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(200);
       const options = clientSelector.locator('option');
       const optionCount = await options.count();
 
       if (optionCount > 1) {
         await clientSelector.selectOption({ index: 1 });
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(200);
 
         // Should show either domains table or empty state (not select-client prompt)
         const domainsTable = page.getByTestId('domains-table');
         const emptyState = page.getByTestId('domains-empty')
           .or(page.getByText('No domains'));
         const content = domainsTable.or(emptyState);
-        await expect(content).toBeVisible({ timeout: 10000 });
+        await expect(content).toBeVisible({ timeout: 2000 });
       }
     });
   });
 
   test.describe('Create Cron Job Modal', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
     test('cron job modal opens when client is selected', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.goto('/cron-jobs');
-      await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
 
       const clientSelector = page.getByTestId('client-selector');
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(200);
       const options = clientSelector.locator('option');
       const optionCount = await options.count();
 
@@ -186,16 +183,15 @@ test.describe('Admin Form Interactions', () => {
 
           const modal = page.getByTestId('add-cron-job-modal')
             .or(page.getByTestId('create-cron-job-modal'));
-          await expect(modal).toBeVisible({ timeout: 5000 });
+          await expect(modal).toBeVisible({ timeout: 2000 });
         }
       }
     });
 
     test('cron job add button is disabled without client selection', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.goto('/cron-jobs');
-      await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
 
       const addButton = page.getByTestId('add-cron-job-button');
       await expect(addButton).toBeDisabled();
@@ -203,23 +199,22 @@ test.describe('Admin Form Interactions', () => {
   });
 
   test.describe('Settings Forms', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
     test('settings page shows workload repos section', async ({ page }) => {
-      await loginAsAdmin(page);
 
       await page.getByRole('link', { name: 'Settings' }).click();
-      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });
 
       // Look for workload repos section
-      await expect(page.getByTestId('workload-repos-section')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('workload-repos-section')).toBeVisible({ timeout: 2000 });
     });
 
     test('password change is accessible from user menu', async ({ page }) => {
-      await loginAsAdmin(page);
 
       // Open user menu from header
       const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
       await userMenuBtn.click();
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Look for Change Password section — may be a clickable item or already expanded
       const changePwItem = page.getByTestId('change-password-menu-item');
@@ -228,19 +223,19 @@ test.describe('Admin Form Interactions', () => {
       }
 
       // The Change Password form should be visible (either after clicking or already expanded)
-      await expect(page.getByRole('heading', { name: 'Change Password' })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByRole('heading', { name: 'Change Password' })).toBeVisible({ timeout: 2000 });
 
       // Fill password form with mismatched passwords using label-based selectors
       const currentPwInput = page.getByRole('textbox', { name: 'Current password' });
-      await currentPwInput.waitFor({ state: 'visible', timeout: 5000 });
+      await currentPwInput.waitFor({ state: 'visible', timeout: 2000 });
       await currentPwInput.fill('admin');
 
       const newPwInput = page.getByRole('textbox', { name: /^New password$/i });
-      await newPwInput.waitFor({ state: 'visible', timeout: 5000 });
+      await newPwInput.waitFor({ state: 'visible', timeout: 2000 });
       await newPwInput.fill('newpassword123');
 
       const confirmPwInput = page.getByRole('textbox', { name: /Confirm new password/i });
-      await confirmPwInput.waitFor({ state: 'visible', timeout: 5000 });
+      await confirmPwInput.waitFor({ state: 'visible', timeout: 2000 });
       await confirmPwInput.fill('differentpassword');
 
       await page.getByRole('button', { name: 'Update Password' }).click();
@@ -252,14 +247,13 @@ test.describe('Admin Form Interactions', () => {
     });
 
     test('user menu displays current user info', async ({ page }) => {
-      await loginAsAdmin(page);
 
       // Open user menu from header
       await page.getByTestId('user-menu-button').click();
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Check that user email is shown in the dropdown
-      await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 2000 });
     });
   });
 });

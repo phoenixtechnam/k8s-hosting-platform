@@ -1,13 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Client Detail Page', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test('can click on a client to see details', async ({ page }) => {
-    await loginAsAdmin(page);
 
     // First create a client to ensure one exists
     await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     // Wait for data to load
     await page.waitForTimeout(3000);
@@ -22,14 +22,13 @@ test.describe('Admin Client Detail Page', () => {
       const errorMessage = page.getByText('Client not found');
       const backLink = page.getByText('Back to clients');
 
-      await expect(editButton.or(errorMessage).or(backLink)).toBeVisible({ timeout: 10000 });
+      await expect(editButton.or(errorMessage).or(backLink)).toBeVisible({ timeout: 2000 });
     }
   });
 
   test('client detail shows action buttons', async ({ page }) => {
-    await loginAsAdmin(page);
     await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     const clientRows = page.locator('table tbody tr');
     const rowCount = await clientRows.count();
@@ -38,7 +37,7 @@ test.describe('Admin Client Detail Page', () => {
       await clientRows.first().click();
 
       const editButton = page.getByTestId('edit-button');
-      const isDetail = await editButton.isVisible({ timeout: 10000 }).catch(() => false);
+      const isDetail = await editButton.isVisible({ timeout: 2000 }).catch(() => false);
 
       if (isDetail) {
         await expect(page.getByTestId('edit-button')).toBeVisible();
@@ -49,9 +48,8 @@ test.describe('Admin Client Detail Page', () => {
   });
 
   test('client detail shows Account Information section', async ({ page }) => {
-    await loginAsAdmin(page);
     await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     const clientRows = page.locator('table tbody tr');
     const rowCount = await clientRows.count();
@@ -60,7 +58,7 @@ test.describe('Admin Client Detail Page', () => {
       await clientRows.first().click();
 
       const editButton = page.getByTestId('edit-button');
-      const isDetail = await editButton.isVisible({ timeout: 10000 }).catch(() => false);
+      const isDetail = await editButton.isVisible({ timeout: 2000 }).catch(() => false);
 
       if (isDetail) {
         await expect(page.getByText('Account Information')).toBeVisible();
@@ -71,9 +69,8 @@ test.describe('Admin Client Detail Page', () => {
   });
 
   test('client detail shows back to clients link', async ({ page }) => {
-    await loginAsAdmin(page);
     await page.getByRole('link', { name: 'Clients' }).click();
-    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
     const clientRows = page.locator('table tbody tr');
     const rowCount = await clientRows.count();
@@ -82,7 +79,7 @@ test.describe('Admin Client Detail Page', () => {
       await clientRows.first().click();
 
       const editButton = page.getByTestId('edit-button');
-      const isDetail = await editButton.isVisible({ timeout: 10000 }).catch(() => false);
+      const isDetail = await editButton.isVisible({ timeout: 2000 }).catch(() => false);
 
       if (isDetail) {
         const backLink = page.getByLabel('Back to clients');

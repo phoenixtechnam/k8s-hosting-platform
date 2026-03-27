@@ -1,44 +1,47 @@
 import { Page, expect } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
 
 export async function loginAsAdmin(page: Page) {
-  // Clear any stale auth state
   await page.goto('/login');
-  await page.evaluate(() => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_user');
-  });
+  await page.evaluate(() => { localStorage.clear(); });
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
 
-  // Wait for login form to appear (may take a moment for OIDC status fetch)
-  const emailInput = page.getByTestId('email-input');
-  await expect(emailInput).toBeVisible({ timeout: 10000 });
-
-  // Fill and submit
-  await emailInput.fill('admin@platform.local');
+  await page.getByTestId('email-input').fill('admin@platform.local');
   await page.getByTestId('password-input').fill('admin');
   await page.getByTestId('login-button').click();
 
-  // Wait for navigation to dashboard (use heading to avoid sidebar ambiguity)
-  await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible({ timeout: 5000 });
+}
+
+export async function injectAdminAuth(page: Page) {
+  const authPath = path.join(__dirname, '.auth/admin-auth.json');
+  if (!fs.existsSync(authPath)) {
+    // Fallback to full login if setup hasn't run
+    await loginAsAdmin(page);
+    return;
+  }
+
+  const authData = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
+  await page.goto('/login');
+  await page.evaluate((data) => {
+    if (data.token) localStorage.setItem('auth_token', data.token);
+    if (data.user) localStorage.setItem('auth_user', data.user);
+  }, authData);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible({ timeout: 5000 });
 }
 
 export async function loginAsAdminClient(page: Page) {
-  // Clear stale state
   await page.goto('/login');
-  await page.evaluate(() => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_user');
-  });
+  await page.evaluate(() => { localStorage.clear(); });
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
 
-  const emailInput = page.getByTestId('email-input');
-  await expect(emailInput).toBeVisible({ timeout: 10000 });
-
-  await emailInput.fill('admin@platform.local');
+  await page.getByTestId('email-input').fill('admin@platform.local');
   await page.getByTestId('password-input').fill('admin');
   await page.getByTestId('login-button').click();
 
-  await expect(page.getByTestId('welcome-heading')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('welcome-heading')).toBeVisible({ timeout: 5000 });
 }

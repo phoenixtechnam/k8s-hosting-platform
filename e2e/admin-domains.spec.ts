@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { injectAdminAuth } from './helpers';
 
 test.describe('Admin Domains Page', () => {
+  test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
     await page.getByRole('link', { name: 'Domains' }).click();
-    await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
   });
 
   test('domains page loads after login', async ({ page }) => {
