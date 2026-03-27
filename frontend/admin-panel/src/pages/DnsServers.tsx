@@ -128,7 +128,7 @@ key "${form.rndc_key_name}" {
 };
 
 controls {
-    inet 0.0.0.0 port ${form.rndc_port} allow { PLATFORM_IP; } keys { "${form.rndc_key_name}"; };
+    inet * port ${form.rndc_port} allow { any; } keys { "${form.rndc_key_name}"; };
 };
 
 # Add to options {} block to allow rndc to create new zones:
