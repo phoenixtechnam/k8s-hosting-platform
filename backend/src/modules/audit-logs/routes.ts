@@ -8,7 +8,7 @@ const MAX_LIMIT = 100;
 
 export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/audit-logs — latest audit log entries
   app.get<{

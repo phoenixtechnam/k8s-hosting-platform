@@ -15,7 +15,7 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/clients/:clientId/resource-quota — admin only
   app.patch('/clients/:clientId/resource-quota', {
-    onRequest: [authenticate, requireRole('admin')],
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const input = request.body as Record<string, unknown>;

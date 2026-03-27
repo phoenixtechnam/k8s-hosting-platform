@@ -6,7 +6,7 @@ import { success } from '../../shared/response.js';
 
 export async function metricsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin', 'read-only'));
+  app.addHook('onRequest', requireRole('admin', 'super_admin', 'read_only'));
 
   // GET /api/v1/clients/:id/metrics
   app.get('/clients/:id/metrics', async (request) => {

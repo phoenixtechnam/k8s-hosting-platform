@@ -41,9 +41,9 @@ describe('domain routes', () => {
     await app.register(domainRoutes, { prefix: '/api/v1' });
     await app.ready();
 
-    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
-    supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', iat: Math.floor(Date.now() / 1000) });
-    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read-only', iat: Math.floor(Date.now() / 1000) });
+    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
   });
 
   afterAll(async () => {

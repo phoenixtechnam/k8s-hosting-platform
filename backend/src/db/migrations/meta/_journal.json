@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1774540589951,
+      "tag": "0000_sweet_red_skull",
+      "breakpoints": true
+    }
+  ]
+}

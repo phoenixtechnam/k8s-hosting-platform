@@ -63,5 +63,7 @@ export async function authenticateUser(
     email: user.email,
     fullName: user.fullName,
     role: user.roleName,
+    panel: user.panel ?? 'admin',
+    clientId: user.clientId ?? undefined,
   };
 }

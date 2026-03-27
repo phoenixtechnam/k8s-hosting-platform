@@ -73,14 +73,17 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, password } = parsed.data;
     const user = await authenticateUser(app.db, email, password);
 
-    const token = app.jwt.sign(
-      {
-        sub: user.id,
-        role: user.role as 'admin' | 'billing' | 'support' | 'read-only',
-        exp: Math.floor(Date.now() / 1000) + 86400,
-        iat: Math.floor(Date.now() / 1000),
-      },
-    );
+    const jwtPayload: Record<string, unknown> = {
+      sub: user.id,
+      role: user.role,
+      panel: user.panel ?? 'admin',
+      exp: Math.floor(Date.now() / 1000) + 86400,
+      iat: Math.floor(Date.now() / 1000),
+      jti: crypto.randomUUID(),
+    };
+    if (user.clientId) jwtPayload.clientId = user.clientId;
+
+    const token = app.jwt.sign(jwtPayload as any);
 
     return reply.send({
       data: {
@@ -90,6 +93,8 @@ export async function authRoutes(app: FastifyInstance) {
           email: user.email,
           fullName: user.fullName,
           role: user.role,
+          panel: user.panel,
+          clientId: user.clientId,
         },
       },
     });
@@ -235,12 +240,16 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Issue new token
-    const newToken = app.jwt.sign({
+    const refreshPayload: Record<string, unknown> = {
       sub: user.id,
-      role: user.roleName as 'admin' | 'billing' | 'support' | 'read-only',
+      role: user.roleName,
+      panel: user.panel ?? 'admin',
       exp: Math.floor(Date.now() / 1000) + 86400,
       iat: Math.floor(Date.now() / 1000),
-    });
+      jti: crypto.randomUUID(),
+    };
+    if (user.clientId) refreshPayload.clientId = user.clientId;
+    const newToken = app.jwt.sign(refreshPayload as any);
 
     return reply.send({
       data: {

@@ -63,9 +63,12 @@ describe('createClient', () => {
       status: 'pending',
     };
 
-    // For createClient: insert, then select (to return created record)
+    // For createClient: insert client, select, insert user (onDuplicateKeyUpdate)
     const insertValues = vi.fn().mockResolvedValue(undefined);
-    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+    const onDuplicateKeyUpdate = vi.fn().mockResolvedValue(undefined);
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues, onDuplicateKeyUpdate });
+    // Make values return chainable too
+    insertValues.mockReturnValue({ onDuplicateKeyUpdate });
 
     const whereFn = vi.fn().mockResolvedValue([createdClient]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -84,7 +87,9 @@ describe('createClient', () => {
     };
 
     const result = await createClient(db, input, 'creator-1');
-    expect(result).toEqual(createdClient);
+    expect(result).toMatchObject(createdClient);
+    expect(result._generatedPassword).toBeDefined();
+    expect(result._clientUserId).toBeDefined();
     expect(insertFn).toHaveBeenCalled();
   });
 });

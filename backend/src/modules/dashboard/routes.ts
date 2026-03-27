@@ -5,7 +5,7 @@ import { clients, domains, databases, backups } from '../../db/schema.js';
 
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin', 'read-only'));
+  app.addHook('onRequest', requireRole('admin', 'super_admin', 'read_only'));
 
   // GET /api/v1/admin/dashboard — aggregated platform metrics
   app.get('/admin/dashboard', async () => {

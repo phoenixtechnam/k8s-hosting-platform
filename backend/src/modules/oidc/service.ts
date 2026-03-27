@@ -303,7 +303,8 @@ export async function findOrCreateOidcUser(
     email: email ?? `${claims.sub}@oidc`,
     fullName: claims.name ?? claims.preferred_username ?? 'OIDC User',
     passwordHash: null,
-    roleName: 'read-only', // New OIDC users get read-only by default
+    roleName: 'read_only', // New OIDC users get read-only by default
+    panel: 'admin', // OIDC users default to admin panel
     status: 'active',
     oidcIssuer: claims.iss,
     oidcSubject: claims.sub,

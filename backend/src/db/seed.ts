@@ -15,10 +15,13 @@ console.log('Seeding database...');
 
 // RBAC Roles
 await db.insert(rbacRoles).values([
-  { id: crypto.randomUUID(), name: 'admin', description: 'Full platform access', isSystemRole: 1, permissions: JSON.parse('["*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'super_admin', description: 'Full platform access + OIDC/user management', isSystemRole: 1, permissions: JSON.parse('["*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'admin', description: 'Manage clients and all resources', isSystemRole: 1, permissions: JSON.parse('["clients:*","domains:*","databases:*","workloads:*","backups:*","cron-jobs:*","subscriptions:*"]') as string[] },
   { id: crypto.randomUUID(), name: 'billing', description: 'Subscription and billing management', isSystemRole: 1, permissions: JSON.parse('["clients:read","subscriptions:*","billing:*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'support', description: 'Client support — domains, databases, backups', isSystemRole: 1, permissions: JSON.parse('["clients:read","domains:*","databases:*","backups:*"]') as string[] },
-  { id: crypto.randomUUID(), name: 'read-only', description: 'View-only access to metrics and status', isSystemRole: 1, permissions: JSON.parse('["clients:read","metrics:read","status:read"]') as string[] },
+  { id: crypto.randomUUID(), name: 'support', description: 'Client support — domains, databases, backups + impersonate', isSystemRole: 1, permissions: JSON.parse('["clients:read","domains:*","databases:*","backups:*","impersonate"]') as string[] },
+  { id: crypto.randomUUID(), name: 'read_only', description: 'View-only access to metrics and status', isSystemRole: 1, permissions: JSON.parse('["clients:read","metrics:read","status:read"]') as string[] },
+  { id: crypto.randomUUID(), name: 'client_admin', description: 'Full access to own client account', isSystemRole: 1, permissions: JSON.parse('["own:*"]') as string[] },
+  { id: crypto.randomUUID(), name: 'client_user', description: 'View-only access to own client resources', isSystemRole: 1, permissions: JSON.parse('["own:read"]') as string[] },
 ]).onDuplicateKeyUpdate({ set: { description: sql`VALUES(description)` } });
 console.log('  Seeded RBAC roles');
 
@@ -60,7 +63,8 @@ await db.insert(users).values([
     email: adminEmail,
     passwordHash: adminPasswordHash,
     fullName: adminName,
-    roleName: 'admin',
+    roleName: 'super_admin',
+    panel: 'admin',
     status: 'active',
     emailVerifiedAt: new Date(),
   },

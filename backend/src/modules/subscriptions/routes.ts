@@ -8,7 +8,7 @@ import { ApiError } from '../../shared/errors.js';
 
 export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin', 'billing'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'billing'));
 
   // GET /api/v1/clients/:id/subscription
   app.get('/clients/:id/subscription', async (request) => {
@@ -36,7 +36,7 @@ export async function subscriptionRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/check-expiry — manually trigger subscription expiry check
   app.post('/admin/check-expiry', {
-    onRequest: [authenticate, requireRole('admin')],
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async () => {
     const suspendedCount = await suspendExpiredClients(app.db);
     return success({ suspended_count: suspendedCount });

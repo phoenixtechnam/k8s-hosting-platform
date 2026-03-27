@@ -8,7 +8,7 @@ import { ApiError } from '../../shared/errors.js';
 export async function workloadRepoRoutes(app: FastifyInstance): Promise<void> {
   // All workload-repo routes require admin auth
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/workload-repos
   app.get('/admin/workload-repos', {

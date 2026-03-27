@@ -1,12 +1,20 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { insufficientPermissions, missingToken, invalidToken } from '../shared/errors.js';
+import { insufficientPermissions, missingToken, invalidToken, ApiError } from '../shared/errors.js';
 import { isTokenDenied } from '../modules/auth/routes.js';
+
+export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read_only';
+export type ClientRole = 'client_admin' | 'client_user';
+export type AnyRole = AdminRole | ClientRole;
 
 export interface JwtPayload {
   readonly sub: string;
-  readonly role: 'admin' | 'billing' | 'support' | 'read-only';
+  readonly role: AnyRole;
+  readonly panel: 'admin' | 'client';
+  readonly clientId?: string;
+  readonly impersonatedBy?: string;
   readonly exp: number;
   readonly iat: number;
+  readonly jti?: string;
 }
 
 declare module '@fastify/jwt' {
@@ -47,7 +55,25 @@ export function authenticate(
   }
 }
 
-export function requireRole(...roles: JwtPayload['role'][]) {
+export function requirePanel(panel: 'admin' | 'client') {
+  return function checkPanel(
+    request: FastifyRequest,
+    _reply: FastifyReply,
+    done: (err?: Error) => void,
+  ): void {
+    if (!request.user || request.user.panel !== panel) {
+      done(new ApiError(
+        'PANEL_ACCESS_DENIED',
+        `This endpoint requires ${panel} panel access`,
+        403,
+      ));
+      return;
+    }
+    done();
+  };
+}
+
+export function requireRole(...roles: AnyRole[]) {
   return function checkRole(
     request: FastifyRequest,
     _reply: FastifyReply,
@@ -57,6 +83,41 @@ export function requireRole(...roles: JwtPayload['role'][]) {
       done(insufficientPermissions(roles.join(', ')));
       return;
     }
+    done();
+  };
+}
+
+export function requireClientAccess() {
+  return function checkClientAccess(
+    request: FastifyRequest,
+    _reply: FastifyReply,
+    done: (err?: Error) => void,
+  ): void {
+    const user = request.user;
+    if (!user) {
+      done(invalidToken());
+      return;
+    }
+
+    // Admin panel users can access any client
+    if (user.panel === 'admin') {
+      done();
+      return;
+    }
+
+    // Client panel users can only access their own client
+    const params = request.params as { clientId?: string; id?: string };
+    const requestedClientId = params.clientId ?? params.id;
+
+    if (requestedClientId && user.clientId && requestedClientId !== user.clientId) {
+      done(new ApiError(
+        'CLIENT_ACCESS_DENIED',
+        'You can only access your own client resources',
+        403,
+      ));
+      return;
+    }
+
     done();
   };
 }

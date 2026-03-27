@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import {
   createProtectedDirectorySchema,
   updateProtectedDirectorySchema,
@@ -12,7 +12,8 @@ import { ApiError } from '../../shared/errors.js';
 
 export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin', 'support'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientAccess());
 
   const base = '/clients/:clientId/domains/:domainId/protected-directories';
 

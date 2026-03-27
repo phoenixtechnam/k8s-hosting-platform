@@ -102,7 +102,7 @@ describe('auth routes', () => {
   });
 
   it('GET /api/v1/auth/me should return user info with valid token', async () => {
-    const token = app.jwt.sign({ sub: 'u1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const token = app.jwt.sign({ sub: 'u1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/me',
@@ -138,7 +138,7 @@ describe('auth routes', () => {
   });
 
   it('PATCH /api/v1/auth/password should return 400 with missing fields', async () => {
-    const token = app.jwt.sign({ sub: 'u1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const token = app.jwt.sign({ sub: 'u1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/auth/password',
@@ -151,7 +151,7 @@ describe('auth routes', () => {
   });
 
   it('PATCH /api/v1/auth/password should return 400 when new_password is too short', async () => {
-    const token = app.jwt.sign({ sub: 'u1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const token = app.jwt.sign({ sub: 'u1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/auth/password',
@@ -164,7 +164,7 @@ describe('auth routes', () => {
   });
 
   it('PATCH /api/v1/auth/password should return 401 with wrong current password', async () => {
-    const token = app.jwt.sign({ sub: 'u1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const token = app.jwt.sign({ sub: 'u1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/auth/password',
@@ -177,7 +177,7 @@ describe('auth routes', () => {
   });
 
   it('PATCH /api/v1/auth/password should return 200 on successful password change', async () => {
-    const token = app.jwt.sign({ sub: 'u1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const token = app.jwt.sign({ sub: 'u1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/v1/auth/password',

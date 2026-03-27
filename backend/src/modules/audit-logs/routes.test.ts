@@ -65,8 +65,8 @@ describe('audit-logs routes', () => {
     await app.register(auditLogRoutes, { prefix: '/api/v1' });
     await app.ready();
 
-    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'admin', iat: Math.floor(Date.now() / 1000) });
-    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read-only', iat: Math.floor(Date.now() / 1000) });
+    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
   });
 
   afterAll(async () => {
@@ -138,7 +138,7 @@ describe('audit-logs routes', () => {
   });
 
   it('should return 403 for billing role', async () => {
-    const billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', iat: Math.floor(Date.now() / 1000) });
+    const billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/audit-logs',
@@ -148,7 +148,7 @@ describe('audit-logs routes', () => {
   });
 
   it('should return 403 for support role', async () => {
-    const supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', iat: Math.floor(Date.now() / 1000) });
+    const supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/audit-logs',

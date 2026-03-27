@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { createSshKeySchema } from './schema.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
@@ -7,7 +7,8 @@ import { ApiError } from '../../shared/errors.js';
 
 export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('admin', 'support'));
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientAccess());
 
   // GET /api/v1/clients/:clientId/ssh-keys
   app.get('/clients/:clientId/ssh-keys', async (request) => {

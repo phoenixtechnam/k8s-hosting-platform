@@ -100,12 +100,16 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     const user = await service.findOrCreateOidcUser(app.db, idToken);
 
     // Issue platform JWT
-    const token = app.jwt.sign({
+    const oidcJwtPayload: Record<string, unknown> = {
       sub: user.id,
-      role: user.roleName as 'admin' | 'billing' | 'support' | 'read-only',
+      role: user.roleName,
+      panel: user.panel ?? 'admin',
       exp: Math.floor(Date.now() / 1000) + 86400,
       iat: Math.floor(Date.now() / 1000),
-    });
+      jti: crypto.randomUUID(),
+    };
+    if (user.clientId) oidcJwtPayload.clientId = user.clientId;
+    const token = app.jwt.sign(oidcJwtPayload as any);
 
     // Redirect back to frontend with token
     const frontendRedirect = pkce.frontendRedirect;
@@ -115,6 +119,8 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       email: user.email,
       fullName: user.fullName,
       role: user.roleName,
+      panel: user.panel ?? 'admin',
+      clientId: user.clientId ?? null,
     }));
 
     return reply.redirect(`${frontendRedirect}${separator}token=${token}&user=${userJson}`);
@@ -150,14 +156,14 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   // ─── Admin: OIDC Settings CRUD ─────────────────────────────────────────────
 
   app.get('/admin/oidc/settings', {
-    onRequest: [authenticate, requireRole('admin')],
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async () => {
     const settings = await service.getOidcSettings(app.db);
     return success(settings);
   });
 
   app.put('/admin/oidc/settings', {
-    onRequest: [authenticate, requireRole('admin')],
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const input = request.body as {
       issuer_url: string;
@@ -177,7 +183,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/admin/oidc/test', {
-    onRequest: [authenticate, requireRole('admin')],
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async () => {
     const result = await service.testOidcConnection(app.db);
     return success(result);

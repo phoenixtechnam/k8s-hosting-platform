@@ -132,7 +132,9 @@ describe('authenticateUser', () => {
               email: 'user@example.com',
               passwordHash: await hashNewPassword(password),
               fullName: 'Test User',
-              roleName: 'admin',
+              roleName: 'super_admin',
+              panel: 'admin',
+              clientId: null,
               status: 'active',
             }]),
           }),
@@ -147,7 +149,9 @@ describe('authenticateUser', () => {
       id: 'u1',
       email: 'user@example.com',
       fullName: 'Test User',
-      role: 'admin',
+      role: 'super_admin',
+      panel: 'admin',
+      clientId: undefined,
     });
     expect(updateFn).toHaveBeenCalled();
   });

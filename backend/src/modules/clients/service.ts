@@ -1,5 +1,6 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
-import { clients, domains, workloads, cronJobs } from '../../db/schema.js';
+import bcrypt from 'bcrypt';
+import { clients, domains, workloads, cronJobs, users } from '../../db/schema.js';
 import { clientNotFound, duplicateEntry, operationNotAllowed } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
@@ -28,7 +29,32 @@ export async function createClient(db: Database, input: CreateClientInput, creat
   });
 
   const [created] = await db.select().from(clients).where(eq(clients.id, id));
-  return created;
+
+  // Auto-create client_admin user with generated password
+  const generatedPassword = generateStrongPassword();
+  const passwordHash = await bcrypt.hash(generatedPassword, 12);
+  const clientUserId = crypto.randomUUID();
+
+  await db.insert(users).values({
+    id: clientUserId,
+    email: input.company_email,
+    passwordHash,
+    fullName: input.company_name,
+    roleName: 'client_admin',
+    panel: 'client',
+    clientId: id,
+    status: 'active',
+    emailVerifiedAt: new Date(),
+  }).onDuplicateKeyUpdate({ set: { clientId: sql`VALUES(client_id)` } });
+
+  return { ...created, _generatedPassword: generatedPassword, _clientUserId: clientUserId };
+}
+
+function generateStrongPassword(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*';
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
 }
 
 export async function getClientById(db: Database, id: string) {
