@@ -6,8 +6,8 @@ const exec = promisify(execFile);
 
 /**
  * BIND9 DNS provider via rndc (remote name daemon control).
- * Uses `rndc` for zone management and `nsupdate` for record CRUD.
- * Requires rndc and nsupdate binaries available on the system PATH.
+ * Uses ONLY rndc commands — no nsupdate dependency.
+ * Requires rndc binary on the system PATH and BIND 9.11+.
  */
 export class RndcDnsProvider implements DnsProviderAdapter {
   readonly providerType = 'rndc';
@@ -22,9 +22,14 @@ export class RndcDnsProvider implements DnsProviderAdapter {
     ];
   }
 
+  private async rndc(...args: string[]): Promise<string> {
+    const { stdout } = await exec('rndc', [...this.rndcArgs(), ...args]);
+    return stdout;
+  }
+
   async testConnection(): Promise<{ status: 'ok' | 'error'; message?: string; version?: string }> {
     try {
-      const { stdout } = await exec('rndc', [...this.rndcArgs(), 'status']);
+      const stdout = await this.rndc('status');
       const versionMatch = stdout.match(/version:\s*(.+)/i);
       return { status: 'ok', message: 'BIND9 connected via rndc', version: versionMatch?.[1]?.trim() };
     } catch (err) {
@@ -34,8 +39,7 @@ export class RndcDnsProvider implements DnsProviderAdapter {
 
   async listZones(): Promise<DnsZone[]> {
     try {
-      const { stdout } = await exec('rndc', [...this.rndcArgs(), 'zonestatus']);
-      // Parse rndc zonestatus output — simplified
+      const stdout = await this.rndc('zonestatus');
       const zones: DnsZone[] = [];
       const matches = stdout.matchAll(/name:\s*(\S+)/g);
       for (const match of matches) {
@@ -53,48 +57,34 @@ export class RndcDnsProvider implements DnsProviderAdapter {
     return zones.find((z) => z.name === normalized) ?? null;
   }
 
-  async createZone(name: string, kind: 'Native' | 'Master'): Promise<DnsZone> {
+  async createZone(name: string, _kind: 'Native' | 'Master'): Promise<DnsZone> {
     const existing = await this.getZone(name);
     if (existing) return existing;
 
     const normalized = name.endsWith('.') ? name : `${name}.`;
-    // rndc addzone requires a zone configuration string
-    await exec('rndc', [...this.rndcArgs(), 'addzone', normalized, `{ type master; file "${normalized}zone"; allow-update { key "${this.config.rndc_key_name}"; }; };`]);
-    return { name: normalized, kind, serial: 1 };
+    const zoneConfig = `{ type master; file "${normalized}zone"; allow-update { key "${this.config.rndc_key_name}"; }; };`;
+    await this.rndc('addzone', normalized, zoneConfig);
+    return { name: normalized, kind: 'Master', serial: 1 };
   }
 
   async deleteZone(name: string): Promise<void> {
     const normalized = name.endsWith('.') ? name : `${name}.`;
-    await exec('rndc', [...this.rndcArgs(), 'delzone', normalized]);
+    await this.rndc('delzone', normalized);
   }
 
-  async listRecords(zone: string): Promise<DnsRecord[]> {
-    // BIND doesn't have a direct "list records" API via rndc
-    // Would need to use `dig axfr` or parse zone file
-    // For now, return empty — records are managed via nsupdate
+  async listRecords(_zone: string): Promise<DnsRecord[]> {
+    // BIND does not expose record listing via rndc.
+    // Records are tracked in the platform's local dns_records table.
     return [];
   }
 
-  private async nsupdate(commands: string[]): Promise<void> {
-    const input = [
-      `server ${this.config.server_host}`,
-      `key ${this.config.rndc_key_algorithm}:${this.config.rndc_key_name} ${this.config.rndc_key_secret}`,
-      ...commands,
-      'send',
-      'quit',
-    ].join('\n');
-
-    await exec('nsupdate', [], { input } as any);
-  }
-
   async createRecord(zone: string, input: DnsRecordInput): Promise<DnsRecord> {
-    const name = input.name.endsWith('.') ? input.name : `${input.name}.${zone}.`;
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const name = input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
     const content = input.type === 'MX' && input.priority ? `${input.priority} ${input.content}` : input.content;
 
-    await this.nsupdate([
-      `zone ${zone}`,
-      `update add ${name} ${input.ttl ?? 3600} ${input.type} ${content}`,
-    ]);
+    // rndc addrecord zone name ttl type content (BIND 9.11+)
+    await this.rndc('addrecord', normalized, name, String(input.ttl ?? 3600), input.type, content);
 
     return {
       id: `${name}|${input.type}|${input.content}`,
@@ -104,26 +94,22 @@ export class RndcDnsProvider implements DnsProviderAdapter {
   }
 
   async updateRecord(zone: string, recordId: string, input: Partial<DnsRecordInput>): Promise<DnsRecord> {
+    // rndc doesn't support atomic update — delete old + add new
+    await this.deleteRecord(zone, recordId);
     const [name, type, oldContent] = recordId.split('|');
-    // Delete old, add new
-    await this.nsupdate([
-      `zone ${zone}`,
-      `update delete ${name} ${type}`,
-      `update add ${name} ${input.ttl ?? 3600} ${input.type ?? type} ${input.content ?? oldContent}`,
-    ]);
-
-    return {
-      id: `${name}|${input.type ?? type}|${input.content ?? oldContent}`,
-      type: input.type ?? type, name, content: input.content ?? oldContent,
-      ttl: input.ttl ?? 3600, priority: input.priority ?? null,
-    };
+    return this.createRecord(zone, {
+      type: input.type ?? type,
+      name: input.name ?? name,
+      content: input.content ?? oldContent,
+      ttl: input.ttl ?? 3600,
+      priority: input.priority,
+    });
   }
 
   async deleteRecord(zone: string, recordId: string): Promise<void> {
-    const [name, type] = recordId.split('|');
-    await this.nsupdate([
-      `zone ${zone}`,
-      `update delete ${name} ${type}`,
-    ]);
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const [name, type, content] = recordId.split('|');
+    // rndc delrecord zone name type content (BIND 9.11+)
+    await this.rndc('delrecord', normalized, name, type, content);
   }
 }
