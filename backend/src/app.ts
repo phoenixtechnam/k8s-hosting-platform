@@ -28,6 +28,7 @@ import { protectedDirectoryRoutes } from './modules/protected-directories/routes
 import { sshKeyRoutes } from './modules/ssh-keys/routes.js';
 import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
+import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -155,6 +156,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(sshKeyRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });
+  await app.register(dnsServerRoutes, { prefix: '/api/v1' });
 
   return app;
 }

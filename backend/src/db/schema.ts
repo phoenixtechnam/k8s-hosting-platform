@@ -135,6 +135,22 @@ export const domains = mysqlTable('domains', {
   index('domains_status_idx').on(table.status),
 ]);
 
+// ─── DNS Servers (External Providers) ───
+
+export const dnsServers = mysqlTable('dns_servers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  displayName: varchar('display_name', { length: 255 }).notNull(),
+  providerType: mysqlEnum('provider_type', ['powerdns', 'rndc', 'cloudflare', 'route53', 'hetzner', 'mock']).notNull(),
+  connectionConfigEncrypted: varchar('connection_config_encrypted', { length: 2000 }).notNull(),
+  zoneDefaultKind: mysqlEnum('zone_default_kind', ['Native', 'Master']).notNull().default('Native'),
+  isDefault: int('is_default').notNull().default(0),
+  enabled: int('enabled').notNull().default(1),
+  lastHealthCheck: timestamp('last_health_check'),
+  lastHealthStatus: varchar('last_health_status', { length: 50 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
+
 export const workloads = mysqlTable('workloads', {
   id: varchar('id', { length: 36 }).primaryKey(),
   clientId: varchar('client_id', { length: 36 }).notNull(),

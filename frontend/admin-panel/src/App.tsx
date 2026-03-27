@@ -16,6 +16,7 @@ import Security from '@/pages/Security';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
 import OidcSettings from '@/pages/OidcSettings';
+import DnsServers from '@/pages/DnsServers';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Settings />} />
             <Route path="settings/oidc" element={<OidcSettings />} />
+            <Route path="settings/dns" element={<DnsServers />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

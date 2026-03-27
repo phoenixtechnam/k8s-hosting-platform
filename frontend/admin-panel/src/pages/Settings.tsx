@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, ChevronRight } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, ChevronRight } from 'lucide-react';
 
 const platformConfig = [
   { label: 'Platform Name', value: 'K8s Hosting Platform' },
@@ -50,6 +50,23 @@ export default function Settings() {
           <div>
             <h2 className="text-base font-semibold text-gray-900">OIDC / SSO Configuration</h2>
             <p className="text-sm text-gray-500">Configure external identity provider for single sign-on</p>
+          </div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link
+        to="/settings/dns"
+        className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors"
+        data-testid="dns-settings-link"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-50 text-green-600">
+            <Globe size={20} />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">DNS Servers</h2>
+            <p className="text-sm text-gray-500">Manage external DNS servers for domain provisioning</p>
           </div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
