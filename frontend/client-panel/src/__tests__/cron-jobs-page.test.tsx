@@ -21,7 +21,7 @@ vi.mock('@/lib/api-client', () => ({
 
 const mockApiFetch = vi.mocked(apiFetch);
 
-const MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
+const _MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
 const MOCK_JOBS = [
   { id: 'cj1', clientId: 'c1', name: 'daily-backup', schedule: '0 2 * * *', command: '/bin/backup.sh', enabled: 1, lastRunAt: '2026-01-10T02:00:00Z', lastRunStatus: 'success', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-10T02:00:00Z' },
   { id: 'cj2', clientId: 'c1', name: 'cleanup', schedule: '0 0 * * 0', command: '/bin/cleanup.sh', enabled: 0, lastRunAt: null, lastRunStatus: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' },

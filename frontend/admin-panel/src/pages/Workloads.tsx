@@ -255,6 +255,7 @@ function AvailableWorkloadsTab() {
   const [search, setSearch] = useState('');
   const [repoFilter, setRepoFilter] = useState('');
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [expandedImageId, setExpandedImageId] = useState<string | null>(null);
   const { data: response, isLoading, isError, error } = useContainerImages();
   const { data: reposResponse } = useWorkloadRepos();
   const syncRepo = useSyncWorkloadRepo();
@@ -385,35 +386,52 @@ function AvailableWorkloadsTab() {
                   const sourceName = sourceRepoId ? repoMap.get(sourceRepoId) ?? 'Repository' : 'Built-in';
                   const tags = imageRecord.tags as readonly string[] | undefined;
 
+                  const isExpanded = expandedImageId === image.id;
+                  const resourceCpu = imageRecord.resourceCpu as string | undefined;
+                  const resourceMemory = imageRecord.resourceMemory as string | undefined;
+                  const minPlan = imageRecord.minPlan as string | undefined;
+                  const hasDockerfile = imageRecord.hasDockerfile as number | undefined;
+                  const envVars = imageRecord.envVars as Record<string, string>[] | undefined;
+
                   return (
-                    <tr key={image.id} className="transition-colors hover:bg-gray-50">
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2">
-                          <Container size={14} className="text-gray-400" />
-                          <span className="font-medium text-gray-900">{image.name}</span>
-                          {tags && tags.length > 0 && (
-                            <div className="flex gap-1">
-                              {tags.map((tag) => (
-                                <span
-                                  key={tag}
-                                  className="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500"
-                                >
-                                  {tag}
-                                </span>
-                              ))}
+                    <tr key={image.id} className="transition-colors hover:bg-gray-50 cursor-pointer" onClick={() => setExpandedImageId(isExpanded ? null : image.id)}>
+                      <td colSpan={5} className="p-0">
+                        <div className="flex items-center">
+                          <div className="flex-1 px-5 py-3.5">
+                            <div className="flex items-center gap-2">
+                              <Container size={14} className="text-gray-400" />
+                              <span className="font-medium text-gray-900">{image.name}</span>
+                              {tags && tags.length > 0 && (
+                                <div className="flex gap-1">{tags.map((tag) => (
+                                  <span key={tag} className="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500">{tag}</span>
+                                ))}</div>
+                              )}
                             </div>
-                          )}
+                          </div>
+                          <div className="px-5 py-3.5 text-sm text-gray-600">{image.imageType}</div>
+                          <div className="hidden px-5 py-3.5 text-sm font-mono text-gray-500 md:block">{image.registryUrl ?? '—'}</div>
+                          <div className="px-5 py-3.5 text-sm text-gray-600">{sourceName}</div>
+                          <div className="px-5 py-3.5"><StatusBadge status={image.status as 'active' | 'pending' | 'error'} /></div>
                         </div>
-                      </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-600">{image.imageType}</td>
-                      <td className="hidden px-5 py-3.5 text-sm font-mono text-gray-500 md:table-cell">
-                        {image.registryUrl ?? '—'}
-                      </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-600" data-testid="image-source">
-                        {sourceName}
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <StatusBadge status={image.status as 'active' | 'pending' | 'error'} />
+                        {isExpanded && (
+                          <div className="border-t border-gray-100 bg-gray-50 px-5 py-4" data-testid={`image-detail-${image.id}`}>
+                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                              <div><span className="text-xs font-medium text-gray-500">CPU</span><p className="text-sm text-gray-900">{resourceCpu ?? 'Default'}</p></div>
+                              <div><span className="text-xs font-medium text-gray-500">Memory</span><p className="text-sm text-gray-900">{resourceMemory ?? 'Default'}</p></div>
+                              <div><span className="text-xs font-medium text-gray-500">Min Plan</span><p className="text-sm text-gray-900">{minPlan ?? 'Any'}</p></div>
+                              <div><span className="text-xs font-medium text-gray-500">Dockerfile</span><p className="text-sm text-gray-900">{hasDockerfile ? 'Yes' : 'No'}</p></div>
+                            </div>
+                            {envVars && envVars.length > 0 && (
+                              <div className="mt-3">
+                                <span className="text-xs font-medium text-gray-500">Environment Variables</span>
+                                <div className="mt-1 flex flex-wrap gap-1">{envVars.map((v, i) => (
+                                  <span key={i} className="rounded bg-gray-200 px-2 py-0.5 text-xs font-mono text-gray-700">{Object.keys(v)[0]}</span>
+                                ))}</div>
+                              </div>
+                            )}
+                            <div className="mt-3"><span className="text-xs font-medium text-gray-500">Code</span><p className="text-sm font-mono text-gray-700">{image.code}</p></div>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

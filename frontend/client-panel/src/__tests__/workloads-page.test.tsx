@@ -21,7 +21,7 @@ vi.mock('@/lib/api-client', () => ({
 
 const mockApiFetch = vi.mocked(apiFetch);
 
-const MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
+const _MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
 const MOCK_WORKLOADS = [
   { id: 'w1', clientId: 'c1', name: 'my-app', containerImageId: 'img1', replicaCount: 2, cpuRequest: '0.5', memoryRequest: '512Mi', status: 'running', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
   { id: 'w2', clientId: 'c1', name: 'worker', containerImageId: 'img2', replicaCount: 1, cpuRequest: '0.25', memoryRequest: '256Mi', status: 'stopped', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },

@@ -1,8 +1,27 @@
 import { eq, and } from 'drizzle-orm';
 import { dnsRecords, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
+
+const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+
+async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
+  try {
+    const servers = await getActiveServers(db);
+    for (const server of servers) {
+      try {
+        const provider = getProviderForServer(server, encryptionKey());
+        if (action === 'create') {
+          await provider.createRecord(domainName, { type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 3600, priority: record.priority ?? undefined });
+        } else if (action === 'delete' && record.id) {
+          await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
+        }
+      } catch { /* DNS sync failure shouldn't block — log and continue */ }
+    }
+  } catch { /* no servers configured */ }
+}
 
 async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
   const [domain] = await db
@@ -51,6 +70,15 @@ export async function createDnsRecord(
     .select()
     .from(dnsRecords)
     .where(eq(dnsRecords.id, id));
+
+  // Sync to external DNS servers
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (domain) {
+    await syncRecordToProviders(db, domain.domainName, 'create', {
+      type: input.record_type, name: input.record_name ?? '@', content: input.record_value,
+      ttl: input.ttl, priority: input.priority,
+    });
+  }
 
   return created;
 }
@@ -113,4 +141,13 @@ export async function deleteDnsRecord(
   }
 
   await db.delete(dnsRecords).where(eq(dnsRecords.id, recordId));
+
+  // Sync deletion to external DNS servers
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (domain && record.recordType && record.recordValue) {
+    await syncRecordToProviders(db, domain.domainName, 'delete', {
+      type: record.recordType, name: record.recordName ?? '@', content: record.recordValue ?? '',
+      id: recordId,
+    });
+  }
 }

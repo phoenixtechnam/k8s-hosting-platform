@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UserSettings from '../pages/UserSettings';
-import { apiFetch } from '@/lib/api-client';
+import '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn(),

@@ -22,7 +22,7 @@ vi.mock('@/lib/api-client', () => ({
 
 const mockApiFetch = vi.mocked(apiFetch);
 
-const MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
+const _MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
 const MOCK_DOMAIN = {
   id: 'd1', clientId: 'c1', domainName: 'example.com', status: 'active',
   dnsMode: 'cname', sslAutoRenew: 1, createdAt: '2026-01-10T00:00:00Z',
@@ -83,7 +83,7 @@ describe('Client DomainDetail page', () => {
   });
 
   it('shows domain not found for invalid domain', async () => {
-    mockApiFetch.mockImplementation((url: string) => {
+    mockApiFetch.mockImplementation((_url: string) => {
       return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } });
     });
     render(<DomainDetail />, { wrapper: createWrapper() });

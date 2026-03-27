@@ -7,33 +7,22 @@ import Settings from '../pages/Settings';
 vi.mock('../hooks/use-auth', () => ({
   useAuth: vi.fn(() => ({
     user: { id: 'admin-1', email: 'admin@platform.local', fullName: 'Admin User', role: 'admin' },
-    token: 'test-token',
-    isAuthenticated: true,
-    isLoading: false,
-    error: null,
-    login: vi.fn(),
-    logout: vi.fn(),
-    initialize: vi.fn(),
+    token: 'test-token', isAuthenticated: true, isLoading: false, error: null,
+    login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
   })),
 }));
 
-vi.mock('../hooks/use-password', () => ({
-  useChangePassword: vi.fn(() => ({
-    mutateAsync: vi.fn().mockResolvedValue({ data: { message: 'Password updated successfully' } }),
-    isPending: false,
+vi.mock('../hooks/use-dashboard', () => ({
+  usePlatformStatus: vi.fn(() => ({
+    data: { data: { status: 'healthy', version: '0.1.0', timestamp: '2026-03-27T00:00:00Z' } },
+    isLoading: false,
   })),
 }));
 
 function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { readonly children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
+    return <QueryClientProvider client={queryClient}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>;
   };
 }
 
@@ -44,20 +33,20 @@ describe('Admin Settings page', () => {
     expect(screen.getByText('Platform Settings')).toBeInTheDocument();
   });
 
-  it('shows Platform Configuration section', () => {
+  it('shows Platform Status section with API data', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('platform-config-section')).toBeInTheDocument();
-    expect(screen.getByText('Platform Configuration')).toBeInTheDocument();
+    expect(screen.getByText('Platform Status')).toBeInTheDocument();
     expect(screen.getByText('K8s Hosting Platform')).toBeInTheDocument();
     expect(screen.getByText('0.1.0')).toBeInTheDocument();
-    expect(screen.getByText('Production')).toBeInTheDocument();
-    expect(screen.getByText('24 hours')).toBeInTheDocument();
-    expect(screen.getByText('100 req/min')).toBeInTheDocument();
+    expect(screen.getByText('healthy')).toBeInTheDocument();
   });
 
-  it('shows environment variables note in Platform Configuration', () => {
+  it('shows links to OIDC, DNS, and Plan settings', () => {
     render(<Settings />, { wrapper: createWrapper() });
-    expect(screen.getByText('Configuration is managed via environment variables.')).toBeInTheDocument();
+    expect(screen.getByTestId('oidc-settings-link')).toBeInTheDocument();
+    expect(screen.getByTestId('dns-settings-link')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-settings-link')).toBeInTheDocument();
   });
 
   it('does not show Profile section (moved to user menu)', () => {
