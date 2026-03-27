@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import {
-  Shield, Loader2, AlertCircle, CheckCircle, Plus, Trash2, Plug,
+  Shield, Loader2, AlertCircle, CheckCircle, Plus, Trash2, Plug, Edit,
   Save, X, AlertTriangle, KeyRound,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -23,6 +23,9 @@ export default function OidcSettings() {
     return <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-brand-500" /></div>;
   }
 
+  const hasAdminProvider = providers.some((p) => p.panelScope === 'admin' && p.enabled);
+  const hasClientProvider = providers.some((p) => p.panelScope === 'client' && p.enabled);
+
   return (
     <div className="space-y-6" data-testid="oidc-settings-page">
       <div className="flex items-center gap-3">
@@ -33,14 +36,23 @@ export default function OidcSettings() {
         </div>
       </div>
 
-      <GlobalSettingsSection settings={globalSettings} />
+      {/* Issue #5: Providers ABOVE auth settings */}
       <ProvidersSection providers={providers} />
+      <GlobalSettingsSection
+        settings={globalSettings}
+        hasAdminProvider={hasAdminProvider}
+        hasClientProvider={hasClientProvider}
+      />
     </div>
   );
 }
 
-function GlobalSettingsSection({ settings }: {
+// ─── Global Settings (below providers) ───────────────────────────────────────
+
+function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }: {
   readonly settings: { disableLocalAuthAdmin: boolean; disableLocalAuthClient: boolean; hasBreakGlassSecret: boolean } | undefined;
+  readonly hasAdminProvider: boolean;
+  readonly hasClientProvider: boolean;
 }) {
   const saveSettings = useSaveOidcGlobalSettings();
   const [disableAdmin, setDisableAdmin] = useState(settings?.disableLocalAuthAdmin ?? false);
@@ -48,6 +60,13 @@ function GlobalSettingsSection({ settings }: {
   const [breakGlassSecret, setBreakGlassSecret] = useState('');
   const [showWarning, setShowWarning] = useState(false);
   const [warningChecks, setWarningChecks] = useState({ tested: false, secretSet: false });
+
+  // Issue #4: break-glass disabled until admin provider exists
+  const canSetBreakGlass = hasAdminProvider;
+  // Issue #2: client toggle disabled until client provider exists
+  const canDisableClient = hasClientProvider;
+  // Issue #3: admin toggle disabled until admin provider + break-glass exists
+  const canDisableAdmin = hasAdminProvider && (settings?.hasBreakGlassSecret || breakGlassSecret.length > 0);
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -71,26 +90,35 @@ function GlobalSettingsSection({ settings }: {
     <form onSubmit={handleSave} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-4" data-testid="global-settings-section">
       <h2 className="text-lg font-semibold text-gray-900">Authentication Settings</h2>
 
-      <label className="flex items-start gap-3">
-        <input type="checkbox" checked={disableClient} onChange={(e) => setDisableClient(e.target.checked)} className="mt-1 h-4 w-4 rounded border-gray-300 text-brand-500" data-testid="disable-local-client-toggle" />
+      {/* Issue #2 */}
+      <label className={clsx('flex items-start gap-3', !canDisableClient && 'opacity-50')}>
+        <input type="checkbox" checked={disableClient} onChange={(e) => setDisableClient(e.target.checked)} disabled={!canDisableClient} className="mt-1 h-4 w-4 rounded border-gray-300 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-client-toggle" />
         <div>
           <span className="text-sm font-medium text-gray-700">Disable Local Auth for Client Panel</span>
-          <p className="text-xs text-gray-500">Clients must use SSO. Email/password login blocked.</p>
+          <p className="text-xs text-gray-500">
+            {canDisableClient ? 'Clients must use SSO. Email/password login blocked.' : 'Enable a client-scoped OIDC provider first.'}
+          </p>
         </div>
       </label>
 
-      <label className="flex items-start gap-3">
-        <input type="checkbox" checked={disableAdmin} onChange={(e) => setDisableAdmin(e.target.checked)} className="mt-1 h-4 w-4 rounded border-gray-300 text-brand-500" data-testid="disable-local-admin-toggle" />
+      {/* Issue #3 */}
+      <label className={clsx('flex items-start gap-3', !canDisableAdmin && 'opacity-50')}>
+        <input type="checkbox" checked={disableAdmin} onChange={(e) => setDisableAdmin(e.target.checked)} disabled={!canDisableAdmin} className="mt-1 h-4 w-4 rounded border-gray-300 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-admin-toggle" />
         <div>
           <span className="text-sm font-medium text-gray-700">Disable Local Auth for Admin Panel</span>
-          <p className="text-xs text-gray-500">Admins must use SSO. Requires a break-glass secret.</p>
+          <p className="text-xs text-gray-500">
+            {canDisableAdmin ? 'Admins must use SSO. Requires a break-glass secret.' : hasAdminProvider ? 'Set a break-glass secret first.' : 'Enable an admin-scoped OIDC provider and set a break-glass secret first.'}
+          </p>
         </div>
       </label>
 
-      <div>
+      {/* Issue #4 */}
+      <div className={clsx(!canSetBreakGlass && 'opacity-50')}>
         <label className="flex items-center gap-2 text-sm font-medium text-gray-700"><KeyRound size={14} /> Break-Glass Emergency Secret</label>
-        <input type="password" className={INPUT_CLASS} placeholder={settings?.hasBreakGlassSecret ? '(set — enter new value to change)' : 'Set emergency secret'} value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} data-testid="break-glass-input" />
-        <p className="mt-1 text-xs text-gray-500">Used at <code>/login?emergency=true</code> when SSO is down.</p>
+        <input type="password" className={INPUT_CLASS} placeholder={settings?.hasBreakGlassSecret ? '(set — enter new value to change)' : 'Set emergency secret'} value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} disabled={!canSetBreakGlass} data-testid="break-glass-input" />
+        <p className="mt-1 text-xs text-gray-500">
+          {canSetBreakGlass ? 'Used at /login?emergency=true when SSO is down.' : 'Enable an admin-scoped OIDC provider first.'}
+        </p>
       </div>
 
       {saveSettings.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{saveSettings.error instanceof Error ? saveSettings.error.message : 'Failed'}</div>}
@@ -122,6 +150,8 @@ function GlobalSettingsSection({ settings }: {
     </form>
   );
 }
+
+// ─── Providers Section ───────────────────────────────────────────────────────
 
 function ProvidersSection({ providers }: { readonly providers: readonly OidcProvider[] }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -173,11 +203,60 @@ function AddProviderForm({ onClose }: { readonly onClose: () => void }) {
   );
 }
 
+// Issue #1: ProviderRow with inline edit
 function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
   const update = useUpdateOidcProvider();
   const del = useDeleteOidcProvider();
   const test = useTestOidcProvider();
   const [confirmDel, setConfirmDel] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    display_name: provider.displayName,
+    issuer_url: provider.issuerUrl,
+    client_id: provider.clientId,
+    client_secret: '',
+    panel_scope: provider.panelScope as 'admin' | 'client',
+  });
+
+  const handleSaveEdit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await update.mutateAsync({
+        id: provider.id,
+        display_name: editForm.display_name,
+        issuer_url: editForm.issuer_url,
+        client_id: editForm.client_id,
+        client_secret: editForm.client_secret || undefined,
+        panel_scope: editForm.panel_scope,
+      });
+      setEditing(false);
+    } catch { /* error shown */ }
+  };
+
+  if (editing) {
+    return (
+      <form onSubmit={handleSaveEdit} className="bg-gray-50 px-5 py-4 space-y-3" data-testid={`edit-provider-${provider.id}`}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div><label className="block text-xs font-medium text-gray-700">Display Name</label><input type="text" className={INPUT_CLASS} value={editForm.display_name} onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Issuer URL</label><input type="url" className={INPUT_CLASS} value={editForm.issuer_url} onChange={(e) => setEditForm({ ...editForm, issuer_url: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Client ID</label><input type="text" className={INPUT_CLASS} value={editForm.client_id} onChange={(e) => setEditForm({ ...editForm, client_id: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Client Secret</label><input type="password" className={INPUT_CLASS} placeholder="(unchanged)" value={editForm.client_secret} onChange={(e) => setEditForm({ ...editForm, client_secret: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700">Panel Scope</label>
+            <select className={INPUT_CLASS} value={editForm.panel_scope} onChange={(e) => setEditForm({ ...editForm, panel_scope: e.target.value as 'admin' | 'client' })}>
+              <option value="admin">Admin Panel</option><option value="client">Client Panel</option>
+            </select>
+          </div>
+        </div>
+        {update.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{update.error instanceof Error ? update.error.message : 'Failed'}</div>}
+        <div className="flex gap-2 justify-end">
+          <button type="button" onClick={() => setEditing(false)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button type="submit" disabled={update.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+            {update.isPending && <Loader2 size={12} className="animate-spin" />} Save
+          </button>
+        </div>
+      </form>
+    );
+  }
 
   return (
     <div className="px-5 py-4" data-testid={`provider-${provider.id}`}>
@@ -188,6 +267,7 @@ function ProviderRow({ provider }: { readonly provider: OidcProvider }) {
           <span className={clsx('rounded-full px-2 py-0.5 text-xs font-medium', provider.panelScope === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700')}>{provider.panelScope}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50" data-testid={`edit-provider-${provider.id}`}><Edit size={12} /></button>
           <button type="button" onClick={() => update.mutate({ id: provider.id, enabled: !provider.enabled })} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50" data-testid={`toggle-provider-${provider.id}`}>{provider.enabled ? 'Disable' : 'Enable'}</button>
           <button type="button" onClick={() => test.mutate(provider.id)} disabled={test.isPending} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50" data-testid={`test-provider-${provider.id}`}>{test.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}</button>
           {confirmDel ? (
