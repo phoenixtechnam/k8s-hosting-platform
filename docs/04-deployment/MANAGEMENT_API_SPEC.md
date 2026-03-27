@@ -308,7 +308,7 @@ Create a new client **(Admin only)**.
 
 **Side Effects:**
 - Creates Kubernetes namespace: `client-{id}`
-- Provisions shared pod if plan requires it
+- Provisions dedicated pod in `client-{id}` namespace
 - Creates initial DNS zone
 - Sends welcome email to client
 - Logs event to audit trail
@@ -491,7 +491,7 @@ The `plan` field on a client is **immutable** — it cannot be changed via PATCH
 4. **Suspend** the old client (`PATCH /api/v1/clients/{old_id}` → `status: suspended`)
 5. **Delete** the old client once migration is verified (`DELETE /api/v1/clients/{old_id}`)
 
-> **Future improvement:** A dedicated `POST /api/v1/clients/{id}/plan-change` endpoint could automate this workflow, handling resource limit changes, pod migration (shared→dedicated or vice versa), and data transfer in a single operation. This is deferred to Phase 2.
+> **Future improvement:** A dedicated `POST /api/v1/clients/{id}/plan-change` endpoint could automate this workflow, handling ResourceQuota changes and feature flag updates in a single operation. Since all clients use dedicated pods (ADR-024), plan upgrades only require ResourceQuota edits — no pod migration. This is deferred to Phase 2.
 
 **Downgrade considerations:**
 - If the new plan has lower limits (storage, domains, databases), the admin must ensure the customer's current usage fits within the new plan's limits before migration

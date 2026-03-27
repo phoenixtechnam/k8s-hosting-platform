@@ -907,7 +907,7 @@ Adding or removing a variable triggers a pod restart after confirmation.
 
 | Feature | Specification | Phase |
 |---------|---------------|-------|
-| **Namespace list** | All namespaces: `platform`, shared pod pools, and per-client namespaces — with pod count, CPU/memory used, ResourceQuota status | 1 |
+| **Namespace list** | All namespaces: `platform` and per-client `client-{id}` namespaces — with pod count, CPU/memory used, ResourceQuota status | 1 |
 | **Namespace detail** | Per-namespace: pod list, resource usage, active NetworkPolicies, ResourceQuota, LimitRange | 1 |
 | **ResourceQuota status** | View per-namespace quota (CPU, memory, storage, pod count) vs. actual usage — visual gauge | 1 |
 | **Namespace creation** | Create a new client namespace with ResourceQuota and default-deny NetworkPolicy (Phase 2 — currently done by Management API automatically) | 2 |
@@ -957,9 +957,9 @@ Resource limits per plan:
 
 | Plan | CPU request / limit | Memory request / limit | Pod model |
 |------|--------------------|-----------------------|-----------|
-| Starter | Shared pool (2 vCPU / 4Gi per pool pod, 20–50 clients) | Same | Shared (VirtualHost) |
-| Business | `100m` / `1000m` | `256Mi` / `1Gi` | Dedicated namespace |
-| Premium | `200m` / `2000m` | `512Mi` / `4Gi` | Dedicated namespace |
+| Starter | `50m` / `500m` | `64Mi` / `512Mi` | Dedicated pod in `client-{id}` namespace |
+| Business | `100m` / `1000m` | `256Mi` / `1Gi` | Dedicated pod in `client-{id}` namespace |
+| Premium | `200m` / `2000m` | `512Mi` / `4Gi` | Dedicated pod in `client-{id}` namespace |
 
 See also: `HOSTING_PLANS.md`, `SECURITY_ARCHITECTURE.md` (Pod Security Standards: `baseline` for client workloads; `imagePullPolicy: IfNotPresent` for catalog images, `Always` for platform services).
 
@@ -1078,7 +1078,7 @@ Unhealthy services display a Critical banner. Clicking any row navigates to the 
 
 **Requirement:** View and manage Kubernetes PersistentVolumeClaims and Longhorn volumes — for storage health monitoring, capacity management, snapshot management, and volume expansion.
 
-Storage class: `longhorn`. Client workload PVCs are mounted at `/storage/customers/{id}/` inside shared pods (Starter) or at the container's working directory in dedicated pods (Business/Premium). Plan storage defaults: Starter 5 Gi, Business 20 Gi, Premium 50 Gi.
+Storage class: `longhorn`. All client workload PVCs are mounted at `/storage/customers/{id}/` inside their dedicated pod in the `client-{id}` namespace (ADR-024). Plan storage defaults: Starter 5 Gi, Business 20 Gi, Premium 50 Gi.
 
 See also: `STORAGE_DATABASES.md`, `SLI_SLO_DEFINITION.md` (Storage SLO: backup success rate 99.5%, restore success rate 99.0%).
 

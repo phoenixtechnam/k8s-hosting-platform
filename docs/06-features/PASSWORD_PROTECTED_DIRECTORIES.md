@@ -17,7 +17,7 @@ This document specifies the **password-protected directories** feature, allowing
 - **Path-based Protection** — Protect specific directories (e.g., `/admin/`, `/private/`, `/assets/staging/`)
 - **Multiple Users** — Create multiple username/password combinations per protected directory
 - **Admin & Client Management** — Both admin panel and client self-service
-- **Works Everywhere** — Shared pods, dedicated pods, all PHP versions
+- **Works Everywhere** — All plans use dedicated pods, all PHP versions
 - **Standard Tools** — Uses industry-standard `.htpasswd` format (bcrypt hashing)
 - **API-Driven** — Full REST API for automation
 
@@ -140,24 +140,26 @@ Browser dialog:
 
 ## Configuration Architecture
 
-### Shared Pod Implementation
+### Dedicated Pod Implementation
 
-**NGINX Configuration (per customer, per protected directory):**
+Each client has their own dedicated pod (ADR-024). Password protection is configured within the client's own web server config.
+
+**NGINX Configuration (per protected directory):**
 
 ```nginx
-# Customer: acme, Protected directory: /admin/
+# Protected directory: /admin/
 location ~ ^/admin/ {
   auth_basic "Restricted Area: Admin";
-  auth_basic_user_file /var/www/acme/.htpasswd-admin;
-  
+  auth_basic_user_file /var/www/html/.htpasswd-admin;
+
   # Continue normal PHP processing
   try_files $uri $uri/ /index.php?$query_string;
-  
+
   # Pass to FPM with auth info
   location ~ \.php$ {
-    fastcgi_pass unix:/var/run/php-fpm-acme.sock;
+    fastcgi_pass 127.0.0.1:9000;
     include fastcgi.conf;
-    
+
     # Optional: Pass authenticated user to PHP
     fastcgi_param REMOTE_USER $remote_user;
     fastcgi_param AUTH_USER $remote_user;
@@ -241,19 +243,12 @@ data:
 
 ### File Locations
 
-**Shared Pods:**
-```
-/var/www/{customer_id}/.htpasswd-{dirname}
-/var/www/acme/.htpasswd-admin        (1.2 KB)
-/var/www/acme/.htpasswd-staging      (1.1 KB)
-/var/www/acme/.htpasswd-downloads    (1.3 KB)
-```
-
-**Dedicated Pods:**
+**All Plans (dedicated pods — ADR-024):**
 ```
 /var/www/html/.htpasswd-{dirname}
 /var/www/html/.htpasswd-admin
 /var/www/html/.htpasswd-staging
+/var/www/html/.htpasswd-downloads
 ```
 
 ### File Permissions
@@ -1159,8 +1154,7 @@ protected_directory_user_expiring_soon              # Users expiring < 7 days
 
 ### Integration (Week 2)
 
-- [ ] Shared pod NGINX config template update
-- [ ] Dedicated pod ConfigMap generation
+- [ ] Dedicated pod web server config generation
 - [ ] Integration with existing domain lifecycle
 - [ ] Delete cascade (when domain/client deleted)
 
@@ -1205,7 +1199,7 @@ protected_directory_user_expiring_soon              # Users expiring < 7 days
 
 ## Related Documents
 
-- [`../01-core/SHARED_POD_IMPLEMENTATION.md`](../01-core/SHARED_POD_IMPLEMENTATION.md) — NGINX configuration and templates
+- [`../01-core/WORKLOAD_DEPLOYMENT.md`](../01-core/WORKLOAD_DEPLOYMENT.md) — Dedicated pod provisioning and catalog images
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — API endpoint specifications
 - [`./CLIENT_PANEL_FEATURES.md`](./CLIENT_PANEL_FEATURES.md) — Client panel features and UI
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel features

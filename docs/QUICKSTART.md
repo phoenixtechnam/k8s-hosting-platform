@@ -95,7 +95,7 @@ A **Kubernetes-based web hosting platform** that replaces Plesk with:
   ├── PLATFORM_ARCHITECTURE.md    Core design decisions, catalogs, diagrams
   ├── HOSTING_PLANS.md            Plan tier definitions & features
   ├── WORKLOAD_DEPLOYMENT.md      Deployment models & scaling
-  ├── SHARED_POD_IMPLEMENTATION.md  Shared pod architecture details
+  ├── SHARED_POD_IMPLEMENTATION.md  Superseded by ADR-024 (historical reference)
   ├── DATABASE_SCHEMA.md          Complete database schema
   ├── DEPENDENCIES_AND_RISKS.md   Dependencies & risk analysis
   ├── EXTERNAL_BILLING_INTEGRATION.md  Billing gateway integration
@@ -210,19 +210,19 @@ The following topics are not yet covered by dedicated documentation and should b
 - **Single-tenant:** Each customer gets isolated instance (Moodle, Keycloak, etc.)
 - **Multi-tenant:** One shared instance serves multiple customers (Nextcloud, Gitea)
 
-### **Hosting Plans**
-- **Starter:** Shared pods, cost-optimized (~$5-8/mo)
-- **Business:** Dedicated pods, better isolation (~$15-25/mo)
-- **Premium:** Dedicated resources, support, WAF (~$40-60/mo)
+### **Hosting Plans (ADR-024: dedicated pods for all)**
+- **Starter:** Dedicated pod, resource-limited (~$5-8/mo)
+- **Business:** Dedicated pod, higher limits (~$15-25/mo)
+- **Premium:** Dedicated pod + database/cache, WAF, support (~$40-60/mo)
 
 ### **Backup Strategy**
 - **Cluster Backups:** Platform-managed, free to customers
 - **Customer Backups:** User-created, counted toward disk quota
 
 ### **Workload Model**
-- **Shared Pods:** Multiple client sites in same pod (Starter)
-- **Dedicated Pods:** One pod per customer (Business/Premium)
+- **Dedicated Pods:** One pod per client in `client-{id}` namespace (all plans)
 - **Scale-to-Zero:** Pods scale down when idle (KEDA, optional)
+- **Plan Upgrades:** ResourceQuota edits, no pod migration
 
 ---
 

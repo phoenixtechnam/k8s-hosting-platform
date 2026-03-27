@@ -1743,8 +1743,8 @@ The platform uses **geographic sharding** to distribute clients across multiple 
 ## ✅ What's Included
 
 ### Platform Features
-- ✅ Shared pod model (Starter clients, 50 per pod)
-- ✅ Dedicated pods (Business/Premium clients)
+- ✅ Dedicated pod per client (all plans, ADR-024)
+- ✅ Namespace-level isolation (`client-{id}` per client)
 - ✅ Centralized workload catalog (Apache+PHP, Node, Python, Ruby, Java, .NET, static)
 - ✅ Application catalog (Nextcloud, Jitsi, BigBlueButton, Gitea, Mattermost, etc.)
 - ✅ Hybrid email (self-hosted + external provider option)
@@ -1773,10 +1773,9 @@ The platform uses **geographic sharding** to distribute clients across multiple 
 - ✅ Backup verification
 
 ### Cost Optimization
-- ✅ Shared resources for Starter clients
 - ✅ Resource overcommit (Burstable QoS)
-- ✅ Density optimization (50+ Starter per shared pod)
-- ✅ Scale-to-zero for idle Business clients
+- ✅ Scale-to-zero for idle clients (KEDA)
+- ✅ ResourceQuota-based plan differentiation
 - ✅ Transparent pricing (no bandwidth surprises)
 
 ---
@@ -1919,9 +1918,9 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | `HOSTING_PLANS.md` | Plan tier definitions (Starter, Business, Premium); resource limits; add-ons |
 | `PLATFORM_ARCHITECTURE.md` | High-level architecture overview with component diagram |
 | `POWERDNS_INTEGRATION.md` | PowerDNS REST API integration; zone management; AXFR replication config |
-| `SHARED_POD_IMPLEMENTATION.md` | Shared NGINX+PHP pod model for Starter clients; resource isolation |
+| `SHARED_POD_IMPLEMENTATION.md` | Superseded by ADR-024 — historical reference only |
 | `WEB_SERVER_PHP_VERSION_SWITCHING.md` | PHP version switching mechanism; catalog image change workflow |
-| `WORKLOAD_DEPLOYMENT.md` | Client workload types (shared, dedicated); deployment triggers; rollout strategy |
+| `WORKLOAD_DEPLOYMENT.md` | Client workload types (dedicated pods for all plans); deployment triggers; rollout strategy |
 
 ### 02-operations/ — Day-to-Day Operations
 

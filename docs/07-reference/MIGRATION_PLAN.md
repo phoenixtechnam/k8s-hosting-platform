@@ -48,8 +48,8 @@ All panels (Plesk, cPanel, Virtualmin):
 
 - [ ] Provision client namespace on K8s
 - [ ] Create PersistentVolumeClaim for site files
-- [ ] **(Starter)** Mount PV into shared pod pool, generate VirtualHost config
-- [ ] **(Business/Premium)** Deploy dedicated web pod with matched catalog image
+- [ ] Deploy dedicated web pod with matched catalog image in `client-{id}` namespace (ADR-024)
+- [ ] Apply ResourceQuota and LimitRange based on hosting plan
 - [ ] Create Ingress rules for all client domains (primary + add-ons)
 - [ ] Provision SSL certificates via cert-manager (Let's Encrypt)
 - [ ] Create database + user on shared MariaDB/PostgreSQL instance

@@ -79,9 +79,9 @@ When a catalog image reaches end-of-life:
 
 ## Client Site Deployment — Three Methods
 
-Clients deploy code by placing files in their PersistentVolume. The container (shared or dedicated) serves whatever files are in the volume. **No container builds happen per-client.** See **ADR-016** for the full architectural decision and canonical file path layout.
+Clients deploy code by placing files in their PersistentVolume. The dedicated container serves whatever files are in the volume. **No container builds happen per-client.** See **ADR-016** for the full architectural decision and canonical file path layout.
 
-All three methods work identically for both Starter (shared pod) and Business/Premium (dedicated pod) clients — the PV is the same regardless of deployment mode. All methods access the same underlying filesystem:
+All three methods work identically for all clients — every client has a dedicated pod in their `client-{id}` namespace (ADR-024). All methods access the same underlying filesystem:
 
 ```
 /storage/customers/{customer_id}/
@@ -179,20 +179,13 @@ When a new client is provisioned via the management panel, the Management API or
 14. Create webmail Ingress (e.g., `webmail.client.com`) if `webmail_domain` set
 15. Send welcome email with credentials and panel URL
 
-### Starter Plan (Additional Steps)
-
-13. Mount client's PV into shared Apache+PHP pod pool at `/storage/customers/{id}/` (canonical path — see ADR-016)
-14. Generate Apache VirtualHost config, add to shared pod ConfigMap
-15. Create PHP-FPM pool for client with `open_basedir` restriction
-16. Gracefully reload Apache in shared pod
-
-### Business / Premium / Custom Plan (Additional Steps)
+### All Plans (Additional Steps — ADR-024: dedicated pod per client)
 
 13. Apply ResourceQuota and LimitRange based on hosting plan
 14. Create ServiceAccount with namespace-scoped RBAC
 15. Deploy dedicated web pod using **client-selected catalog image**
 16. _(Premium only)_ Provision dedicated Redis pod in client namespace
-17. _(Premium/Custom only)_ Optional: provision dedicated database in client namespace
+17. _(Premium/Custom only)_ Optional: provision dedicated MariaDB StatefulSet in client namespace (database is a premium add-on)
 
 ## GitOps for Platform
 

@@ -46,7 +46,7 @@
 
 ### Q: How does this handle scaling?
 
-**A:** Horizontal scaling by adding worker nodes. Vertical scaling (bigger instances) not recommended. Shared pod architecture handles 50-100 Starter clients per worker node.
+**A:** Horizontal scaling by adding worker nodes. Vertical scaling (bigger instances) not recommended. Dedicated pods with scale-to-zero (KEDA) handle 50-100 clients per worker node efficiently.
 
 ---
 
@@ -81,17 +81,17 @@
 ### Q: What are the three hosting plans?
 
 **A:**
-- **Starter:** Shared pod, shared database/cache, 1 domain, 7-day backups, $5.99/mo
-- **Business:** Dedicated pod, shared database/cache, 5 domains, 14-day backups, $19.99/mo
-- **Premium:** Dedicated pod/database/cache, unlimited domains, 30-day backups, WAF, $49.99/mo
+- **Starter:** Dedicated pod, no database (add-on available), 1 domain, 7-day backups, $5.99/mo
+- **Business:** Dedicated pod, no database (add-on available), 5 domains, 14-day backups, $19.99/mo
+- **Premium:** Dedicated pod + dedicated database/cache, unlimited domains, 30-day backups, WAF, $49.99/mo
 
 ### Q: Can I customize plans?
 
 **A:** Yes, fully. Every parameter (CPU, memory, storage, backup retention, features) is configurable per-client via overrides, without changing their plan.
 
-### Q: How does shared pod work for Starter?
+### Q: Do all clients get their own pod?
 
-**A:** Multiple Starter clients share Apache+PHP pods via Apache VirtualHost configuration. Each client gets isolated document root via PHP-FPM pools with `open_basedir` restriction. Efficient and secure.
+**A:** Yes. Per ADR-024, every client gets a dedicated pod in their own `client-{id}` namespace regardless of plan. Plan differentiation is through resource limits and features, not isolation model. There is no shared pod model.
 
 ### Q: Can a client upgrade/downgrade?
 

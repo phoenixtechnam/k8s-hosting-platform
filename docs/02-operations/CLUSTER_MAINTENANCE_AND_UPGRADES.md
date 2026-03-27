@@ -1345,7 +1345,7 @@ Data directory: /var/lib/rancher/k3s/
      kubectl -n ingress-nginx get pods -o wide
    - Verify DNS Ingress Controller added new node IP to ingress.platform.com:
      dig ingress.platform.com +short
-   - Increase shared web pod pool if needed
+   - Verify client pods are scheduling on new node as expected
    - Update Longhorn replication factor if going from 1→2+ nodes
 ```
 

@@ -29,11 +29,7 @@ kubectl top nodes
 
 ### Step 3: Check pod health
 ```bash
-# Starter client (shared pod)
-kubectl -n hosting get pods
-kubectl -n hosting logs <shared-pod> --tail=50
-
-# Business/Premium client (dedicated pod)
+# All clients have dedicated pods in client-{id} namespace (ADR-024)
 kubectl -n client-{id} get pods
 kubectl -n client-{id} describe pod <pod-name>
 kubectl -n client-{id} logs <pod-name> --tail=50

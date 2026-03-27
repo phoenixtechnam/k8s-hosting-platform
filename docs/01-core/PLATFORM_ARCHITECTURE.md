@@ -107,7 +107,7 @@
 | **Target Revenue**          | **$0-5k/month** (initial phase)           | Small but sustainable platform; can scale to higher revenue |
 | **Positioning**             | **Premium**                               | Focus on quality/features over low-cost competition; higher margins |
 | **Pricing Model**           | **NOT in scope for this project**         | Focus on technical infrastructure; business team will define pricing strategy |
-| **Starter Plan**            | **Business decision (out of scope)**      | Shared pods, cost optimization; pricing TBD by business |
+| **Starter Plan**            | **Business decision (out of scope)**      | Dedicated pod (ADR-024), resource-limited; pricing TBD by business |
 | **Business Plan**           | **Business decision (out of scope)**      | Dedicated pods, better isolation; pricing TBD by business |
 | **Premium Plan**            | **Business decision (out of scope)**      | Dedicated resources, support, features; pricing TBD by business |
 

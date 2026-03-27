@@ -30,7 +30,7 @@ Every HA feature below is an **opt-in upgrade**. The "Initial" column shows what
 | **Shared PostgreSQL** | 1 instance (no replica) | Primary + replica (auto-failover) | Same as MariaDB |
 | **Shared Redis** | 1 instance | Redis Sentinel (auto-failover) | When cache downtime affects clients |
 | **Ingress controller** | DaemonSet (1 per worker, auto) | Scales automatically with workers | Automatic — DaemonSet adds pod per new worker |
-| **Shared web pod pool** | 2 pods | 3-5 pods across nodes | When adding worker nodes |
+| **Client web pods** | 1 dedicated pod per client | Spread across nodes via anti-affinity | Automatic with node scaling |
 | **Storage (Longhorn)** | Replication factor 1 | Replication factor 2-3 | When adding storage capacity |
 | **Pod disruption budgets** | None | Set for platform services (min 1 avail) | When running multi-node |
 | **Anti-affinity rules** | None | Spread platform services across nodes | When running 3+ nodes |

@@ -135,7 +135,7 @@ gh api repos/hosting-platform/hosting-platform/branches/staging/protection \
 > **Phase 1 resource optimization (single-node 4vCPU/8Gi):**
 > - **No Longhorn** — Use k3s built-in `local-path` provisioner. Longhorn replication factor 1 adds overhead with zero benefit on one node. Deferred to Phase 2 (multi-node).
 > - **No Harbor** — Use GitHub Container Registry or `ctr image import` for pre-built images. Harbor (~1Gi RAM) is too heavy for single-node. Deferred to Phase 2.
-> - **1 shared pod replica** (not 2) — No HA benefit on single node. Scale to 2 when adding second worker.
+> - **Dedicated pods per client** (ADR-024) — Each client gets their own pod in a `client-{id}` namespace. Scale-to-zero via KEDA for idle sites.
 > - See `INFRASTRUCTURE_SIZING.md` for the full resource budget.
 
 **GitHub Pull Request Template for Infrastructure:**

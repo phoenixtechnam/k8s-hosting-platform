@@ -11,7 +11,7 @@
 
 This document defines the full runtime contract for Node.js catalog images (`node22`, `node20`) on the platform. It covers the Dockerfile specification, startup contract, port convention, environment variable injection, health check requirements, dependency installation, Kubernetes manifests, and a step-by-step customer deployment guide.
 
-Node.js workloads are **only available on Business and Premium plans** (dedicated pod model). They are not supported on the Starter plan (shared Apache+PHP pods).
+Node.js workloads are **only available on Business and Premium plans** (dedicated pod model). They are not supported on the Starter plan (Apache+PHP only). All plans use dedicated pods per ADR-024.
 
 ---
 

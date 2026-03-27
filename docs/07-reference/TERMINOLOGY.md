@@ -52,7 +52,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Database** — Persistent data store (MariaDB, PostgreSQL, SQLite). Platform runs shared MariaDB and PostgreSQL; premium clients can have dedicated instances.
 
-**Dedicated Pod** — Pod belonging solely to one client (Business/Premium plans). Contrast: **Shared Pod**.
+**Dedicated Pod** — Pod belonging solely to one client. Per ADR-024, all clients (including Starter) get a dedicated pod in their own `client-{id}` namespace.
 
 **Deployment** — Kubernetes resource describing how to create, replicate, and update pods.
 
@@ -174,7 +174,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Phase 2 (Scale)** — Post-MVP: HA options, enterprise features, additional runtimes, compliance.
 
-**PHP-FPM** — PHP FastCGI Process Manager. Runs PHP code, isolated per-client in shared pods via separate pool.
+**PHP-FPM** — PHP FastCGI Process Manager. Runs PHP code inside the client's dedicated pod.
 
 **Plan** — Hosting tier (Starter, Business, Premium, Custom). Defines features, resources, price.
 
@@ -220,7 +220,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **SFTP** — SSH File Transfer Protocol. Secure file upload/download. Platform provides per-client SFTP access.
 
-**Shared Pod** — Pod serving multiple Starter clients (via Apache VirtualHost). Contrast: **Dedicated Pod**.
+**Shared Pod** — _(Superseded by ADR-024)_ Previously described a pod serving multiple Starter clients. All clients now use dedicated pods.
 
 **Single-Tenant** — One client per application instance (e.g., BigBlueButton). Contrast: **Multi-Tenant**.
 
@@ -228,7 +228,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **SLO** — Service Level Objective. Target for SLI. Platform: 99.5% availability, < 1000ms p95 latency.
 
-**Starter Plan** — Entry-level plan: shared pod, shared database/cache, 7-day backups, 1 domain.
+**Starter Plan** — Entry-level plan: dedicated pod (ADR-024), no database (add-on available), 7-day backups, 1 domain.
 
 **StatefulSet** — Kubernetes workload managing stateful apps (databases with persistent identity). Used for MariaDB, PostgreSQL, Redis.
 
@@ -258,7 +258,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Velero** — Kubernetes backup/restore tool. Snapshots cluster state, etcd, PVs. Primary backup mechanism.
 
-**VirtualHost** — Apache configuration block routing HTTP requests to specific document root. Shared pods use multiple VirtualHosts.
+**VirtualHost** — Apache configuration block routing HTTP requests to specific document root. Each dedicated pod has its own VirtualHost config.
 
 **Volume** — Storage attached to a pod. Types: PersistentVolume (Longhorn), ConfigMap (config), Secret (credentials), etc.
 
@@ -272,7 +272,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Worker Node** — Kubernetes node running client workloads (pods). Contrast: **Control Plane**.
 
-**Workload** — Container(s) running client application. Types: shared pod (Starter), dedicated pod (Business/Premium), application (Nextcloud, etc.).
+**Workload** — Container(s) running client application. All clients use dedicated pods (ADR-024). Additional types: application instances (Nextcloud, etc.).
 
 **Workload Container Catalog** — Library of pre-built runtime images (PHP, Node, Python, etc.). See also **Application Catalog**.
 

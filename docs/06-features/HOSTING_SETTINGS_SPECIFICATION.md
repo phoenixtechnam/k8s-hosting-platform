@@ -76,8 +76,7 @@ This document specifies the **Hosting Settings** feature, enabling customers to 
 │    └─ PASS: All checks passed                                    │
 │                                                                  │
 │ 3. Route to appropriate pod:                                     │
-│    ├─ Shared pod (Starter): /storage/customers/acme/public/      │
-│    └─ Dedicated pod (Business/Premium): Mount /var/www/html      │
+│    └─ Dedicated pod (all plans): /storage/customers/{id}/         │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
           ↓

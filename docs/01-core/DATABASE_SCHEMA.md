@@ -135,7 +135,7 @@ collation-server = utf8mb4_unicode_ci
 
 ### Connection Pooling (ProxySQL)
 
-**Problem:** With 20-50 Starter clients per shared pod, each running PHP-FPM pools with up to 10 workers, a single pod can generate 200-500 concurrent database connections. With `max_connections = 200` (Phase 1 profile), this overflows quickly.
+**Problem:** With many clients each running their own dedicated pod with PHP-FPM workers, the total concurrent database connections can exceed MariaDB's `max_connections = 200` (Phase 1 profile).
 
 **Solution:** Deploy ProxySQL as a lightweight connection multiplexer between application pods and MariaDB.
 
@@ -174,7 +174,7 @@ spec:
 | Max frontend connections (app→ProxySQL) | 500 | 2000 |
 | Multiplexing ratio | 10:1 | 10:1 |
 | PHP-FPM workers per client | 5-10 | 5-10 |
-| Clients per shared pod | 10-20 (Phase 1) | 20-50 |
+| Clients with database add-on | 5-10 (Phase 1) | 20-50 |
 | Effective concurrent DB queries | ~50 | ~200 |
 
 **How it works:**
@@ -1080,20 +1080,9 @@ CREATE TABLE ssl_certificates (
   FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Shared pod pool assignments (which Starter client is on which pod)
-CREATE TABLE shared_pod_assignments (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  client_id BIGINT UNSIGNED NOT NULL,
-  pool_id VARCHAR(63) NOT NULL COMMENT 'e.g., hosting-pool-01',
-  pool_namespace VARCHAR(63) NOT NULL DEFAULT 'hosting',
-  assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  storage_subpath VARCHAR(255) NOT NULL COMMENT 'e.g., /storage/customers/{id}',
-
-  UNIQUE KEY idx_client_pool (client_id),
-  KEY idx_pool_id (pool_id),
-
-  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- NOTE: shared_pod_assignments table removed per ADR-024.
+-- All clients now get dedicated pods in client-{id} namespaces.
+-- Pod assignment is implicit: one pod per client namespace.
 
 -- Per-client hosting plan overrides
 CREATE TABLE hosting_plan_overrides (

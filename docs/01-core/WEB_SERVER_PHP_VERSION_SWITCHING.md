@@ -18,7 +18,7 @@ This specification defines how clients can **seamlessly switch between different
 - **Automatic configuration migration** — Convert Apache configs to NGINX where possible
 - **PHP version flexibility** — Change PHP versions independently of web server
 - **Rollback capability** — Automatic rollback on health check failure
-- **Plan-aware limitations** — Starter clients limited to Apache; Business/Premium can switch freely
+- **Plan-aware limitations** — Starter clients limited to Apache; Business/Premium can switch freely (all plans use dedicated pods)
 - **Full audit trail** — Track all switches with reasons and outcomes
 
 ### Use Cases
@@ -42,13 +42,13 @@ This specification defines how clients can **seamlessly switch between different
 
 | Catalog ID | Web Server | PHP Version | Status | Notes |
 |------------|-----------|------------|--------|-------|
-| `apache-php84` | Apache 2.4 | 8.4 | ✅ Active | Shared pod (Starter), Dedicated (Business/Premium) |
-| `apache-php83` | Apache 2.4 | 8.3 | ✅ Active | Shared pod (Starter), Dedicated (Business/Premium) |
+| `apache-php84` | Apache 2.4 | 8.4 | ✅ Active | All plans (dedicated pod) |
+| `apache-php83` | Apache 2.4 | 8.3 | ✅ Active | All plans (dedicated pod) |
 | `apache-php82` | Apache 2.4 | 8.2 | ⚠️ Deprecated | Still supported, migration recommended |
-| `nginx-php84` | NGINX 1.25+ | 8.4 | ✅ Active | Dedicated pods only (Business/Premium) |
-| `nginx-php83` | NGINX 1.25+ | 8.3 | ✅ Active | Dedicated pods only (Business/Premium) |
-| `wordpress-php84` | Apache 2.4 | 8.4 + WP optimized | ✅ Active | Shared/Dedicated, WordPress-specific |
-| `wordpress-php83` | Apache 2.4 | 8.3 + WP optimized | ✅ Active | Shared/Dedicated, WordPress-specific |
+| `nginx-php84` | NGINX 1.25+ | 8.4 | ✅ Active | Business/Premium only (dedicated pod) |
+| `nginx-php83` | NGINX 1.25+ | 8.3 | ✅ Active | Business/Premium only (dedicated pod) |
+| `wordpress-php84` | Apache 2.4 | 8.4 + WP optimized | ✅ Active | All plans (dedicated pod) |
+| `wordpress-php83` | Apache 2.4 | 8.3 + WP optimized | ✅ Active | All plans (dedicated pod) |
 
 ### Switching Matrix (Allowed Combinations)
 
@@ -63,8 +63,8 @@ This specification defines how clients can **seamlessly switch between different
 | `wordpress-php84` → `apache-php84` | ✅ Yes | ✅ Yes | ✅ Yes | Remove WordPress optimization |
 
 **Key Restrictions:**
-- **Starter clients (shared pods):** Apache only, can switch PHP versions
-- **Business/Premium (dedicated pods):** Full flexibility, can switch web servers and PHP versions
+- **Starter clients:** Apache only, can switch PHP versions (dedicated pod per client)
+- **Business/Premium clients:** Full flexibility, can switch web servers and PHP versions (dedicated pod per client)
 - **All plans:** Can switch to/from WordPress-optimized versions if on same web server
 
 ---
@@ -1040,12 +1040,12 @@ T+70s:  Cleanup complete
 
 ### Limitation 1: Starter Clients Cannot Use NGINX
 
-**Problem:** Starter clients run in shared Apache+PHP pods, cannot switch to NGINX (requires dedicated pod).
+**Problem:** Starter plan restricts web server choice to Apache for simplicity and support consistency.
 
 **Workaround:**
 ```
 If Starter client wants NGINX:
-1. Upgrade to Business plan
+1. Upgrade to Business plan (ResourceQuota edit, no pod migration)
    OR
 2. Use Apache but optimize PHP version
 ```
@@ -1053,7 +1053,7 @@ If Starter client wants NGINX:
 **Implementation:**
 - Block NGINX options in client panel for Starter clients
 - Show message: "Upgrade to Business plan to use NGINX"
-- Allow one-click upgrade link
+- Allow one-click upgrade request link
 
 ### Limitation 2: .htaccess Compatibility
 
@@ -1289,7 +1289,7 @@ Test 4: High error rate post-switch
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — API specification
 - [`../02-operations/CLIENT_PANEL_FEATURES.md`](../02-operations/CLIENT_PANEL_FEATURES.md) — Client panel
 - [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel
-- [`./SHARED_POD_IMPLEMENTATION.md`](./SHARED_POD_IMPLEMENTATION.md) — Shared pod architecture
+- [`./SHARED_POD_IMPLEMENTATION.md`](./SHARED_POD_IMPLEMENTATION.md) — Superseded by ADR-024 (historical reference only)
 
 ---
 

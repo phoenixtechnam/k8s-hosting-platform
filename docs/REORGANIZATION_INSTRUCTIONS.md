@@ -47,8 +47,7 @@
 #### 1.3 Create `01-core/WORKLOAD_DEPLOYMENT.md` (8 KB)
 - **Source:** INFRASTRUCTURE_PLAN.md sections 2.3, 4.3-4.4, 5.2
 - **Contents:**
-  - Shared pod architecture (Starter)
-  - Dedicated pod architecture (Business/Premium)
+  - Dedicated pod architecture (all plans, ADR-024)
   - Container selection process
   - Scale-to-zero (KEDA) strategy
   - Pod resource limits
@@ -261,7 +260,7 @@ mv RESTORE_SPECIFICATION.md 06-features/
 - CNI, Ingress, Service
 - Workload Container Catalog
 - Application Catalog
-- Shared Pod, Dedicated Pod
+- Dedicated Pod (all plans, ADR-024)
 - Scale-to-Zero
 - etc.
 

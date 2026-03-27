@@ -19,7 +19,7 @@ This document specifies the **file transfer** feature, enabling customers to upl
 - **Quota Management** — Per-user upload/download bandwidth limits, storage quota enforcement
 - **Chroot Jail** — Impossible for users to escape their assigned directory
 - **Audit Logging** — All file operations logged (upload, download, delete, rename) with user, IP, timestamp
-- **Works Everywhere** — Shared pods (Starter) and dedicated pods (Business/Premium)
+- **Works Everywhere** — All plans use dedicated pods in `client-{id}` namespaces (ADR-024)
 - **Web UI** — Optional file browser for non-technical customers (upload, download, delete, rename)
 - **Automatic Backups** — File change tracking for restore functionality
 - **API-Driven** — Full REST API for customer and admin management
