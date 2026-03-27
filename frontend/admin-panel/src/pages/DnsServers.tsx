@@ -131,12 +131,11 @@ controls {
     inet 0.0.0.0 port ${form.rndc_port} allow { PLATFORM_IP; } keys { "${form.rndc_key_name}"; };
 };
 
-# For each zone the platform should manage, add:
-# zone "example.com" {
-#     type master;
-#     file "/var/lib/bind/db.example.com";
-#     allow-update { key "${form.rndc_key_name}"; };
-# };`;
+# Add to options {} block to allow rndc to create new zones:
+options {
+    // ... existing options ...
+    allow-new-zones yes;
+};`;
 
   return (
     <form onSubmit={handleSubmit} className="border-b border-gray-100 bg-gray-50 p-4 space-y-3" data-testid={isEdit ? 'edit-dns-server-form' : 'add-dns-server-form'}>
