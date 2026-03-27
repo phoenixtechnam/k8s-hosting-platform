@@ -5,9 +5,8 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
 // In-memory PKCE state store (Phase 1). Replace with Redis in production.
-const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; expiresAt: number }>();
+const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; providerId: string; expiresAt: number }>();
 
-// Clean expired entries every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of pkceStore) {
@@ -16,55 +15,42 @@ setInterval(() => {
 }, 300_000);
 
 export async function oidcRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY
-    ?? process.env.OIDC_ENCRYPTION_KEY
-    ?? '0'.repeat(64); // fallback for dev (32 bytes hex)
+  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
 
-  // ─── Public: OIDC status (login page needs to know if SSO is enabled) ──────
+  // ─── Public: Auth status (login page) ──────────────────────────────────────
 
-  app.get('/auth/oidc/status', async () => {
-    const settings = await service.getOidcSettings(app.db);
-    return success({
-      enabled: Boolean(settings?.enabled),
-      disableLocalAuth: Boolean(settings?.enabled && settings?.disableLocalAuth),
-    });
+  app.get('/auth/oidc/status', async (request) => {
+    const query = request.query as { panel?: string };
+    const panel = (query.panel === 'client' ? 'client' : 'admin') as 'admin' | 'client';
+    const status = await service.getAuthStatus(app.db, panel);
+    return success(status);
   });
 
-  // ─── Public: Authorization redirect ────────────────────────────────────────
+  // ─── Public: Authorization redirect (per provider) ─────────────────────────
 
-  app.get('/auth/oidc/authorize', async (request, reply) => {
+  app.get('/auth/oidc/authorize/:providerId', async (request, reply) => {
+    const { providerId } = request.params as { providerId: string };
     const query = request.query as { redirect_uri?: string };
     const frontendCallback = query.redirect_uri;
-    if (!frontendCallback) {
-      throw new ApiError('MISSING_REDIRECT_URI', 'redirect_uri query parameter is required', 400);
-    }
+    if (!frontendCallback) throw new ApiError('MISSING_REDIRECT_URI', 'redirect_uri is required', 400);
 
     const state = crypto.randomUUID();
     const { codeVerifier, codeChallenge } = service.generatePkce();
 
-    // Store PKCE verifier + frontend redirect with 10 minute expiry
-    pkceStore.set(state, { codeVerifier, frontendRedirect: frontendCallback, expiresAt: Date.now() + 600_000 });
+    pkceStore.set(state, { codeVerifier, frontendRedirect: frontendCallback, providerId, expiresAt: Date.now() + 600_000 });
 
-    // Use a clean callback URL (no query params) so it matches Dex's registered redirect_uri exactly
     const host = request.headers.host ?? request.hostname;
     const backendCallback = `${request.protocol}://${host}/api/v1/auth/oidc/callback`;
 
-    const authUrl = await service.buildAuthorizationUrl(app.db, backendCallback, state, codeChallenge);
-
+    const authUrl = await service.buildAuthorizationUrl(app.db, providerId, backendCallback, state, codeChallenge);
     return reply.redirect(authUrl);
   });
 
   // ─── Public: OIDC callback ─────────────────────────────────────────────────
 
   app.get('/auth/oidc/callback', async (request, reply) => {
-    const query = request.query as {
-      code?: string;
-      state?: string;
-      error?: string;
-      error_description?: string;
-    };
+    const query = request.query as { code?: string; state?: string; error?: string; error_description?: string };
 
-    // On error, try to find the frontend redirect from state, fall back to /login
     if (query.error) {
       const pkce = query.state ? pkceStore.get(query.state) : undefined;
       if (pkce) pkceStore.delete(query.state!);
@@ -72,55 +58,34 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       return reply.redirect(`${redirect}?error=${encodeURIComponent(query.error_description ?? query.error)}`);
     }
 
-    if (!query.code || !query.state) {
-      throw new ApiError('OIDC_CALLBACK_INVALID', 'Missing code or state parameter', 400);
-    }
+    if (!query.code || !query.state) throw new ApiError('OIDC_CALLBACK_INVALID', 'Missing code or state', 400);
 
-    // Retrieve PKCE verifier + frontend redirect
     const pkce = pkceStore.get(query.state);
-    if (!pkce) {
-      throw new ApiError('OIDC_STATE_INVALID', 'Invalid or expired state parameter', 400);
-    }
+    if (!pkce) throw new ApiError('OIDC_STATE_INVALID', 'Invalid or expired state', 400);
     pkceStore.delete(query.state);
 
-    // Use the same clean callback URL for token exchange (must match what was sent to authorize)
     const host = request.headers.host ?? request.hostname;
     const callbackUrl = `${request.protocol}://${host}/api/v1/auth/oidc/callback`;
 
-    // Exchange code for tokens
-    const { idToken } = await service.exchangeCodeForTokens(
-      app.db,
-      query.code,
-      callbackUrl,
-      pkce.codeVerifier,
-      encryptionKey,
+    const { idToken, provider } = await service.exchangeCodeForTokens(
+      app.db, pkce.providerId, query.code, callbackUrl, pkce.codeVerifier, encryptionKey,
     );
 
-    // Find or create user
-    const user = await service.findOrCreateOidcUser(app.db, idToken);
+    const user = await service.findOrCreateOidcUser(app.db, idToken, provider.panelScope as 'admin' | 'client');
 
-    // Issue platform JWT
-    const oidcJwtPayload: Record<string, unknown> = {
-      sub: user.id,
-      role: user.roleName,
-      panel: user.panel ?? 'admin',
-      exp: Math.floor(Date.now() / 1000) + 86400,
-      iat: Math.floor(Date.now() / 1000),
+    const jwtPayload: Record<string, unknown> = {
+      sub: user.id, role: user.roleName, panel: user.panel ?? 'admin',
+      exp: Math.floor(Date.now() / 1000) + 86400, iat: Math.floor(Date.now() / 1000),
       jti: crypto.randomUUID(),
     };
-    if (user.clientId) oidcJwtPayload.clientId = user.clientId;
-    const token = app.jwt.sign(oidcJwtPayload as any);
+    if (user.clientId) jwtPayload.clientId = user.clientId;
+    const token = app.jwt.sign(jwtPayload as any);
 
-    // Redirect back to frontend with token
     const frontendRedirect = pkce.frontendRedirect;
     const separator = frontendRedirect.includes('?') ? '&' : '?';
     const userJson = encodeURIComponent(JSON.stringify({
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.roleName,
-      panel: user.panel ?? 'admin',
-      clientId: user.clientId ?? null,
+      id: user.id, email: user.email, fullName: user.fullName,
+      role: user.roleName, panel: user.panel ?? 'admin', clientId: user.clientId ?? null,
     }));
 
     return reply.redirect(`${frontendRedirect}${separator}token=${token}&user=${userJson}`);
@@ -128,64 +93,96 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Public: Backchannel logout ────────────────────────────────────────────
 
-  app.post('/auth/oidc/backchannel-logout', {
-    config: { rawBody: true },
-  }, async (request, reply) => {
+  app.post('/auth/oidc/backchannel-logout', async (request, reply) => {
     const body = request.body as { logout_token?: string } | string;
-
     let logoutToken: string;
     if (typeof body === 'string') {
-      // Form-encoded: logout_token=xxx
-      const params = new URLSearchParams(body);
-      logoutToken = params.get('logout_token') ?? '';
+      logoutToken = new URLSearchParams(body).get('logout_token') ?? '';
     } else {
       logoutToken = body?.logout_token ?? '';
     }
-
-    if (!logoutToken) {
-      throw new ApiError('MISSING_LOGOUT_TOKEN', 'logout_token is required', 400);
-    }
+    if (!logoutToken) throw new ApiError('MISSING_LOGOUT_TOKEN', 'logout_token is required', 400);
 
     const result = await service.handleBackchannelLogout(app.db, logoutToken);
     app.log.info({ loggedOutUsers: result.loggedOutUsers }, 'Backchannel logout processed');
-
-    // OIDC spec requires 200 OK response
     return reply.status(200).send();
   });
 
-  // ─── Admin: OIDC Settings CRUD ─────────────────────────────────────────────
+  // ─── Public: Break-glass emergency login ───────────────────────────────────
+
+  app.post('/auth/break-glass', {
+    config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
+  }, async (request, reply) => {
+    const body = request.body as { email?: string; password?: string; break_glass_secret?: string };
+    if (!body.email || !body.password || !body.break_glass_secret) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'email, password, and break_glass_secret are required', 400);
+    }
+
+    const user = await service.breakGlassLogin(app.db, body.email, body.password, body.break_glass_secret);
+
+    const jwtPayload: Record<string, unknown> = {
+      sub: user.id, role: user.role, panel: 'admin',
+      exp: Math.floor(Date.now() / 1000) + 86400,
+      iat: Math.floor(Date.now() / 1000), jti: crypto.randomUUID(),
+    };
+    const token = app.jwt.sign(jwtPayload as any);
+
+    return reply.send(success({ token, user, breakGlass: true }));
+  });
+
+  // ─── Admin: Provider CRUD ──────────────────────────────────────────────────
+
+  app.get('/admin/oidc/providers', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async () => success(await service.listProviders(app.db)));
+
+  app.post('/admin/oidc/providers', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request, reply) => {
+    const input = request.body as any;
+    if (!input.display_name || !input.issuer_url || !input.client_id || !input.client_secret || !input.panel_scope) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, issuer_url, client_id, client_secret, and panel_scope are required', 400);
+    }
+    const provider = await service.createProvider(app.db, input, encryptionKey);
+    reply.status(201).send(success(provider));
+  });
+
+  app.patch('/admin/oidc/providers/:id', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const input = request.body as any;
+    const updated = await service.updateProvider(app.db, id, input, encryptionKey);
+    return success(updated);
+  });
+
+  app.delete('/admin/oidc/providers/:id', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await service.deleteProvider(app.db, id);
+    reply.status(204).send();
+  });
+
+  app.post('/admin/oidc/providers/:id/test', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const result = await service.testProviderConnection(app.db, id);
+    return success(result);
+  });
+
+  // ─── Admin: Global Auth Settings ───────────────────────────────────────────
 
   app.get('/admin/oidc/settings', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
-  }, async () => {
-    const settings = await service.getOidcSettings(app.db);
-    return success(settings);
-  });
+  }, async () => success(await service.getGlobalSettings(app.db)));
 
   app.put('/admin/oidc/settings', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
-    const input = request.body as {
-      issuer_url: string;
-      client_id: string;
-      client_secret: string;
-      enabled?: boolean;
-      disable_local_auth?: boolean;
-      backchannel_logout_enabled?: boolean;
-    };
-
-    if (!input.issuer_url || !input.client_id || !input.client_secret) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'issuer_url, client_id, and client_secret are required', 400);
-    }
-
-    const settings = await service.saveOidcSettings(app.db, input, encryptionKey);
+    const input = request.body as any;
+    const settings = await service.saveGlobalSettings(app.db, input);
     return success(settings);
-  });
-
-  app.post('/admin/oidc/test', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin')],
-  }, async () => {
-    const result = await service.testOidcConnection(app.db);
-    return success(result);
   });
 }

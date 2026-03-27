@@ -33,18 +33,26 @@ export const users = mysqlTable('users', {
   uniqueIndex('users_oidc_unique').on(table.oidcIssuer, table.oidcSubject),
 ]);
 
-export const oidcSettings = mysqlTable('oidc_settings', {
+export const oidcProviders = mysqlTable('oidc_providers', {
   id: varchar('id', { length: 36 }).primaryKey(),
+  displayName: varchar('display_name', { length: 255 }).notNull(),
   issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
   clientId: varchar('client_id', { length: 255 }).notNull(),
   clientSecretEncrypted: varchar('client_secret_encrypted', { length: 500 }).notNull(),
+  panelScope: mysqlEnum('panel_scope', ['admin', 'client']).notNull(),
   enabled: int('enabled').notNull().default(0),
-  disableLocalAuth: int('disable_local_auth').notNull().default(0),
-  discoveryMetadata: json('discovery_metadata').$type<Record<string, unknown>>(),
-  jwksCache: json('jwks_cache').$type<Record<string, unknown>>(),
-  jwksCachedAt: timestamp('jwks_cached_at'),
   backchannelLogoutEnabled: int('backchannel_logout_enabled').notNull().default(0),
+  discoveryMetadata: json('discovery_metadata').$type<Record<string, unknown>>(),
+  displayOrder: int('display_order').notNull().default(0),
   createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
+
+export const oidcGlobalSettings = mysqlTable('oidc_global_settings', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  disableLocalAuthAdmin: int('disable_local_auth_admin').notNull().default(0),
+  disableLocalAuthClient: int('disable_local_auth_client').notNull().default(0),
+  breakGlassSecretHash: varchar('break_glass_secret_hash', { length: 255 }),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 });
 

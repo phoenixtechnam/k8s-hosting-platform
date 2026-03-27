@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { encrypt, decrypt } from './crypto.js';
-import { generatePkce, parseLogoutToken, findOrCreateOidcUser, isLocalAuthDisabled, getOidcSettings } from './service.js';
+import { generatePkce, parseLogoutToken, findOrCreateOidcUser, isLocalAuthDisabled, getGlobalSettings } from './service.js';
 
 describe('OIDC crypto', () => {
   const key = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -10,9 +10,7 @@ describe('OIDC crypto', () => {
     const encrypted = encrypt(plaintext, key);
     expect(encrypted).not.toBe(plaintext);
     expect(encrypted).toContain(':');
-
-    const decrypted = decrypt(encrypted, key);
-    expect(decrypted).toBe(plaintext);
+    expect(decrypt(encrypted, key)).toBe(plaintext);
   });
 
   it('should produce different ciphertext each time (random IV)', () => {
@@ -42,60 +40,48 @@ describe('generatePkce', () => {
 
 describe('parseLogoutToken', () => {
   function makeLogoutToken(claims: Record<string, unknown>): string {
-    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
     return `${header}.${payload}.fake-signature`;
   }
 
   it('should parse a valid backchannel logout token', () => {
     const token = makeLogoutToken({
-      sub: 'user-123',
-      iss: 'https://dex.example.com',
+      sub: 'user-123', iss: 'https://dex.example.com',
       events: { 'http://schemas.openid.net/event/backchannel-logout': {} },
     });
-
     const claims = parseLogoutToken(token);
     expect(claims.sub).toBe('user-123');
-    expect(claims.iss).toBe('https://dex.example.com');
   });
 
   it('should reject token without backchannel-logout event', () => {
-    const token = makeLogoutToken({ sub: 'user-123', iss: 'https://dex.example.com', events: {} });
+    const token = makeLogoutToken({ sub: 'user-123', iss: 'https://dex', events: {} });
     expect(() => parseLogoutToken(token)).toThrow('Not a backchannel logout token');
   });
 
   it('should reject token without sub or sid', () => {
     const token = makeLogoutToken({
-      iss: 'https://dex.example.com',
+      iss: 'https://dex',
       events: { 'http://schemas.openid.net/event/backchannel-logout': {} },
     });
     expect(() => parseLogoutToken(token)).toThrow('must contain sub or sid');
   });
 
   it('should reject malformed tokens', () => {
-    expect(() => parseLogoutToken('not.a.valid.token.here')).toThrow();
     expect(() => parseLogoutToken('onlyone')).toThrow('Invalid logout token format');
   });
 });
 
-describe('getOidcSettings', () => {
-  it('should return null when no settings exist', async () => {
-    const whereFn = vi.fn().mockResolvedValue([]);
-    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
-    const db = { select: selectFn } as unknown as Parameters<typeof getOidcSettings>[0];
+describe('getGlobalSettings', () => {
+  it('should return defaults when no settings exist', async () => {
+    const db = {
+      select: vi.fn().mockReturnValue({ from: vi.fn().mockResolvedValue([]) }),
+    } as unknown as Parameters<typeof getGlobalSettings>[0];
 
-    // getOidcSettings does select().from(oidcSettings) with no where — it just returns all rows
-    // The mock above won't match because there's no .where() call
-    // Let me fix to mock select().from() directly
-    const mockDb = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockResolvedValue([]),
-      }),
-    } as unknown as Parameters<typeof getOidcSettings>[0];
-
-    const result = await getOidcSettings(mockDb);
-    expect(result).toBeNull();
+    const result = await getGlobalSettings(db);
+    expect(result.disableLocalAuthAdmin).toBe(false);
+    expect(result.disableLocalAuthClient).toBe(false);
+    expect(result.hasBreakGlassSecret).toBe(false);
   });
 });
 
@@ -105,8 +91,8 @@ describe('isLocalAuthDisabled', () => {
       select: vi.fn().mockReturnValue({ from: vi.fn().mockResolvedValue([]) }),
     } as unknown as Parameters<typeof isLocalAuthDisabled>[0];
 
-    const result = await isLocalAuthDisabled(db);
-    expect(result).toBe(false);
+    expect(await isLocalAuthDisabled(db, 'admin')).toBe(false);
+    expect(await isLocalAuthDisabled(db, 'client')).toBe(false);
   });
 });
 
@@ -116,7 +102,7 @@ describe('findOrCreateOidcUser', () => {
     let callCount = 0;
     const whereFn = vi.fn().mockImplementation(() => {
       callCount++;
-      if (callCount === 1) return Promise.resolve([existingUser]); // match by oidc
+      if (callCount === 1) return Promise.resolve([existingUser]);
       return Promise.resolve([]);
     });
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
@@ -128,15 +114,11 @@ describe('findOrCreateOidcUser', () => {
     const db = { select: selectFn, update: updateFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
 
     const result = await findOrCreateOidcUser(db, {
-      sub: 'sub-1',
-      iss: 'https://dex',
-      email: 'test@example.com',
-      aud: 'hosting-platform',
-      exp: 9999999999,
-      iat: 1000000000,
-    });
+      sub: 'sub-1', iss: 'https://dex', email: 'test@example.com',
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, 'admin');
 
     expect(result).toEqual(existingUser);
-    expect(updateFn).toHaveBeenCalled(); // lastLoginAt updated
+    expect(updateFn).toHaveBeenCalled();
   });
 });

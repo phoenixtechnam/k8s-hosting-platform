@@ -56,8 +56,10 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
   }, async (request, reply) => {
-    // Check if local auth is disabled (OIDC-only mode)
-    if (await isLocalAuthDisabled(app.db)) {
+    // Check if local auth is disabled for the requested panel
+    const loginBody = request.body as Record<string, unknown>;
+    const loginPanel = (loginBody?.panel === 'client' ? 'client' : 'admin') as 'admin' | 'client';
+    if (await isLocalAuthDisabled(app.db, loginPanel)) {
       throw new ApiError('LOCAL_AUTH_DISABLED', 'Local authentication is disabled. Please use SSO to sign in.', 403);
     }
 
