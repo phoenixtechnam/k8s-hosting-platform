@@ -3,6 +3,7 @@ import { domains } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
+import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
@@ -28,6 +29,24 @@ export async function createDomain(db: Database, clientId: string, input: Create
   });
 
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
+
+  // Auto-provision DNS zone on all active DNS servers
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  try {
+    const activeServers = await getActiveServers(db);
+    for (const server of activeServers) {
+      try {
+        const provider = getProviderForServer(server, encryptionKey);
+        const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
+        await provider.createZone(input.domain_name, zoneKind);
+      } catch {
+        // DNS provisioning failure shouldn't block domain creation — log and continue
+      }
+    }
+  } catch {
+    // No DNS servers configured — that's fine
+  }
+
   return created;
 }
 

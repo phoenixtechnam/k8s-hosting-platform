@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Mail,
   Archive,
+  Users,
   Settings,
   X,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ const navItems = [
   { to: '/files', icon: FolderOpen, label: 'Files' },
   { to: '/email', icon: Mail, label: 'Email' },
   { to: '/backups', icon: Archive, label: 'Backups' },
+  { to: '/users', icon: Users, label: 'Users' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
 

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Copy, CheckCircle, KeyRound } from 'lucide-react';
 import { useCreateClient } from '@/hooks/use-clients';
 import { usePlans, useRegions } from '@/hooks/use-plans';
 
@@ -18,6 +18,8 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
   const createClient = useCreateClient();
+  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const plans = plansData?.data ?? [];
   const regions = regionsData?.data ?? [];
@@ -28,6 +30,8 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
     setContactEmail('');
     setPlanId('');
     setRegionId('');
+    setCreatedCredentials(null);
+    setCopied(false);
     createClient.reset();
   };
 
@@ -39,14 +43,20 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createClient.mutateAsync({
+      const result = await createClient.mutateAsync({
         company_name: companyName,
         company_email: companyEmail,
         contact_email: contactEmail || undefined,
         plan_id: planId,
         region_id: regionId,
       });
-      handleClose();
+      // Show generated credentials
+      const clientUser = (result as { data: { clientUser?: { email: string; generatedPassword: string } } }).data?.clientUser;
+      if (clientUser?.generatedPassword) {
+        setCreatedCredentials({ email: clientUser.email, password: clientUser.generatedPassword });
+      } else {
+        handleClose();
+      }
     } catch {
       // error displayed in modal
     }
@@ -69,13 +79,49 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
           </button>
         </div>
 
-        {createClient.error && (
+        {createdCredentials && (
+          <div className="space-y-4" data-testid="client-credentials">
+            <div className="flex items-center gap-2 text-green-600">
+              <CheckCircle size={20} />
+              <span className="text-sm font-medium">Client created successfully!</span>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <KeyRound size={16} className="text-amber-600" />
+                <span className="text-sm font-semibold text-amber-800">Client Portal Credentials</span>
+              </div>
+              <p className="text-xs text-amber-700 mb-3">Save these credentials now. The password will not be shown again.</p>
+              <div className="space-y-2 text-sm">
+                <div><span className="text-gray-500">Email:</span> <span className="font-mono font-medium text-gray-900">{createdCredentials.email}</span></div>
+                <div><span className="text-gray-500">Password:</span> <span className="font-mono font-medium text-gray-900">{createdCredentials.password}</span></div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(`Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                data-testid="copy-credentials"
+              >
+                {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
+                {copied ? 'Copied!' : 'Copy Credentials'}
+              </button>
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={handleClose} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="close-credentials">Done</button>
+            </div>
+          </div>
+        )}
+
+        {!createdCredentials && createClient.error && (
           <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="create-error">
             {createClient.error instanceof Error ? createClient.error.message : 'Failed to create client'}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-client-form">
+        {!createdCredentials && <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-client-form">
           <div>
             <label htmlFor="company-name" className="block text-sm font-medium text-gray-700">
               Company Name *
@@ -185,7 +231,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
               Create Client
             </button>
           </div>
-        </form>
+        </form>}
       </div>
     </div>
   );

@@ -39,12 +39,14 @@ const MOCK_AUDIT_ROWS = [
 ];
 
 function createMockDb(rows: readonly Record<string, unknown>[] = MOCK_AUDIT_ROWS) {
+  const limitFn = () => Promise.resolve([...rows]);
+  const orderByFn = () => ({ limit: limitFn });
+  const whereFn = () => ({ orderBy: orderByFn, limit: limitFn });
   return {
     select: () => ({
       from: () => ({
-        orderBy: () => ({
-          limit: () => Promise.resolve([...rows]),
-        }),
+        where: whereFn,
+        orderBy: orderByFn,
       }),
     }),
   };
