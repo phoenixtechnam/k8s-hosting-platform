@@ -21,25 +21,30 @@ This document defines:
 
 ---
 
-## Database Architecture Overview
+## Database Architecture Overview (ADR-024)
 
-### MariaDB (Percona)
+### Client Databases — Dedicated Per-Client
 
-```
-Master: percona-mysql-0.percona-mysql.hosting.svc.cluster.local:3306
-Replicas: percona-mysql-1, percona-mysql-2
-Purpose: Customer databases, shared tenant isolation
-Backup: Automated daily, 30-day retention
-```
-
-### PostgreSQL (CloudNativePG)
+Each client with the database add-on gets a dedicated MariaDB StatefulSet in their own `client-{id}` namespace. There is no shared database instance for customer data.
 
 ```
-Primary: postgres-primary.hosting.svc.cluster.local:5432
-Replicas: postgres-replica-1, postgres-replica-2
-Purpose: Platform metadata, PowerDNS zones, OIDC state
-Backup: Automated daily, 30-day retention
+Client DB: mariadb.client-{id}.svc.cluster.local:3306
+Isolation: Full namespace isolation (NetworkPolicy enforced)
+Credentials: Auto-generated, stored as K8s Secret in client namespace
+Backup: Automated daily mysqldump per client instance
 ```
+
+### Platform Database (MariaDB)
+
+```
+Platform DB: mariadb.platform.svc.cluster.local:3306
+Purpose: Platform metadata (users, clients, domains, settings)
+Access: Management API service account only
+```
+
+### PostgreSQL (Phase 2)
+
+PostgreSQL 16 will be available as an alternative client database type in Phase 2, using the same dedicated-per-client model.
 
 ---
 
