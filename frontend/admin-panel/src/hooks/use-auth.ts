@@ -36,6 +36,15 @@ export const useAuth = create<AuthState>((set) => ({
       try {
         const user = JSON.parse(userJson) as AuthUser;
         set({ token, user, isAuthenticated: true, isLoading: false });
+
+        // Verify token is still valid with backend (async, non-blocking)
+        apiFetch<{ data: { id: string; email: string; fullName: string; role: string } }>('/api/v1/auth/me')
+          .catch(() => {
+            // Token invalid — clear and redirect (handled by api-client 401 handler)
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('auth_user');
+            set({ token: null, user: null, isAuthenticated: false, isLoading: false });
+          });
       } catch {
         localStorage.removeItem('auth_token');
         localStorage.removeItem('auth_user');
