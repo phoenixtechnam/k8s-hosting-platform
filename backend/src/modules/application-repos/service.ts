@@ -7,7 +7,6 @@ import type { AddAppRepoInput } from './schema.js';
 
 interface CatalogFile {
   readonly applications?: readonly string[];
-  readonly workloads?: readonly string[];
 }
 
 type CatalogInput = CatalogFile | readonly CatalogEntry[];
@@ -16,14 +15,12 @@ interface CatalogEntry {
   readonly name: string;
 }
 
-// Supports both application manifest v3 (full) and workload manifest v1 (simple)
 interface ApplicationManifest {
   readonly name: string;
   readonly code: string;
   readonly version?: string;
   readonly description?: string;
   readonly category?: string;
-  readonly type?: string; // workload v1 field — used as category fallback
   readonly min_plan?: string;
   readonly tenancy?: string[];
   readonly components?: readonly Record<string, unknown>[];
@@ -33,14 +30,9 @@ interface ApplicationManifest {
   readonly health_check?: Record<string, unknown>;
   readonly parameters?: readonly Record<string, unknown>[];
   readonly tags?: readonly string[];
-  // Workload v1 fields (mapped to application catalog)
-  readonly env_vars?: readonly string[];
-  readonly image?: string | null;
-  readonly has_dockerfile?: boolean;
-  readonly ports?: readonly number[];
 }
 
-const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog';
+const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-application-catalog';
 
 async function validateRepoAccess(url: string, branch: string, authToken?: string | null): Promise<void> {
   const { owner, repo } = parseGithubUrl(url);
@@ -89,8 +81,8 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
         400,
       );
     }
-  } else if (catalogData && typeof catalogData === 'object' && ('applications' in catalogData || 'workloads' in catalogData)) {
-    const applications = (catalogData as CatalogFile).applications ?? (catalogData as CatalogFile).workloads;
+  } else if (catalogData && typeof catalogData === 'object' && 'applications' in catalogData) {
+    const applications = (catalogData as CatalogFile).applications;
     if (!applications || applications.length === 0) {
       throw new ApiError(
         'INVALID_CATALOG',
@@ -177,13 +169,13 @@ export async function syncRepo(db: Database, repoId: string) {
   try {
     const { owner, repo: repoName } = parseGithubUrl(repo.url);
 
-    // Fetch catalog.json — supports both array-of-objects and {applications:[...]} formats
+    // Fetch catalog.json — expects { applications: [...] } or array-of-objects format
     const catalogUrl = buildRawUrl(owner, repoName, repo.branch, 'catalog.json');
     const catalogRaw = await fetchJson<CatalogInput>(catalogUrl, repo.authToken);
 
     const entries: readonly CatalogEntry[] = Array.isArray(catalogRaw)
       ? catalogRaw
-      : ((catalogRaw as CatalogFile).applications ?? (catalogRaw as CatalogFile).workloads ?? []).map((name: string) => ({ name }));
+      : ((catalogRaw as CatalogFile).applications ?? []).map((name: string) => ({ name }));
 
     const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
     const manifestErrors: string[] = [];
@@ -223,7 +215,7 @@ export async function syncRepo(db: Database, repoId: string) {
         name: manifest.name,
         version: manifest.version ?? null,
         description: manifest.description ?? null,
-        category: manifest.category ?? manifest.type ?? null,
+        category: manifest.category ?? null,
         minPlan: manifest.min_plan ?? null,
         tenancy: (manifest.tenancy as unknown as Record<string, unknown> | null) ?? null,
         components: (manifest.components as unknown as Record<string, unknown> | null) ?? null,
@@ -231,7 +223,7 @@ export async function syncRepo(db: Database, repoId: string) {
         volumes: (manifest.volumes as unknown as Record<string, unknown> | null) ?? null,
         resources: (manifest.resources as unknown as Record<string, unknown> | null) ?? null,
         healthCheck: (manifest.health_check as unknown as Record<string, unknown> | null) ?? null,
-        parameters: (manifest.parameters ?? (manifest.env_vars ? manifest.env_vars.map(k => ({ key: k, label: k, type: 'string' })) : null)) as Record<string, unknown> | null,
+        parameters: (manifest.parameters as unknown as Record<string, unknown> | null) ?? null,
         tags: (manifest.tags as unknown as string[] | null) ?? null,
         status: 'available' as const,
         sourceRepoId: repoId,
