@@ -20,6 +20,7 @@ import { containerImageRoutes } from './modules/container-images/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { auditLogRoutes } from './modules/audit-logs/routes.js';
 import { workloadRepoRoutes } from './modules/workload-repos/routes.js';
+import { applicationRepoRoutes } from './modules/application-repos/routes.js';
 import { workloadRoutes } from './modules/workloads/routes.js';
 import { databaseRoutes } from './modules/databases/routes.js';
 import { dnsRecordRoutes } from './modules/dns-records/routes.js';
@@ -35,6 +36,10 @@ import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
+import { emailDomainRoutes } from './modules/email-domains/routes.js';
+import { mailboxRoutes } from './modules/mailboxes/routes.js';
+import { emailAliasRoutes } from './modules/email-aliases/routes.js';
+import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -154,6 +159,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(dashboardRoutes, { prefix: '/api/v1' });
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(workloadRepoRoutes, { prefix: '/api/v1' });
+  await app.register(applicationRepoRoutes, { prefix: '/api/v1' });
   await app.register(workloadRoutes, { prefix: '/api/v1' });
   await app.register(databaseRoutes, { prefix: '/api/v1' });
   await app.register(dnsRecordRoutes, { prefix: '/api/v1' });
@@ -169,6 +175,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
+  await app.register(emailDomainRoutes, { prefix: '/api/v1' });
+  await app.register(mailboxRoutes, { prefix: '/api/v1' });
+  await app.register(emailAliasRoutes, { prefix: '/api/v1' });
+  await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
 
   return app;
 }

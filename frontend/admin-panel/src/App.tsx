@@ -12,6 +12,7 @@ import Storage from '@/pages/Storage';
 import CronJobs from '@/pages/CronJobs';
 import Settings from '@/pages/Settings';
 import Workloads from '@/pages/Workloads';
+import Applications from '@/pages/Applications';
 import Security from '@/pages/Security';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
@@ -22,6 +23,7 @@ import BackupSettings from '@/pages/BackupSettings';
 import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
+import EmailManagement from '@/pages/EmailManagement';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -53,6 +55,7 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="clients/:clientId/domains/:domainId" element={<DomainDetail />} />
             <Route path="workloads" element={<Workloads />} />
+            <Route path="applications" element={<Applications />} />
             <Route path="storage" element={<Storage />} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="security" element={<Security />} />
@@ -65,6 +68,7 @@ export default function App() {
             <Route path="settings/users" element={<AdminUsers />} />
             <Route path="settings/export-import" element={<ExportImport />} />
             <Route path="monitoring/health" element={<HealthDashboard />} />
+            <Route path="settings/email" element={<EmailManagement />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

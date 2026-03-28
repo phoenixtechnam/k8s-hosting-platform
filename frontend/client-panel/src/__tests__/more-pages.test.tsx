@@ -36,6 +36,18 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-email', () => ({
+  useEmailDomains: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useMailboxes: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useEmailAliases: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}));
+
 import { useBackups } from '../hooks/use-backups';
 
 const mockedUseBackups = vi.mocked(useBackups);
@@ -158,19 +170,10 @@ describe('Email', () => {
     expect(screen.getByText('Email')).toBeInTheDocument();
   });
 
-  it('shows coming soon content', () => {
+  it('shows email not enabled message when no email domains', () => {
     renderWithProviders(<Email />);
-    expect(screen.getByTestId('email-coming-soon')).toBeInTheDocument();
-    expect(screen.getByText(/Coming Soon/)).toBeInTheDocument();
-  });
-
-  it('lists planned features', () => {
-    renderWithProviders(<Email />);
-    expect(screen.getByText('Create/delete mailboxes')).toBeInTheDocument();
-    expect(screen.getByText('Email aliases')).toBeInTheDocument();
-    expect(screen.getByText('Forwarding rules')).toBeInTheDocument();
-    expect(screen.getByText('Spam filtering (Rspamd)')).toBeInTheDocument();
-    expect(screen.getByText('Webmail (Roundcube)')).toBeInTheDocument();
+    expect(screen.getByTestId('email-not-enabled')).toBeInTheDocument();
+    expect(screen.getByText('Email Not Enabled')).toBeInTheDocument();
   });
 });
 

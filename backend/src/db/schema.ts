@@ -177,12 +177,14 @@ export const databases = mysqlTable('databases', {
   username: varchar('username', { length: 63 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   port: int('port').notNull().default(3306),
+  workloadId: varchar('workload_id', { length: 36 }),
   status: mysqlEnum('status', ['active', 'creating', 'deleting', 'failed']).notNull().default('creating'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [
   uniqueIndex('databases_name_unique').on(table.name),
   index('databases_client_idx').on(table.clientId),
+  index('databases_workload_idx').on(table.workloadId),
 ]);
 
 // ─── Notifications ───
@@ -294,8 +296,18 @@ export const containerImages = mysqlTable('container_images', {
   minPlan: varchar('min_plan', { length: 50 }),
   resourceCpu: varchar('resource_cpu', { length: 20 }),
   resourceMemory: varchar('resource_memory', { length: 20 }),
-  envVars: json('env_vars').$type<Record<string, string>[]>(),
+  envVars: json('env_vars').$type<{ configurable: string[]; fixed: Record<string, string> } | Record<string, string>[] | null>(),
   tags: json('tags').$type<string[]>(),
+  runtime: varchar('runtime', { length: 50 }),
+  webServer: varchar('web_server', { length: 50 }),
+  deploymentStrategy: varchar('deployment_strategy', { length: 20 }),
+  containerPort: int('container_port'),
+  mountPath: varchar('mount_path', { length: 500 }),
+  healthCheck: json('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
+  services: json('services').$type<Record<string, unknown> | null>(),
+  provides: json('provides').$type<Record<string, unknown> | null>(),
+  version: varchar('version', { length: 50 }),
+  description: text('description'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('container_images_code_repo_unique').on(table.code, table.sourceRepoId),
@@ -474,6 +486,164 @@ export const resourceQuotas = mysqlTable('resource_quotas', {
   uniqueIndex('resource_quotas_client_unique').on(table.clientId),
 ]);
 
+// ─── Email System ───
+
+export const emailDomains = mysqlTable('email_domains', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  enabled: int('enabled').notNull().default(1),
+  dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
+  dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
+  dkimPublicKey: text('dkim_public_key'),
+  maxMailboxes: int('max_mailboxes').notNull().default(50),
+  maxQuotaMb: int('max_quota_mb').notNull().default(10240),
+  catchAllAddress: varchar('catch_all_address', { length: 255 }),
+  mxProvisioned: int('mx_provisioned').notNull().default(0),
+  spfProvisioned: int('spf_provisioned').notNull().default(0),
+  dkimProvisioned: int('dkim_provisioned').notNull().default(0),
+  dmarcProvisioned: int('dmarc_provisioned').notNull().default(0),
+  spamThresholdJunk: decimal('spam_threshold_junk', { precision: 4, scale: 1 }).notNull().default('5.0'),
+  spamThresholdReject: decimal('spam_threshold_reject', { precision: 4, scale: 1 }).notNull().default('10.0'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('email_domains_domain_unique').on(table.domainId),
+  index('email_domains_client_idx').on(table.clientId),
+]);
+
+export const mailboxes = mysqlTable('mailboxes', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  emailDomainId: varchar('email_domain_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  localPart: varchar('local_part', { length: 64 }).notNull(),
+  fullAddress: varchar('full_address', { length: 255 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  displayName: varchar('display_name', { length: 255 }),
+  quotaMb: int('quota_mb').notNull().default(1024),
+  usedMb: int('used_mb').notNull().default(0),
+  status: mysqlEnum('status', ['active', 'disabled']).notNull().default('active'),
+  mailboxType: mysqlEnum('mailbox_type', ['mailbox', 'forward_only']).notNull().default('mailbox'),
+  autoReply: int('auto_reply').notNull().default(0),
+  autoReplySubject: varchar('auto_reply_subject', { length: 255 }),
+  autoReplyBody: text('auto_reply_body'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('mailboxes_address_unique').on(table.fullAddress),
+  index('mailboxes_client_idx').on(table.clientId),
+  index('mailboxes_domain_idx').on(table.emailDomainId),
+]);
+
+export const mailboxAccess = mysqlTable('mailbox_access', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  mailboxId: varchar('mailbox_id', { length: 36 }).notNull(),
+  accessLevel: mysqlEnum('access_level', ['full', 'read_only']).notNull().default('full'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('mailbox_access_unique').on(table.userId, table.mailboxId),
+  index('mailbox_access_user_idx').on(table.userId),
+  index('mailbox_access_mailbox_idx').on(table.mailboxId),
+]);
+
+export const emailAliases = mysqlTable('email_aliases', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  emailDomainId: varchar('email_domain_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  sourceAddress: varchar('source_address', { length: 255 }).notNull(),
+  destinationAddresses: json('destination_addresses').$type<string[]>().notNull(),
+  enabled: int('enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('email_aliases_source_unique').on(table.sourceAddress),
+  index('email_aliases_client_idx').on(table.clientId),
+  index('email_aliases_domain_idx').on(table.emailDomainId),
+]);
+
+export const smtpRelayConfigs = mysqlTable('smtp_relay_configs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  providerType: mysqlEnum('provider_type', ['direct', 'mailgun', 'postmark']).notNull(),
+  isDefault: int('is_default').notNull().default(0),
+  enabled: int('enabled').notNull().default(1),
+  smtpHost: varchar('smtp_host', { length: 255 }),
+  smtpPort: int('smtp_port').default(587),
+  authUsername: varchar('auth_username', { length: 255 }),
+  authPasswordEncrypted: varchar('auth_password_encrypted', { length: 500 }),
+  apiKeyEncrypted: varchar('api_key_encrypted', { length: 500 }),
+  region: varchar('region', { length: 50 }),
+  lastTestedAt: timestamp('last_tested_at'),
+  lastTestStatus: varchar('last_test_status', { length: 50 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
+
+// ─── Application Catalog ───
+
+export const applicationRepositories = mysqlTable('application_repositories', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  url: varchar('url', { length: 500 }).notNull(),
+  branch: varchar('branch', { length: 100 }).notNull().default('main'),
+  authToken: varchar('auth_token', { length: 500 }),
+  syncIntervalMinutes: int('sync_interval_minutes').notNull().default(60),
+  lastSyncedAt: timestamp('last_synced_at'),
+  status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('app_repos_url_unique').on(table.url),
+]);
+
+export const applicationCatalog = mysqlTable('application_catalog', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  code: varchar('code', { length: 100 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  version: varchar('version', { length: 50 }),
+  description: text('description'),
+  category: varchar('category', { length: 50 }),
+  minPlan: varchar('min_plan', { length: 50 }),
+  tenancy: json('tenancy').$type<Record<string, unknown> | null>(),
+  components: json('components').$type<Record<string, unknown> | null>(),
+  networking: json('networking').$type<Record<string, unknown> | null>(),
+  volumes: json('volumes').$type<Record<string, unknown> | null>(),
+  resources: json('resources').$type<Record<string, unknown> | null>(),
+  healthCheck: json('health_check').$type<Record<string, unknown> | null>(),
+  parameters: json('parameters').$type<Record<string, unknown> | null>(),
+  tags: json('tags').$type<string[] | null>(),
+  status: mysqlEnum('status', ['available', 'beta', 'deprecated']).notNull().default('available'),
+  sourceRepoId: varchar('source_repo_id', { length: 36 }),
+  manifestUrl: varchar('manifest_url', { length: 500 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('uk_app_catalog_code_repo').on(table.code, table.sourceRepoId),
+  index('idx_app_catalog_status').on(table.status),
+  index('idx_app_catalog_category').on(table.category),
+  index('idx_app_catalog_source_repo').on(table.sourceRepoId),
+]);
+
+export const applicationInstances = mysqlTable('application_instances', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  applicationCatalogId: varchar('application_catalog_id', { length: 36 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  domainName: varchar('domain_name', { length: 255 }),
+  configuration: json('configuration').$type<Record<string, unknown> | null>(),
+  helmReleaseName: varchar('helm_release_name', { length: 255 }),
+  status: mysqlEnum('status', ['deploying', 'running', 'stopped', 'failed', 'deleting']).notNull().default('deploying'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('uk_client_app_name').on(table.clientId, table.name),
+  index('idx_app_instances_client').on(table.clientId),
+  index('idx_app_instances_catalog').on(table.applicationCatalogId),
+  index('idx_app_instances_status').on(table.status),
+]);
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -505,3 +675,17 @@ export type Notification = typeof notifications.$inferSelect;
 export type NewNotification = typeof notifications.$inferInsert;
 export type BackupConfiguration = typeof backupConfigurations.$inferSelect;
 export type NewBackupConfiguration = typeof backupConfigurations.$inferInsert;
+export type EmailDomain = typeof emailDomains.$inferSelect;
+export type NewEmailDomain = typeof emailDomains.$inferInsert;
+export type Mailbox = typeof mailboxes.$inferSelect;
+export type NewMailbox = typeof mailboxes.$inferInsert;
+export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
+export type EmailAlias = typeof emailAliases.$inferSelect;
+export type NewEmailAlias = typeof emailAliases.$inferInsert;
+export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
+export type ApplicationRepository = typeof applicationRepositories.$inferSelect;
+export type NewApplicationRepository = typeof applicationRepositories.$inferInsert;
+export type ApplicationCatalogEntry = typeof applicationCatalog.$inferSelect;
+export type NewApplicationCatalogEntry = typeof applicationCatalog.$inferInsert;
+export type ApplicationInstance = typeof applicationInstances.$inferSelect;
+export type NewApplicationInstance = typeof applicationInstances.$inferInsert;

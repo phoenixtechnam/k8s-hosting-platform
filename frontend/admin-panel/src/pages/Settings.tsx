@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 
 export default function Settings() {
@@ -56,6 +56,14 @@ export default function Settings() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><CreditCard size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900">Hosting Plans</h2><p className="text-sm text-gray-500">Manage hosting plans and resource limits</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/email" className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:border-brand-300 hover:bg-brand-50/30 transition-colors" data-testid="email-settings-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600"><Mail size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900">Email System</h2><p className="text-sm text-gray-500">Manage email domains, mailboxes, SMTP relays, and spam settings</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
