@@ -206,16 +206,24 @@ automation.
 
 ---
 
-## 2. Workload Container Catalog
+## 2. Workload Catalog (ADR-026)
 
-> _This is the central architectural concept: all client workloads run on standardized,
-> admin-managed container images. Clients choose from the catalog; they cannot bring their own._
+> _Workloads are composable building blocks — runtimes, databases, and services — that clients
+> assemble into their own development environments. For managed application stacks (WordPress,
+> Nextcloud, Jitsi, etc.) see Section 3: Application Catalog._
 
 ### 2.1 Concept
 
 Instead of allowing clients to run arbitrary containers or build custom images, the platform
 provides a **curated catalog of workload containers**. Each container is a pre-built,
 hardened, tested runtime image maintained by the platform admin.
+
+**Workload types (ADR-026):**
+- **Runtimes** — Generic web server environments (PHP, Node.js, Python, static). Clients upload their own application files via SFTP/Git Deploy and manage their software manually.
+- **Databases** — Dedicated database instances (MariaDB, PostgreSQL). Multiple runtimes can share one database. The platform manages database/user creation and credential injection.
+- **Services** — Supporting infrastructure (Redis). Shared across workloads within a client namespace.
+
+Workloads are deployed by the platform as Kubernetes Deployments or StatefulSets (not Helm charts) because they need shared resource management — e.g., two runtimes sharing one database instance. See ADR-026 for the rationale.
 
 **Deployment model (ADR-024):**
 
@@ -237,7 +245,9 @@ Every client — regardless of plan — gets a **dedicated pod** in their own `c
 ### 2.2 Catalog Structure
 
 Each catalog entry defines a workload container with a specific runtime, web server, and
-version combination.
+version combination. Note: application-specific images like WordPress are in the **Application Catalog** (Section 3), not here. See ADR-026.
+
+**Runtimes:**
 
 | Catalog ID               | Base Image              | Web Server | Runtime     | Status      |
 | ------------------------ | ----------------------- | ---------- | ----------- | ----------- |
@@ -246,16 +256,22 @@ version combination.
 | `apache-php82`           | php:8.2-apache-alpine   | Apache 2.4 | PHP 8.2     | Deprecated  |
 | `nginx-php84`            | custom (nginx + php-fpm)| Nginx      | PHP 8.4     | Active      |
 | `nginx-php83`            | custom (nginx + php-fpm)| Nginx      | PHP 8.3     | Active      |
-| `wordpress-php84`        | wordpress:php8.4-apache | Apache 2.4 | PHP 8.4 + WP optimized | Active |
-| `wordpress-php83`        | wordpress:php8.3-apache | Apache 2.4 | PHP 8.3 + WP optimized | Active |
-| `node22`                 | node:22-alpine          | Built-in   | Node.js 22  | Active      |
-| `node20`                 | node:20-alpine          | Built-in   | Node.js 20  | Active      |
+| `node22`                 | node:22-alpine          | PM2        | Node.js 22  | Active      |
+| `node20`                 | node:20-alpine          | PM2        | Node.js 20  | Active      |
 | `python312`              | python:3.12-slim        | Gunicorn   | Python 3.12 | Active      |
 | `python311`              | python:3.11-slim        | Gunicorn   | Python 3.11 | Active      |
 | `ruby34`                 | ruby:3.4-alpine         | Puma       | Ruby 3.4    | Active      |
 | `dotnet9`                | mcr.microsoft.com/dotnet/aspnet:9.0 | Kestrel | .NET 9 | Active   |
 | `java21`                 | eclipse-temurin:21-jre-alpine | Tomcat/embedded | Java 21 | Active |
 | `static-nginx`           | nginx:alpine            | Nginx      | Static only | Active      |
+
+**Databases & Services:**
+
+| Catalog ID               | Image                   | Type       | Version     | Status      |
+| ------------------------ | ----------------------- | ---------- | ----------- | ----------- |
+| `mariadb-106`            | mariadb:10.6            | Database   | MariaDB 10.6| Active      |
+| `postgresql-16`          | postgres:16-alpine      | Database   | PostgreSQL 16| Active     |
+| `redis-7`                | redis:7-alpine          | Service    | Redis 7     | Active      |
 | `static-caddy`           | caddy:alpine            | Caddy      | Static only | Active      |
 
 ### 2.3 Dedicated Pod Provisioning (All Plans)
@@ -393,20 +409,26 @@ For cases where a client needs a PHP extension or system package not in the defa
 
 ---
 
-## 3. Application Catalog
+## 3. Application Catalog (ADR-026)
 
-> _The Application Catalog handles complex, multi-container workloads (Nextcloud, BigBlueButton,
-> Jitsi, etc.) that go beyond simple website hosting. This is separate from the Workload
-> Container Catalog (Section 2) which handles client web runtimes._
+> _The Application Catalog provides managed, self-contained application stacks deployed via Helm charts.
+> This is separate from the Workload Catalog (Section 2) which provides composable runtimes, databases,
+> and services that clients assemble manually. See ADR-026 for the architectural rationale._
 
 ### 3.1 Concept — Two Catalogs
 
-The platform maintains **two distinct catalogs**:
+The platform maintains **two distinct catalogs** with different deployment mechanisms:
 
-| Catalog                      | Purpose                                          | Deployed By    | Example                        |
+| Catalog                      | Purpose                                          | Deployment     | Example                        |
 | ---------------------------- | ------------------------------------------------ | -------------- | ------------------------------ |
-| **Workload Container Catalog** (Section 2) | Standardized web runtimes for client sites | Admin (manages images), Client (selects) | `apache-php84`, `node22`, `wordpress-php84` |
-| **Application Catalog** (this section) | Complex multi-container applications | Admin (defines apps), Admin or Client (deploys instances) | Nextcloud, BigBlueButton, Jitsi, Gitea, Matomo, Moodle, Gibbon, Keycloak |
+| **Workload Catalog** (Section 2) | Composable runtimes, databases, services — clients assemble their own stack | Platform-generated K8s manifests | `apache-php84`, `node22`, `mariadb-106`, `redis-7` |
+| **Application Catalog** (this section) | Managed application stacks — one-click deploy, self-contained | Helm charts (`helm install`) | WordPress, Nextcloud, Jitsi, Gitea, Matomo, Moodle, Keycloak |
+
+**Key difference:** A workload is a generic runtime where clients upload and manage their own software (like cPanel/Plesk). An application is a **complete, pre-configured stack** — often multiple containers with its own database — deployed as a unit. A workload's database is shared and platform-managed; an application's database is bundled and chart-managed.
+
+> **Note:** WordPress was previously listed in the Workload Catalog as `wordpress-php84`. Per ADR-026,
+> it has been moved to the Application Catalog. Clients who want to manually install WordPress should
+> use the generic `apache-php84` runtime with a database add-on.
 
 **Key difference:** A workload container is a single runtime image that serves client-provided
 files. An application is a **complete stack** — often multiple containers, its own database,

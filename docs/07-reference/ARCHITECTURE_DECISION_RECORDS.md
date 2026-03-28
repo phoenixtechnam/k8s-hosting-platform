@@ -2241,6 +2241,105 @@ This approach tightly couples workload definition maintenance to the platform re
 
 ---
 
+## ADR-026: Workloads vs Applications — Two Catalog Architecture
+
+**Date:** 2026-03-28
+**Status:** ACCEPTED
+**Deciders:** Platform Owner
+
+### Context
+
+The platform needs to support two fundamentally different deployment models:
+
+1. **Composable environments** — A client assembles their own stack: picks a PHP runtime, adds a database, uploads their files via SFTP/Git Deploy, and manages their own application (e.g., installs WordPress manually, connects it to the database, manages plugins). This is the traditional hosting model (cPanel/Plesk).
+
+2. **Managed application stacks** — A client clicks "Install Nextcloud" and gets a fully configured, multi-container application with its own database, cache, cron jobs, and ingress. No manual setup required.
+
+These models have conflicting requirements:
+
+- Composable environments need **shared services** — one MariaDB instance serving multiple workloads (a PHP app and a Node.js API sharing the same database). The platform must manage database lifecycle, credential injection, and cross-workload bindings.
+- Managed applications need **isolated stacks** — Nextcloud bundles its own MariaDB and Redis. Deleting Nextcloud removes everything cleanly. No sharing with other apps.
+
+An earlier proposal to unify both models into Helm charts was rejected because Helm releases are isolated — they have no cross-release awareness for shared databases, credential injection, or multi-workload bindings.
+
+Additionally, a `wordpress-php84` entry existed in the Workload Catalog as a pre-installed WordPress image. This was a hybrid that fit neither model well: it wasn't a clean runtime (had WordPress baked in, couldn't be used for Laravel) and it wasn't a managed app (no auto-DB setup, no WP-CLI integration).
+
+### Decision
+
+**Two separate catalogs with different deployment mechanisms:**
+
+**1. Workload Catalog** — Composable building blocks
+
+- **Contents:** Runtimes (`nginx-php84`, `node22`, `static-nginx`), Databases (`mariadb-106`, `postgresql-16`), Services (`redis-7`)
+- **Repository:** `hosting-platform-workload-catalog` (manifest.json per entry, validated by JSON Schema)
+- **Deployment:** Platform generates Kubernetes manifests (Deployment/StatefulSet, Service, PVC, Ingress, Secrets) from manifest fields
+- **Database model:** Shared — platform manages MariaDB/PostgreSQL instances, creates databases and users, injects credentials into workloads via `services.database.env_mapping`
+- **Target user:** Developer, agency, power user who manages their own software
+- **Platform tables:** `container_images` + `workloads` + `databases`
+- **Sync:** `POST /api/v1/admin/workload-repos/:id/sync`
+
+**2. Application Catalog** — Self-contained managed stacks
+
+- **Contents:** WordPress, Nextcloud, Jitsi, Moodle, Gitea, Matomo, Keycloak, etc.
+- **Repository:** `hosting-platform-application-catalog` (manifest.json + Helm chart per entry)
+- **Deployment:** `helm install` with values derived from admin-configurable parameters
+- **Database model:** Bundled — each application chart includes its own database StatefulSet
+- **Target user:** Non-technical client who wants a working app with zero setup
+- **Platform tables:** `application_catalog` + `application_instances`
+- **Sync:** `POST /api/v1/admin/application-repos/:id/sync`
+
+**3. Remove `wordpress-php84` from Workload Catalog**
+
+WordPress is a managed application, not a generic runtime. It belongs in the Application Catalog where it can auto-provision its database, configure wp-config.php, and offer one-click updates via WP-CLI. The Workload Catalog retains `apache-php84` as the generic PHP runtime that clients can use to manually install any PHP application including WordPress.
+
+### Rationale
+
+1. **Shared database support** — A client running a PHP site and a Node.js API on the same database is only possible when the platform controls database lifecycle and credential injection. Helm charts are release-isolated and cannot share databases across releases.
+
+2. **Clean separation of concerns** — Workloads are infrastructure building blocks; applications are complete products. Different deployment mechanisms (platform-generated manifests vs. Helm) match the different abstraction levels.
+
+3. **Different update models** — Workload runtimes update via image tag changes (security patches). Applications update via Helm chart version bumps that may include database migrations, config changes, and multi-container coordination.
+
+4. **Different target users** — Power users want composability and control. Non-technical users want one-click deploys. Forcing both through the same mechanism serves neither well.
+
+5. **WordPress clarity** — `wordpress-php84` as a workload was confusing: it pre-installed WordPress into the image, but the client still had to set up the database manually. As a managed application, WordPress auto-provisions everything and provides a better experience.
+
+### Consequences
+
+**Positive:**
+- Clear mental model: "Workloads = I build my stack" vs. "Applications = I install a product"
+- Platform can manage shared databases, cross-workload bindings, and credential rotation for workloads
+- Helm handles the complexity of multi-container application lifecycle (upgrades, rollbacks, hooks)
+- Each catalog can evolve independently with its own release cycle
+- Client panel can present two distinct UX sections: "My Environment" (workloads) and "My Applications"
+
+**Negative:**
+- Two deployment mechanisms to build and maintain (platform manifest generator + Helm integration)
+- Two catalog repositories with different sync logic
+- Some overlap: a client could run WordPress both ways (manual install on `apache-php84` workload, or managed via Application Catalog)
+
+**Neutral:**
+- The `application_catalog` and `application_instances` tables already exist in the database schema
+- The `container_images` table continues to store workload definitions synced from the workload catalog
+- `wordpress-php84` removed from workload catalog; WordPress will be added to Application Catalog in a future phase
+
+### Documents Affected
+
+| Document | Change |
+|----------|--------|
+| `PLATFORM_ARCHITECTURE.md` Section 2 | Clarify workloads are composable runtimes/databases/services only |
+| `PLATFORM_ARCHITECTURE.md` Section 3 | Clarify applications are Helm-deployed managed stacks |
+| `WORKLOAD_DEPLOYMENT.md` | Remove WordPress references; clarify workloads are generic runtimes |
+| `ADMIN_PANEL_REQUIREMENTS.md` | Distinguish workload management (W.0-W.2) from application management |
+| Workload catalog repo | Remove `wordpress-php84`; update README and catalog.json |
+
+### Related ADRs
+
+- **ADR-024:** Dedicated Workloads Only — every client gets a namespace; workloads and applications both deploy into `client-{id}` namespaces
+- **ADR-025:** Workload Catalog in External Repos — established the manifest.json sync pattern for workloads; the same pattern extends to application catalog repos
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/

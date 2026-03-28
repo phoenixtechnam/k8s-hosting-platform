@@ -1,8 +1,10 @@
-# Workload Container Deployment
+# Workload Deployment
 
 ## Overview
 
-The platform provides a **curated catalog of workload containers** instead of allowing clients to run arbitrary containers or build custom images. Each container is a pre-built, hardened, tested runtime image maintained by the platform admin.
+The Workload Catalog provides **composable building blocks** — runtimes, databases, and services — that clients assemble into their own development environments (ADR-026). Each workload is a pre-built, hardened, tested container image maintained by the platform admin.
+
+**Workloads are generic runtimes, not pre-installed applications.** Clients upload their own application files via SFTP/Git Deploy and manage their software manually. For managed, pre-configured application stacks (WordPress, Nextcloud, Jitsi, etc.) see the **Application Catalog** (PLATFORM_ARCHITECTURE.md Section 3).
 
 This centralized approach eliminates per-client CI/CD pipelines, simplifies security patching, and provides consistent, isolated environments for every client.
 

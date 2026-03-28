@@ -120,13 +120,16 @@ packages/api-contracts/src/
 - **Immutability:** Prefer new objects over mutation
 - **Test coverage target:** 80%+ (Phase 1: 70%+)
 
-## External Dependencies (ADR-022, ADR-025)
+## External Dependencies (ADR-022, ADR-025, ADR-026)
 
 These services are managed by **separate projects** — this platform consumes their APIs:
 - **DNS:** PowerDNS REST API (ADR-022)
 - **VPN Mesh:** NetBird (ADR-022)
 - **IAM/Auth:** Dex OIDC provider (ADR-022)
-- **Workload Catalog:** External GitHub repos with `catalog.json` + `manifest.json` (ADR-025) — default: `https://github.com/phoenixtechnam/hosting-platform-workload-catalog`
+- **Workload Catalog:** Composable runtimes/databases/services via `manifest.json` (ADR-025) — default: `https://github.com/phoenixtechnam/hosting-platform-workload-catalog`
+- **Application Catalog:** Managed app stacks via Helm charts (ADR-026, Phase 2) — `https://github.com/phoenixtechnam/hosting-platform-application-catalog`
+
+**Two catalogs (ADR-026):** Workloads = composable building blocks (generic PHP, Node.js, MariaDB). Applications = self-contained managed stacks (WordPress, Nextcloud, Jitsi). Workloads share databases; applications bundle their own.
 
 ## Key Documentation
 
