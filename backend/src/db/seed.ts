@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, containerImages, users, workloadRepositories } from './schema.js';
+import { rbacRoles, regions, hostingPlans, users, workloadRepositories } from './schema.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -39,15 +39,7 @@ await db.insert(hostingPlans).values([
 ]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded hosting plans');
 
-// Container Images
-await db.insert(containerImages).values([
-  { id: crypto.randomUUID(), code: 'nginx-php84', name: 'NGINX + PHP 8.4', imageType: 'php', registryUrl: 'ghcr.io/hosting-platform/nginx-php84', status: 'active' },
-  { id: crypto.randomUUID(), code: 'apache-php84', name: 'Apache + PHP 8.4', imageType: 'php', registryUrl: 'ghcr.io/hosting-platform/apache-php84', status: 'active' },
-  { id: crypto.randomUUID(), code: 'wordpress-php84', name: 'WordPress (PHP 8.4)', imageType: 'wordpress', registryUrl: 'ghcr.io/hosting-platform/wordpress-php84', status: 'active' },
-  { id: crypto.randomUUID(), code: 'static-nginx', name: 'Static Site (NGINX)', imageType: 'static', registryUrl: 'ghcr.io/hosting-platform/static-nginx', status: 'active' },
-  { id: crypto.randomUUID(), code: 'node22', name: 'Node.js 22', imageType: 'nodejs', registryUrl: 'ghcr.io/hosting-platform/node22', status: 'active' },
-]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
-console.log('  Seeded container images');
+// Container images are populated by syncing workload catalog repositories — no built-in seed.
 
 // Default admin user
 const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';

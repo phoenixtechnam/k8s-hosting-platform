@@ -1,4 +1,4 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useState, useMemo, Fragment, type FormEvent } from 'react';
 import { Server, Container, Rocket, Search, Loader2, AlertCircle, RefreshCw, Plus, Trash2, X, Play, Square } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
@@ -396,26 +396,27 @@ function AvailableWorkloadsTab() {
                   const envVars: string[] | undefined = Array.isArray(rawEnvVars) ? rawEnvVars : typeof rawEnvVars === 'string' ? (() => { try { return JSON.parse(rawEnvVars); } catch { return undefined; } })() : undefined;
 
                   return (
-                    <tr key={image.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" onClick={() => setExpandedImageId(isExpanded ? null : image.id)}>
-                      <td colSpan={5} className="p-0">
-                        <div className="flex items-center">
-                          <div className="flex-1 px-5 py-3.5">
-                            <div className="flex items-center gap-2">
-                              <Container size={14} className="text-gray-400" />
-                              <span className="font-medium text-gray-900 dark:text-gray-100">{image.name}</span>
-                              {tags && tags.length > 0 && (
-                                <div className="flex gap-1">{tags.map((tag) => (
-                                  <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">{tag}</span>
-                                ))}</div>
-                              )}
-                            </div>
-                          </div>
-                          <div className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{image.imageType}</div>
-                          <div className="hidden px-5 py-3.5 text-sm font-mono text-gray-500 dark:text-gray-400 md:block">{image.registryUrl ?? '—'}</div>
-                          <div className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{sourceName}</div>
-                          <div className="px-5 py-3.5"><StatusBadge status={image.status as 'active' | 'pending' | 'error'} /></div>
+                    <Fragment key={image.id}>
+                    <tr className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" onClick={() => setExpandedImageId(isExpanded ? null : image.id)}>
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2">
+                          <Container size={14} className="text-gray-400" />
+                          <span className="font-medium text-gray-900 dark:text-gray-100">{image.name}</span>
+                          {tags && tags.length > 0 && (
+                            <div className="flex gap-1">{tags.map((tag) => (
+                              <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">{tag}</span>
+                            ))}</div>
+                          )}
                         </div>
-                        {isExpanded && (
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{image.imageType}</td>
+                      <td className="hidden px-5 py-3.5 text-sm font-mono text-gray-500 dark:text-gray-400 md:table-cell">{image.registryUrl ?? '—'}</td>
+                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{sourceName}</td>
+                      <td className="px-5 py-3.5"><StatusBadge status={image.status as 'active' | 'pending' | 'error'} /></td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={5} className="p-0">
                           <div className="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-4" data-testid={`image-detail-${image.id}`}>
                             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                               <div><span className="text-xs font-medium text-gray-500">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceCpu ?? 'Default'}</p></div>
@@ -433,9 +434,10 @@ function AvailableWorkloadsTab() {
                             )}
                             <div className="mt-3"><span className="text-xs font-medium text-gray-500">Code</span><p className="text-sm font-mono text-gray-700 dark:text-gray-300">{image.code}</p></div>
                           </div>
-                        )}
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
                 {filteredImages.length === 0 && (
