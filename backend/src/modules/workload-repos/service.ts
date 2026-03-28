@@ -1,18 +1,9 @@
 import { eq, and } from 'drizzle-orm';
 import { workloadRepositories, containerImages } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { parseGithubUrl, buildRawUrl, fetchJson } from '../../shared/github-catalog.js';
 import type { Database } from '../../db/index.js';
 import type { AddRepoInput } from './schema.js';
-
-interface CatalogFile {
-  readonly workloads?: readonly string[];
-}
-
-type CatalogInput = CatalogFile | readonly CatalogEntry[];
-
-interface CatalogEntry {
-  readonly name: string;
-}
 
 interface WorkloadManifest {
   readonly name: string;
@@ -29,39 +20,27 @@ interface WorkloadManifest {
   readonly resources?: {
     readonly cpu?: string;
     readonly memory?: string;
+    readonly storage?: string | null;
   };
-  readonly env_vars?: Record<string, string>[];
+  readonly env_vars?: { readonly configurable?: string[]; readonly fixed?: Record<string, string> } | Record<string, string>[];
   readonly tags?: string[];
-}
-
-function parseGithubUrl(url: string): { owner: string; repo: string } {
-  const match = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)/);
-  if (!match) {
-    throw new ApiError('INVALID_REPO_URL', 'Could not parse GitHub owner/repo from URL', 400);
-  }
-  return { owner: match[1], repo: match[2] };
-}
-
-function buildRawUrl(owner: string, repo: string, branch: string, path: string): string {
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-}
-
-async function fetchJson<T>(url: string, authToken?: string | null): Promise<T> {
-  const headers: Record<string, string> = { 'Accept': 'application/json' };
-  if (authToken) {
-    headers['Authorization'] = `token ${authToken}`;
-  }
-
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    throw new ApiError(
-      'CATALOG_FETCH_ERROR',
-      `Failed to fetch ${url}: ${response.status} ${response.statusText}`,
-      502,
-    );
-  }
-
-  return response.json() as Promise<T>;
+  // New v3 fields
+  readonly runtime?: string;
+  readonly web_server?: string | null;
+  readonly deployment_strategy?: string;
+  readonly container_port?: number;
+  readonly mount_path?: string;
+  readonly health_check?: {
+    readonly path?: string | null;
+    readonly command?: string[] | null;
+    readonly port?: number | null;
+    readonly initial_delay_seconds: number;
+    readonly period_seconds: number;
+  } | null;
+  readonly services?: Record<string, unknown>;
+  readonly provides?: Record<string, unknown>;
+  readonly version?: string;
+  readonly description?: string;
 }
 
 export async function listRepos(db: Database) {
@@ -82,7 +61,7 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
     if (authToken) {
       headers['Authorization'] = `token ${authToken}`;
     }
-    response = await fetch(catalogUrl, { headers });
+    response = await fetch(catalogUrl, { headers, signal: AbortSignal.timeout(15_000) });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     throw new ApiError(
@@ -120,7 +99,7 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
       );
     }
   } else if (catalogData && typeof catalogData === 'object' && 'workloads' in catalogData) {
-    const workloads = (catalogData as CatalogFile).workloads;
+    const workloads = (catalogData as { workloads?: readonly string[] }).workloads;
     if (!workloads || workloads.length === 0) {
       throw new ApiError(
         'INVALID_CATALOG',
@@ -159,7 +138,9 @@ export async function addRepo(db: Database, input: AddRepoInput) {
     .from(workloadRepositories)
     .where(eq(workloadRepositories.id, id));
 
-  return created;
+  // Strip authToken — never expose stored secrets via API
+  const { authToken: _token, ...rest } = created;
+  return rest;
 }
 
 export async function deleteRepo(db: Database, id: string) {
@@ -178,6 +159,10 @@ export async function deleteRepo(db: Database, id: string) {
     .where(eq(containerImages.sourceRepoId, id));
 
   await db.delete(workloadRepositories).where(eq(workloadRepositories.id, id));
+}
+
+interface CatalogInput {
+  readonly workloads?: readonly string[];
 }
 
 export async function syncRepo(db: Database, repoId: string) {
@@ -201,21 +186,32 @@ export async function syncRepo(db: Database, repoId: string) {
 
     // Fetch catalog.json — supports both array-of-objects and {workloads:[...]} formats
     const catalogUrl = buildRawUrl(owner, repoName, repo.branch, 'catalog.json');
-    const catalogRaw = await fetchJson<CatalogInput>(catalogUrl, repo.authToken);
+    const catalogRaw = await fetchJson<CatalogInput | readonly { name: string }[]>(catalogUrl, repo.authToken);
 
-    const entries: readonly CatalogEntry[] = Array.isArray(catalogRaw)
+    const entries: readonly { readonly name: string }[] = Array.isArray(catalogRaw)
       ? catalogRaw
-      : ((catalogRaw as CatalogFile).workloads ?? []).map((name: string) => ({ name }));
+      : ((catalogRaw as CatalogInput).workloads ?? []).map((name: string) => ({ name }));
+
+    const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+    const manifestErrors: string[] = [];
 
     // Fetch each workload manifest and upsert
     for (const entry of entries) {
+      if (!VALID_ENTRY_NAME.test(entry.name)) {
+        console.warn(`[workload-sync] Skipping entry with invalid name: "${entry.name}"`);
+        manifestErrors.push(`Invalid entry name: "${entry.name}"`);
+        continue;
+      }
+
       const manifestUrl = buildRawUrl(owner, repoName, repo.branch, `${entry.name}/manifest.json`);
 
       let manifest: WorkloadManifest;
       try {
         manifest = await fetchJson<WorkloadManifest>(manifestUrl, repo.authToken);
-      } catch {
-        // Skip workloads whose manifests fail to fetch
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[workload-sync] Failed to fetch manifest for "${entry.name}": ${msg}`);
+        manifestErrors.push(`${entry.name}: ${msg}`);
         continue;
       }
 
@@ -241,9 +237,21 @@ export async function syncRepo(db: Database, repoId: string) {
         minPlan: manifest.min_plan ?? null,
         resourceCpu: manifest.resources?.cpu ?? null,
         resourceMemory: manifest.resources?.memory ?? null,
-        envVars: manifest.env_vars ?? null,
+        resourceStorage: manifest.resources?.storage ?? null,
+        envVars: (manifest.env_vars ?? null) as { configurable: string[]; fixed: Record<string, string> } | Record<string, string>[] | null,
         tags: manifest.tags ?? null,
         status: 'active' as const,
+        // New v3 fields
+        runtime: manifest.runtime ?? null,
+        webServer: manifest.web_server ?? null,
+        deploymentStrategy: manifest.deployment_strategy ?? null,
+        containerPort: manifest.container_port ?? null,
+        mountPath: manifest.mount_path ?? null,
+        healthCheck: manifest.health_check ?? null,
+        services: manifest.services ?? null,
+        provides: manifest.provides ?? null,
+        version: manifest.version ?? null,
+        description: manifest.description ?? null,
       };
 
       if (existing) {
@@ -261,12 +269,16 @@ export async function syncRepo(db: Database, repoId: string) {
     }
 
     // Mark sync complete
+    const syncLastError = manifestErrors.length > 0
+      ? `${manifestErrors.length} manifest(s) failed to fetch`
+      : null;
+
     await db
       .update(workloadRepositories)
       .set({
         status: 'active',
         lastSyncedAt: new Date(),
-        lastError: null,
+        lastError: syncLastError,
       })
       .where(eq(workloadRepositories.id, repoId));
   } catch (error) {
@@ -287,7 +299,9 @@ export async function restoreDefaultRepo(db: Database) {
     .where(eq(workloadRepositories.url, OFFICIAL_CATALOG_URL));
 
   if (existing) {
-    return existing;
+    // Strip authToken — never expose stored secrets via API
+    const { authToken: _token, ...rest } = existing;
+    return rest;
   }
 
   const id = crypto.randomUUID();
@@ -307,5 +321,7 @@ export async function restoreDefaultRepo(db: Database) {
     .from(workloadRepositories)
     .where(eq(workloadRepositories.id, id));
 
-  return created;
+  // Strip authToken — never expose stored secrets via API
+  const { authToken: _token2, ...rest } = created;
+  return rest;
 }

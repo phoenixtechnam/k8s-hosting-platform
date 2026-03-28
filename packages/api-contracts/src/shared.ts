@@ -44,3 +44,8 @@ export const statusEnum = z.enum(['active', 'suspended', 'pending', 'cancelled']
 export type Status = z.infer<typeof statusEnum>;
 
 export const uuidField = z.string().uuid();
+
+// ─── Shared Patterns ────────────────────────────────────────────────────────
+
+/** GitHub repository URL pattern — shared by workload-repos and application-repos */
+export const githubUrlPattern = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/;

@@ -3,7 +3,7 @@ import { uuidField, githubUrlPattern } from './shared.js';
 
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
-export const addRepoInputSchema = z.object({
+export const addAppRepoInputSchema = z.object({
   name: z.string().min(1).max(255),
   url: z.string().url().regex(githubUrlPattern, 'Must be a GitHub repository URL (https://github.com/owner/repo)'),
   branch: z.string().min(1).max(100).default('main'),
@@ -13,14 +13,14 @@ export const addRepoInputSchema = z.object({
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
 
-export const workloadRepoResponseSchema = z.object({
+export const applicationRepoResponseSchema = z.object({
   id: uuidField,
   name: z.string(),
   url: z.string(),
   branch: z.string(),
   syncIntervalMinutes: z.number(),
   lastSyncedAt: z.string().nullable(),
-  status: z.string(),
+  status: z.enum(['active', 'error', 'syncing']),
   lastError: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -28,5 +28,6 @@ export const workloadRepoResponseSchema = z.object({
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type AddRepoInput = z.infer<typeof addRepoInputSchema>;
-export type WorkloadRepoResponse = z.infer<typeof workloadRepoResponseSchema>;
+export type AddAppRepoInput = z.input<typeof addAppRepoInputSchema>;
+export type AddAppRepoOutput = z.infer<typeof addAppRepoInputSchema>;
+export type ApplicationRepoResponse = z.infer<typeof applicationRepoResponseSchema>;

@@ -296,6 +296,7 @@ export const containerImages = mysqlTable('container_images', {
   minPlan: varchar('min_plan', { length: 50 }),
   resourceCpu: varchar('resource_cpu', { length: 20 }),
   resourceMemory: varchar('resource_memory', { length: 20 }),
+  resourceStorage: varchar('resource_storage', { length: 20 }),
   envVars: json('env_vars').$type<{ configurable: string[]; fixed: Record<string, string> } | Record<string, string>[] | null>(),
   tags: json('tags').$type<string[]>(),
   runtime: varchar('runtime', { length: 50 }),

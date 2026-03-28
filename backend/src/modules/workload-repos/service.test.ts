@@ -41,7 +41,13 @@ function createMockDb(overrides: {
     update: updateFn,
     delete: deleteFn,
     _whereFn: whereFn,
-  } as unknown as Parameters<typeof addRepo>[0] & { _whereFn: ReturnType<typeof vi.fn> };
+    _insertValues: insertValues,
+    _updateSet: updateSet,
+  } as unknown as Parameters<typeof addRepo>[0] & {
+    _whereFn: ReturnType<typeof vi.fn>;
+    _insertValues: ReturnType<typeof vi.fn>;
+    _updateSet: ReturnType<typeof vi.fn>;
+  };
 }
 
 beforeEach(() => {
@@ -245,6 +251,239 @@ describe('syncRepo', () => {
     await expect(syncRepo(db, 'r1')).rejects.toThrow();
     // db.update should have been called to set status='error'
     expect(db.update).toHaveBeenCalled();
+  });
+
+  it('should map new v3 fields from manifest to imageValues', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    const db = createMockDb({ selectResults: [[repo], []] });
+
+    const v3Manifest = {
+      name: 'WordPress',
+      code: 'wordpress',
+      type: 'cms',
+      image: 'ghcr.io/hosting/wordpress:6.4',
+      supported_versions: ['6.4', '6.3'],
+      runtime: 'php-8.2',
+      web_server: 'nginx',
+      deployment_strategy: 'rolling',
+      container_port: 8080,
+      mount_path: '/var/www/html',
+      health_check: {
+        path: '/healthz',
+        command: null,
+        port: 8080,
+        initial_delay_seconds: 10,
+        period_seconds: 30,
+      },
+      services: { mariadb: { version: '10.6' } },
+      provides: { http: { port: 8080 } },
+      version: '2.0.0',
+      description: 'WordPress CMS workload',
+    };
+
+    // First fetch: catalog.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'wordpress' }]),
+    });
+    // Second fetch: wordpress/manifest.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(v3Manifest),
+    });
+
+    await syncRepo(db, 'r1');
+
+    // Verify insert was called with the new v3 fields
+    const insertCall = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues;
+    expect(insertCall).toHaveBeenCalledTimes(1);
+    const insertedValues = insertCall.mock.calls[0][0];
+
+    expect(insertedValues).toMatchObject({
+      name: 'WordPress',
+      code: 'wordpress',
+      runtime: 'php-8.2',
+      webServer: 'nginx',
+      deploymentStrategy: 'rolling',
+      containerPort: 8080,
+      mountPath: '/var/www/html',
+      healthCheck: {
+        path: '/healthz',
+        command: null,
+        port: 8080,
+        initial_delay_seconds: 10,
+        period_seconds: 30,
+      },
+      services: { mariadb: { version: '10.6' } },
+      provides: { http: { port: 8080 } },
+      version: '2.0.0',
+      description: 'WordPress CMS workload',
+    });
+  });
+
+  it('should default new v3 fields to null for old-format manifests', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    const db = createMockDb({ selectResults: [[repo], []] });
+
+    const legacyManifest = {
+      name: 'Nginx',
+      code: 'nginx',
+      type: 'web-server',
+      image: 'ghcr.io/hosting/nginx:1.25',
+      supported_versions: ['1.25'],
+      env_vars: [{ SERVER_NAME: 'localhost' }],
+    };
+
+    // First fetch: catalog.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'nginx' }]),
+    });
+    // Second fetch: nginx/manifest.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(legacyManifest),
+    });
+
+    await syncRepo(db, 'r1');
+
+    const insertCall = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues;
+    expect(insertCall).toHaveBeenCalledTimes(1);
+    const insertedValues = insertCall.mock.calls[0][0];
+
+    // All new v3 fields should be null
+    expect(insertedValues.runtime).toBeNull();
+    expect(insertedValues.webServer).toBeNull();
+    expect(insertedValues.deploymentStrategy).toBeNull();
+    expect(insertedValues.containerPort).toBeNull();
+    expect(insertedValues.mountPath).toBeNull();
+    expect(insertedValues.healthCheck).toBeNull();
+    expect(insertedValues.services).toBeNull();
+    expect(insertedValues.provides).toBeNull();
+    expect(insertedValues.version).toBeNull();
+    expect(insertedValues.description).toBeNull();
+
+    // Legacy env_vars should still be stored
+    expect(insertedValues.envVars).toEqual([{ SERVER_NAME: 'localhost' }]);
+  });
+
+  it('should store new env_vars format with configurable and fixed', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    const db = createMockDb({ selectResults: [[repo], []] });
+
+    const manifest = {
+      name: 'WordPress',
+      code: 'wordpress',
+      type: 'cms',
+      image: 'ghcr.io/hosting/wordpress:6.4',
+      env_vars: {
+        configurable: ['WORDPRESS_DB_HOST', 'WORDPRESS_DB_NAME'],
+        fixed: { WORDPRESS_CONFIG_EXTRA: 'define("WP_DEBUG", false);' },
+      },
+    };
+
+    // First fetch: catalog.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'wordpress' }]),
+    });
+    // Second fetch: wordpress/manifest.json
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(manifest),
+    });
+
+    await syncRepo(db, 'r1');
+
+    const insertCall = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues;
+    expect(insertCall).toHaveBeenCalledTimes(1);
+    const insertedValues = insertCall.mock.calls[0][0];
+
+    expect(insertedValues.envVars).toEqual({
+      configurable: ['WORDPRESS_DB_HOST', 'WORDPRESS_DB_NAME'],
+      fixed: { WORDPRESS_CONFIG_EXTRA: 'define("WP_DEBUG", false);' },
+    });
+  });
+
+  it('should update existing container image with new v3 fields', async () => {
+    const repo = {
+      id: 'r1',
+      name: 'test',
+      url: 'https://github.com/org/catalog',
+      branch: 'main',
+      authToken: null,
+    };
+
+    const existingImage = {
+      id: 'img-1',
+      code: 'wordpress',
+      sourceRepoId: 'r1',
+    };
+
+    // selectResults: [repo lookup], [existing image found]
+    const db = createMockDb({ selectResults: [[repo], [existingImage]] });
+
+    const v3Manifest = {
+      name: 'WordPress',
+      code: 'wordpress',
+      type: 'cms',
+      image: 'ghcr.io/hosting/wordpress:6.4',
+      runtime: 'php-8.2',
+      container_port: 8080,
+      description: 'WordPress CMS',
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([{ name: 'wordpress' }]),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(v3Manifest),
+    });
+
+    await syncRepo(db, 'r1');
+
+    // Should call update (not insert) since image already exists
+    const updateSet = (db as unknown as { _updateSet: ReturnType<typeof vi.fn> })._updateSet;
+    // updateSet is called for: mark syncing, update image, mark active = 3 times
+    expect(updateSet).toHaveBeenCalledTimes(3);
+
+    // The second call is the image update
+    const updatedValues = updateSet.mock.calls[1][0];
+    expect(updatedValues).toMatchObject({
+      runtime: 'php-8.2',
+      containerPort: 8080,
+      description: 'WordPress CMS',
+      webServer: null,
+      deploymentStrategy: null,
+      mountPath: null,
+      healthCheck: null,
+      services: null,
+      provides: null,
+      version: null,
+    });
   });
 });
 

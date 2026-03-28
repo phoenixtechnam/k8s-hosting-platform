@@ -4,6 +4,7 @@ import {
   Users,
   Globe,
   Server,
+  AppWindow,
   Database,
   Clock,
   Shield,
@@ -18,6 +19,7 @@ const navItems = [
   { to: '/clients', icon: Users, label: 'Clients' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/workloads', icon: Server, label: 'Workloads' },
+  { to: '/applications', icon: AppWindow, label: 'Applications' },
   { to: '/storage', icon: Database, label: 'Storage & DB' },
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },
   { to: '/security', icon: Shield, label: 'Security' },
@@ -43,7 +45,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
       <aside
         className={clsx(
-          'fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-gradient-to-b from-brand-500 to-accent-500 transition-transform duration-200 lg:static lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-gradient-to-b from-brand-500 to-accent-500 transition-transform duration-200 lg:static lg:translate-x-0 dark:from-gray-800 dark:to-gray-900',
           open ? 'translate-x-0' : '-translate-x-full',
         )}
         data-testid="sidebar"
