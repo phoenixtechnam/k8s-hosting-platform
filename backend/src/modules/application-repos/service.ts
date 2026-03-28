@@ -7,6 +7,7 @@ import type { AddAppRepoInput } from './schema.js';
 
 interface CatalogFile {
   readonly applications?: readonly string[];
+  readonly workloads?: readonly string[];
 }
 
 type CatalogInput = CatalogFile | readonly CatalogEntry[];
@@ -15,54 +16,28 @@ interface CatalogEntry {
   readonly name: string;
 }
 
+// Supports both application manifest v3 (full) and workload manifest v1 (simple)
 interface ApplicationManifest {
   readonly name: string;
   readonly code: string;
-  readonly version: string;
-  readonly description: string;
-  readonly category: string;
-  readonly min_plan: string;
-  readonly tenancy: string[];
-  readonly components: readonly {
-    readonly name: string;
-    readonly type: string;
-    readonly image: string;
-    readonly ports?: readonly { readonly port: number; readonly protocol: string; readonly ingress?: boolean }[];
-    readonly optional?: boolean;
-    readonly schedule?: string;
-  }[];
-  readonly networking: {
-    readonly ingress_ports: readonly { readonly port: number; readonly protocol: string; readonly tls: boolean; readonly description?: string }[];
-    readonly host_ports?: readonly Record<string, unknown>[];
-    readonly websocket?: boolean;
-    readonly notes?: string;
-  };
-  readonly volumes: readonly {
-    readonly name: string;
-    readonly mount_path: string;
-    readonly default_size: string;
-    readonly description?: string;
-    readonly optional?: boolean;
-  }[];
-  readonly resources: {
-    readonly default: { readonly cpu: string; readonly memory: string; readonly storage: string };
-    readonly minimum: { readonly cpu: string; readonly memory: string; readonly storage: string };
-  };
-  readonly health_check: {
-    readonly path: string;
-    readonly port: number;
-    readonly initial_delay_seconds: number;
-    readonly period_seconds: number;
-  };
-  readonly parameters: readonly {
-    readonly key: string;
-    readonly label: string;
-    readonly type: string;
-    readonly default?: unknown;
-    readonly required?: boolean;
-    readonly description?: string;
-  }[];
-  readonly tags: readonly string[];
+  readonly version?: string;
+  readonly description?: string;
+  readonly category?: string;
+  readonly type?: string; // workload v1 field — used as category fallback
+  readonly min_plan?: string;
+  readonly tenancy?: string[];
+  readonly components?: readonly Record<string, unknown>[];
+  readonly networking?: Record<string, unknown>;
+  readonly volumes?: readonly Record<string, unknown>[];
+  readonly resources?: Record<string, unknown>;
+  readonly health_check?: Record<string, unknown>;
+  readonly parameters?: readonly Record<string, unknown>[];
+  readonly tags?: readonly string[];
+  // Workload v1 fields (mapped to application catalog)
+  readonly env_vars?: readonly string[];
+  readonly image?: string | null;
+  readonly has_dockerfile?: boolean;
+  readonly ports?: readonly number[];
 }
 
 const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog';
@@ -114,8 +89,8 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
         400,
       );
     }
-  } else if (catalogData && typeof catalogData === 'object' && 'applications' in catalogData) {
-    const applications = (catalogData as CatalogFile).applications;
+  } else if (catalogData && typeof catalogData === 'object' && ('applications' in catalogData || 'workloads' in catalogData)) {
+    const applications = (catalogData as CatalogFile).applications ?? (catalogData as CatalogFile).workloads;
     if (!applications || applications.length === 0) {
       throw new ApiError(
         'INVALID_CATALOG',
@@ -208,7 +183,7 @@ export async function syncRepo(db: Database, repoId: string) {
 
     const entries: readonly CatalogEntry[] = Array.isArray(catalogRaw)
       ? catalogRaw
-      : ((catalogRaw as CatalogFile).applications ?? []).map((name: string) => ({ name }));
+      : ((catalogRaw as CatalogFile).applications ?? (catalogRaw as CatalogFile).workloads ?? []).map((name: string) => ({ name }));
 
     const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
     const manifestErrors: string[] = [];
@@ -248,7 +223,7 @@ export async function syncRepo(db: Database, repoId: string) {
         name: manifest.name,
         version: manifest.version ?? null,
         description: manifest.description ?? null,
-        category: manifest.category ?? null,
+        category: manifest.category ?? manifest.type ?? null,
         minPlan: manifest.min_plan ?? null,
         tenancy: (manifest.tenancy as unknown as Record<string, unknown> | null) ?? null,
         components: (manifest.components as unknown as Record<string, unknown> | null) ?? null,
@@ -256,7 +231,7 @@ export async function syncRepo(db: Database, repoId: string) {
         volumes: (manifest.volumes as unknown as Record<string, unknown> | null) ?? null,
         resources: (manifest.resources as unknown as Record<string, unknown> | null) ?? null,
         healthCheck: (manifest.health_check as unknown as Record<string, unknown> | null) ?? null,
-        parameters: (manifest.parameters as unknown as Record<string, unknown> | null) ?? null,
+        parameters: (manifest.parameters ?? (manifest.env_vars ? manifest.env_vars.map(k => ({ key: k, label: k, type: 'string' })) : null)) as Record<string, unknown> | null,
         tags: (manifest.tags as unknown as string[] | null) ?? null,
         status: 'available' as const,
         sourceRepoId: repoId,
@@ -335,6 +310,25 @@ export async function restoreDefaultRepo(db: Database) {
   return rest;
 }
 
+function parseJsonField(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return value; }
+  }
+  return value;
+}
+
 export async function listCatalogEntries(db: Database) {
-  return db.select().from(applicationCatalog);
+  const rows = await db.select().from(applicationCatalog);
+  return rows.map(row => ({
+    ...row,
+    tags: parseJsonField(row.tags),
+    components: parseJsonField(row.components),
+    networking: parseJsonField(row.networking),
+    volumes: parseJsonField(row.volumes),
+    resources: parseJsonField(row.resources),
+    healthCheck: parseJsonField(row.healthCheck),
+    parameters: parseJsonField(row.parameters),
+    tenancy: parseJsonField(row.tenancy),
+  }));
 }

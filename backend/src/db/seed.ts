@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, users, workloadRepositories } from './schema.js';
+import { rbacRoles, regions, hostingPlans, users, workloadRepositories, applicationRepositories } from './schema.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -73,6 +73,17 @@ await db.insert(workloadRepositories).values([{
   status: 'active',
 }]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded workload repositories');
+
+// Application Repositories (uses the same catalog repo as workloads)
+await db.insert(applicationRepositories).values([{
+  id: crypto.randomUUID(),
+  name: 'Official Catalog',
+  url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+  branch: 'main',
+  syncIntervalMinutes: 60,
+  status: 'active',
+}]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
+console.log('  Seeded application repositories');
 
 console.log('Seed complete.');
 await closeDb();
