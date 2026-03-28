@@ -49,6 +49,7 @@ vi.mock('./service.js', () => ({
   syncRepo: vi.fn().mockResolvedValue(undefined),
   restoreDefaultRepo: vi.fn().mockResolvedValue(mockRepo),
   listCatalogEntries: vi.fn().mockResolvedValue([mockCatalogEntry]),
+  getCatalogEntry: vi.fn().mockResolvedValue(mockCatalogEntry),
 }));
 
 // Import routes AFTER mocking
@@ -260,5 +261,43 @@ describe('application-repos routes', () => {
       url: '/api/v1/admin/application-catalog',
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('GET /api/v1/admin/application-catalog/:code should return 200 with entry', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/application-catalog/wordpress',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data).toBeDefined();
+    expect(body.data.code).toBe('wordpress');
+    expect(body.data.name).toBe('WordPress');
+  });
+
+  it('GET /api/v1/admin/application-catalog/:code should require auth', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/application-catalog/wordpress',
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('GET /api/v1/admin/application-catalog/:code should return 404 for unknown code', async () => {
+    const { getCatalogEntry } = await import('./service.js');
+    const { ApiError } = await import('../../shared/errors.js');
+    vi.mocked(getCatalogEntry).mockRejectedValueOnce(
+      new ApiError('CATALOG_ENTRY_NOT_FOUND', "Application catalog entry 'nonexistent' not found", 404),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/application-catalog/nonexistent',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(404);
+    const body = res.json();
+    expect(body.error.code).toBe('CATALOG_ENTRY_NOT_FOUND');
   });
 });

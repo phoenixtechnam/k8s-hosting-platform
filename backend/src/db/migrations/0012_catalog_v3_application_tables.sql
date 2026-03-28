@@ -89,3 +89,6 @@ CREATE TABLE IF NOT EXISTS platform_settings (
 INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('auto_update', 'false');
 INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('last_update_check', '');
 INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('latest_version', '');
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('node_cpu_total', '4');
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('node_memory_total', '8Gi');
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('node_storage_total', '80Gi');

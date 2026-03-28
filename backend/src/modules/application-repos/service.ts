@@ -310,6 +310,30 @@ function parseJsonField(value: unknown): unknown {
   return value;
 }
 
+export async function getCatalogEntry(db: Database, code: string) {
+  const rows = await db
+    .select()
+    .from(applicationCatalog)
+    .where(eq(applicationCatalog.code, code));
+
+  if (rows.length === 0) {
+    throw new ApiError('CATALOG_ENTRY_NOT_FOUND', `Application catalog entry '${code}' not found`, 404, { code });
+  }
+
+  const row = rows[0];
+  return {
+    ...row,
+    tags: parseJsonField(row.tags),
+    components: parseJsonField(row.components),
+    networking: parseJsonField(row.networking),
+    volumes: parseJsonField(row.volumes),
+    resources: parseJsonField(row.resources),
+    healthCheck: parseJsonField(row.healthCheck),
+    parameters: parseJsonField(row.parameters),
+    tenancy: parseJsonField(row.tenancy),
+  };
+}
+
 export async function listCatalogEntries(db: Database) {
   const rows = await db.select().from(applicationCatalog);
   return rows.map(row => ({

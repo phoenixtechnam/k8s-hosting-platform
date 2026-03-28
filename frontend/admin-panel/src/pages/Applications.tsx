@@ -1,8 +1,10 @@
-import { useState, useMemo } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle } from 'lucide-react';
+import { useState, useMemo, useCallback } from 'react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box } from 'lucide-react';
 import clsx from 'clsx';
 import ApplicationRepoSettings from '@/components/ApplicationRepoSettings';
 import { useApplicationCatalog } from '@/hooks/use-application-catalog';
+import { useCapacityCheck } from '@/hooks/use-capacity-check';
+import type { ApplicationCatalogResponse } from '@k8s-hosting/api-contracts';
 
 type Tab = 'catalog' | 'installed' | 'repos';
 
@@ -49,9 +51,97 @@ export default function Applications() {
   );
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+interface ComponentEntry {
+  readonly name?: string;
+  readonly type?: string;
+  readonly image?: string;
+  readonly ports?: readonly { readonly port?: number; readonly protocol?: string; readonly ingress?: boolean }[];
+  readonly optional?: boolean;
+}
+
+interface ParameterEntry {
+  readonly key?: string;
+  readonly label?: string;
+  readonly type?: string;
+  readonly default?: unknown;
+  readonly required?: boolean;
+}
+
+interface VolumeEntry {
+  readonly name?: string;
+  readonly mount_path?: string;
+  readonly default_size?: string;
+  readonly description?: string;
+  readonly optional?: boolean;
+}
+
+interface IngressPort {
+  readonly port?: number;
+  readonly protocol?: string;
+  readonly tls?: boolean;
+  readonly description?: string;
+}
+
+interface HostPort {
+  readonly port?: number;
+  readonly protocol?: string;
+  readonly component?: string;
+  readonly description?: string;
+  readonly optional?: boolean;
+  readonly remappable?: boolean;
+}
+
+interface NetworkingData {
+  readonly ingress_ports?: readonly IngressPort[];
+  readonly host_ports?: readonly HostPort[];
+  readonly websocket?: boolean;
+}
+
+interface ResourceTier {
+  readonly cpu?: string;
+  readonly memory?: string;
+  readonly storage?: string;
+}
+
+interface ResourcesData {
+  readonly default?: ResourceTier;
+  readonly minimum?: ResourceTier;
+}
+
+interface HealthCheckData {
+  readonly path?: string;
+  readonly port?: number;
+  readonly initial_delay_seconds?: number;
+  readonly period_seconds?: number;
+}
+
+function asComponents(val: unknown): readonly ComponentEntry[] {
+  return Array.isArray(val) ? val : [];
+}
+function asParameters(val: unknown): readonly ParameterEntry[] {
+  return Array.isArray(val) ? val : [];
+}
+function asVolumes(val: unknown): readonly VolumeEntry[] {
+  return Array.isArray(val) ? val : [];
+}
+function asNetworking(val: unknown): NetworkingData {
+  return (val && typeof val === 'object' ? val : {}) as NetworkingData;
+}
+function asResources(val: unknown): ResourcesData {
+  return (val && typeof val === 'object' ? val : {}) as ResourcesData;
+}
+function asHealthCheck(val: unknown): HealthCheckData {
+  return (val && typeof val === 'object' ? val : {}) as HealthCheckData;
+}
+
+// ─── Catalog Tab ────────────────────────────────────────────────────────────
+
 function CatalogTab() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [selectedEntry, setSelectedEntry] = useState<ApplicationCatalogResponse | null>(null);
   const { data: response, isLoading, isError, error } = useApplicationCatalog();
 
   const entries = response?.data ?? [];
@@ -83,6 +173,14 @@ function CatalogTab() {
 
     return result;
   }, [search, categoryFilter, entries]);
+
+  const handleCardClick = useCallback((entry: ApplicationCatalogResponse) => {
+    setSelectedEntry(entry);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setSelectedEntry(null);
+  }, []);
 
   return (
     <div className="space-y-4" data-testid="catalog-tab">
@@ -138,9 +236,11 @@ function CatalogTab() {
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="catalog-grid">
               {filteredEntries.map((entry) => (
-                <div
+                <button
                   key={entry.id}
-                  className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md"
+                  type="button"
+                  onClick={() => handleCardClick(entry)}
+                  className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
                   data-testid={`catalog-card-${entry.code}`}
                 >
                   <div className="mb-3 flex items-start justify-between">
@@ -173,7 +273,7 @@ function CatalogTab() {
                       ))}
                     </div>
                   )}
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -182,9 +282,351 @@ function CatalogTab() {
           </div>
         </>
       )}
+
+      {selectedEntry && (
+        <AppDetailPanel entry={selectedEntry} onClose={handleClose} />
+      )}
     </div>
   );
 }
+
+// ─── Application Detail Panel ───────────────────────────────────────────────
+
+function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementType; readonly title: string }) {
+  return (
+    <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+      <Icon size={16} className="text-brand-500" />
+      {title}
+    </h4>
+  );
+}
+
+function AppDetailPanel({
+  entry,
+  onClose,
+}: {
+  readonly entry: ApplicationCatalogResponse;
+  readonly onClose: () => void;
+}) {
+  const resources = asResources(entry.resources);
+  const minRes = resources.minimum ?? resources.default;
+  const minCpu = minRes?.cpu ?? '0.25';
+  const minMemory = minRes?.memory ?? '256Mi';
+  const minStorage = minRes?.storage ?? '5Gi';
+
+  const { data: capacityResponse } = useCapacityCheck(minCpu, minMemory, minStorage);
+  const capacity = capacityResponse?.data;
+
+  const components = asComponents(entry.components);
+  const parameters = asParameters(entry.parameters);
+  const networking = asNetworking(entry.networking);
+  const volumes = asVolumes(entry.volumes);
+  const healthCheck = asHealthCheck(entry.healthCheck);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4" data-testid="app-detail-panel">
+      <div
+        className="relative my-8 w-full max-w-3xl rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl"
+        role="dialog"
+        aria-label={`${entry.name} details`}
+      >
+        {/* Close button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          data-testid="detail-close-button"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="p-6 space-y-6">
+          {/* Capacity Warning */}
+          {capacity && !capacity.fits && (
+            <div
+              className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
+              data-testid="capacity-warning"
+            >
+              <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+              <span>Resource warning: {capacity.warnings.join(', ')}</span>
+            </div>
+          )}
+
+          {/* Header */}
+          <div>
+            <div className="flex items-start justify-between pr-8">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{entry.name}</h3>
+                <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
+              </div>
+              <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-3 py-1 text-xs font-medium text-brand-700 dark:text-brand-300">
+                {entry.category ?? 'other'}
+              </span>
+            </div>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
+          </div>
+
+          {/* Components */}
+          {components.length > 0 && (
+            <div>
+              <SectionHeading icon={Box} title="Components" />
+              <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                <table className="w-full text-sm" data-testid="components-table">
+                  <thead>
+                    <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2">Image</th>
+                      <th className="px-3 py-2">Ports</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {components.map((comp) => (
+                      <tr key={comp.name ?? Math.random()}>
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{comp.name}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{comp.type}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                          {(comp.ports ?? []).map((p) => `${p.port}/${p.protocol}${p.ingress ? ' (ingress)' : ''}`).join(', ') || '-'}
+                        </td>
+                        <td className="px-3 py-2">
+                          {comp.optional && (
+                            <span className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">
+                              optional
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Parameters */}
+          {parameters.length > 0 && (
+            <div>
+              <SectionHeading icon={Settings2} title="Parameters" />
+              <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                <table className="w-full text-sm" data-testid="parameters-table">
+                  <thead>
+                    <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <th className="px-3 py-2">Label</th>
+                      <th className="px-3 py-2">Key</th>
+                      <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2">Default</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {parameters.map((param) => (
+                      <tr key={param.key ?? Math.random()}>
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{param.label ?? param.key}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{param.key}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{param.type ?? 'string'}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{param.default != null ? String(param.default) : '-'}</td>
+                        <td className="px-3 py-2">
+                          {param.required && (
+                            <span className="inline-flex rounded-full bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs font-medium text-red-600 dark:text-red-400">
+                              required
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Networking */}
+          {((networking.ingress_ports ?? []).length > 0 || (networking.host_ports ?? []).length > 0 || networking.websocket != null) && (
+            <div>
+              <SectionHeading icon={Network} title="Networking" />
+              <div className="space-y-3">
+                {(networking.ingress_ports ?? []).length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Ingress Ports</p>
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            <th className="px-3 py-2">Port</th>
+                            <th className="px-3 py-2">Protocol</th>
+                            <th className="px-3 py-2">TLS</th>
+                            <th className="px-3 py-2">Description</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {(networking.ingress_ports ?? []).map((p, i) => (
+                            <tr key={i}>
+                              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{p.port}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.protocol}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.tls ? 'Yes' : 'No'}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.description ?? '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {(networking.host_ports ?? []).length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Host Ports</p>
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            <th className="px-3 py-2">Port</th>
+                            <th className="px-3 py-2">Protocol</th>
+                            <th className="px-3 py-2">Component</th>
+                            <th className="px-3 py-2">Description</th>
+                            <th className="px-3 py-2"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {(networking.host_ports ?? []).map((p, i) => (
+                            <tr key={i}>
+                              <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{p.port}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.protocol}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.component ?? '-'}</td>
+                              <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{p.description ?? '-'}</td>
+                              <td className="px-3 py-2 flex gap-1">
+                                {p.optional && <span className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500">optional</span>}
+                                {p.remappable && <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-xs text-blue-600 dark:text-blue-400">remappable</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {networking.websocket != null && (
+                  <div className="flex items-center gap-2">
+                    <Globe size={14} className="text-gray-400" />
+                    <span className="text-sm text-gray-600 dark:text-gray-400">
+                      WebSocket: {networking.websocket ? (
+                        <span className="inline-flex rounded-full bg-green-50 dark:bg-green-900/20 px-2 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">supported</span>
+                      ) : (
+                        <span className="text-gray-500">not required</span>
+                      )}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Volumes */}
+          {volumes.length > 0 && (
+            <div>
+              <SectionHeading icon={HardDrive} title="Volumes" />
+              <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                <table className="w-full text-sm" data-testid="volumes-table">
+                  <thead>
+                    <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <th className="px-3 py-2">Name</th>
+                      <th className="px-3 py-2">Mount Path</th>
+                      <th className="px-3 py-2">Default Size</th>
+                      <th className="px-3 py-2">Description</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {volumes.map((vol) => (
+                      <tr key={vol.name ?? Math.random()}>
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{vol.name}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.mount_path}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.default_size ?? '-'}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.description ?? '-'}</td>
+                        <td className="px-3 py-2">
+                          {vol.optional && (
+                            <span className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500">
+                              optional
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Resources */}
+          {(resources.default ?? resources.minimum) && (
+            <div>
+              <SectionHeading icon={Cpu} title="Resources" />
+              <div className="grid grid-cols-2 gap-4">
+                {resources.default && (
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Default</p>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.storage}</span></div>
+                    </div>
+                  </div>
+                )}
+                {resources.minimum && (
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Minimum</p>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.storage}</span></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Health Check */}
+          {healthCheck.path && (
+            <div>
+              <SectionHeading icon={Heart} title="Health Check" />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div><span className="text-xs font-medium text-gray-500">Path</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.path}</p></div>
+                <div><span className="text-xs font-medium text-gray-500">Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500">Initial Delay</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500">Period</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p></div>
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+              data-testid="install-button"
+            >
+              Install (Phase 2)
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              data-testid="close-button"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Static Tabs ────────────────────────────────────────────────────────────
 
 function InstalledTab() {
   return (

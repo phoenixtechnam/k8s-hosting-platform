@@ -74,6 +74,124 @@ export async function updateSettings(db: Database, autoUpdate: boolean) {
   return { autoUpdate };
 }
 
+// ─── Capacity Check ─────────────────────────────────────────────────────────
+
+function parseResourceValue(value: string, unit: 'cpu' | 'memory' | 'storage'): number {
+  if (unit === 'cpu') {
+    // CPU: plain number (cores) or with 'm' suffix (millicores)
+    if (value.endsWith('m')) {
+      return Number(value.slice(0, -1)) / 1000;
+    }
+    return Number(value);
+  }
+
+  // Memory/Storage: parse Gi/Mi/Ki suffixes
+  const trimmed = value.trim();
+  if (trimmed.endsWith('Gi')) return Number(trimmed.slice(0, -2));
+  if (trimmed.endsWith('Mi')) return Number(trimmed.slice(0, -2)) / 1024;
+  if (trimmed.endsWith('Ki')) return Number(trimmed.slice(0, -2)) / (1024 * 1024);
+  return Number(trimmed);
+}
+
+interface CapacityCheckResult {
+  readonly totalCpu: number;
+  readonly totalMemory: number;
+  readonly totalStorage: number;
+  readonly allocatedCpu: number;
+  readonly allocatedMemory: number;
+  readonly allocatedStorage: number;
+  readonly requestedCpu: number;
+  readonly requestedMemory: number;
+  readonly requestedStorage: number;
+  readonly fits: boolean;
+  readonly warnings: readonly string[];
+}
+
+export async function getCapacityCheck(
+  db: Database,
+  appMinCpu: string,
+  appMinMemory: string,
+  appMinStorage: string,
+): Promise<CapacityCheckResult> {
+  // Read total node capacity from platform_settings (defaults for CX32)
+  const cpuTotal = parseResourceValue(
+    (await getSetting(db, 'node_cpu_total')) ?? '4',
+    'cpu',
+  );
+  const memoryTotal = parseResourceValue(
+    (await getSetting(db, 'node_memory_total')) ?? '8Gi',
+    'memory',
+  );
+  const storageTotal = parseResourceValue(
+    (await getSetting(db, 'node_storage_total')) ?? '80Gi',
+    'storage',
+  );
+
+  // Sum allocated resources from running application instances
+  // For Phase 1, since we don't have real instances yet, allocated is 0
+  const allocatedCpu = 0;
+  const allocatedMemory = 0;
+  const allocatedStorage = 0;
+
+  const requestedCpu = parseResourceValue(appMinCpu, 'cpu');
+  const requestedMemory = parseResourceValue(appMinMemory, 'memory');
+  const requestedStorage = parseResourceValue(appMinStorage, 'storage');
+
+  const availableCpu = cpuTotal - allocatedCpu;
+  const availableMemory = memoryTotal - allocatedMemory;
+  const availableStorage = storageTotal - allocatedStorage;
+
+  const warnings: string[] = [];
+  let fits = true;
+
+  if (requestedCpu > availableCpu) {
+    fits = false;
+    warnings.push(
+      `This application requires ${requestedCpu.toFixed(2)} CPU but only ${availableCpu.toFixed(2)} CPU is available`,
+    );
+  } else if ((allocatedCpu + requestedCpu) / cpuTotal >= 0.95) {
+    warnings.push(
+      `Installing this application would use ${(((allocatedCpu + requestedCpu) / cpuTotal) * 100).toFixed(0)}% of total CPU`,
+    );
+  }
+
+  if (requestedMemory > availableMemory) {
+    fits = false;
+    warnings.push(
+      `This application requires ${requestedMemory.toFixed(2)}Gi memory but only ${availableMemory.toFixed(2)}Gi is available`,
+    );
+  } else if ((allocatedMemory + requestedMemory) / memoryTotal >= 0.95) {
+    warnings.push(
+      `Installing this application would use ${(((allocatedMemory + requestedMemory) / memoryTotal) * 100).toFixed(0)}% of total memory`,
+    );
+  }
+
+  if (requestedStorage > availableStorage) {
+    fits = false;
+    warnings.push(
+      `This application requires ${requestedStorage.toFixed(2)}Gi storage but only ${availableStorage.toFixed(2)}Gi is available`,
+    );
+  } else if ((allocatedStorage + requestedStorage) / storageTotal >= 0.95) {
+    warnings.push(
+      `Installing this application would use ${(((allocatedStorage + requestedStorage) / storageTotal) * 100).toFixed(0)}% of total storage`,
+    );
+  }
+
+  return {
+    totalCpu: cpuTotal,
+    totalMemory: memoryTotal,
+    totalStorage: storageTotal,
+    allocatedCpu,
+    allocatedMemory,
+    allocatedStorage,
+    requestedCpu,
+    requestedMemory,
+    requestedStorage,
+    fits,
+    warnings,
+  };
+}
+
 export async function triggerUpdate(db: Database) {
   const info = await getVersionInfo(db);
   if (!info.updateAvailable || !info.latestVersion) {

@@ -82,6 +82,51 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
     return success(result);
   });
 
+  // POST /api/v1/admin/platform/capacity-check
+  app.post('/admin/platform/capacity-check', {
+    schema: {
+      tags: ['Platform Updates'],
+      summary: 'Check if the cluster has enough resources for an application',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['cpu', 'memory', 'storage'],
+        properties: {
+          cpu: { type: 'string' },
+          memory: { type: 'string' },
+          storage: { type: 'string' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                totalCpu: { type: 'number' },
+                totalMemory: { type: 'number' },
+                totalStorage: { type: 'number' },
+                allocatedCpu: { type: 'number' },
+                allocatedMemory: { type: 'number' },
+                allocatedStorage: { type: 'number' },
+                requestedCpu: { type: 'number' },
+                requestedMemory: { type: 'number' },
+                requestedStorage: { type: 'number' },
+                fits: { type: 'boolean' },
+                warnings: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const { cpu, memory, storage } = request.body as { cpu: string; memory: string; storage: string };
+    const result = await service.getCapacityCheck(app.db, cpu, memory, storage);
+    return success(result);
+  });
+
   // POST /api/v1/admin/platform/update
   app.post('/admin/platform/update', {
     schema: {

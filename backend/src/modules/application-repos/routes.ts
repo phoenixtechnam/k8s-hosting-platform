@@ -230,4 +230,56 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
     const entries = await service.listCatalogEntries(app.db);
     return success(entries);
   });
+
+  // GET /api/v1/admin/application-catalog/:code
+  app.get('/admin/application-catalog/:code', {
+    schema: {
+      tags: ['Application Catalog'],
+      summary: 'Get a single application catalog entry by code',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' },
+        },
+        required: ['code'],
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            data: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                code: { type: 'string' },
+                name: { type: 'string' },
+                version: { type: 'string', nullable: true },
+                description: { type: 'string', nullable: true },
+                category: { type: 'string', nullable: true },
+                minPlan: { type: 'string', nullable: true },
+                tenancy: { type: 'object', nullable: true },
+                components: { type: 'object', nullable: true },
+                networking: { type: 'object', nullable: true },
+                volumes: { type: 'object', nullable: true },
+                resources: { type: 'object', nullable: true },
+                healthCheck: { type: 'object', nullable: true },
+                parameters: { type: 'object', nullable: true },
+                tags: { type: 'array', nullable: true, items: { type: 'string' } },
+                status: { type: 'string' },
+                sourceRepoId: { type: 'string', nullable: true },
+                manifestUrl: { type: 'string', nullable: true },
+                createdAt: { type: 'string' },
+                updatedAt: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const { code } = request.params as { code: string };
+    const entry = await service.getCatalogEntry(app.db, code);
+    return success(entry);
+  });
 }
