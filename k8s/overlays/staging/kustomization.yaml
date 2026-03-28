@@ -4,6 +4,14 @@ kind: Kustomization
 resources:
   - ../../base
 
+images:
+  - name: ghcr.io/phoenixtechnam/hosting-platform/backend
+    newTag: "9f9633e"
+  - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+    newTag: "9f9633e"
+  - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
+    newTag: "9f9633e"
+
 patches:
   - target:
       kind: ResourceQuota
