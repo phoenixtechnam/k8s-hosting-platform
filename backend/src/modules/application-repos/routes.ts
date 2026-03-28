@@ -190,41 +190,6 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
       tags: ['Application Catalog'],
       summary: 'List all application catalog entries',
       security: [{ bearerAuth: [] }],
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            data: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string' },
-                  code: { type: 'string' },
-                  name: { type: 'string' },
-                  version: { type: 'string', nullable: true },
-                  description: { type: 'string', nullable: true },
-                  category: { type: 'string', nullable: true },
-                  minPlan: { type: 'string', nullable: true },
-                  tenancy: { type: 'object', nullable: true },
-                  components: { type: 'object', nullable: true },
-                  networking: { type: 'object', nullable: true },
-                  volumes: { type: 'object', nullable: true },
-                  resources: { type: 'object', nullable: true },
-                  healthCheck: { type: 'object', nullable: true },
-                  parameters: { type: 'object', nullable: true },
-                  tags: { type: 'array', nullable: true, items: { type: 'string' } },
-                  status: { type: 'string' },
-                  sourceRepoId: { type: 'string', nullable: true },
-                  manifestUrl: { type: 'string', nullable: true },
-                  createdAt: { type: 'string' },
-                  updatedAt: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
     },
   }, async () => {
     const entries = await service.listCatalogEntries(app.db);
@@ -243,38 +208,6 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
           code: { type: 'string' },
         },
         required: ['code'],
-      },
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            data: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                code: { type: 'string' },
-                name: { type: 'string' },
-                version: { type: 'string', nullable: true },
-                description: { type: 'string', nullable: true },
-                category: { type: 'string', nullable: true },
-                minPlan: { type: 'string', nullable: true },
-                tenancy: { type: 'object', nullable: true },
-                components: { type: 'object', nullable: true },
-                networking: { type: 'object', nullable: true },
-                volumes: { type: 'object', nullable: true },
-                resources: { type: 'object', nullable: true },
-                healthCheck: { type: 'object', nullable: true },
-                parameters: { type: 'object', nullable: true },
-                tags: { type: 'array', nullable: true, items: { type: 'string' } },
-                status: { type: 'string' },
-                sourceRepoId: { type: 'string', nullable: true },
-                manifestUrl: { type: 'string', nullable: true },
-                createdAt: { type: 'string' },
-                updatedAt: { type: 'string' },
-              },
-            },
-          },
-        },
       },
     },
   }, async (request) => {
