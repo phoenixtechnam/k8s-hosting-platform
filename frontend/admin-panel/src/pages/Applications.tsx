@@ -7,8 +7,8 @@ import { useApplicationCatalog } from '@/hooks/use-application-catalog';
 type Tab = 'catalog' | 'installed' | 'repos';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
-  { id: 'catalog', label: 'Catalog' },
-  { id: 'installed', label: 'Installed' },
+  { id: 'catalog', label: 'Available Applications' },
+  { id: 'installed', label: 'Installed Applications' },
   { id: 'repos', label: 'Repositories' },
 ] as const;
 

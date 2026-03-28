@@ -109,9 +109,9 @@ describe('Domains page', () => {
     expect(screen.queryByTestId('select-client-prompt')).not.toBeInTheDocument();
   });
 
-  it('disables add domain button when no client selected', () => {
+  it('add domain button is always enabled', () => {
     render(<Domains />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('add-domain-button')).toBeDisabled();
+    expect(screen.getByTestId('add-domain-button')).toBeEnabled();
   });
 
   it('has a search input', () => {

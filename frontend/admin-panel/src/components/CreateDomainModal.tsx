@@ -1,22 +1,29 @@
 import { useState, type FormEvent } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { useCreateDomain } from '@/hooks/use-domains';
+import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 
 interface CreateDomainModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
-  readonly clientId: string;
+  readonly clientId?: string | null;
 }
 
 export default function CreateDomainModal({ open, onClose, clientId }: CreateDomainModalProps) {
   const [domainName, setDomainName] = useState('');
   const [dnsMode, setDnsMode] = useState<'cname' | 'primary' | 'secondary'>('cname');
+  const [internalClientId, setInternalClientId] = useState<string | null>(clientId ?? null);
 
-  const createDomain = useCreateDomain(clientId);
+  const effectiveClientId = clientId ?? internalClientId;
+
+  const createDomain = useCreateDomain(effectiveClientId ?? undefined);
 
   const resetForm = () => {
     setDomainName('');
     setDnsMode('cname');
+    if (!clientId) {
+      setInternalClientId(null);
+    }
     createDomain.reset();
   };
 
@@ -27,6 +34,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!effectiveClientId) return;
     try {
       await createDomain.mutateAsync({
         domain_name: domainName,
@@ -43,12 +51,12 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="create-domain-modal">
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-900">Add Domain</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Add Domain</h2>
           <button
             onClick={handleClose}
-            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
             aria-label="Close"
           >
             <X size={20} />
@@ -56,14 +64,27 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
         </div>
 
         {createDomain.error && (
-          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="create-domain-error">
+          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="create-domain-error">
             {createDomain.error instanceof Error ? createDomain.error.message : 'Failed to create domain'}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-domain-form">
+          {!clientId && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Client *
+              </label>
+              <SearchableClientSelect
+                selectedClientId={internalClientId}
+                onSelect={setInternalClientId}
+                placeholder="Search for a client..."
+              />
+            </div>
+          )}
+
           <div>
-            <label htmlFor="domain-name" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="domain-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Domain Name *
             </label>
             <input
@@ -72,14 +93,14 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
               required
               value={domainName}
               onChange={(e) => setDomainName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="example.com"
               data-testid="domain-name-input"
             />
           </div>
 
           <div>
-            <label htmlFor="dns-mode" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="dns-mode" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               DNS Mode *
             </label>
             <select
@@ -87,7 +108,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
               required
               value={dnsMode}
               onChange={(e) => setDnsMode(e.target.value as 'cname' | 'primary' | 'secondary')}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               data-testid="dns-mode-select"
             >
               <option value="cname">CNAME</option>
@@ -100,13 +121,13 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
             <button
               type="button"
               onClick={handleClose}
-              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={createDomain.isPending}
+              disabled={createDomain.isPending || !effectiveClientId}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               data-testid="submit-domain-button"
             >

@@ -67,11 +67,16 @@ const MOCK_BACKUPS = {
   pagination: { total_count: 1, cursor: null, has_more: false, page_size: 25 },
 };
 
+const MOCK_EMAIL_DOMAINS = { data: [] };
+const MOCK_MAILBOXES = { data: [] };
+
 function setupMockApi() {
   mockApiFetch.mockImplementation((path: string) => {
     if (path.includes('/workloads')) return Promise.resolve(MOCK_WORKLOADS);
     if (path.includes('/databases')) return Promise.resolve(MOCK_DATABASES);
     if (path.includes('/backups')) return Promise.resolve(MOCK_BACKUPS);
+    if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
+    if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
     if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
     if (path.match(/\/clients\/client-001$/)) return Promise.resolve(MOCK_CLIENT);
     return Promise.resolve({ data: [] });
@@ -99,7 +104,7 @@ describe('ClientDetail resource tabs', () => {
     setupMockApi();
   });
 
-  it('renders all four resource tabs', async () => {
+  it('renders all resource tabs', async () => {
     renderClientDetail();
 
     await waitFor(() => {
@@ -107,8 +112,9 @@ describe('ClientDetail resource tabs', () => {
     });
 
     expect(screen.getByTestId('tab-domains')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-databases')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-applications')).toBeInTheDocument();
     expect(screen.getByTestId('tab-workloads')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-email')).toBeInTheDocument();
     expect(screen.getByTestId('tab-backups')).toBeInTheDocument();
   });
 
@@ -118,7 +124,6 @@ describe('ClientDetail resource tabs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('tab-domains')).toHaveTextContent('Domains (2)');
     });
-    expect(screen.getByTestId('tab-databases')).toHaveTextContent('Databases (1)');
     expect(screen.getByTestId('tab-workloads')).toHaveTextContent('Workloads (3)');
     expect(screen.getByTestId('tab-backups')).toHaveTextContent('Backups (1)');
   });
@@ -133,20 +138,19 @@ describe('ClientDetail resource tabs', () => {
     expect(screen.getByText('shop.acme.com')).toBeInTheDocument();
   });
 
-  it('switches to databases tab on click', async () => {
+  it('switches to workloads tab on click', async () => {
     renderClientDetail();
 
     await waitFor(() => {
-      expect(screen.getByTestId('tab-databases')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-workloads')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('tab-databases'));
+    fireEvent.click(screen.getByTestId('tab-workloads'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('databases-table')).toBeInTheDocument();
+      expect(screen.getByTestId('workloads-table')).toBeInTheDocument();
     });
-    expect(screen.getByText('acme_prod')).toBeInTheDocument();
-    expect(screen.getByText('mysql')).toBeInTheDocument();
+    expect(screen.getByText('web-app')).toBeInTheDocument();
   });
 
   it('switches to workloads tab on click and shows workload data', async () => {

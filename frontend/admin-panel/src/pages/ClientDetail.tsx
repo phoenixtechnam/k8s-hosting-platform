@@ -6,15 +6,16 @@ import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
-import { useDatabases, useBackups } from '@/hooks/use-databases';
+import { useBackups } from '@/hooks/use-databases';
 import { useWorkloads } from '@/hooks/use-workloads';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
+import { useEmailDomains, useMailboxes } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse, Workload } from '@/types/api';
-import type { Database, Backup } from '@/hooks/use-databases';
+import type { Backup } from '@/hooks/use-databases';
 
-type TabKey = 'domains' | 'databases' | 'workloads' | 'backups';
+type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -27,10 +28,11 @@ export default function ClientDetail() {
   const [activeTab, setActiveTab] = useState<TabKey>('domains');
 
   const domainsQuery = useDomains(id);
-  const databasesQuery = useDatabases(id);
   const workloadsQuery = useWorkloads(id);
   const backupsQuery = useBackups(id);
   const subscriptionQuery = useSubscription(id);
+  const emailDomainsQuery = useEmailDomains(id);
+  const mailboxesQuery = useMailboxes(id);
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
@@ -75,7 +77,7 @@ export default function ClientDetail() {
   if (error || !client) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
-        <p className="text-lg text-gray-500">
+        <p className="text-lg text-gray-500 dark:text-gray-400">
           {error instanceof Error ? error.message : 'Client not found'}
         </p>
         <Link to="/clients" className="mt-4 text-sm text-brand-500 hover:text-brand-600">
@@ -90,14 +92,15 @@ export default function ClientDetail() {
   const created = client.createdAt;
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
-  const databaseCount = databasesQuery.data?.data.length ?? 0;
   const workloadCount = workloadsQuery.data?.data.length ?? 0;
   const backupCount = backupsQuery.data?.data.length ?? 0;
+  const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
-    { key: 'databases', label: 'Databases', count: databaseCount },
+    { key: 'applications', label: 'Applications', count: 0 },
     { key: 'workloads', label: 'Workloads', count: workloadCount },
+    { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
   ];
 
@@ -106,14 +109,14 @@ export default function ClientDetail() {
       <div className="flex items-center gap-3">
         <Link
           to="/clients"
-          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
           aria-label="Back to clients"
         >
           <ArrowLeft size={20} />
         </Link>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold text-gray-900">{name}</h1>
-          <p className="text-sm text-gray-500">{email}</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{email}</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -128,7 +131,7 @@ export default function ClientDetail() {
               } catch { /* error shown via impersonate.error */ }
             }}
             disabled={impersonate.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-medium text-brand-700 shadow-sm hover:bg-brand-100 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2 text-sm font-medium text-brand-700 dark:text-brand-300 shadow-sm hover:bg-brand-100 dark:hover:bg-brand-900/20 disabled:opacity-50"
             data-testid="impersonate-button"
           >
             {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
@@ -136,7 +139,7 @@ export default function ClientDetail() {
           </button>
           <button
             onClick={() => setEditOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50"
             data-testid="edit-button"
           >
             <Edit size={14} />
@@ -146,7 +149,7 @@ export default function ClientDetail() {
             <button
               onClick={handleReactivate}
               disabled={updateClient.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-green-200 bg-white px-4 py-2 text-sm font-medium text-green-600 shadow-sm hover:bg-green-50 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
               data-testid="reactivate-button"
             >
               {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
@@ -156,7 +159,7 @@ export default function ClientDetail() {
             <button
               onClick={handleSuspend}
               disabled={updateClient.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-orange-200 bg-white px-4 py-2 text-sm font-medium text-orange-600 shadow-sm hover:bg-orange-50 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-orange-200 dark:border-orange-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-orange-600 dark:text-orange-400 shadow-sm hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50"
               data-testid="suspend-button"
             >
               {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
@@ -165,7 +168,7 @@ export default function ClientDetail() {
           )}
           <button
             onClick={() => setDeleteOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
             data-testid="delete-button"
           >
             <Trash2 size={14} />
@@ -175,56 +178,56 @@ export default function ClientDetail() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm lg:col-span-2">
-          <h2 className="mb-4 text-lg font-semibold text-gray-900">Account Information</h2>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm lg:col-span-2">
+          <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Account Information</h2>
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Status</dt>
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
               <dd className="mt-1">
                 <StatusBadge status={client.status} />
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Created</dt>
-              <dd className="mt-1 text-sm text-gray-900">
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Created</dt>
+              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
                 {created ? new Date(created).toLocaleDateString() : '—'}
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Namespace</dt>
-              <dd className="mt-1 font-mono text-xs text-gray-700">
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Namespace</dt>
+              <dd className="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300">
                 {client.kubernetesNamespace ?? '—'}
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Contact Email</dt>
-              <dd className="mt-1 text-sm text-gray-900">
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Contact Email</dt>
+              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
                 {client.contactEmail ?? 'Not set'}
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium uppercase text-gray-500">Created By</dt>
-              <dd className="mt-1 text-sm text-gray-900">
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Created By</dt>
+              <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
                 {client.createdBy ?? '—'}
               </dd>
             </div>
           </dl>
         </div>
 
-        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-4 text-lg font-semibold text-gray-900">IDs</h2>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+          <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">IDs</h2>
           <div className="space-y-3 text-sm">
             <div>
-              <span className="text-xs font-medium uppercase text-gray-500">Client ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700">{client.id}</p>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Client ID</span>
+              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{client.id}</p>
             </div>
             <div>
-              <span className="text-xs font-medium uppercase text-gray-500">Plan ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700">{client.planId ?? '—'}</p>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Plan ID</span>
+              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{client.planId ?? '—'}</p>
             </div>
             <div>
-              <span className="text-xs font-medium uppercase text-gray-500">Region ID</span>
-              <p className="mt-0.5 break-all font-mono text-xs text-gray-700">{client.regionId ?? '—'}</p>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Region ID</span>
+              <p className="mt-0.5 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{client.regionId ?? '—'}</p>
             </div>
           </div>
         </div>
@@ -233,8 +236,8 @@ export default function ClientDetail() {
       <SubscriptionCard clientId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
 
       {/* Resource tabs */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200" data-testid="resource-tabs">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="border-b border-gray-200 dark:border-gray-700" data-testid="resource-tabs">
           <nav className="-mb-px flex gap-6 px-5" aria-label="Resource tabs">
             {tabs.map((tab) => (
               <button
@@ -243,8 +246,8 @@ export default function ClientDetail() {
                 data-testid={`tab-${tab.key}`}
                 className={`whitespace-nowrap border-b-2 py-3 text-sm font-medium transition-colors ${
                   activeTab === tab.key
-                    ? 'border-brand-500 text-brand-600'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                    ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                    : 'border-transparent text-gray-500 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-300'
                 }`}
               >
                 {tab.label} ({tab.count})
@@ -255,8 +258,9 @@ export default function ClientDetail() {
 
         <div className="p-5">
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
-          {activeTab === 'databases' && <DatabasesTab data={databasesQuery.data} isLoading={databasesQuery.isLoading} error={databasesQuery.error} />}
+          {activeTab === 'applications' && <ApplicationsTab />}
           {activeTab === 'workloads' && <WorkloadsTab data={workloadsQuery.data} isLoading={workloadsQuery.isLoading} error={workloadsQuery.error} />}
+          {activeTab === 'email' && <EmailTab emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />}
         </div>
       </div>
@@ -294,7 +298,7 @@ function TabLoading() {
 
 function TabError({ message }: { readonly message: string }) {
   return (
-    <p className="py-6 text-center text-sm text-red-500" data-testid="tab-error">
+    <p className="py-6 text-center text-sm text-red-500 dark:text-red-400" data-testid="tab-error">
       {message}
     </p>
   );
@@ -302,7 +306,7 @@ function TabError({ message }: { readonly message: string }) {
 
 function TabEmpty({ resource }: { readonly resource: string }) {
   return (
-    <p className="py-6 text-center text-sm text-gray-500" data-testid="tab-empty">
+    <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="tab-empty">
       No {resource} found for this client.
     </p>
   );
@@ -317,7 +321,7 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
   return (
     <table className="w-full text-left text-sm" data-testid="domains-table">
       <thead>
-        <tr className="border-b border-gray-100 text-xs font-medium uppercase text-gray-500">
+        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
           <th className="pb-2">Domain</th>
           <th className="pb-2">DNS Mode</th>
           <th className="pb-2">SSL</th>
@@ -327,12 +331,12 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
       </thead>
       <tbody>
         {items.map((d) => (
-          <tr key={d.id} className="border-b border-gray-50">
-            <td className="py-2 font-medium text-gray-900">{d.domainName}</td>
-            <td className="py-2 text-gray-600">{d.dnsMode}</td>
-            <td className="py-2 text-gray-600">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
+          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.dnsMode}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
             <td className="py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
-            <td className="py-2 text-gray-500">{new Date(d.createdAt).toLocaleDateString()}</td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
           </tr>
         ))}
       </tbody>
@@ -340,35 +344,92 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
   );
 }
 
-function DatabasesTab({ data, isLoading, error }: TabContentProps<Database>) {
+function ApplicationsTab() {
+  return (
+    <div className="py-10 text-center" data-testid="applications-tab">
+      <p className="text-sm text-gray-500 dark:text-gray-400">Application management coming soon.</p>
+    </div>
+  );
+}
+
+interface EmailTabProps {
+  readonly emailDomains: readonly { readonly id: string; readonly domainName: string; readonly enabled: number; readonly mailboxCount?: number; readonly createdAt: string }[] | undefined;
+  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string; readonly displayName: string | null; readonly status: string; readonly quotaMb: number; readonly usedMb: number; readonly createdAt: string }[] | undefined;
+  readonly isLoading: boolean;
+  readonly error: Error | null;
+}
+
+function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) {
   if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load databases." />;
-  const items = data?.data ?? [];
-  if (items.length === 0) return <TabEmpty resource="databases" />;
+  if (error) return <TabError message="Failed to load email data." />;
+
+  const domains = emailDomains ?? [];
+  const mboxes = mailboxes ?? [];
+
+  if (domains.length === 0) {
+    return (
+      <div className="py-10 text-center" data-testid="email-tab-empty">
+        <p className="text-sm text-gray-500 dark:text-gray-400">Email not enabled for this client.</p>
+      </div>
+    );
+  }
 
   return (
-    <table className="w-full text-left text-sm" data-testid="databases-table">
-      <thead>
-        <tr className="border-b border-gray-100 text-xs font-medium uppercase text-gray-500">
-          <th className="pb-2">Name</th>
-          <th className="pb-2">Type</th>
-          <th className="pb-2">Size</th>
-          <th className="pb-2">Status</th>
-          <th className="pb-2">Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((db) => (
-          <tr key={db.id} className="border-b border-gray-50">
-            <td className="py-2 font-medium text-gray-900">{db.name}</td>
-            <td className="py-2 text-gray-600">{db.databaseType}</td>
-            <td className="py-2 text-gray-600">{db.sizeBytes ? formatBytes(db.sizeBytes) : '—'}</td>
-            <td className="py-2"><StatusBadge status={db.status as 'active' | 'pending' | 'failed'} /></td>
-            <td className="py-2 text-gray-500">{new Date(db.createdAt).toLocaleDateString()}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="space-y-6" data-testid="email-tab">
+      <div>
+        <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Email Domains</h3>
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+              <th className="pb-2">Domain</th>
+              <th className="pb-2">Mailboxes</th>
+              <th className="pb-2">Status</th>
+              <th className="pb-2">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {domains.map((d) => (
+              <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
+                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
+                <td className="py-2 text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
+                <td className="py-2">
+                  <StatusBadge status={d.enabled ? 'active' : 'suspended'} />
+                </td>
+                <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {mboxes.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Mailboxes</h3>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="pb-2">Address</th>
+                <th className="pb-2">Display Name</th>
+                <th className="pb-2">Quota</th>
+                <th className="pb-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mboxes.map((m) => (
+                <tr key={m.id} className="border-b border-gray-50 dark:border-gray-700">
+                  <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{m.fullAddress}</td>
+                  <td className="py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
+                  <td className="py-2 text-gray-600 dark:text-gray-400">{m.usedMb}/{m.quotaMb} MB</td>
+                  <td className="py-2">
+                    <StatusBadge status={m.status as 'active' | 'pending' | 'suspended'} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -381,7 +442,7 @@ function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
   return (
     <table className="w-full text-left text-sm" data-testid="workloads-table">
       <thead>
-        <tr className="border-b border-gray-100 text-xs font-medium uppercase text-gray-500">
+        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
           <th className="pb-2">Name</th>
           <th className="pb-2">Replicas</th>
           <th className="pb-2">CPU</th>
@@ -392,13 +453,13 @@ function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
       </thead>
       <tbody>
         {items.map((w) => (
-          <tr key={w.id} className="border-b border-gray-50">
-            <td className="py-2 font-medium text-gray-900">{w.name}</td>
-            <td className="py-2 text-gray-600">{w.replicaCount}</td>
-            <td className="py-2 text-gray-600">{w.cpuRequest}</td>
-            <td className="py-2 text-gray-600">{w.memoryRequest}</td>
+          <tr key={w.id} className="border-b border-gray-50 dark:border-gray-700">
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{w.name}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{w.replicaCount}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{w.cpuRequest}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{w.memoryRequest}</td>
             <td className="py-2"><StatusBadge status={w.status} /></td>
-            <td className="py-2 text-gray-500">{new Date(w.createdAt).toLocaleDateString()}</td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(w.createdAt).toLocaleDateString()}</td>
           </tr>
         ))}
       </tbody>
@@ -415,7 +476,7 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
   return (
     <table className="w-full text-left text-sm" data-testid="backups-table">
       <thead>
-        <tr className="border-b border-gray-100 text-xs font-medium uppercase text-gray-500">
+        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
           <th className="pb-2">Resource</th>
           <th className="pb-2">Type</th>
           <th className="pb-2">Size</th>
@@ -425,12 +486,12 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
       </thead>
       <tbody>
         {items.map((b) => (
-          <tr key={b.id} className="border-b border-gray-50">
-            <td className="py-2 font-medium text-gray-900">{b.resourceType}</td>
-            <td className="py-2 text-gray-600">{b.backupType}</td>
-            <td className="py-2 text-gray-600">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
-            <td className="py-2 text-gray-500">{new Date(b.createdAt).toLocaleDateString()}</td>
-            <td className="py-2 text-gray-500">{b.expiresAt ? new Date(b.expiresAt).toLocaleDateString() : '—'}</td>
+          <tr key={b.id} className="border-b border-gray-50 dark:border-gray-700">
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{b.resourceType}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{b.backupType}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{b.sizeBytes ? formatBytes(b.sizeBytes) : '—'}</td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(b.createdAt).toLocaleDateString()}</td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{b.expiresAt ? new Date(b.expiresAt).toLocaleDateString() : '—'}</td>
           </tr>
         ))}
       </tbody>
@@ -474,27 +535,27 @@ function SubscriptionCard({
 
   if (isLoading) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
         <div className="flex items-center gap-2">
           <Loader2 size={16} className="animate-spin text-gray-400" />
-          <span className="text-sm text-gray-500">Loading subscription...</span>
+          <span className="text-sm text-gray-500 dark:text-gray-400">Loading subscription...</span>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="subscription-card">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="subscription-card">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <CreditCard size={18} className="text-gray-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Subscription</h2>
+          <CreditCard size={18} className="text-gray-600 dark:text-gray-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Subscription</h2>
         </div>
         {!editing && (
           <button
             type="button"
             onClick={startEditing}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             data-testid="edit-subscription-button"
           >
             <Edit size={14} />
@@ -506,18 +567,18 @@ function SubscriptionCard({
       {!editing ? (
         <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div>
-            <dt className="text-xs font-medium uppercase text-gray-500">Plan</dt>
-            <dd className="mt-1 text-sm text-gray-900">{data?.plan?.name ?? 'No plan'}</dd>
+            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Plan</dt>
+            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{data?.plan?.name ?? 'No plan'}</dd>
           </div>
           <div>
-            <dt className="text-xs font-medium uppercase text-gray-500">Status</dt>
+            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
             <dd className="mt-1">
               <StatusBadge status={(data?.status ?? 'active') as 'active' | 'pending' | 'suspended'} />
             </dd>
           </div>
           <div>
-            <dt className="text-xs font-medium uppercase text-gray-500">Expires</dt>
-            <dd className="mt-1 text-sm text-gray-900">
+            <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Expires</dt>
+            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
               {data?.subscription_expires_at
                 ? new Date(data.subscription_expires_at).toLocaleDateString()
                 : 'Not set'}
@@ -528,10 +589,10 @@ function SubscriptionCard({
         <form onSubmit={handleSave} className="space-y-4" data-testid="subscription-edit-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="sub-plan" className="block text-sm font-medium text-gray-700">Plan</label>
+              <label htmlFor="sub-plan" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Plan</label>
               <select
                 id="sub-plan"
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100"
                 value={planId}
                 onChange={(e) => setPlanId(e.target.value)}
                 data-testid="sub-plan-select"
@@ -543,11 +604,11 @@ function SubscriptionCard({
               </select>
             </div>
             <div>
-              <label htmlFor="sub-expires" className="block text-sm font-medium text-gray-700">Expires</label>
+              <label htmlFor="sub-expires" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Expires</label>
               <input
                 id="sub-expires"
                 type="date"
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100"
                 value={expiresAt}
                 onChange={(e) => setExpiresAt(e.target.value)}
                 data-testid="sub-expires-input"
@@ -555,7 +616,7 @@ function SubscriptionCard({
             </div>
           </div>
           {updateSub.error && (
-            <p className="text-sm text-red-600">
+            <p className="text-sm text-red-600 dark:text-red-400">
               {updateSub.error instanceof Error ? updateSub.error.message : 'Failed to update subscription'}
             </p>
           )}
@@ -563,7 +624,7 @@ function SubscriptionCard({
             <button
               type="button"
               onClick={() => setEditing(false)}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>

@@ -65,7 +65,7 @@ interface ApplicationManifest {
   readonly tags: readonly string[];
 }
 
-const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-application-catalog';
+const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog';
 
 async function validateRepoAccess(url: string, branch: string, authToken?: string | null): Promise<void> {
   const { owner, repo } = parseGithubUrl(url);
