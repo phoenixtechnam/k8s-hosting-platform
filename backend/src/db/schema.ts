@@ -645,6 +645,14 @@ export const applicationInstances = mysqlTable('application_instances', {
   index('idx_app_instances_status').on(table.status),
 ]);
 
+// ─── Platform Settings ───
+
+export const platformSettings = mysqlTable('platform_settings', {
+  key: varchar('setting_key', { length: 100 }).primaryKey(),
+  value: text('setting_value').notNull(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+});
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -690,3 +698,5 @@ export type ApplicationCatalogEntry = typeof applicationCatalog.$inferSelect;
 export type NewApplicationCatalogEntry = typeof applicationCatalog.$inferInsert;
 export type ApplicationInstance = typeof applicationInstances.$inferSelect;
 export type NewApplicationInstance = typeof applicationInstances.$inferInsert;
+export type PlatformSetting = typeof platformSettings.$inferSelect;
+export type NewPlatformSetting = typeof platformSettings.$inferInsert;

@@ -97,3 +97,61 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy-staging:
+    name: Update Staging Tags
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-admin-panel, build-client-panel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update staging image tags
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          cat > k8s/overlays/staging/kustomization.yaml << EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+
+          resources:
+            - ../../base
+
+          images:
+            - name: ghcr.io/phoenixtechnam/hosting-platform/backend
+              newTag: "${SHA}"
+            - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+              newTag: "${SHA}"
+            - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
+              newTag: "${SHA}"
+
+          patches:
+            - target:
+                kind: ResourceQuota
+                name: hosting-quota
+                namespace: hosting
+              patch: |
+                - op: replace
+                  path: /spec/hard/requests.cpu
+                  value: "4"
+                - op: replace
+                  path: /spec/hard/requests.memory
+                  value: 8Gi
+                - op: replace
+                  path: /spec/hard/limits.cpu
+                  value: "8"
+                - op: replace
+                  path: /spec/hard/limits.memory
+                  value: 16Gi
+                - op: replace
+                  path: /spec/hard/pods
+                  value: "50"
+          EOF
+
+      - name: Commit staging tag update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/staging/kustomization.yaml
+          git diff --cached --quiet || git commit -m "ci: update staging image tags to ${GITHUB_SHA::7}"
+          git push

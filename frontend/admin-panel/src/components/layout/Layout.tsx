@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import UpdateBanner from '../UpdateBanner';
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -10,11 +11,12 @@ export default function Layout() {
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   return (
-    <div className="flex h-screen overflow-hidden" data-testid="layout">
+    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900" data-testid="layout">
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={openSidebar} />
+        <UpdateBanner />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           <Outlet />

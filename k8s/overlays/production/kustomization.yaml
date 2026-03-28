@@ -4,4 +4,10 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Production uses base values (or overrides here if needed)
+images:
+  - name: ghcr.io/phoenixtechnam/hosting-platform/backend
+    newTag: "latest"
+  - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+    newTag: "latest"
+  - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
+    newTag: "latest"

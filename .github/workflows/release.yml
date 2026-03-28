@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/phoenixtechnam/hosting-platform
+
+jobs:
+  build-and-release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Build all 3 images with semver tag
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/backend:latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/admin-panel/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/admin-panel:latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/client-panel/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/client-panel:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/client-panel:latest
+
+      # Update production kustomization with new version
+      - name: Update production image tags
+        run: |
+          cd k8s/overlays/production
+          # Use kustomize edit to set image tags
+          for component in backend admin-panel client-panel; do
+            sed -i "s|newTag:.*|newTag: \"${{ steps.version.outputs.version }}\"|g" kustomization.yaml || true
+          done
+
+      # Create GitHub Release
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

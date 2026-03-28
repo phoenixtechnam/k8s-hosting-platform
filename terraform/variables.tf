@@ -15,6 +15,22 @@ variable "server_name" {
   default     = "admin1"
 }
 
+variable "environment" {
+  description = "Deployment environment (staging or production)"
+  type        = string
+  default     = "production"
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "Environment must be 'staging' or 'production'."
+  }
+}
+
+variable "server_type" {
+  description = "Hetzner server type"
+  type        = string
+  default     = "cx32"
+}
+
 variable "location" {
   description = "Hetzner datacenter location"
   type        = string

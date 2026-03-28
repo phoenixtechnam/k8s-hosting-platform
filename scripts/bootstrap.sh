@@ -17,12 +17,14 @@ set -euo pipefail
 #   --skip-monitoring      Skip Prometheus/Loki/Grafana
 #   --skip-flux            Skip Flux v2 GitOps controller
 #   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
+#   --env <staging|production>  Environment (default: production)
 #   --skip-vpn             Skip WireGuard + NetBird client install
 #   --help                 Show this help message
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 NODE_ROLE="server"
+PLATFORM_ENV="production"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.31.4+k3s1"
@@ -53,6 +55,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --role)            NODE_ROLE="$2"; shift 2 ;;
+      --env)             PLATFORM_ENV="$2"; shift 2 ;;
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
@@ -67,6 +70,10 @@ parse_args() {
 
   if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
     error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
+  fi
+
+  if [[ "$PLATFORM_ENV" != "staging" && "$PLATFORM_ENV" != "production" ]]; then
+    error "Invalid --env: ${PLATFORM_ENV}. Must be 'staging' or 'production'."
   fi
 
   if [[ "$NODE_ROLE" == "worker" ]]; then
@@ -555,7 +562,22 @@ install_flux() {
 
   log "Installing Flux v2..."
   flux install --kubeconfig="$KUBECONFIG" --timeout=300s
-  log "Flux v2 installed."
+
+  log "Configuring Flux source and kustomization for ${PLATFORM_ENV}..."
+  flux create source git hosting-platform \
+    --url="$REPO_URL" \
+    --branch=main \
+    --interval=1m \
+    --kubeconfig="$KUBECONFIG"
+
+  flux create kustomization platform \
+    --source=hosting-platform \
+    --path="./k8s/overlays/${PLATFORM_ENV}" \
+    --prune=true \
+    --interval=1m \
+    --kubeconfig="$KUBECONFIG"
+
+  log "Flux v2 installed and configured for ${PLATFORM_ENV}."
 }
 
 generate_platform_secrets() {
@@ -589,6 +611,16 @@ generate_platform_secrets() {
       --from-literal=secret="$jwt_secret"
     log "JWT secret created."
   fi
+}
+
+create_platform_configmap() {
+  log "Creating platform-config ConfigMap (environment=${PLATFORM_ENV})..."
+  kctl create configmap platform-config \
+    --namespace=platform \
+    --from-literal=environment="$PLATFORM_ENV" \
+    --from-literal=version="0.0.0" \
+    --dry-run=client -o yaml | kctl apply -f -
+  log "platform-config ConfigMap applied."
 }
 
 apply_platform_manifests() {
@@ -665,6 +697,7 @@ print_summary() {
   log "════════════════════════════════════════════════"
   log ""
   log "  Server IP:    ${server_ip}"
+  log "  Environment:  ${PLATFORM_ENV}"
   log "  Kubeconfig:   ${KUBECONFIG}"
   log "  k3s version:  ${K3S_VERSION}"
   log ""
@@ -699,7 +732,7 @@ main() {
   check_os
 
   log "════════════════════════════════════════════════"
-  log "  K8s Hosting Platform — Bootstrap (${NODE_ROLE})"
+  log "  K8s Hosting Platform — Bootstrap (${NODE_ROLE}, ${PLATFORM_ENV})"
   log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
   log "════════════════════════════════════════════════"
   log ""
@@ -732,6 +765,7 @@ main() {
     install_monitoring
     install_flux
     generate_platform_secrets
+    create_platform_configmap
     apply_platform_manifests
 
     # Phase 4: Verify

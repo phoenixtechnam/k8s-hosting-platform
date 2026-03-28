@@ -19,16 +19,17 @@ data "hcloud_ssh_key" "deploy" {
 }
 
 resource "hcloud_server" "k3s" {
-  name        = var.server_name
-  server_type = "cx32"
+  name        = "${var.server_name}-${var.environment}"
+  server_type = var.server_type
   image       = "debian-13"
   location    = var.location
   ssh_keys    = [data.hcloud_ssh_key.deploy.id]
 
   labels = {
-    role    = "k3s-control"
-    project = "hosting-platform"
-    phase   = "1"
+    role        = "k3s-control"
+    project     = "hosting-platform"
+    phase       = "1"
+    environment = var.environment
   }
 
   public_net {

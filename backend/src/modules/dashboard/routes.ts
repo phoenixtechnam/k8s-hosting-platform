@@ -35,7 +35,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         total_domains: Number(domainStats.total_domains),
         total_databases: Number(databaseStats.total_databases),
         total_backups: Number(backupStats.total_backups),
-        platform_version: '0.1.0',
+        platform_version: process.env.PLATFORM_VERSION ?? '0.1.0',
       },
     };
   });

@@ -78,3 +78,14 @@ CREATE TABLE application_instances (
   KEY idx_app_instances_catalog (application_catalog_id),
   KEY idx_app_instances_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Platform settings (key-value store for platform configuration)
+CREATE TABLE IF NOT EXISTS platform_settings (
+  setting_key varchar(100) PRIMARY KEY,
+  setting_value text NOT NULL,
+  updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('auto_update', 'false');
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('last_update_check', '');
+INSERT IGNORE INTO platform_settings (setting_key, setting_value) VALUES ('latest_version', '');

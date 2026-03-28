@@ -40,6 +40,7 @@ import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
+import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -179,6 +180,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
+  await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
 
   return app;
 }

@@ -12,12 +12,12 @@ test.describe('Admin Settings Page', () => {
     await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible();
   });
 
-  test('shows Platform Configuration', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Platform Configuration' })).toBeVisible({ timeout: 2000 });
+  test('shows Platform Status section', async ({ page }) => {
+    await expect(page.getByText('Platform Status')).toBeVisible({ timeout: 2000 });
   });
 
-  test('shows Workload Repositories section', async ({ page }) => {
-    await expect(page.getByText('Workload Repositories')).toBeVisible({ timeout: 2000 });
+  test('shows Platform Updates section', async ({ page }) => {
+    await expect(page.getByTestId('platform-updates-section')).toBeVisible({ timeout: 2000 });
   });
 
   test('user menu is accessible from header', async ({ page }) => {

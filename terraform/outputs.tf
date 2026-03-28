@@ -22,3 +22,8 @@ output "server_status" {
   description = "Current server status"
   value       = hcloud_server.k3s.status
 }
+
+output "environment" {
+  description = "Deployment environment"
+  value       = var.environment
+}
