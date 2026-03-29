@@ -23,7 +23,7 @@ test.describe('Client Panel Smoke Tests', () => {
 
     // Verify stat labels within the grid (not sidebar links)
     await expect(statsGrid.getByText('Domains')).toBeVisible();
-    await expect(statsGrid.getByText('Databases')).toBeVisible();
+    await expect(statsGrid.getByText('Applications')).toBeVisible();
     await expect(statsGrid.getByText('Backups')).toBeVisible();
   });
 
@@ -47,21 +47,11 @@ test.describe('Client Panel Smoke Tests', () => {
     await expect(content).toBeVisible({ timeout: 2000 });
   });
 
-  test('can navigate to Databases page', async ({ page }) => {
+  test('can navigate to Applications page', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
-
-    // Should show create button
-    await expect(page.getByTestId('create-database-button')).toBeVisible();
-
-    // Should show loading, empty state, error, or table
-    const content = page.getByTestId('databases-loading')
-      .or(page.getByTestId('databases-empty'))
-      .or(page.getByTestId('databases-error'))
-      .or(page.getByTestId('databases-table'));
-    await expect(content).toBeVisible({ timeout: 2000 });
+    await page.getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Settings page', async ({ page }) => {
@@ -78,7 +68,7 @@ test.describe('Client Panel Smoke Tests', () => {
     await expect(sidebar).toBeVisible();
 
     // All nav items should be visible
-    for (const label of ['Dashboard', 'Domains', 'Databases', 'Files', 'Email', 'Backups', 'Settings']) {
+    for (const label of ['Dashboard', 'Domains', 'Applications', 'Files', 'Email', 'Backups', 'Settings']) {
       await expect(page.getByRole('link', { name: label })).toBeVisible();
     }
   });

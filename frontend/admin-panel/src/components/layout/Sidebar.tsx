@@ -20,7 +20,7 @@ const navItems = [
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/workloads', icon: Server, label: 'Workloads' },
   { to: '/applications', icon: AppWindow, label: 'Applications' },
-  { to: '/storage', icon: Database, label: 'Storage & DB' },
+  { to: '/storage', icon: Database, label: 'Storage & Backups' },
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },
   { to: '/security', icon: Shield, label: 'Security' },
   { to: '/monitoring', icon: Activity, label: 'Monitoring' },

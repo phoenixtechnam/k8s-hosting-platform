@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Users, Globe, Server, Database, Loader2, Activity } from 'lucide-react';
+import { Users, Globe, Server, Archive, Loader2, Activity } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useClients } from '@/hooks/use-clients';
@@ -43,10 +43,9 @@ export default function Dashboard() {
           accent="green"
         />
         <StatCard
-          title="Databases"
-          value={metricsLoading ? '...' : (metrics?.total_databases ?? 0)}
-          subtitle={metrics ? `${metrics.total_backups} backups` : undefined}
-          icon={Database}
+          title="Backups"
+          value={metricsLoading ? '...' : (metrics?.total_backups ?? 0)}
+          icon={Archive}
           accent="amber"
         />
       </div>

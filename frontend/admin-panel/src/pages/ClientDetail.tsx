@@ -6,14 +6,14 @@ import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
-import { useBackups } from '@/hooks/use-databases';
+import { useBackups } from '@/hooks/use-backups';
 import { useWorkloads } from '@/hooks/use-workloads';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
 import { useEmailDomains, useMailboxes } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse, Workload } from '@/types/api';
-import type { Backup } from '@/hooks/use-databases';
+import type { Backup } from '@/hooks/use-backups';
 
 type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
 

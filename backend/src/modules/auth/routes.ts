@@ -123,6 +123,8 @@ export async function authRoutes(app: FastifyInstance) {
         email: user.email,
         fullName: user.fullName,
         role: user.roleName,
+        panel: user.panel ?? 'admin',
+        clientId: user.clientId ?? null,
       },
     };
   });
@@ -263,6 +265,8 @@ export async function authRoutes(app: FastifyInstance) {
           email: user.email,
           fullName: user.fullName,
           role: user.roleName,
+          panel: user.panel ?? 'admin',
+          clientId: user.clientId ?? null,
         },
       },
     });

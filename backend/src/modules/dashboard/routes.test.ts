@@ -30,8 +30,6 @@ describe('dashboard routes', () => {
               result[key] = 12;
             } else if (key === 'total_domains') {
               result[key] = 25;
-            } else if (key === 'total_databases') {
-              result[key] = 18;
             } else if (key === 'total_backups') {
               result[key] = 42;
             } else {
@@ -99,7 +97,6 @@ describe('dashboard routes', () => {
     expect(body.data.total_clients).toBe(12);
     expect(body.data.active_clients).toBe(8);
     expect(body.data.total_domains).toBe(25);
-    expect(body.data.total_databases).toBe(18);
     expect(body.data.total_backups).toBe(42);
     expect(body.data.platform_version).toBe('0.1.0');
   });
@@ -114,7 +111,6 @@ describe('dashboard routes', () => {
     expect(typeof body.data.total_clients).toBe('number');
     expect(typeof body.data.active_clients).toBe('number');
     expect(typeof body.data.total_domains).toBe('number');
-    expect(typeof body.data.total_databases).toBe('number');
     expect(typeof body.data.total_backups).toBe('number');
   });
 

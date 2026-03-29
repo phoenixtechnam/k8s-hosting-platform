@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { clients, domains, databases, backups } from '../../db/schema.js';
+import { clients, domains, backups } from '../../db/schema.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
 
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
@@ -21,10 +21,6 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       .select({ total_domains: sql<number>`count(*)` })
       .from(domains);
 
-    const [databaseStats] = await app.db
-      .select({ total_databases: sql<number>`count(*)` })
-      .from(databases);
-
     const [backupStats] = await app.db
       .select({ total_backups: sql<number>`count(*)` })
       .from(backups);
@@ -34,7 +30,6 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         total_clients: Number(clientStats.total_clients),
         active_clients: Number(clientStats.active_clients ?? 0),
         total_domains: Number(domainStats.total_domains),
-        total_databases: Number(databaseStats.total_databases),
         total_backups: Number(backupStats.total_backups),
         platform_version: process.env.PLATFORM_VERSION ?? '0.1.0',
       },

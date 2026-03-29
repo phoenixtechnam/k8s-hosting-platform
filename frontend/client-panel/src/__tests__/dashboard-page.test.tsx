@@ -25,10 +25,6 @@ vi.mock('../hooks/use-domains', () => ({
   useDomains: vi.fn(() => ({ data: { data: [] } })),
 }));
 
-vi.mock('../hooks/use-databases', () => ({
-  useDatabases: vi.fn(() => ({ data: { data: [] } })),
-}));
-
 vi.mock('../hooks/use-backups', () => ({
   useBackups: vi.fn(() => ({ data: { data: [] } })),
 }));
@@ -78,7 +74,7 @@ describe('Dashboard Page', () => {
     renderWithProviders(<Dashboard />);
     expect(screen.getByTestId('quick-stats')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('Databases')).toBeInTheDocument();
+    expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
     expect(screen.getByText('Workloads')).toBeInTheDocument();
   });

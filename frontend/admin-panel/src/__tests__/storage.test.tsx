@@ -18,9 +18,9 @@ function createWrapper() {
 }
 
 describe('Storage page', () => {
-  it('renders page heading "Storage & DB"', () => {
+  it('renders page heading "Storage & Backups"', () => {
     render(<Storage />, { wrapper: createWrapper() });
-    expect(screen.getByText('Storage & DB')).toBeInTheDocument();
+    expect(screen.getByText('Storage & Backups')).toBeInTheDocument();
   });
 
   it('shows stat cards', () => {
@@ -28,7 +28,7 @@ describe('Storage page', () => {
     expect(screen.getByText('Total Storage')).toBeInTheDocument();
     expect(screen.getByText('Storage Used')).toBeInTheDocument();
     const statCards = screen.getAllByTestId('stat-card');
-    expect(statCards).toHaveLength(4);
+    expect(statCards).toHaveLength(3);
     expect(screen.getByText('1.2 TB')).toBeInTheDocument();
     expect(screen.getByText('31%')).toBeInTheDocument();
   });
@@ -42,17 +42,9 @@ describe('Storage page', () => {
   it('shows ResourceBar components in Overview', () => {
     render(<Storage />, { wrapper: createWrapper() });
     const bars = screen.getAllByTestId('resource-bar');
-    expect(bars.length).toBeGreaterThanOrEqual(3);
+    expect(bars.length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Block Storage')).toBeInTheDocument();
-    expect(screen.getByText('Database Storage')).toBeInTheDocument();
     expect(screen.getByText('Backup Storage')).toBeInTheDocument();
-  });
-
-  it('switches to Databases tab', () => {
-    render(<Storage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('tab-databases'));
-    expect(screen.getByTestId('tab-databases')).toHaveClass('border-brand-500');
-    expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
   });
 
   it('switches to Backups tab', () => {
@@ -62,18 +54,17 @@ describe('Storage page', () => {
     expect(screen.getByTestId('client-search-select')).toBeInTheDocument();
   });
 
-  it('shows select-client prompt when no client is selected on Databases tab', () => {
+  it('shows select-client prompt when no client is selected on Backups tab', () => {
     render(<Storage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('tab-databases'));
+    fireEvent.click(screen.getByTestId('tab-backups'));
     expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
     expect(screen.getByText('Select a client to view their data.')).toBeInTheDocument();
   });
 
-  it('renders the tab bar with three tabs', () => {
+  it('renders the tab bar with two tabs', () => {
     render(<Storage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
     expect(screen.getByTestId('tab-overview')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-databases')).toBeInTheDocument();
     expect(screen.getByTestId('tab-backups')).toBeInTheDocument();
   });
 });

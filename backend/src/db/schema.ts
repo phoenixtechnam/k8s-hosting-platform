@@ -169,24 +169,6 @@ export const workloads = mysqlTable('workloads', {
   index('workloads_status_idx').on(table.status),
 ]);
 
-export const databases = mysqlTable('databases', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
-  name: varchar('name', { length: 63 }).notNull(),
-  databaseType: mysqlEnum('database_type', ['mysql', 'postgresql']).notNull().default('mysql'),
-  username: varchar('username', { length: 63 }).notNull(),
-  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
-  port: int('port').notNull().default(3306),
-  workloadId: varchar('workload_id', { length: 36 }),
-  status: mysqlEnum('status', ['active', 'creating', 'deleting', 'failed']).notNull().default('creating'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
-}, (table) => [
-  uniqueIndex('databases_name_unique').on(table.name),
-  index('databases_client_idx').on(table.clientId),
-  index('databases_workload_idx').on(table.workloadId),
-]);
-
 // ─── Notifications ───
 
 export const notifications = mysqlTable('notifications', {

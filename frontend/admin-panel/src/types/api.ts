@@ -4,8 +4,6 @@ export type {
   ClientListResponse,
   DomainResponse as Domain,
   DomainListResponse,
-  DatabaseResponse,
-  DatabaseListResponse,
   PaginationMeta,
   WorkloadResponse as Workload,
   WorkloadListResponse,

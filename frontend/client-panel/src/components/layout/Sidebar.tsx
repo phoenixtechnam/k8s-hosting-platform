@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
   Globe,
-  Database,
+  AppWindow,
   Server,
   Clock,
   FolderOpen,
@@ -17,7 +17,7 @@ import clsx from 'clsx';
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/domains', icon: Globe, label: 'Domains' },
-  { to: '/databases', icon: Database, label: 'Databases' },
+  { to: '/applications', icon: AppWindow, label: 'Applications' },
   { to: '/workloads', icon: Server, label: 'Workloads' },
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },
   { to: '/files', icon: FolderOpen, label: 'Files' },

@@ -58,12 +58,11 @@ test.describe('Admin Full Workflow — End-to-End', () => {
         const tabBar = page.getByTestId('resource-tabs');
         await expect(tabBar).toBeVisible();
         await expect(page.getByTestId('tab-domains')).toBeVisible();
-        await expect(page.getByTestId('tab-databases')).toBeVisible();
         await expect(page.getByTestId('tab-workloads')).toBeVisible();
         await expect(page.getByTestId('tab-backups')).toBeVisible();
 
         // 6. Click each tab and verify content/empty state
-        for (const tabName of ['tab-databases', 'tab-workloads', 'tab-backups', 'tab-domains']) {
+        for (const tabName of ['tab-workloads', 'tab-backups', 'tab-domains']) {
           await page.getByTestId(tabName).click();
           const tabContent = page.getByTestId('tab-empty')
             .or(page.getByTestId('tab-loading'))
@@ -80,9 +79,9 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     const clientSelector = page.getByTestId('client-selector');
     await expect(clientSelector).toBeVisible();
 
-    // 8. Navigate to Storage & DB page
-    await page.getByRole('link', { name: 'Storage & DB' }).click();
-    await expect(page.getByRole('heading', { name: 'Storage & DB', exact: true })).toBeVisible({ timeout: 2000 });
+    // 8. Navigate to Storage & Backups page
+    await page.getByRole('link', { name: 'Storage & Backups' }).click();
+    await expect(page.getByRole('heading', { name: 'Storage & Backups', exact: true })).toBeVisible({ timeout: 2000 });
 
     // 9. Navigate to Monitoring, check tabs
     await page.getByRole('link', { name: 'Monitoring' }).click();
@@ -117,7 +116,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // Verify dashboard stat cards are present
     await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Databases')).toBeVisible();
+    await expect(page.getByText('Storage & Backups')).toBeVisible();
   });
 
   test('breadcrumb navigation from client detail back to clients list', async ({ page }) => {
@@ -176,7 +175,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
   test('dashboard shows all expected stat cards', async ({ page }) => {
 
     await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Databases')).toBeVisible();
+    await expect(page.getByText('Storage & Backups')).toBeVisible();
   });
 
   test('multiple page navigations preserve session', async ({ page }) => {

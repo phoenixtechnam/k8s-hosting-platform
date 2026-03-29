@@ -5,7 +5,7 @@ import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Domains from '@/pages/Domains';
-import Databases from '@/pages/Databases';
+import Applications from '@/pages/Applications';
 import Workloads from '@/pages/Workloads';
 import CronJobs from '@/pages/CronJobs';
 import Backups from '@/pages/Backups';
@@ -43,7 +43,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="domains" element={<Domains />} />
             <Route path="domains/:domainId" element={<DomainDetail />} />
-            <Route path="databases" element={<Databases />} />
+            <Route path="applications" element={<Applications />} />
             <Route path="workloads" element={<Workloads />} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="files" element={<Files />} />

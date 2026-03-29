@@ -18,7 +18,7 @@ test.describe('Admin Panel Smoke Test', () => {
 
     // Check stat cards
     await expect(page.getByText('Total Clients')).toBeVisible();
-    await expect(page.getByText('Databases')).toBeVisible();
+    await expect(page.getByText('Storage & Backups')).toBeVisible();
   });
 
   test('can navigate to clients page', async ({ page }) => {

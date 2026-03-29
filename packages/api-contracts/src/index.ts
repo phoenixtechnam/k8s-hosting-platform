@@ -17,7 +17,6 @@ export * from './shared.js';
 export * from './auth.js';
 export * from './clients.js';
 export * from './domains.js';
-export * from './databases.js';
 export * from './workloads.js';
 export * from './backups.js';
 export * from './cron-jobs.js';

@@ -1,18 +1,16 @@
 import { useState } from 'react';
-import { Database, HardDrive, Archive, Loader2 } from 'lucide-react';
+import { HardDrive, Archive, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import ResourceBar from '@/components/ui/ResourceBar';
-import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
-import { useDatabases, useBackups } from '@/hooks/use-databases';
-import type { DatabaseResponse, BackupResponse } from '@k8s-hosting/api-contracts';
+import { useBackups } from '@/hooks/use-backups';
+import type { BackupResponse } from '@k8s-hosting/api-contracts';
 
-type Tab = 'overview' | 'databases' | 'backups';
+type Tab = 'overview' | 'backups';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'overview', label: 'Overview' },
-  { id: 'databases', label: 'Databases' },
   { id: 'backups', label: 'Backups' },
 ] as const;
 
@@ -33,27 +31,19 @@ export default function Storage() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
   const {
-    data: databasesData,
-    isLoading: databasesLoading,
-    error: databasesError,
-  } = useDatabases(selectedClientId ?? undefined);
-
-  const {
     data: backupsData,
     isLoading: backupsLoading,
     error: backupsError,
   } = useBackups(selectedClientId ?? undefined);
 
-  const databases = databasesData?.data ?? [];
   const backups = backupsData?.data ?? [];
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Storage &amp; DB</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Storage &amp; Backups</h1>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard title="Total Storage" value="1.2 TB" icon={HardDrive} accent="brand" />
-        <StatCard title="Databases" value={databases.length} icon={Database} accent="green" />
         <StatCard title="Backups" value={backups.length} icon={Archive} accent="amber" />
         <StatCard
           title="Storage Used"
@@ -85,16 +75,6 @@ export default function Storage() {
       </div>
 
       {activeTab === 'overview' && <OverviewTab />}
-      {activeTab === 'databases' && (
-        <DataTab
-          selectedClientId={selectedClientId}
-          onClientChange={setSelectedClientId}
-          isLoading={databasesLoading}
-          error={databasesError}
-        >
-          <DatabasesTable databases={databases} />
-        </DataTab>
-      )}
       {activeTab === 'backups' && (
         <DataTab
           selectedClientId={selectedClientId}
@@ -115,7 +95,6 @@ function OverviewTab() {
       <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Allocation</h2>
       <div className="space-y-5">
         <ResourceBar label="Block Storage" used={280} total={500} unit=" GB" />
-        <ResourceBar label="Database Storage" used={85} total={200} unit=" GB" />
         <ResourceBar label="Backup Storage" used={520} total={800} unit=" GB" />
       </div>
     </div>
@@ -141,7 +120,7 @@ function DataTab({ selectedClientId, onClientChange, isLoading, error, children 
 
       {!selectedClientId && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-16 text-center shadow-sm">
-          <Database size={40} className="mx-auto text-gray-300" />
+          <Archive size={40} className="mx-auto text-gray-300" />
           <p className="mt-4 text-sm text-gray-500 dark:text-gray-400" data-testid="select-client-prompt">
             Select a client to view their data.
           </p>
@@ -161,61 +140,6 @@ function DataTab({ selectedClientId, onClientChange, isLoading, error, children 
       )}
 
       {selectedClientId && !isLoading && !error && children}
-    </div>
-  );
-}
-
-interface DatabasesTableProps {
-  readonly databases: readonly DatabaseResponse[];
-}
-
-function DatabasesTable({ databases }: DatabasesTableProps) {
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-      <div className="overflow-x-auto">
-        <table className="w-full" data-testid="databases-table">
-          <thead>
-            <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              <th className="px-5 py-3">Name</th>
-              <th className="px-5 py-3">Type</th>
-              <th className="px-5 py-3">Status</th>
-              <th className="hidden px-5 py-3 md:table-cell">Size</th>
-              <th className="hidden px-5 py-3 lg:table-cell">Created</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-            {databases.map((db) => (
-              <tr key={db.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                <td className="px-5 py-3.5">
-                  <div className="flex items-center gap-2">
-                    <Database size={14} className="text-gray-400" />
-                    <span className="font-medium text-gray-900 dark:text-gray-100">{db.name}</span>
-                  </div>
-                </td>
-                <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
-                  {db.databaseType === 'mysql' ? 'MariaDB' : 'PostgreSQL'}
-                </td>
-                <td className="px-5 py-3.5">
-                  <StatusBadge status={db.status as 'active' | 'pending' | 'failed'} />
-                </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">
-                  {db.sizeBytes ? formatBytes(db.sizeBytes) : '—'}
-                </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                  {new Date(db.createdAt).toLocaleDateString()}
-                </td>
-              </tr>
-            ))}
-            {databases.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                  No databases found for this client.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
@@ -259,13 +183,13 @@ function BackupsTable({ backups }: BackupsTableProps) {
                 </td>
                 <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{backup.resourceType}</td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">
-                  {backup.sizeBytes ? formatBytes(backup.sizeBytes) : '—'}
+                  {backup.sizeBytes ? formatBytes(backup.sizeBytes) : '---'}
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                   {new Date(backup.createdAt).toLocaleDateString()}
                 </td>
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                  {backup.expiresAt ? new Date(backup.expiresAt).toLocaleDateString() : '—'}
+                  {backup.expiresAt ? new Date(backup.expiresAt).toLocaleDateString() : '---'}
                 </td>
               </tr>
             ))}

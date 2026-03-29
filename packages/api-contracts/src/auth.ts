@@ -23,7 +23,7 @@ export const userSchema = z.object({
   id: z.string(),
   email: z.string(),
   fullName: z.string(),
-  role: z.enum(['admin', 'billing', 'support', 'read-only']),
+  role: z.enum(['super_admin', 'admin', 'billing', 'support', 'read_only', 'client_admin', 'client_user']),
 });
 
 export const loginResponseSchema = z.object({

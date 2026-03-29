@@ -22,7 +22,6 @@ vi.mock('@/hooks/use-dashboard', () => ({
         total_clients: 12,
         active_clients: 10,
         total_domains: 25,
-        total_databases: 8,
         total_backups: 3,
         platform_version: '1.0.0',
       },
@@ -62,9 +61,8 @@ describe('Dashboard', () => {
     expect(screen.getByText('10 active')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('25')).toBeInTheDocument();
-    expect(screen.getByText('Databases')).toBeInTheDocument();
-    expect(screen.getByText('8')).toBeInTheDocument();
-    expect(screen.getByText('3 backups')).toBeInTheDocument();
+    expect(screen.getByText('Backups')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
   });
 
   it('renders the platform status card', () => {

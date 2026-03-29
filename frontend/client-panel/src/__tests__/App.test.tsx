@@ -53,7 +53,7 @@ describe('Layout', () => {
     renderWithProviders(<Layout />);
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('Databases')).toBeInTheDocument();
+    expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Files')).toBeInTheDocument();
     expect(screen.getByText('Email')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
@@ -94,7 +94,7 @@ describe('Dashboard', () => {
     renderWithProviders(<Dashboard />);
     expect(screen.getByTestId('quick-stats')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
-    expect(screen.getByText('Databases')).toBeInTheDocument();
+    expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
     expect(screen.getByText('Workloads')).toBeInTheDocument();
   });

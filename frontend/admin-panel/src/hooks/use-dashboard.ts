@@ -21,7 +21,6 @@ interface DashboardMetrics {
   readonly total_clients: number;
   readonly active_clients: number;
   readonly total_domains: number;
-  readonly total_databases: number;
   readonly total_backups: number;
   readonly platform_version: string;
 }

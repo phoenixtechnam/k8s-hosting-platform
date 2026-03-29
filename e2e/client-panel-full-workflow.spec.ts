@@ -10,7 +10,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     const statsGrid = page.getByTestId('quick-stats');
     await expect(statsGrid).toBeVisible({ timeout: 2000 });
     await expect(statsGrid.getByText('Domains')).toBeVisible();
-    await expect(statsGrid.getByText('Databases')).toBeVisible();
+    await expect(statsGrid.getByText('Applications')).toBeVisible();
     await expect(statsGrid.getByText('Backups')).toBeVisible();
 
     // 3. Navigate to Domains
@@ -22,10 +22,9 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
       .or(page.getByTestId('domains-table'));
     await expect(domainsContent).toBeVisible({ timeout: 2000 });
 
-    // 4. Navigate to Databases
-    await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByTestId('create-database-button')).toBeVisible();
+    // 4. Navigate to Applications
+    await page.getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
 
     // 5. Navigate to Backups
     await page.getByRole('link', { name: 'Backups' }).click();
@@ -68,7 +67,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
 
-    for (const label of ['Dashboard', 'Domains', 'Databases', 'Files', 'Email', 'Backups', 'Settings']) {
+    for (const label of ['Dashboard', 'Domains', 'Applications', 'Files', 'Email', 'Backups', 'Settings']) {
       await expect(page.getByRole('link', { name: label })).toBeVisible();
     }
   });
@@ -98,18 +97,11 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(content).toBeVisible({ timeout: 2000 });
   });
 
-  test('Databases page shows create button and content', async ({ page }) => {
+  test('Applications page loads correctly', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByTestId('create-database-button')).toBeVisible();
-
-    const content = page.getByTestId('databases-empty')
-      .or(page.getByTestId('databases-table'))
-      .or(page.getByTestId('databases-loading'))
-      .or(page.getByTestId('databases-error'));
-    await expect(content).toBeVisible({ timeout: 2000 });
+    await page.getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
   });
 
   test('Backups page loads correctly', async ({ page }) => {
@@ -161,8 +153,8 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await page.getByRole('link', { name: 'Domains' }).click();
     await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
 
-    await page.getByRole('link', { name: 'Databases' }).click();
-    await expect(page.getByTestId('databases-heading')).toBeVisible({ timeout: 2000 });
+    await page.getByRole('link', { name: 'Applications' }).click();
+    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
 
     await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });

@@ -2,8 +2,6 @@
 export type {
   DomainResponse as Domain,
   DomainListResponse,
-  DatabaseResponse as Database,
-  DatabaseListResponse,
   BackupResponse as Backup,
   BackupListResponse,
   CronJobResponse as CronJob,
