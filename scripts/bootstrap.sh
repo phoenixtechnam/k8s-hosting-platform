@@ -651,12 +651,10 @@ apply_platform_manifests() {
     return 0
   fi
 
-  # Compute hostnames from --domain and --env
-  local prefix=""
-  [[ "$PLATFORM_ENV" == "dev" ]] && prefix="dev."
-  local api_host="api.${prefix}${PLATFORM_DOMAIN}"
-  local admin_host="admin.${prefix}${PLATFORM_DOMAIN}"
-  local client_host="client.${prefix}${PLATFORM_DOMAIN}"
+  # Compute hostnames from --domain (operator provides the full base domain)
+  local api_host="api.${PLATFORM_DOMAIN}"
+  local admin_host="admin.${PLATFORM_DOMAIN}"
+  local client_host="client.${PLATFORM_DOMAIN}"
   log "Hostnames: ${api_host}, ${admin_host}, ${client_host}"
 
   # Generate the environment overlay with real hostnames
@@ -750,9 +748,6 @@ print_summary() {
   log "  BOOTSTRAP COMPLETE"
   log "════════════════════════════════════════════════"
   log ""
-  local prefix=""
-  [[ "$PLATFORM_ENV" == "dev" ]] && prefix="dev."
-
   log "  Server IP:    ${server_ip}"
   log "  Domain:       ${PLATFORM_DOMAIN}"
   log "  Environment:  ${PLATFORM_ENV}"
@@ -760,9 +755,9 @@ print_summary() {
   log "  k3s version:  ${K3S_VERSION}"
   log ""
   log "  Endpoints:"
-  log "    Admin:   https://admin.${prefix}${PLATFORM_DOMAIN}"
-  log "    Client:  https://client.${prefix}${PLATFORM_DOMAIN}"
-  log "    API:     https://api.${prefix}${PLATFORM_DOMAIN}"
+  log "    Admin:   https://admin.${PLATFORM_DOMAIN}"
+  log "    Client:  https://client.${PLATFORM_DOMAIN}"
+  log "    API:     https://api.${PLATFORM_DOMAIN}"
   log ""
   log "  Installed:"
   log "    - k3s + Calico CNI"
