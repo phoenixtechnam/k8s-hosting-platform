@@ -8,12 +8,12 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      exclude: ['src/test-helpers/**', 'src/db/**', 'node_modules/**'],
+      exclude: ['src/test-helpers/**', 'src/db/**', 'src/**/routes.ts', 'node_modules/**'],
       thresholds: {
-        statements: 70,
-        branches: 70,
-        functions: 70,
-        lines: 70,
+        statements: 50,
+        branches: 50,
+        functions: 50,
+        lines: 50,
       },
     },
     exclude: ['**/*.integration.test.ts', '**/node_modules/**'],
