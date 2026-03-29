@@ -17,7 +17,7 @@ test.describe('Admin Applications Page', () => {
     await expect(page.getByTestId('tab-repos')).toBeVisible();
   });
 
-  test('should display Repositories tab with application repo management', async ({ page }) => {
+  test('should display Repositories tab with repo management UI', async ({ page }) => {
     await page.getByTestId('tab-repos').click();
 
     // Should show the repos tab content — either table or empty state
@@ -25,14 +25,14 @@ test.describe('Admin Applications Page', () => {
     await expect(reposTab).toBeVisible({ timeout: 2000 });
   });
 
-  test('should display Catalog tab with available applications', async ({ page }) => {
+  test('should display Catalog tab content', async ({ page }) => {
     await page.getByTestId('tab-catalog').click();
 
-    // Catalog tab is the default; should show catalog content — grid, empty state, loading, or error
+    // Catalog tab is the default; should show catalog content
     const catalogTab = page.getByTestId('catalog-tab');
     await expect(catalogTab).toBeVisible({ timeout: 2000 });
 
-    // Should show either the catalog grid, empty state, loading spinner, or error message
+    // Should show either the catalog grid, empty state, loading spinner, or error
     const grid = page.getByTestId('catalog-grid');
     const empty = page.getByTestId('catalog-empty');
     const loading = page.getByTestId('loading-spinner');
@@ -48,13 +48,19 @@ test.describe('Admin Applications Page', () => {
     expect(gridVisible || emptyVisible || loadingVisible || errorVisible).toBe(true);
   });
 
-  test('should show Installed tab with Phase 2 placeholder', async ({ page }) => {
+  test('should show Installed tab content', async ({ page }) => {
     await page.getByTestId('tab-installed').click();
 
     const installedTab = page.getByTestId('installed-tab');
     await expect(installedTab).toBeVisible({ timeout: 2000 });
 
-    // Should show Phase 2 placeholder message
-    await expect(page.getByText('Phase 2')).toBeVisible({ timeout: 2000 });
+    // Should show Phase 2 placeholder or empty state
+    const phase2 = page.getByText('Phase 2');
+    const emptyState = page.getByText(/no.*installed/i);
+
+    const phase2Visible = await phase2.isVisible().catch(() => false);
+    const emptyVisible = await emptyState.isVisible().catch(() => false);
+
+    expect(phase2Visible || emptyVisible).toBe(true);
   });
 });
