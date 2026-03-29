@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# smoke-test.sh — Integration smoke tests against the running staging stack.
-# Run after ./scripts/staging.sh rebuild to verify frontend ↔ backend compatibility.
+# smoke-test.sh — Integration smoke tests against the running local stack.
+# Run after ./scripts/local.sh rebuild to verify frontend ↔ backend compatibility.
 #
 # Usage:
-#   ./scripts/smoke-test.sh                        # uses .env.staging defaults
+#   ./scripts/smoke-test.sh                        # uses .env.local defaults
 #   API_URL=http://localhost:3000 ./scripts/smoke-test.sh   # custom URL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-ENV_FILE="${SCRIPT_DIR}/../.env.staging"
+ENV_FILE="${SCRIPT_DIR}/../.env.local"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a

@@ -10,7 +10,7 @@ build/
 .env
 .env.*
 !.env.example
-!.env.staging
+!.env.local.example
 
 # Vite
 frontend/*/dist/
@@ -50,3 +50,9 @@ npm-debug.log*
 *.pem
 *.key
 credentials.json
+
+# Playwright auth tokens (regenerated per test run)
+e2e/.auth/
+
+# Claude Code IDE config
+.claude/

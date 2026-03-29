@@ -17,7 +17,7 @@ frontend/
   client-panel/           # React 18 + Vite + shadcn/ui (port 5174)
 k8s/
   base/                   # Kustomize base manifests
-  overlays/               # staging, production overlays
+  overlays/               # dev, production overlays
 terraform/                # Hetzner VPS provisioning
 scripts/                  # Utility scripts
 docs/                     # Architecture docs, ADRs, specs (read-only reference)
@@ -55,7 +55,7 @@ npm run db:generate      # Generate migration from schema changes
 
 ### Smoke Tests (after deploy)
 ```bash
-./scripts/smoke-test.sh          # Run against staging stack
+./scripts/smoke-test.sh          # Run against local stack
 ```
 
 ### Frontend Admin (`frontend/admin-panel/`)

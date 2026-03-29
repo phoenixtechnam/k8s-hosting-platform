@@ -210,9 +210,9 @@ Triggers: push/PR to `main` or `staging` affecting `frontend/**`. Runs lint, typ
 
 Triggers: push/PR affecting `terraform/**`. Runs `terraform fmt`, `terraform validate`, `terraform plan` (dry-run against Hetzner). See `CICD_PIPELINE_REQUIREMENTS.md §P1.3`.
 
-### 4. Deploy to Staging (`deploy-staging.yml`)
+### 4. Deploy to Dev (`deploy-dev.yml`)
 
-Triggers: push to `staging` branch (after CI passes). Builds image, pushes to Harbor, updates Flux manifest in `k8s/overlays/staging/`, commits back — Flux auto-applies within 5 minutes. See `CICD_PIPELINE_REQUIREMENTS.md §P1.4`.
+Triggers: push to `main` branch (after CI passes). Builds image, pushes to GHCR, updates Flux manifest in `k8s/overlays/dev/`, commits back — Flux auto-applies within 5 minutes. See `CICD_PIPELINE_REQUIREMENTS.md §P1.4`.
 
 ### 5. Deploy to Production (`deploy-production.yml`)
 

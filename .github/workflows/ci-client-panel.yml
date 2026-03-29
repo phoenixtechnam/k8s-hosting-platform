@@ -2,10 +2,10 @@ name: Client Panel CI
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
     paths: ['frontend/client-panel/**', 'packages/api-contracts/**']
   pull_request:
-    branches: [main, staging]
+    branches: [main]
     paths: ['frontend/client-panel/**', 'packages/api-contracts/**']
 
 jobs:

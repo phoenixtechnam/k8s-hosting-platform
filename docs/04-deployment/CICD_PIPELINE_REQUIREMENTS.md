@@ -559,18 +559,18 @@ jobs:
           echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ secrets.HARBOR_REGISTRY }} \
             -u ${{ secrets.HARBOR_USERNAME }} --password-stdin
 
-      - name: Update image tag in staging overlay
+      - name: Update image tag in dev overlay
         run: |
           IMAGE="${{ secrets.HARBOR_REGISTRY }}/platform/backend:${{ github.sha }}"
           sed -i "s|image: .*platform/backend:.*|image: ${IMAGE}|g" \
-            k8s/overlays/staging/backend-deployment-patch.yaml
+            k8s/overlays/dev/backend-deployment-patch.yaml
 
       - name: Commit updated manifest
         run: |
           git config user.name "ci-bot"
           git config user.email "ci@platform.internal"
-          git add k8s/overlays/staging/
-          git diff --staged --quiet || git commit -m "chore: update staging backend image to ${{ github.sha }}"
+          git add k8s/overlays/dev/
+          git diff --staged --quiet || git commit -m "chore: update dev backend image to ${{ github.sha }}"
           git push
 
       - name: Wait for Flux to reconcile
@@ -1061,8 +1061,8 @@ jobs:
 
 **After Phase 1 (Week 13+):**
 
-- All merges to `staging` branch trigger automatic deploy to staging environment
-- Staging deploy runs smoke tests; failure blocks the deploy and notifies Slack
+- All merges to `main` branch trigger automatic deploy to dev environment
+- Dev deploy runs smoke tests; failure blocks the deploy and notifies Slack
 - Production deploys remain **manual** (`workflow_dispatch`) until Phase 2 canary is proven stable
 - Production deploys require 1 Environment Approver (configured in GitHub Settings → Environments → production)
 - All production deploys include `reason` in the dispatch input — written to commit message for audit trail

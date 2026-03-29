@@ -43,7 +43,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
 
   // Auto-provision DNS zone on all active DNS servers
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
   try {
     const activeServers = await getActiveServers(db);
     for (const server of activeServers) {

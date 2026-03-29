@@ -2,14 +2,14 @@ name: Infrastructure CI
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
     paths:
       - 'terraform/**'
       - 'k8s/**'
       - 'scripts/**'
       - 'catalog-images/**'
   pull_request:
-    branches: [main, staging]
+    branches: [main]
     paths:
       - 'terraform/**'
       - 'k8s/**'
@@ -37,8 +37,8 @@ jobs:
       - run: |
           echo "Building base..."
           kubectl kustomize k8s/base
-          echo "Building staging overlay..."
-          kubectl kustomize k8s/overlays/staging
+          echo "Building dev overlay..."
+          kubectl kustomize k8s/overlays/dev
           echo "Building production overlay..."
           kubectl kustomize k8s/overlays/production
 

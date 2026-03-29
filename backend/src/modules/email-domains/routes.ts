@@ -5,7 +5,7 @@ import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
-const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
 export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
   // ── Admin routes ──

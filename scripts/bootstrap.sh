@@ -17,7 +17,7 @@ set -euo pipefail
 #   --skip-monitoring      Skip Prometheus/Loki/Grafana
 #   --skip-flux            Skip Flux v2 GitOps controller
 #   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
-#   --env <staging|production>  Environment (default: production)
+#   --env <dev|production>      Environment (default: production)
 #   --skip-vpn             Skip WireGuard + NetBird client install
 #   --help                 Show this help message
 
@@ -72,8 +72,8 @@ parse_args() {
     error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
   fi
 
-  if [[ "$PLATFORM_ENV" != "staging" && "$PLATFORM_ENV" != "production" ]]; then
-    error "Invalid --env: ${PLATFORM_ENV}. Must be 'staging' or 'production'."
+  if [[ "$PLATFORM_ENV" != "dev" && "$PLATFORM_ENV" != "production" ]]; then
+    error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev' or 'production'."
   fi
 
   if [[ "$NODE_ROLE" == "worker" ]]; then

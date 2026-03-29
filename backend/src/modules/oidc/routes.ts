@@ -16,7 +16,7 @@ setInterval(() => {
 }, 300_000);
 
 export async function oidcRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
   // ─── Public: Auth status (login page) ──────────────────────────────────────
 

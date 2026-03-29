@@ -232,16 +232,16 @@ kubectl create secret generic platform-db-credentials \
   --from-literal=db-host="mariadb.platform.svc.cluster.local" \
   --from-literal=db-user="platform" \
   --from-literal=db-password="PASSWORD" \
-  --dry-run=client -o yaml | kubeseal --format yaml > k8s/overlays/staging/sealed-db-credentials.yaml
+  --dry-run=client -o yaml | kubeseal --format yaml > k8s/overlays/dev/sealed-db-credentials.yaml
 
-kubectl apply -f k8s/overlays/staging/sealed-db-credentials.yaml
+kubectl apply -f k8s/overlays/dev/sealed-db-credentials.yaml
 ```
 
 ### 5.2 Deploy with Kustomize
 
 ```bash
-# Deploy staging overlay (includes all base manifests + staging patches)
-kubectl apply -k k8s/overlays/staging/
+# Deploy dev overlay (includes all base manifests + dev patches)
+kubectl apply -k k8s/overlays/dev/
 
 # Watch rollout
 kubectl -n platform rollout status deployment/platform-api --timeout=120s

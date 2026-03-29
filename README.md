@@ -62,7 +62,7 @@ frontend/
   client-panel/           # React client UI (port 5174)
 k8s/
   base/                   # Kustomize base manifests
-  overlays/               # staging, production overlays
+  overlays/               # dev, production overlays
 terraform/                # Hetzner VPS provisioning
 catalog-images/           # Dockerfiles for workload types (nginx, apache, node, wordpress)
 scripts/                  # bootstrap.sh, provision, install scripts
@@ -169,9 +169,55 @@ npm run lint -w @k8s-hosting/admin-panel
 npm run typecheck -w @k8s-hosting/admin-panel
 ```
 
+## Environments
+
+### Local Development (Docker Compose)
+
+For code development, unit tests, and quick E2E testing. Runs entirely in Docker.
+
+```bash
+# Start local environment
+./scripts/local.sh up
+
+# Stop
+./scripts/local.sh down
+
+# Reset (wipe volumes)
+./scripts/local.sh reset
+```
+
+**Endpoints:**
+- Admin Panel: http://dind.local:2010
+- Client Panel: http://dind.local:2011
+- Backend API: http://dind.local:2012
+- Login: admin@platform.local / admin
+
+**Configuration:**
+- Copy `.env.local.example` to `.env.local` and adjust values
+- Docker Compose file: `docker-compose.local.yml`
+
+### Development Server (k3s)
+
+For infrastructure validation, integration testing, and pre-production E2E. Runs on a real server.
+
+```bash
+# Bootstrap a fresh server
+curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform/main/scripts/bootstrap.sh | bash -s -- --env dev --skip-monitoring
+
+# Or after cloning:
+./scripts/bootstrap.sh --env dev --skip-monitoring
+```
+
+**K8s manifests:** `k8s/overlays/dev/`
+**Auto-deploy:** Flux v2 watches main branch and applies changes automatically.
+
+### Production
+
+Added when ready for live clients. Uses `k8s/overlays/production/` with Sealed Secrets and strict RBAC.
+
 ## CI/CD
 
-GitHub Actions run on every push to `main`/`staging`:
+GitHub Actions run on every push to `main`:
 
 | Workflow | Checks |
 |----------|--------|

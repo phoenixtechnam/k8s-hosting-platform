@@ -5,7 +5,7 @@ import { getActiveServers, getProviderForServer } from '../dns-servers/service.j
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 
-const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
 async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
   try {
