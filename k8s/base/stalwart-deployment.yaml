@@ -90,7 +90,7 @@ metadata:
 data:
   config.toml: |
     [server]
-    hostname = "mail.platform.example.com"
+    hostname = "mail.platform.local"
 
     [directory."sql"]
     type = "sql"

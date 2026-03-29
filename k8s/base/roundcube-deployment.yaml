@@ -73,10 +73,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - webmail.platform.example.com
+        - webmail.platform.local
       secretName: webmail-tls
   rules:
-    - host: webmail.platform.example.com
+    - host: webmail.platform.local
       http:
         paths:
           - path: /

@@ -12,12 +12,12 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - api.phoenix-host.net
-        - admin.phoenix-host.net
-        - client.phoenix-host.net
+        - api.platform.local
+        - admin.platform.local
+        - client.platform.local
       secretName: platform-tls
   rules:
-    - host: api.phoenix-host.net
+    - host: api.platform.local
       http:
         paths:
           - path: /
@@ -27,7 +27,7 @@ spec:
                 name: platform-api
                 port:
                   number: 3000
-    - host: admin.phoenix-host.net
+    - host: admin.platform.local
       http:
         paths:
           - path: /
@@ -37,7 +37,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.phoenix-host.net
+    - host: client.platform.local
       http:
         paths:
           - path: /
