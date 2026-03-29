@@ -54,5 +54,8 @@ credentials.json
 # Playwright auth tokens (regenerated per test run)
 e2e/.auth/
 
+# Dex OIDC local config (may contain client secrets)
+config/dex/
+
 # Claude Code IDE config
 .claude/
