@@ -6,11 +6,11 @@ resources:
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend
-    newTag: "acc5bb3"
+    newTag: "b27be32"
   - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
-    newTag: "acc5bb3"
+    newTag: "b27be32"
   - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
-    newTag: "acc5bb3"
+    newTag: "b27be32"
 
 patches:
   - target:
