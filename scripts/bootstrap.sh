@@ -14,7 +14,7 @@ set -euo pipefail
 #   --server <IP>          Control plane IP (required for --role worker)
 #   --token <TOKEN>        k3s join token (required for --role worker)
 #   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
-#   --skip-monitoring      Skip Prometheus/Loki/Grafana
+#   --with-monitoring      Install Prometheus/Grafana/Loki (~2.5GB RAM)
 #   --skip-flux            Skip Flux v2 GitOps controller
 #   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
 #   --env <dev|production>      Environment (default: production)
@@ -29,7 +29,7 @@ K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.31.4+k3s1"
 CALICO_VERSION="v3.28.0"
-SKIP_MONITORING=false
+ENABLE_MONITORING=false
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_VPN=false
@@ -59,7 +59,8 @@ parse_args() {
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
-      --skip-monitoring) SKIP_MONITORING=true; shift ;;
+      --with-monitoring) ENABLE_MONITORING=true; shift ;;
+      --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --skip-vpn)        SKIP_VPN=true; shift ;;
@@ -501,8 +502,8 @@ install_sealed_secrets() {
 }
 
 install_monitoring() {
-  if [[ "$SKIP_MONITORING" == true ]]; then
-    log "Skipping monitoring stack (--skip-monitoring)."
+  if [[ "$ENABLE_MONITORING" != true ]]; then
+    log "Skipping monitoring stack (use --with-monitoring to install)."
     return 0
   fi
 
@@ -706,7 +707,7 @@ print_summary() {
   log "    - NGINX Ingress Controller (ports 80/443)"
   log "    - cert-manager (Let's Encrypt staging + production)"
   log "    - Sealed Secrets"
-  [[ "$SKIP_MONITORING" != true ]] && log "    - Prometheus + Grafana + Loki"
+  [[ "$ENABLE_MONITORING" == true ]] && log "    - Prometheus + Grafana + Loki"
   [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
   [[ "$SKIP_VPN" != true ]]        && log "    - WireGuard + NetBird (installed, not configured)"
   log "    - Platform namespaces + RBAC + network policies"
