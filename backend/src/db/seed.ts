@@ -74,11 +74,11 @@ await db.insert(workloadRepositories).values([{
 }]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded workload repositories');
 
-// Application Repositories (uses the same catalog repo as workloads)
+// Application Repositories (separate repo from workloads — managed stacks like WordPress, Nextcloud)
 await db.insert(applicationRepositories).values([{
   id: crypto.randomUUID(),
-  name: 'Official Catalog',
-  url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+  name: 'Official Application Catalog',
+  url: 'https://github.com/phoenixtechnam/hosting-platform-application-catalog',
   branch: 'main',
   syncIntervalMinutes: 60,
   status: 'active',

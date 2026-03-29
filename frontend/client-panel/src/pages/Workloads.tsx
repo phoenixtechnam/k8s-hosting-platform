@@ -1,7 +1,368 @@
-import { useState, type FormEvent } from 'react';
-import { Server, Plus, Loader2, AlertCircle, Trash2, X, Play, Square } from 'lucide-react';
+import { useState, useMemo, type FormEvent } from 'react';
+import { Server, Container, Search, Loader2, AlertCircle, Plus, Trash2, X, Play, Square, Cpu, Heart, Settings2 } from 'lucide-react';
+import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useWorkloads, useContainerImages, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
+import type { ContainerImageResponse } from '@/types/api';
+
+type Tab = 'available' | 'deployed';
+
+const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
+  { id: 'available', label: 'Available' },
+  { id: 'deployed', label: 'Deployed' },
+] as const;
+
+export default function Workloads() {
+  const [activeTab, setActiveTab] = useState<Tab>('available');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400">
+          <Server size={20} />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="workloads-heading">Workloads</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Browse available workloads and manage deployed instances.</p>
+        </div>
+      </div>
+
+      <div className="border-b border-gray-200 dark:border-gray-700">
+        <nav className="-mb-px flex gap-6" data-testid="tab-bar">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={clsx(
+                'whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors',
+                activeTab === tab.id
+                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-300',
+              )}
+              data-testid={`tab-${tab.id}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeTab === 'available' && <AvailableTab />}
+      {activeTab === 'deployed' && <DeployedTab />}
+    </div>
+  );
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+interface HealthCheckData {
+  readonly path?: string | null;
+  readonly command?: readonly string[] | null;
+  readonly port?: number | null;
+  readonly initial_delay_seconds?: number;
+  readonly period_seconds?: number;
+}
+
+function asHealthCheck(val: unknown): HealthCheckData {
+  return (val && typeof val === 'object' ? val : {}) as HealthCheckData;
+}
+
+// ─── Available Tab ──────────────────────────────────────────────────────────
+
+function AvailableTab() {
+  const [search, setSearch] = useState('');
+  const [selectedImage, setSelectedImage] = useState<ContainerImageResponse | null>(null);
+  const { data: response, isLoading, isError, error } = useContainerImages();
+
+  const images = response?.data ?? [];
+
+  const filteredImages = useMemo(() => {
+    if (!search.trim()) return images;
+    const term = search.toLowerCase();
+    return images.filter(
+      (img) =>
+        img.name.toLowerCase().includes(term) ||
+        img.code.toLowerCase().includes(term),
+    );
+  }, [search, images]);
+
+  return (
+    <div className="space-y-4" data-testid="available-tab">
+      <div className="flex items-center gap-3">
+        <div className="relative max-w-sm flex-1">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="search"
+            placeholder="Search images..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            data-testid="image-search"
+          />
+        </div>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-12" data-testid="loading-spinner">
+          <Loader2 size={24} className="animate-spin text-blue-600" />
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading images...</span>
+        </div>
+      )}
+
+      {isError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400" data-testid="error-message">
+          <AlertCircle size={16} />
+          <span>Failed to load container images: {error?.message ?? 'Unknown error'}</span>
+        </div>
+      )}
+
+      {!isLoading && !isError && (
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="images-table">
+              <thead>
+                <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  <th className="px-5 py-3">Name</th>
+                  <th className="px-5 py-3">Type</th>
+                  <th className="hidden px-5 py-3 md:table-cell">Version</th>
+                  <th className="px-5 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                {filteredImages.map((image) => {
+                  const tags: readonly string[] = Array.isArray(image.tags) ? image.tags : [];
+
+                  return (
+                    <tr
+                      key={image.id}
+                      className="cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      onClick={() => setSelectedImage(image)}
+                      data-testid={`image-row-${image.id}`}
+                    >
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2">
+                          <Container size={14} className="text-gray-400" />
+                          <span className="font-medium text-gray-900 dark:text-gray-100">{image.name}</span>
+                          {tags.length > 0 && (
+                            <div className="flex gap-1">
+                              {tags.map((tag) => (
+                                <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">{tag}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{image.imageType}</td>
+                      <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">{image.version ?? '-'}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={clsx(
+                          'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium',
+                          image.status === 'active'
+                            ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/40 dark:text-green-300 dark:border-green-700'
+                            : 'bg-gray-50 text-gray-600 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600',
+                        )}>
+                          {image.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredImages.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      No images found matching your search.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
+            {filteredImages.length} image{filteredImages.length !== 1 ? 's' : ''}
+          </div>
+        </div>
+      )}
+
+      {selectedImage && (
+        <WorkloadDetailPanel image={selectedImage} onClose={() => setSelectedImage(null)} />
+      )}
+    </div>
+  );
+}
+
+// ─── Workload Detail Panel ──────────────────────────────────────────────────
+
+function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementType; readonly title: string }) {
+  return (
+    <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+      <Icon size={16} className="text-blue-600 dark:text-blue-400" />
+      {title}
+    </h4>
+  );
+}
+
+function WorkloadDetailPanel({
+  image,
+  onClose,
+}: {
+  readonly image: ContainerImageResponse;
+  readonly onClose: () => void;
+}) {
+  const healthCheck = asHealthCheck(image.healthCheck);
+  const envVars: readonly Record<string, string>[] = Array.isArray(image.envVars) ? image.envVars : [];
+  const tags: readonly string[] = Array.isArray(image.tags) ? image.tags : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4" data-testid="workload-detail-panel">
+      <div
+        className="relative my-8 w-full max-w-3xl rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl"
+        role="dialog"
+        aria-label={`${image.name} details`}
+      >
+        {/* Close button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          data-testid="detail-close-button"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="p-6 space-y-6">
+          {/* Header */}
+          <div>
+            <div className="flex items-start justify-between pr-8">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{image.name}</h3>
+                <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+                  {image.version ? `v${image.version}` : image.code}
+                </p>
+              </div>
+              <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-3 py-1 text-xs font-medium text-purple-700 dark:text-purple-300">
+                {image.imageType}
+              </span>
+            </div>
+            {image.description && (
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{image.description}</p>
+            )}
+            {tags.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1">
+                {tags.map((tag) => (
+                  <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">{tag}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Resources */}
+          <div>
+            <SectionHeading icon={Cpu} title="Resources" />
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span>
+                <p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceCpu ?? 'Default'}</p>
+              </div>
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span>
+                <p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceMemory ?? 'Default'}</p>
+              </div>
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span>
+                <p className="text-sm text-gray-900 dark:text-gray-100">{image.minPlan ?? 'Any'}</p>
+              </div>
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span>
+                <p className="text-sm text-gray-900 dark:text-gray-100">{image.containerPort ?? '-'}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Health Check */}
+          {healthCheck.path && (
+            <div>
+              <SectionHeading icon={Heart} title="Health Check" />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Path</span>
+                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.path}</p>
+                </div>
+                <div>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span>
+                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p>
+                </div>
+                <div>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span>
+                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p>
+                </div>
+                <div>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span>
+                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Environment Variables */}
+          {envVars.length > 0 && (
+            <div>
+              <SectionHeading icon={Settings2} title="Environment Variables" />
+              <div className="flex flex-wrap gap-1 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                {envVars.map((v, i) => (
+                  <span key={i} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">
+                    {typeof v === 'string' ? v : Object.keys(v)[0]}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Additional Info */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span>
+              <p className="text-sm text-gray-900 dark:text-gray-100">{image.runtime ?? '-'}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span>
+              <p className="text-sm text-gray-900 dark:text-gray-100">{image.webServer ?? '-'}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deploy Strategy</span>
+              <p className="text-sm text-gray-900 dark:text-gray-100">{image.deploymentStrategy ?? '-'}</p>
+            </div>
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span>
+              <p className="text-sm font-mono text-gray-900 dark:text-gray-100">{image.mountPath ?? '-'}</p>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+              data-testid="deploy-button"
+            >
+              Deploy (Phase 2)
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              data-testid="close-button"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Deployed Tab ───────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -20,7 +381,7 @@ function StatusBadge({ status }: { readonly status: string }) {
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-export default function Workloads() {
+function DeployedTab() {
   const { clientId } = useClientContext();
   const { data: response, isLoading, isError, error } = useWorkloads(clientId ?? undefined);
   const { data: imagesResponse } = useContainerImages();
@@ -55,17 +416,8 @@ export default function Workloads() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400">
-            <Server size={20} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="workloads-heading">Workloads</h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Deploy and manage your applications.</p>
-          </div>
-        </div>
+    <div className="space-y-4" data-testid="deployed-tab">
+      <div className="flex items-center justify-end">
         <button
           type="button"
           onClick={() => setShowDeploy((p) => !p)}

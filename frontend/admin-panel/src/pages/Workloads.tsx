@@ -1,5 +1,5 @@
-import { useState, useMemo, Fragment, type FormEvent } from 'react';
-import { Server, Container, Rocket, Search, Loader2, AlertCircle, RefreshCw, Plus, Trash2, X, Play, Square } from 'lucide-react';
+import { useState, useMemo, useCallback, type FormEvent } from 'react';
+import { Server, Container, Rocket, Search, Loader2, AlertCircle, RefreshCw, Plus, Trash2, X, Play, Square, Heart, Settings2, Network, Cpu } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -251,11 +251,304 @@ function DeployedWorkloadsTab() {
   );
 }
 
+// ─── Workload Detail Helpers ─────────────────────────────────────────────────
+
+interface HealthCheckData {
+  readonly path?: string;
+  readonly command?: string;
+  readonly port?: number;
+  readonly initial_delay_seconds?: number;
+  readonly period_seconds?: number;
+}
+
+interface ServiceRequirement {
+  readonly engine?: string;
+  readonly minVersion?: string;
+  readonly envMapping?: Record<string, string>;
+}
+
+function safeJsonParse<T>(val: unknown): T | undefined {
+  if (val == null) return undefined;
+  if (typeof val === 'object') return val as T;
+  if (typeof val === 'string') {
+    try { return JSON.parse(val) as T; } catch { return undefined; }
+  }
+  return undefined;
+}
+
+function safeJsonParseArray(val: unknown): readonly string[] | undefined {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try { const parsed = JSON.parse(val); return Array.isArray(parsed) ? parsed : undefined; } catch { return undefined; }
+  }
+  return undefined;
+}
+
+function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementType; readonly title: string }) {
+  return (
+    <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+      <Icon size={16} className="text-brand-500" />
+      {title}
+    </h4>
+  );
+}
+
+// ─── Workload Detail Panel ──────────────────────────────────────────────────
+
+function WorkloadDetailPanel({
+  image,
+  onClose,
+}: {
+  readonly image: Record<string, unknown>;
+  readonly onClose: () => void;
+}) {
+  const name = image.name as string;
+  const version = image.version as string | undefined;
+  const imageType = image.imageType as string;
+  const description = image.description as string | undefined;
+
+  // Deployment info
+  const runtime = image.runtime as string | undefined;
+  const webServer = image.webServer as string | undefined;
+  const deploymentStrategy = image.deploymentStrategy as string | undefined;
+  const containerPort = image.containerPort as number | string | undefined;
+  const mountPath = image.mountPath as string | undefined;
+  const minPlan = image.minPlan as string | undefined;
+
+  // Resources
+  const resourceCpu = image.resourceCpu as string | undefined;
+  const resourceMemory = image.resourceMemory as string | undefined;
+  const resourceStorage = image.resourceStorage as string | undefined;
+
+  // Health check
+  const healthCheck = safeJsonParse<HealthCheckData>(image.healthCheck);
+
+  // Environment variables
+  const envVars = safeJsonParse<readonly Record<string, unknown>[]>(image.envVars) ?? safeJsonParseArray(image.envVars);
+  const configurableEnvVars: string[] = [];
+  const fixedEnvVars: Array<{ key: string; value: string }> = [];
+
+  if (Array.isArray(envVars)) {
+    for (const v of envVars) {
+      if (typeof v === 'string') {
+        configurableEnvVars.push(v);
+      } else if (v && typeof v === 'object') {
+        const entries = Object.entries(v as Record<string, unknown>);
+        for (const [key, value] of entries) {
+          if (value != null && String(value).length > 0) {
+            fixedEnvVars.push({ key, value: String(value) });
+          } else {
+            configurableEnvVars.push(key);
+          }
+        }
+      }
+    }
+  }
+
+  // Tags
+  const tags = safeJsonParseArray(image.tags) ?? [];
+
+  // Services
+  const services = safeJsonParse<readonly ServiceRequirement[]>(image.services);
+
+  // Provides
+  const provides = safeJsonParse<Record<string, unknown>>(image.provides);
+
+  const typeBadgeColor = imageType === 'runtime'
+    ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
+    : imageType === 'database'
+      ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
+      : 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4" data-testid="workload-detail-panel">
+      <div
+        className="relative my-8 w-full max-w-3xl rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl"
+        role="dialog"
+        aria-label={`${name} details`}
+      >
+        {/* Close button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          data-testid="detail-close-button"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="p-6 space-y-6">
+          {/* Header */}
+          <div>
+            <div className="flex items-start justify-between pr-8">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{name}</h3>
+                {version && <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{version}</p>}
+              </div>
+              <span className={clsx('inline-flex rounded-full px-3 py-1 text-xs font-medium', typeBadgeColor)}>
+                {imageType}
+              </span>
+            </div>
+            {description && <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{description}</p>}
+          </div>
+
+          {/* Deployment Info */}
+          <div>
+            <SectionHeading icon={Server} title="Deployment Info" />
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span><p className="text-sm text-gray-900 dark:text-gray-100">{runtime ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span><p className="text-sm text-gray-900 dark:text-gray-100">{webServer ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deployment Strategy</span><p className="text-sm text-gray-900 dark:text-gray-100">{deploymentStrategy ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{containerPort ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{mountPath ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{minPlan ?? 'Any'}</p></div>
+            </div>
+          </div>
+
+          {/* Resources */}
+          {(resourceCpu ?? resourceMemory ?? resourceStorage) && (
+            <div>
+              <SectionHeading icon={Cpu} title="Resources" />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceCpu ?? 'Default'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceMemory ?? 'Default'}</p></div>
+                {resourceStorage && (
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceStorage}</p></div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Health Check */}
+          {healthCheck && (healthCheck.path ?? healthCheck.command) && (
+            <div>
+              <SectionHeading icon={Heart} title="Health Check" />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div>
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{healthCheck.path ? 'Path' : 'Command'}</span>
+                  <p className="text-sm font-mono text-gray-900 dark:text-gray-100">{healthCheck.path ?? healthCheck.command}</p>
+                </div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p></div>
+              </div>
+            </div>
+          )}
+
+          {/* Environment Variables */}
+          {(configurableEnvVars.length > 0 || fixedEnvVars.length > 0) && (
+            <div>
+              <SectionHeading icon={Settings2} title="Environment Variables" />
+              <div className="space-y-3">
+                {configurableEnvVars.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Configurable</p>
+                    <div className="flex flex-wrap gap-1">
+                      {configurableEnvVars.map((v) => (
+                        <span key={v} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {fixedEnvVars.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Fixed</p>
+                    <div className="flex flex-wrap gap-1">
+                      {fixedEnvVars.map((v) => (
+                        <span key={v.key} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v.key}={v.value}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Services */}
+          {Array.isArray(services) && services.length > 0 && (
+            <div>
+              <SectionHeading icon={Network} title="Services" />
+              <div className="space-y-2">
+                {services.map((svc, i) => (
+                  <div key={i} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <div className="flex items-center gap-3 text-sm">
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{svc.engine ?? 'Unknown'}</span>
+                      {svc.minVersion && <span className="text-gray-500 dark:text-gray-400">min v{svc.minVersion}</span>}
+                    </div>
+                    {svc.envMapping && Object.keys(svc.envMapping).length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {Object.entries(svc.envMapping).map(([key, val]) => (
+                          <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}={String(val)}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Provides */}
+          {provides && Object.keys(provides).length > 0 && (
+            <div>
+              <SectionHeading icon={Server} title="Provides" />
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  {Object.entries(provides).map(([key, val]) => (
+                    <div key={key}>
+                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{key}</span>
+                      <p className="text-gray-900 dark:text-gray-100">{typeof val === 'object' ? JSON.stringify(val) : String(val ?? '-')}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Tags */}
+          {tags.length > 0 && (
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Tags</span>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {tags.map((tag) => (
+                  <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs text-gray-600 dark:text-gray-400">{tag}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+              data-testid="deploy-button"
+            >
+              Deploy (Phase 2)
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              data-testid="close-button"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Available Workloads Tab ────────────────────────────────────────────────
+
 function AvailableWorkloadsTab() {
   const [search, setSearch] = useState('');
   const [repoFilter, setRepoFilter] = useState('');
   const [isSyncingAll, setIsSyncingAll] = useState(false);
-  const [expandedImageId, setExpandedImageId] = useState<string | null>(null);
+  const [selectedImage, setSelectedImage] = useState<Record<string, unknown> | null>(null);
   const { data: response, isLoading, isError, error } = useContainerImages();
   const { data: reposResponse } = useWorkloadRepos();
   const syncRepo = useSyncWorkloadRepo();
@@ -279,6 +572,14 @@ function AvailableWorkloadsTab() {
       setIsSyncingAll(false);
     }
   };
+
+  const handleRowClick = useCallback((image: Record<string, unknown>) => {
+    setSelectedImage(image);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setSelectedImage(null);
+  }, []);
 
   const filteredImages = useMemo(() => {
     let result = images;
@@ -387,17 +688,8 @@ function AvailableWorkloadsTab() {
                   const rawTags = imageRecord.tags;
                   const tags: readonly string[] | undefined = Array.isArray(rawTags) ? rawTags : typeof rawTags === 'string' ? (() => { try { return JSON.parse(rawTags); } catch { return undefined; } })() : undefined;
 
-                  const isExpanded = expandedImageId === image.id;
-                  const resourceCpu = imageRecord.resourceCpu as string | undefined;
-                  const resourceMemory = imageRecord.resourceMemory as string | undefined;
-                  const minPlan = imageRecord.minPlan as string | undefined;
-                  const hasDockerfile = imageRecord.hasDockerfile as number | undefined;
-                  const rawEnvVars = imageRecord.envVars;
-                  const envVars: string[] | undefined = Array.isArray(rawEnvVars) ? rawEnvVars : typeof rawEnvVars === 'string' ? (() => { try { return JSON.parse(rawEnvVars); } catch { return undefined; } })() : undefined;
-
                   return (
-                    <Fragment key={image.id}>
-                    <tr className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" onClick={() => setExpandedImageId(isExpanded ? null : image.id)}>
+                    <tr key={image.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" onClick={() => handleRowClick(imageRecord)}>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-2">
                           <Container size={14} className="text-gray-400" />
@@ -414,30 +706,6 @@ function AvailableWorkloadsTab() {
                       <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{sourceName}</td>
                       <td className="px-5 py-3.5"><StatusBadge status={image.status as 'active' | 'pending' | 'error'} /></td>
                     </tr>
-                    {isExpanded && (
-                      <tr>
-                        <td colSpan={5} className="p-0">
-                          <div className="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-4" data-testid={`image-detail-${image.id}`}>
-                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                              <div><span className="text-xs font-medium text-gray-500">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceCpu ?? 'Default'}</p></div>
-                              <div><span className="text-xs font-medium text-gray-500">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceMemory ?? 'Default'}</p></div>
-                              <div><span className="text-xs font-medium text-gray-500">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{minPlan ?? 'Any'}</p></div>
-                              <div><span className="text-xs font-medium text-gray-500">Dockerfile</span><p className="text-sm text-gray-900 dark:text-gray-100">{hasDockerfile ? 'Yes' : 'No'}</p></div>
-                            </div>
-                            {envVars && envVars.length > 0 && (
-                              <div className="mt-3">
-                                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Environment Variables</span>
-                                <div className="mt-1 flex flex-wrap gap-1">{envVars.map((v, i) => (
-                                  <span key={i} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{typeof v === 'string' ? v : Object.keys(v)[0]}</span>
-                                ))}</div>
-                              </div>
-                            )}
-                            <div className="mt-3"><span className="text-xs font-medium text-gray-500">Code</span><p className="text-sm font-mono text-gray-700 dark:text-gray-300">{image.code}</p></div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    </Fragment>
                   );
                 })}
                 {filteredImages.length === 0 && (
@@ -454,6 +722,10 @@ function AvailableWorkloadsTab() {
             {filteredImages.length} image{filteredImages.length !== 1 ? 's' : ''}
           </div>
         </div>
+      )}
+
+      {selectedImage && (
+        <WorkloadDetailPanel image={selectedImage} onClose={handleClose} />
       )}
     </div>
   );
