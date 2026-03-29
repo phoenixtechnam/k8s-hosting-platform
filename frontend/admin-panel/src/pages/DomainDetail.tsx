@@ -8,6 +8,8 @@ import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useDomains } from '@/hooks/use-domains';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import { useHostingSettings, useUpdateHostingSettings } from '@/hooks/use-hosting-settings';
 import {
   useProtectedDirectories, useCreateProtectedDirectory, useDeleteProtectedDirectory,
@@ -104,6 +106,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const records = response?.data ?? [];
+  const { sortedData: sortedRecords, sortKey, sortDirection, onSort } = useSortable(records, 'recordName');
 
   const [form, setForm] = useState({
     record_type: 'A' as const,
@@ -241,15 +244,15 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
         <table className="w-full" data-testid="dns-records-table">
           <thead>
             <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              <th className="px-5 py-3">Type</th>
-              <th className="px-5 py-3">Name</th>
-              <th className="px-5 py-3">Value</th>
-              <th className="px-5 py-3">TTL</th>
+              <SortableHeader label="Type" sortKey="recordType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Name" sortKey="recordName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Value" sortKey="recordValue" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="TTL" sortKey="ttl" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
               <th className="px-5 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-            {records.map((record) => (
+            {sortedRecords.map((record) => (
               <tr key={record.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td className="px-5 py-3 text-sm">
                   <span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300">

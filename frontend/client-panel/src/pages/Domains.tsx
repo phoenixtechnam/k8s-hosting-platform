@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import { Globe, ExternalLink } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -23,7 +25,8 @@ export default function Domains() {
   const { clientId } = useClientContext();
   const { data, isLoading, isError, error } = useDomains(clientId ?? undefined);
 
-  const domains = data?.data ?? [];
+  const domainsRaw = data?.data ?? [];
+  const { sortedData: domains, sortKey, sortDirection, onSort } = useSortable(domainsRaw, 'domainName');
 
   return (
     <div className="space-y-6">
@@ -55,7 +58,7 @@ export default function Domains() {
           </div>
         )}
 
-        {!isLoading && !isError && domains.length === 0 && (
+        {!isLoading && !isError && domainsRaw.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="domains-empty">
             <Globe size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
             <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No domains yet</p>
@@ -65,16 +68,16 @@ export default function Domains() {
           </div>
         )}
 
-        {!isLoading && !isError && domains.length > 0 && (
+        {!isLoading && !isError && domainsRaw.length > 0 && (
           <div className="overflow-x-auto" data-testid="domains-table">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Domain Name</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">DNS Mode</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">SSL</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Created</th>
+                  <SortableHeader label="Domain Name" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 md:table-cell" />
+                  <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 sm:table-cell" />
+                  <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 lg:table-cell" />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>

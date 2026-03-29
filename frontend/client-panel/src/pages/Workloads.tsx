@@ -3,6 +3,8 @@ import { Server, Container, Search, Loader2, AlertCircle, Plus, Trash2, X, Play,
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useWorkloads, useContainerImages, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import type { ContainerImageResponse } from '@/types/api';
 
 type Tab = 'available' | 'deployed';
@@ -86,6 +88,8 @@ function AvailableTab() {
     );
   }, [search, images]);
 
+  const { sortedData: sortedImages, sortKey: imgSortKey, sortDirection: imgSortDir, onSort: onImgSort } = useSortable(filteredImages, 'name');
+
   return (
     <div className="space-y-4" data-testid="available-tab">
       <div className="flex items-center gap-3">
@@ -122,14 +126,14 @@ function AvailableTab() {
             <table className="w-full" data-testid="images-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-5 py-3">Name</th>
-                  <th className="px-5 py-3">Type</th>
-                  <th className="hidden px-5 py-3 md:table-cell">Version</th>
-                  <th className="px-5 py-3">Status</th>
+                  <SortableHeader label="Name" sortKey="name" currentKey={imgSortKey} direction={imgSortDir} onSort={onImgSort} />
+                  <SortableHeader label="Type" sortKey="imageType" currentKey={imgSortKey} direction={imgSortDir} onSort={onImgSort} />
+                  <SortableHeader label="Version" sortKey="version" currentKey={imgSortKey} direction={imgSortDir} onSort={onImgSort} className="hidden md:table-cell" />
+                  <SortableHeader label="Status" sortKey="status" currentKey={imgSortKey} direction={imgSortDir} onSort={onImgSort} />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {filteredImages.map((image) => {
+                {sortedImages.map((image) => {
                   const tags: readonly string[] = Array.isArray(image.tags) ? image.tags : [];
 
                   return (
@@ -167,7 +171,7 @@ function AvailableTab() {
                     </tr>
                   );
                 })}
-                {filteredImages.length === 0 && (
+                {sortedImages.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                       No images found matching your search.
@@ -178,7 +182,7 @@ function AvailableTab() {
             </table>
           </div>
           <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
-            {filteredImages.length} image{filteredImages.length !== 1 ? 's' : ''}
+            {sortedImages.length} image{sortedImages.length !== 1 ? 's' : ''}
           </div>
         </div>
       )}
@@ -389,8 +393,9 @@ function DeployedTab() {
   const updateWorkload = useUpdateWorkload(clientId ?? undefined);
   const deleteWorkload = useDeleteWorkload(clientId ?? undefined);
 
-  const workloads = response?.data ?? [];
+  const workloadsRaw = response?.data ?? [];
   const images = imagesResponse?.data ?? [];
+  const { sortedData: workloads, sortKey: wlSortKey, sortDirection: wlSortDir, onSort: onWlSort } = useSortable(workloadsRaw, 'name');
 
   const [showDeploy, setShowDeploy] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -477,7 +482,7 @@ function DeployedTab() {
           </div>
         )}
 
-        {!isLoading && !isError && workloads.length === 0 && (
+        {!isLoading && !isError && workloadsRaw.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="workloads-empty">
             <Server size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
             <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No workloads yet</p>
@@ -485,16 +490,16 @@ function DeployedTab() {
           </div>
         )}
 
-        {!isLoading && !isError && workloads.length > 0 && (
+        {!isLoading && !isError && workloadsRaw.length > 0 && (
           <div className="overflow-x-auto" data-testid="workloads-table">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Replicas</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">CPU</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">Memory</th>
+                  <SortableHeader label="Name" sortKey="name" currentKey={wlSortKey} direction={wlSortDir} onSort={onWlSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Status" sortKey="status" currentKey={wlSortKey} direction={wlSortDir} onSort={onWlSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={wlSortKey} direction={wlSortDir} onSort={onWlSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={wlSortKey} direction={wlSortDir} onSort={onWlSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 md:table-cell" />
+                  <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={wlSortKey} direction={wlSortDir} onSort={onWlSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 md:table-cell" />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>

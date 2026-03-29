@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, RotateCw } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -27,7 +29,8 @@ export default function CronJobs() {
   const runJob = useRunCronJob(clientId ?? undefined);
   const deleteJob = useDeleteCronJob(clientId ?? undefined);
 
-  const jobs = response?.data ?? [];
+  const jobsRaw = response?.data ?? [];
+  const { sortedData: jobs, sortKey, sortDirection, onSort } = useSortable(jobsRaw, 'name');
 
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -121,7 +124,7 @@ export default function CronJobs() {
           </div>
         )}
 
-        {!isLoading && !isError && jobs.length === 0 && (
+        {!isLoading && !isError && jobsRaw.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="cron-jobs-empty">
             <Clock size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
             <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No cron jobs yet</p>
@@ -129,16 +132,16 @@ export default function CronJobs() {
           </div>
         )}
 
-        {!isLoading && !isError && jobs.length > 0 && (
+        {!isLoading && !isError && jobsRaw.length > 0 && (
           <div className="overflow-x-auto" data-testid="cron-jobs-table">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Schedule</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">Command</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Enabled</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Last Run</th>
+                  <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Command" sortKey="command" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 md:table-cell" />
+                  <SortableHeader label="Enabled" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Last Run" sortKey="lastRunStatus" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 sm:table-cell" />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>

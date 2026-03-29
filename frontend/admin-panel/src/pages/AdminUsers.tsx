@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Users, Plus, Trash2, Loader2, AlertCircle, X, Edit2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useAdminUsers, useCreateAdminUser, useDeleteAdminUser } from '@/hooks/use-admin-users';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -21,6 +23,7 @@ export default function AdminUsers() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const users = response?.data ?? [];
+  const { sortedData: sortedUsers, sortKey, sortDirection, onSort } = useSortable(users, 'fullName');
 
   const [form, setForm] = useState({
     email: '',
@@ -115,15 +118,15 @@ export default function AdminUsers() {
           <table className="w-full" data-testid="admin-users-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-3">Name</th>
-                <th className="px-5 py-3">Role</th>
-                <th className="px-5 py-3">Status</th>
-                <th className="hidden px-5 py-3 md:table-cell">Last Login</th>
+                <SortableHeader label="Name" sortKey="fullName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Role" sortKey="roleName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                 <th className="px-5 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {users.map((user) => (
+              {sortedUsers.map((user) => (
                 <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5">
                     <div className="font-medium text-gray-900 dark:text-gray-100">{user.fullName}</div>

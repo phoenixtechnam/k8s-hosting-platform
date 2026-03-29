@@ -8,6 +8,8 @@ import WorkloadRepoSettings from '@/components/WorkloadRepoSettings';
 import { useContainerImages } from '@/hooks/use-container-images';
 import { useWorkloadRepos, useSyncWorkloadRepo } from '@/hooks/use-workload-repos';
 import { useWorkloads, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 type Tab = 'deployed' | 'available' | 'repos';
 
@@ -64,6 +66,7 @@ function DeployedWorkloadsTab() {
 
   const workloads = response?.data ?? [];
   const images = imagesResponse?.data ?? [];
+  const { sortedData: sortedWorkloads, sortKey, sortDirection, onSort } = useSortable(workloads, 'name');
 
   const [showDeploy, setShowDeploy] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -186,17 +189,17 @@ function DeployedWorkloadsTab() {
             <table className="w-full" data-testid="workloads-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-5 py-3">Name</th>
-                  <th className="px-5 py-3">Image</th>
-                  <th className="px-5 py-3">Status</th>
-                  <th className="px-5 py-3">Replicas</th>
-                  <th className="hidden px-5 py-3 md:table-cell">CPU</th>
-                  <th className="hidden px-5 py-3 md:table-cell">Memory</th>
+                  <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Image" sortKey="containerImageId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                  <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                   <th className="px-5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {workloads.map((workload) => (
+                {sortedWorkloads.map((workload) => (
                   <tr key={workload.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-5 py-3.5 font-medium text-gray-900 dark:text-gray-100">{workload.name}</td>
                     <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{workload.containerImageId ?? '—'}</td>
@@ -604,6 +607,8 @@ function AvailableWorkloadsTab() {
     return result;
   }, [search, repoFilter, images]);
 
+  const { sortedData: sortedImages, sortKey: imageSortKey, sortDirection: imageSortDir, onSort: onImageSort } = useSortable(filteredImages, 'name');
+
   return (
     <div className="space-y-4" data-testid="available-tab">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -673,15 +678,15 @@ function AvailableWorkloadsTab() {
             <table className="w-full" data-testid="images-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-5 py-3">Name</th>
-                  <th className="px-5 py-3">Type</th>
-                  <th className="hidden px-5 py-3 md:table-cell">Registry URL</th>
-                  <th className="px-5 py-3">Source</th>
-                  <th className="px-5 py-3">Status</th>
+                  <SortableHeader label="Name" sortKey="name" currentKey={imageSortKey} direction={imageSortDir} onSort={onImageSort} />
+                  <SortableHeader label="Type" sortKey="imageType" currentKey={imageSortKey} direction={imageSortDir} onSort={onImageSort} />
+                  <SortableHeader label="Registry URL" sortKey="registryUrl" currentKey={imageSortKey} direction={imageSortDir} onSort={onImageSort} className="hidden md:table-cell" />
+                  <SortableHeader label="Source" sortKey="sourceRepoId" currentKey={imageSortKey} direction={imageSortDir} onSort={onImageSort} />
+                  <SortableHeader label="Status" sortKey="status" currentKey={imageSortKey} direction={imageSortDir} onSort={onImageSort} />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {filteredImages.map((image) => {
+                {sortedImages.map((image) => {
                   const imageRecord = image as unknown as Record<string, unknown>;
                   const sourceRepoId = (imageRecord.sourceRepoId ?? imageRecord.source_repo_id) as string | undefined;
                   const sourceName = sourceRepoId ? repoMap.get(sourceRepoId) ?? 'Repository' : 'Built-in';
@@ -708,7 +713,7 @@ function AvailableWorkloadsTab() {
                     </tr>
                   );
                 })}
-                {filteredImages.length === 0 && (
+                {sortedImages.length === 0 && (
                   <tr>
                     <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                       No images found matching your search.

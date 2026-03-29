@@ -1,6 +1,8 @@
 import { Archive } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useBackups } from '@/hooks/use-backups';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '-';
@@ -31,7 +33,8 @@ export default function Backups() {
   const { clientId } = useClientContext();
   const { data, isLoading, isError, error } = useBackups(clientId ?? undefined);
 
-  const backups = data?.data ?? [];
+  const backupsRaw = data?.data ?? [];
+  const { sortedData: backups, sortKey, sortDirection, onSort } = useSortable(backupsRaw, 'createdAt', 'desc');
 
   return (
     <div className="space-y-6">
@@ -63,7 +66,7 @@ export default function Backups() {
           </div>
         )}
 
-        {!isLoading && !isError && backups.length === 0 && (
+        {!isLoading && !isError && backupsRaw.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="backups-empty">
             <Archive size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
             <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No backups yet</p>
@@ -73,18 +76,18 @@ export default function Backups() {
           </div>
         )}
 
-        {!isLoading && !isError && backups.length > 0 && (
+        {!isLoading && !isError && backupsRaw.length > 0 && (
           <div className="overflow-x-auto" data-testid="backups-table">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Backup ID</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">Resource</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Size</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Created</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Expires</th>
+                  <SortableHeader label="Backup ID" sortKey="id" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Type" sortKey="backupType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Resource" sortKey="resourceType" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 md:table-cell" />
+                  <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                  <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 sm:table-cell" />
+                  <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 lg:table-cell" />
+                  <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 lg:table-cell" />
                 </tr>
               </thead>
               <tbody>

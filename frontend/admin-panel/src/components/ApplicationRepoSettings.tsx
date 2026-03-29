@@ -8,6 +8,8 @@ import {
   useSyncApplicationRepo,
   useRestoreDefaultAppRepo,
 } from '@/hooks/use-application-repos';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -40,6 +42,7 @@ export default function ApplicationRepoSettings() {
   const [syncError, setSyncError] = useState<{ id: string; message: string } | null>(null);
 
   const repos = response?.data ?? [];
+  const { sortedData: sortedRepos, sortKey, sortDirection, onSort } = useSortable(repos, 'name');
   const hasDefaultRepo = repos.some((r) =>
     r.url.includes('hosting-platform-application-catalog'),
   );
@@ -231,16 +234,16 @@ export default function ApplicationRepoSettings() {
           <table className="w-full" data-testid="repos-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">URL</th>
-                <th className="px-4 py-3">Branch</th>
-                <th className="hidden px-4 py-3 md:table-cell">Last Synced</th>
-                <th className="px-4 py-3">Status</th>
+                <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="URL" sortKey="url" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Branch" sortKey="branch" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Last Synced" sortKey="lastSyncedAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {repos.map((repo) => (
+              {sortedRepos.map((repo) => (
                 <tr key={repo.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">{repo.name}</td>
                   <td className="px-4 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{repo.url}</td>

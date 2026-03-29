@@ -7,6 +7,8 @@ import CreateDomainModal from '@/components/CreateDomainModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useDomains } from '@/hooks/use-domains';
 import { useClients } from '@/hooks/use-clients';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function Domains() {
   const navigate = useNavigate();
@@ -27,6 +29,7 @@ export default function Domains() {
 
   const domains = domainsData?.data ?? [];
   const totalCount = domainsData?.pagination?.total_count ?? 0;
+  const { sortedData: sortedDomains, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName');
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -88,16 +91,16 @@ export default function Domains() {
               <table className="w-full" data-testid="domains-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-5 py-3">Domain Name</th>
-                    <th className="px-5 py-3">Client</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="hidden px-5 py-3 md:table-cell">DNS Mode</th>
-                    <th className="hidden px-5 py-3 lg:table-cell">SSL</th>
-                    <th className="hidden px-5 py-3 lg:table-cell">Created</th>
+                    <SortableHeader label="Domain Name" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Client" sortKey="clientId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                    <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+                    <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {domains.map((domain) => (
+                  {sortedDomains.map((domain) => (
                     <tr
                       key={domain.id}
                       className="cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50"

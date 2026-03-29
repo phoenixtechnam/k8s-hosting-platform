@@ -5,6 +5,8 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { useClients } from '@/hooks/use-clients';
 import { usePlatformStatus, useDashboardMetrics } from '@/hooks/use-dashboard';
 import { useAuditLogs } from '@/hooks/use-audit-logs';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function Dashboard() {
   const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
@@ -15,6 +17,7 @@ export default function Dashboard() {
 
   const clients = clientsData?.data ?? [];
   const metrics = metricsData?.data;
+  const { sortedData: sortedClients, sortKey, sortDirection, onSort } = useSortable(clients, 'companyName');
   const platformStatus = statusData?.data?.status ?? 'unknown';
 
   return (
@@ -78,14 +81,14 @@ export default function Dashboard() {
             <table className="w-full" data-testid="clients-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-5 py-3">Name</th>
-                  <th className="px-5 py-3">Status</th>
-                  <th className="hidden px-5 py-3 md:table-cell">Namespace</th>
-                  <th className="hidden px-5 py-3 lg:table-cell">Created</th>
+                  <SortableHeader label="Name" sortKey="companyName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                  <SortableHeader label="Namespace" sortKey="kubernetesNamespace" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                  <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {clients.map((client) => (
+                {sortedClients.map((client) => (
                   <tr key={client.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-5 py-3.5">
                       <Link

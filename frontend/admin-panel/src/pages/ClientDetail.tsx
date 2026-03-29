@@ -14,6 +14,8 @@ import { usePlans } from '@/hooks/use-plans';
 import { useEmailDomains, useMailboxes } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse, Workload } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
 
@@ -316,21 +318,22 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load domains." />;
   const items = data?.data ?? [];
+  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'domainName');
   if (items.length === 0) return <TabEmpty resource="domains" />;
 
   return (
     <table className="w-full text-left text-sm" data-testid="domains-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <th className="pb-2">Domain</th>
-          <th className="pb-2">DNS Mode</th>
-          <th className="pb-2">SSL</th>
-          <th className="pb-2">Status</th>
-          <th className="pb-2">Created</th>
+          <SortableHeader label="Domain" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
         </tr>
       </thead>
       <tbody>
-        {items.map((d) => (
+        {sortedItems.map((d) => (
           <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
             <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{d.dnsMode}</td>
@@ -365,6 +368,8 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
 
   const domains = emailDomains ?? [];
   const mboxes = mailboxes ?? [];
+  const { sortedData: sortedDomains, sortKey: domainSortKey, sortDirection: domainSortDir, onSort: onDomainSort } = useSortable(domains, 'domainName');
+  const { sortedData: sortedMailboxes, sortKey: mboxSortKey, sortDirection: mboxSortDir, onSort: onMboxSort } = useSortable(mboxes, 'fullAddress');
 
   if (domains.length === 0) {
     return (
@@ -381,14 +386,14 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-              <th className="pb-2">Domain</th>
-              <th className="pb-2">Mailboxes</th>
-              <th className="pb-2">Status</th>
-              <th className="pb-2">Created</th>
+              <SortableHeader label="Domain" sortKey="domainName" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
+              <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
+              <SortableHeader label="Status" sortKey="enabled" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
+              <SortableHeader label="Created" sortKey="createdAt" currentKey={domainSortKey} direction={domainSortDir} onSort={onDomainSort} />
             </tr>
           </thead>
           <tbody>
-            {domains.map((d) => (
+            {sortedDomains.map((d) => (
               <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
                 <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
@@ -408,14 +413,14 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                <th className="pb-2">Address</th>
-                <th className="pb-2">Display Name</th>
-                <th className="pb-2">Quota</th>
-                <th className="pb-2">Status</th>
+                <SortableHeader label="Address" sortKey="fullAddress" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
+                <SortableHeader label="Display Name" sortKey="displayName" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
+                <SortableHeader label="Quota" sortKey="usedMb" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
+                <SortableHeader label="Status" sortKey="status" currentKey={mboxSortKey} direction={mboxSortDir} onSort={onMboxSort} />
               </tr>
             </thead>
             <tbody>
-              {mboxes.map((m) => (
+              {sortedMailboxes.map((m) => (
                 <tr key={m.id} className="border-b border-gray-50 dark:border-gray-700">
                   <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{m.fullAddress}</td>
                   <td className="py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
@@ -437,22 +442,23 @@ function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load workloads." />;
   const items = data?.data ?? [];
+  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'name');
   if (items.length === 0) return <TabEmpty resource="workloads" />;
 
   return (
     <table className="w-full text-left text-sm" data-testid="workloads-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <th className="pb-2">Name</th>
-          <th className="pb-2">Replicas</th>
-          <th className="pb-2">CPU</th>
-          <th className="pb-2">Memory</th>
-          <th className="pb-2">Status</th>
-          <th className="pb-2">Created</th>
+          <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
         </tr>
       </thead>
       <tbody>
-        {items.map((w) => (
+        {sortedItems.map((w) => (
           <tr key={w.id} className="border-b border-gray-50 dark:border-gray-700">
             <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{w.name}</td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{w.replicaCount}</td>
@@ -471,21 +477,22 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load backups." />;
   const items = data?.data ?? [];
+  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'resourceType');
   if (items.length === 0) return <TabEmpty resource="backups" />;
 
   return (
     <table className="w-full text-left text-sm" data-testid="backups-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-          <th className="pb-2">Resource</th>
-          <th className="pb-2">Type</th>
-          <th className="pb-2">Size</th>
-          <th className="pb-2">Created</th>
-          <th className="pb-2">Expires</th>
+          <SortableHeader label="Resource" sortKey="resourceType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Type" sortKey="backupType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
         </tr>
       </thead>
       <tbody>
-        {items.map((b) => (
+        {sortedItems.map((b) => (
           <tr key={b.id} className="border-b border-gray-50 dark:border-gray-700">
             <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{b.resourceType}</td>
             <td className="py-2 text-gray-600 dark:text-gray-400">{b.backupType}</td>

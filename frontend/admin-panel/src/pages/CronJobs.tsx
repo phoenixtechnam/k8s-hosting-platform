@@ -4,6 +4,8 @@ import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -19,6 +21,7 @@ export default function CronJobs() {
 
   const cronJobs = cronJobsData?.data ?? [];
   const totalCount = cronJobsData?.pagination?.total_count ?? 0;
+  const { sortedData: sortedCronJobs, sortKey, sortDirection, onSort } = useSortable(cronJobs, 'name');
 
   return (
     <div className="space-y-6">
@@ -69,17 +72,17 @@ export default function CronJobs() {
               <table className="w-full" data-testid="cron-jobs-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-5 py-3">Name</th>
-                    <th className="px-5 py-3">Schedule</th>
-                    <th className="hidden px-5 py-3 md:table-cell">Command</th>
-                    <th className="px-5 py-3">Enabled</th>
-                    <th className="hidden px-5 py-3 lg:table-cell">Last Run</th>
-                    <th className="hidden px-5 py-3 lg:table-cell">Status</th>
+                    <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Command" sortKey="command" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                    <SortableHeader label="Enabled" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Last Run" sortKey="lastRunAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+                    <SortableHeader label="Status" sortKey="lastRunStatus" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                     <th className="px-5 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {cronJobs.map((job) => (
+                  {sortedCronJobs.map((job) => (
                     <tr key={job.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                       <td className="px-5 py-3.5">
                         <span className="font-medium text-gray-900 dark:text-gray-100">{job.name}</span>

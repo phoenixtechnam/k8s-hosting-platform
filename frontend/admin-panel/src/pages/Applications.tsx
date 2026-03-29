@@ -136,6 +136,33 @@ function asHealthCheck(val: unknown): HealthCheckData {
   return (val && typeof val === 'object' ? val : {}) as HealthCheckData;
 }
 
+function getIconUrl(manifestUrl: string | null | undefined): string | null {
+  if (!manifestUrl) return null;
+  return manifestUrl.replace(/manifest\.json$/, 'icon.png');
+}
+
+function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | null; readonly size?: number }) {
+  const [failed, setFailed] = useState(false);
+  const url = getIconUrl(manifestUrl);
+  if (!url || failed) {
+    return (
+      <div className="flex items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-700" style={{ width: size, height: size }}>
+        <AppWindow size={size * 0.5} className="text-gray-400" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="rounded-lg object-contain"
+      style={{ width: size, height: size }}
+    />
+  );
+}
+
 // ─── Catalog Tab ────────────────────────────────────────────────────────────
 
 function CatalogTab() {
@@ -244,9 +271,12 @@ function CatalogTab() {
                   data-testid={`catalog-card-${entry.code}`}
                 >
                   <div className="mb-3 flex items-start justify-between">
-                    <div>
-                      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">v{entry.version}</p>
+                    <div className="flex items-center gap-3">
+                      <AppIcon manifestUrl={entry.manifestUrl} size={40} />
+                      <div>
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">v{entry.version}</p>
+                      </div>
                     </div>
                     <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
                       {entry.category ?? 'other'}
@@ -254,9 +284,6 @@ function CatalogTab() {
                   </div>
                   <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 font-medium">
-                      Plan: {entry.minPlan}
-                    </span>
                     <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">
                       {Array.isArray(entry.components) ? entry.components.length : 0} component{(Array.isArray(entry.components) ? entry.components.length : 0) !== 1 ? 's' : ''}
                     </span>
@@ -355,9 +382,12 @@ function AppDetailPanel({
           {/* Header */}
           <div>
             <div className="flex items-start justify-between pr-8">
-              <div>
-                <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
+              <div className="flex items-center gap-4">
+                <AppIcon manifestUrl={entry.manifestUrl} size={48} />
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{entry.name}</h3>
+                  <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
+                </div>
               </div>
               <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-3 py-1 text-xs font-medium text-brand-700 dark:text-brand-300">
                 {entry.category ?? 'other'}

@@ -5,6 +5,8 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import ResourceBar from '@/components/ui/ResourceBar';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 type Tab = 'active-alerts' | 'alert-history' | 'system-metrics';
 
@@ -92,6 +94,8 @@ function AlertTable({
   readonly resolved?: boolean;
   readonly isLoading?: boolean;
 }) {
+  const { sortedData: sortedAlerts, sortKey, sortDirection, onSort } = useSortable(alerts, 'severity');
+
   if (isLoading) {
     return (
       <div className="p-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="alerts-loading">
@@ -113,15 +117,15 @@ function AlertTable({
       <table className="w-full" data-testid="alerts-table">
         <thead>
           <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-            <th className="px-5 py-3">Severity</th>
-            <th className="px-5 py-3">Message</th>
-            <th className="hidden px-5 py-3 md:table-cell">Service</th>
-            <th className="hidden px-5 py-3 sm:table-cell">Time</th>
+            <SortableHeader label="Severity" sortKey="severity" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Message" sortKey="message" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Service" sortKey="service" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+            <SortableHeader label="Time" sortKey="time" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden sm:table-cell" />
             {resolved && <th className="px-5 py-3">Status</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-          {alerts.map((alert) => (
+          {sortedAlerts.map((alert) => (
             <tr key={alert.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
               <td className="px-5 py-3.5">
                 <StatusBadge

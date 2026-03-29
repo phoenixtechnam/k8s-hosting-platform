@@ -6,6 +6,8 @@ import ResourceBar from '@/components/ui/ResourceBar';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useBackups } from '@/hooks/use-backups';
 import type { BackupResponse } from '@k8s-hosting/api-contracts';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 type Tab = 'overview' | 'backups';
 
@@ -149,22 +151,24 @@ interface BackupsTableProps {
 }
 
 function BackupsTable({ backups }: BackupsTableProps) {
+  const { sortedData: sortedBackups, sortKey, sortDirection, onSort } = useSortable(backups, 'createdAt', 'desc');
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full" data-testid="backups-table">
           <thead>
             <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              <th className="px-5 py-3">Backup ID</th>
-              <th className="px-5 py-3">Type</th>
-              <th className="px-5 py-3">Resource</th>
-              <th className="hidden px-5 py-3 md:table-cell">Size</th>
-              <th className="hidden px-5 py-3 lg:table-cell">Created</th>
-              <th className="hidden px-5 py-3 lg:table-cell">Expires</th>
+              <SortableHeader label="Backup ID" sortKey="id" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Type" sortKey="backupType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Resource" sortKey="resourceType" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+              <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+              <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-            {backups.map((backup) => (
+            {sortedBackups.map((backup) => (
               <tr key={backup.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td className="px-5 py-3.5">
                   <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{truncateId(backup.id)}</span>

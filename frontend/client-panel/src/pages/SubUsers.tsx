@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Users, Plus, Loader2, AlertCircle, Trash2, X } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSubUsers, useCreateSubUser, useDeleteSubUser } from '@/hooks/use-sub-users';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
@@ -11,7 +13,8 @@ export default function SubUsers() {
   const createUser = useCreateSubUser(clientId);
   const deleteUser = useDeleteSubUser(clientId);
 
-  const users = response?.data ?? [];
+  const usersRaw = response?.data ?? [];
+  const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'fullName');
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState({ email: '', full_name: '', password: '' });
@@ -61,18 +64,18 @@ export default function SubUsers() {
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading && <div className="flex items-center justify-center py-16"><div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" /></div>}
         {isError && <div className="px-6 py-16 text-center text-sm text-red-600">Failed to load users.</div>}
-        {!isLoading && !isError && users.length === 0 && (
+        {!isLoading && !isError && usersRaw.length === 0 && (
           <div className="px-6 py-16 text-center"><Users size={40} className="mx-auto text-gray-300 dark:text-gray-600" /><p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No sub-users yet</p><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Add users to give team members access.</p></div>
         )}
-        {!isLoading && !isError && users.length > 0 && (
+        {!isLoading && !isError && usersRaw.length > 0 && (
           <div className="overflow-x-auto" data-testid="users-table">
             <table className="w-full text-left text-sm">
               <thead><tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
-                <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Email</th>
-                <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Role</th>
-                <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Last Login</th>
+                <SortableHeader label="Name" sortKey="fullName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                <SortableHeader label="Email" sortKey="email" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                <SortableHeader label="Role" sortKey="roleName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
+                <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 sm:table-cell" />
                 <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
               </tr></thead>
               <tbody>

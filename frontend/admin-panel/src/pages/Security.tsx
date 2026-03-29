@@ -1,6 +1,8 @@
 import { Shield, Lock, FileCheck, ShieldCheck } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 interface NetworkPolicy {
   readonly id: string;
@@ -101,6 +103,9 @@ const SECURITY_EVENTS: readonly SecurityEvent[] = [
 ] as const;
 
 export default function Security() {
+  const { sortedData: sortedPolicies, sortKey: policySortKey, sortDirection: policySortDir, onSort: onPolicySort } = useSortable(NETWORK_POLICIES, 'name');
+  const { sortedData: sortedEvents, sortKey: eventSortKey, sortDirection: eventSortDir, onSort: onEventSort } = useSortable(SECURITY_EVENTS, 'event');
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
@@ -123,14 +128,14 @@ export default function Security() {
           <table className="w-full" data-testid="policies-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-3">Policy Name</th>
-                <th className="hidden px-5 py-3 sm:table-cell">Namespace</th>
-                <th className="px-5 py-3">Type</th>
-                <th className="px-5 py-3">Status</th>
+                <SortableHeader label="Policy Name" sortKey="name" currentKey={policySortKey} direction={policySortDir} onSort={onPolicySort} />
+                <SortableHeader label="Namespace" sortKey="namespace" currentKey={policySortKey} direction={policySortDir} onSort={onPolicySort} className="hidden sm:table-cell" />
+                <SortableHeader label="Type" sortKey="type" currentKey={policySortKey} direction={policySortDir} onSort={onPolicySort} />
+                <SortableHeader label="Status" sortKey="status" currentKey={policySortKey} direction={policySortDir} onSort={onPolicySort} />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {NETWORK_POLICIES.map((policy) => (
+              {sortedPolicies.map((policy) => (
                 <tr key={policy.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5">
                     <span className="font-medium text-gray-900 dark:text-gray-100">{policy.name}</span>
@@ -157,14 +162,14 @@ export default function Security() {
           <table className="w-full" data-testid="events-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-3">Event</th>
-                <th className="px-5 py-3">Severity</th>
-                <th className="hidden px-5 py-3 md:table-cell">Source</th>
-                <th className="hidden px-5 py-3 sm:table-cell">Time</th>
+                <SortableHeader label="Event" sortKey="event" currentKey={eventSortKey} direction={eventSortDir} onSort={onEventSort} />
+                <SortableHeader label="Severity" sortKey="severity" currentKey={eventSortKey} direction={eventSortDir} onSort={onEventSort} />
+                <SortableHeader label="Source" sortKey="source" currentKey={eventSortKey} direction={eventSortDir} onSort={onEventSort} className="hidden md:table-cell" />
+                <SortableHeader label="Time" sortKey="timestamp" currentKey={eventSortKey} direction={eventSortDir} onSort={onEventSort} className="hidden sm:table-cell" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {SECURITY_EVENTS.map((event) => (
+              {sortedEvents.map((event) => (
                 <tr key={event.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5 text-sm text-gray-900 dark:text-gray-100">{event.event}</td>
                   <td className="px-5 py-3.5">

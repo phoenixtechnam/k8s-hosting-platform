@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const styles: Record<string, string> = {
@@ -78,7 +80,8 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState({ local_part: '', password: '', display_name: '', quota_mb: '1024' });
 
-  const mailboxes = res?.data ?? [];
+  const mailboxesRaw = res?.data ?? [];
+  const { sortedData: mailboxes, sortKey, sortDirection, onSort } = useSortable(mailboxesRaw, 'fullAddress');
   const createMailbox = useCreateMailbox(clientId, selectedDomain);
 
   const handleCreate = async (e: FormEvent) => {
@@ -102,7 +105,7 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500 dark:text-gray-400">{mailboxes.length} mailbox{mailboxes.length !== 1 ? 'es' : ''}</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{mailboxesRaw.length} mailbox{mailboxesRaw.length !== 1 ? 'es' : ''}</p>
         <button type="button" onClick={() => setShowForm(p => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-mailbox-button">
           {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Create Mailbox'}
         </button>
@@ -155,9 +158,9 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
           <table className="w-full" data-testid="mailboxes-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-3">Email</th>
-                <th className="px-5 py-3">Quota</th>
-                <th className="px-5 py-3">Status</th>
+                <SortableHeader label="Email" sortKey="fullAddress" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Quota" sortKey="quotaMb" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <th className="px-5 py-3 text-right">Actions</th>
               </tr>
             </thead>
