@@ -9,7 +9,12 @@ export function getDb(connectionString: string) {
     pool = mysql.createPool({
       uri: connectionString,
       waitForConnections: true,
-      connectionLimit: 10,
+      connectionLimit: 25,             // Up from 10 — handles concurrent API requests
+      queueLimit: 50,                  // Max queued connection requests before rejecting
+      idleTimeout: 60_000,             // Close idle connections after 60s
+      maxIdle: 10,                     // Keep 10 idle connections warm
+      enableKeepAlive: true,           // TCP keepalive to prevent stale connections
+      keepAliveInitialDelay: 30_000,   // Keepalive probe after 30s idle
     });
   }
   return drizzle(pool, { schema, mode: 'default' });
