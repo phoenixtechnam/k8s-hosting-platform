@@ -35,10 +35,9 @@ export function createCacheMiddleware(ttlMs: number) {
     const entry = cache.get(key);
 
     if (entry && !isExpired(entry)) {
-      // Cache hit — send cached response immediately
+      // Cache hit — send cached response and short-circuit handler chain
       reply.header('x-cache', 'HIT');
-      reply.send(entry.body);
-      return;
+      return reply.send(entry.body);
     }
 
     // Cache miss — remove expired entry if present
