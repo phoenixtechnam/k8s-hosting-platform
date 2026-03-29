@@ -2,6 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import { workloadRepositories, containerImages } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { parseGithubUrl, buildRawUrl, fetchJson } from '../../shared/github-catalog.js';
+import { clearCache } from '../../middleware/cache.js';
 import type { Database } from '../../db/index.js';
 import type { AddRepoInput } from './schema.js';
 
@@ -281,6 +282,9 @@ export async function syncRepo(db: Database, repoId: string) {
         lastError: syncLastError,
       })
       .where(eq(workloadRepositories.id, repoId));
+
+    // Invalidate container-images cache so the UI sees updated data immediately
+    clearCache('GET:/api/v1/container-images');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     await db
