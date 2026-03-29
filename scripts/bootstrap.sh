@@ -657,9 +657,6 @@ apply_platform_manifests() {
   local api_host="api.${prefix}${PLATFORM_DOMAIN}"
   local admin_host="admin.${prefix}${PLATFORM_DOMAIN}"
   local client_host="client.${prefix}${PLATFORM_DOMAIN}"
-  local webmail_host="webmail.${prefix}${PLATFORM_DOMAIN}"
-  local mail_host="mail.${prefix}${PLATFORM_DOMAIN}"
-
   log "Hostnames: ${api_host}, ${admin_host}, ${client_host}"
 
   # Generate the environment overlay with real hostnames
