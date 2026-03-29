@@ -48,12 +48,12 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="edit-client-modal">
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-900">Edit Client</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit Client</h2>
           <button
             onClick={handleClose}
-            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
             aria-label="Close"
           >
             <X size={20} />
@@ -61,14 +61,14 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
         </div>
 
         {updateClient.error && (
-          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="edit-error">
+          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="edit-error">
             {updateClient.error instanceof Error ? updateClient.error.message : 'Failed to update client'}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="edit-client-form">
           <div>
-            <label htmlFor="edit-company-name" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="edit-company-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Company Name *
             </label>
             <input
@@ -77,14 +77,14 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
               required
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="Acme Corp"
               data-testid="edit-company-name-input"
             />
           </div>
 
           <div>
-            <label htmlFor="edit-company-email" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="edit-company-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Company Email *
             </label>
             <input
@@ -93,14 +93,14 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
               required
               value={companyEmail}
               onChange={(e) => setCompanyEmail(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="admin@acme.com"
               data-testid="edit-company-email-input"
             />
           </div>
 
           <div>
-            <label htmlFor="edit-contact-email" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="edit-contact-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Contact Email
             </label>
             <input
@@ -108,7 +108,7 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
               type="email"
               value={contactEmail}
               onChange={(e) => setContactEmail(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="support@acme.com (optional)"
               data-testid="edit-contact-email-input"
             />
@@ -118,7 +118,7 @@ export default function EditClientModal({ open, onClose, client }: EditClientMod
             <button
               type="button"
               onClick={handleClose}
-              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>

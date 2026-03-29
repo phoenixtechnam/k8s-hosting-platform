@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stalwart-mail
+  namespace: platform-system
+  labels:
+    app: stalwart-mail
+spec:
+  serviceName: stalwart-mail
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stalwart-mail
+  template:
+    metadata:
+      labels:
+        app: stalwart-mail
+    spec:
+      containers:
+        - name: stalwart
+          image: stalwartlabs/mail-server:latest
+          ports:
+            - containerPort: 25
+              name: smtp
+            - containerPort: 465
+              name: smtps
+            - containerPort: 587
+              name: submission
+            - containerPort: 993
+              name: imaps
+            - containerPort: 443
+              name: https
+            - containerPort: 8080
+              name: admin
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-credentials
+                  key: database-url
+          volumeMounts:
+            - name: mail-data
+              mountPath: /opt/stalwart-mail
+            - name: stalwart-config
+              mountPath: /opt/stalwart-mail/etc
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: mail-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail
+  namespace: platform-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: stalwart-mail
+  ports:
+    - port: 25
+      targetPort: 25
+      name: smtp
+    - port: 465
+      targetPort: 465
+      name: smtps
+    - port: 587
+      targetPort: 587
+      name: submission
+    - port: 993
+      targetPort: 993
+      name: imaps
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-config
+  namespace: platform-system
+data:
+  config.toml: |
+    [server]
+    hostname = "mail.platform.example.com"
+
+    [directory."sql"]
+    type = "sql"
+    address = "${DATABASE_URL}"
+
+    [directory."sql".lookup.authenticate]
+    query = "SELECT password_hash, full_address FROM mailboxes WHERE full_address = ? AND status = 'active'"
+
+    [directory."sql".lookup.email]
+    query = "SELECT full_address FROM mailboxes WHERE full_address = ? AND status = 'active'"
+
+    [directory."sql".lookup.verify]
+    query = "SELECT full_address FROM mailboxes WHERE full_address = ? UNION SELECT source_address FROM email_aliases WHERE source_address = ? AND enabled = 1"
+
+    [directory."sql".lookup.quota]
+    query = "SELECT quota_mb * 1024 * 1024 FROM mailboxes WHERE full_address = ?"
+
+    [auth.master]
+    user = "roundcube-master"
+
+    [spam.dnsbl]
+    servers = ["zen.spamhaus.org", "bl.spamcop.net"]
+
+    [spam.threshold]
+    junk = 5.0
+    reject = 10.0

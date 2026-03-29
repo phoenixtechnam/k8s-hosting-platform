@@ -16,15 +16,15 @@ export default function ResourceBar({ used, total, label, unit = '' }: ResourceB
     <div data-testid="resource-bar">
       {label && (
         <div className="mb-1 flex items-center justify-between text-sm">
-          <span className="text-gray-600">{label}</span>
-          <span className="font-medium text-gray-900">
+          <span className="text-gray-600 dark:text-gray-400">{label}</span>
+          <span className="font-medium text-gray-900 dark:text-gray-100">
             {used}
             {unit} / {total}
             {unit}
           </span>
         </div>
       )}
-      <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+      <div className="h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         <div
           className={clsx('h-full rounded-full transition-all', color)}
           style={{ width: `${percentage}%` }}

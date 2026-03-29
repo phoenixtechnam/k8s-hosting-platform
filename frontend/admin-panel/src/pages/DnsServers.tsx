@@ -3,7 +3,7 @@ import { Globe, Plus, Loader2, AlertCircle, CheckCircle, Trash2, Plug, X, Edit, 
 import clsx from 'clsx';
 import { useDnsServers, useCreateDnsServer, useUpdateDnsServer, useDeleteDnsServer, useTestDnsServer, type DnsServer } from '@/hooks/use-dns-servers';
 
-const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 const PROVIDERS = [
   { value: 'powerdns', label: 'PowerDNS (API v4/v5)' },
@@ -36,23 +36,23 @@ export default function DnsServers() {
       <div className="flex items-center gap-3">
         <Globe size={28} className="text-brand-500" />
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">DNS Servers</h1>
-          <p className="text-sm text-gray-500">Manage external DNS servers for domain provisioning.</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">DNS Servers</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Manage external DNS servers for domain provisioning.</p>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm" data-testid="dns-servers-section">
-        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">Servers</h2>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-servers-section">
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Servers</h2>
           <button type="button" onClick={() => setShowAdd((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-dns-server-button">
             {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'Add Server'}
           </button>
         </div>
         {showAdd && <DnsServerForm onClose={() => setShowAdd(false)} />}
         {servers.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-gray-500">No DNS servers configured.</div>
+          <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">No DNS servers configured.</div>
         ) : (
-          <div className="divide-y divide-gray-100">{servers.map((s) => <ServerRow key={s.id} server={s} />)}</div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">{servers.map((s) => <ServerRow key={s.id} server={s} />)}</div>
         )}
       </div>
     </div>
@@ -138,16 +138,16 @@ options {
 };`;
 
   return (
-    <form onSubmit={handleSubmit} className="border-b border-gray-100 bg-gray-50 p-4 space-y-3" data-testid={isEdit ? 'edit-dns-server-form' : 'add-dns-server-form'}>
+    <form onSubmit={handleSubmit} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid={isEdit ? 'edit-dns-server-form' : 'add-dns-server-form'}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div><label className="block text-xs font-medium text-gray-700">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Primary DNS" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="dns-server-name-input" /></div>
-        <div><label className="block text-xs font-medium text-gray-700">Provider</label>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Primary DNS" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="dns-server-name-input" /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Provider</label>
           <select className={INPUT_CLASS} value={form.provider_type} onChange={(e) => setForm({ ...form, provider_type: e.target.value })} disabled={isEdit} data-testid="dns-provider-select">
             {PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
         </div>
         {form.provider_type === 'powerdns' && (
-          <div><label className="block text-xs font-medium text-gray-700">Zone Default Kind</label>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Zone Default Kind</label>
             <select className={INPUT_CLASS} value={form.zone_default_kind} onChange={(e) => setForm({ ...form, zone_default_kind: e.target.value as 'Native' | 'Master' })} data-testid="dns-zone-kind-select">
               <option value="Native">Native</option><option value="Master">Master</option>
             </select>
@@ -158,10 +158,10 @@ options {
       {/* PowerDNS fields */}
       {form.provider_type === 'powerdns' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div><label className="block text-xs font-medium text-gray-700">API URL</label><input type="url" className={INPUT_CLASS} placeholder="http://powerdns:8081" value={form.api_url} onChange={(e) => setForm({ ...form, api_url: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700">API Key</label><input type="text" className={INPUT_CLASS} value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700">Server ID</label><input type="text" className={INPUT_CLASS} value={form.server_id} onChange={(e) => setForm({ ...form, server_id: e.target.value })} /></div>
-          <div><label className="block text-xs font-medium text-gray-700">API Version</label>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">API URL</label><input type="url" className={INPUT_CLASS} placeholder="http://powerdns:8081" value={form.api_url} onChange={(e) => setForm({ ...form, api_url: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">API Key</label><input type="text" className={INPUT_CLASS} value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Server ID</label><input type="text" className={INPUT_CLASS} value={form.server_id} onChange={(e) => setForm({ ...form, server_id: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">API Version</label>
             <select className={INPUT_CLASS} value={form.api_version} onChange={(e) => setForm({ ...form, api_version: e.target.value })}><option value="v4">v4</option><option value="v5">v5</option></select>
           </div>
         </div>
@@ -171,20 +171,20 @@ options {
       {form.provider_type === 'rndc' && (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div><label className="block text-xs font-medium text-gray-700">BIND Server Host</label><input type="text" className={INPUT_CLASS} placeholder="dns.example.com" value={form.server_host} onChange={(e) => setForm({ ...form, server_host: e.target.value })} required /></div>
-            <div><label className="block text-xs font-medium text-gray-700">rndc Port</label><input type="number" className={INPUT_CLASS} value={form.rndc_port} onChange={(e) => setForm({ ...form, rndc_port: e.target.value })} /></div>
-            <div><label className="block text-xs font-medium text-gray-700">Key Algorithm</label>
+            <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">BIND Server Host</label><input type="text" className={INPUT_CLASS} placeholder="dns.example.com" value={form.server_host} onChange={(e) => setForm({ ...form, server_host: e.target.value })} required /></div>
+            <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">rndc Port</label><input type="number" className={INPUT_CLASS} value={form.rndc_port} onChange={(e) => setForm({ ...form, rndc_port: e.target.value })} /></div>
+            <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Key Algorithm</label>
               <select className={INPUT_CLASS} value={form.rndc_key_algorithm} onChange={(e) => {
                 setForm({ ...form, rndc_key_algorithm: e.target.value, rndc_key_secret: generateRndcSecret() });
               }}>
                 <option value="hmac-sha256">HMAC-SHA256</option><option value="hmac-sha512">HMAC-SHA512</option><option value="hmac-md5">HMAC-MD5</option>
               </select>
             </div>
-            <div><label className="block text-xs font-medium text-gray-700">Key Name</label><input type="text" className={INPUT_CLASS} value={form.rndc_key_name} onChange={(e) => setForm({ ...form, rndc_key_name: e.target.value })} required /></div>
+            <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Key Name</label><input type="text" className={INPUT_CLASS} value={form.rndc_key_name} onChange={(e) => setForm({ ...form, rndc_key_name: e.target.value })} required /></div>
             <div className="sm:col-span-2">
               <div className="flex items-center justify-between">
-                <label className="block text-xs font-medium text-gray-700">Key Secret (Base64)</label>
-                <button type="button" onClick={() => setForm({ ...form, rndc_key_secret: generateRndcSecret() })} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700" data-testid="regenerate-rndc-secret">
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Key Secret (Base64)</label>
+                <button type="button" onClick={() => setForm({ ...form, rndc_key_secret: generateRndcSecret() })} className="inline-flex items-center gap-1 text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:text-brand-300" data-testid="regenerate-rndc-secret">
                   <RefreshCw size={12} /> Regenerate
                 </button>
               </div>
@@ -193,10 +193,10 @@ options {
           </div>
 
           {/* BIND configuration code sample */}
-          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-medium text-blue-800">Add this to your BIND9 configuration:</p>
-              <button type="button" onClick={() => navigator.clipboard.writeText(bindConfigSample)} className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700">
+              <p className="text-xs font-medium text-blue-800 dark:text-blue-300">Add this to your BIND9 configuration:</p>
+              <button type="button" onClick={() => navigator.clipboard.writeText(bindConfigSample)} className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:text-blue-400">
                 <Copy size={12} /> Copy
               </button>
             </div>
@@ -208,7 +208,7 @@ options {
       {/* Cloudflare / Hetzner — single token */}
       {(form.provider_type === 'cloudflare' || form.provider_type === 'hetzner') && (
         <div>
-          <label className="block text-xs font-medium text-gray-700">API Token</label>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">API Token</label>
           <input type="text" className={INPUT_CLASS + ' font-mono'} placeholder="Bearer token" value={form.api_token} onChange={(e) => setForm({ ...form, api_token: e.target.value })} required />
         </div>
       )}
@@ -216,16 +216,16 @@ options {
       {/* Route53 — AWS credentials */}
       {form.provider_type === 'route53' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div><label className="block text-xs font-medium text-gray-700">Access Key ID</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.access_key_id} onChange={(e) => setForm({ ...form, access_key_id: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700">Secret Access Key</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.secret_access_key} onChange={(e) => setForm({ ...form, secret_access_key: e.target.value })} required /></div>
-          <div><label className="block text-xs font-medium text-gray-700">Region</label><input type="text" className={INPUT_CLASS} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></div>
-          <div><label className="block text-xs font-medium text-gray-700">Hosted Zone ID (optional)</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.hosted_zone_id} onChange={(e) => setForm({ ...form, hosted_zone_id: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Access Key ID</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.access_key_id} onChange={(e) => setForm({ ...form, access_key_id: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Secret Access Key</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.secret_access_key} onChange={(e) => setForm({ ...form, secret_access_key: e.target.value })} required /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Region</label><input type="text" className={INPUT_CLASS} value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></div>
+          <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Hosted Zone ID (optional)</label><input type="text" className={INPUT_CLASS + ' font-mono'} value={form.hosted_zone_id} onChange={(e) => setForm({ ...form, hosted_zone_id: e.target.value })} /></div>
         </div>
       )}
 
-      {error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
+      {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
       <div className="flex gap-2 justify-end">
-        {isEdit && <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>}
+        {isEdit && <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>}
         <button type="submit" disabled={isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-dns-server">{isPending && <Loader2 size={14} className="animate-spin" />} {isEdit ? 'Save' : 'Add Server'}</button>
       </div>
     </form>
@@ -252,25 +252,25 @@ function ServerRow({ server }: { readonly server: DnsServer }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className={clsx('h-2.5 w-2.5 rounded-full', healthColor)} />
-          <span className="text-sm font-medium text-gray-900">{server.displayName}</span>
-          <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">{server.providerType}</span>
-          {server.providerType === 'powerdns' && <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-600">{server.zoneDefaultKind}</span>}
-          {server.isDefault && <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">default</span>}
+          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{server.displayName}</span>
+          <span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-400">{server.providerType}</span>
+          {server.providerType === 'powerdns' && <span className="rounded bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-xs text-blue-600 dark:text-blue-400">{server.zoneDefaultKind}</span>}
+          {server.isDefault && <span className="rounded bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">default</span>}
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50" data-testid={`edit-dns-${server.id}`}><Edit size={12} /></button>
-          <button type="button" onClick={() => update.mutate({ id: server.id, enabled: !server.enabled })} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50" data-testid={`toggle-dns-${server.id}`}>{server.enabled ? 'Disable' : 'Enable'}</button>
-          <button type="button" onClick={() => test.mutate(server.id)} disabled={test.isPending} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50" data-testid={`test-dns-${server.id}`}>{test.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}</button>
+          <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-dns-${server.id}`}><Edit size={12} /></button>
+          <button type="button" onClick={() => update.mutate({ id: server.id, enabled: !server.enabled })} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`toggle-dns-${server.id}`}>{server.enabled ? 'Disable' : 'Enable'}</button>
+          <button type="button" onClick={() => test.mutate(server.id)} disabled={test.isPending} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50" data-testid={`test-dns-${server.id}`}>{test.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}</button>
           {confirmDel ? (
-            <><button type="button" onClick={async () => { await del.mutateAsync(server.id); setConfirmDel(false); }} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700">Confirm</button><button type="button" onClick={() => setConfirmDel(false)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button></>
+            <><button type="button" onClick={async () => { await del.mutateAsync(server.id); setConfirmDel(false); }} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700">Confirm</button><button type="button" onClick={() => setConfirmDel(false)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button></>
           ) : (
-            <button type="button" onClick={() => setConfirmDel(true)} className="rounded-md border border-red-200 px-2.5 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-dns-${server.id}`}><Trash2 size={12} /></button>
+            <button type="button" onClick={() => setConfirmDel(true)} className="rounded-md border border-red-200 dark:border-red-800 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20" data-testid={`delete-dns-${server.id}`}><Trash2 size={12} /></button>
           )}
         </div>
       </div>
-      {server.lastHealthCheck && <p className="mt-1 text-xs text-gray-500">Last check: {new Date(server.lastHealthCheck).toLocaleString()} — {server.lastHealthStatus}</p>}
-      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600"><CheckCircle size={12} /> {(test.data as { data?: { message?: string; version?: string } })?.data?.message ?? 'Connected'} {(test.data as { data?: { message?: string; version?: string } })?.data?.version ? `(${(test.data as { data?: { message?: string; version?: string } }).data?.version})` : ''}</div>}
-      {test.isError && <div className="mt-2 flex items-center gap-1 text-xs text-red-600"><AlertCircle size={12} /> {test.error instanceof Error ? test.error.message : 'Failed'}</div>}
+      {server.lastHealthCheck && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Last check: {new Date(server.lastHealthCheck).toLocaleString()} — {server.lastHealthStatus}</p>}
+      {test.isSuccess && <div className="mt-2 flex items-center gap-1 text-xs text-green-600 dark:text-green-400"><CheckCircle size={12} /> {(test.data as { data?: { message?: string; version?: string } })?.data?.message ?? 'Connected'} {(test.data as { data?: { message?: string; version?: string } })?.data?.version ? `(${(test.data as { data?: { message?: string; version?: string } }).data?.version})` : ''}</div>}
+      {test.isError && <div className="mt-2 flex items-center gap-1 text-xs text-red-600 dark:text-red-400"><AlertCircle size={12} /> {test.error instanceof Error ? test.error.message : 'Failed'}</div>}
     </div>
   );
 }

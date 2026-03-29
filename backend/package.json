@@ -20,6 +20,7 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^10.0.0",
     "@fastify/jwt": "^9.0.0",
     "@fastify/rate-limit": "^10.3.0",
@@ -31,12 +32,14 @@
     "fastify": "^5.2.0",
     "js-yaml": "^4.1.1",
     "mysql2": "^3.12.0",
+    "nodemailer": "^8.0.4",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/nodemailer": "^7.0.11",
     "@vitest/coverage-v8": "^3.0.0",
     "drizzle-kit": "^0.30.0",
     "eslint": "^9.0.0",

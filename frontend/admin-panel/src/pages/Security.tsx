@@ -105,7 +105,7 @@ export default function Security() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Shield size={28} className="text-brand-500" />
-        <h1 className="text-2xl font-bold text-gray-900">Security</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Security</h1>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -115,30 +115,30 @@ export default function Security() {
         <StatCard title="Security Score" value="92/100" icon={ShieldCheck} accent="green" />
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 px-5 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">Network Policies</h2>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Network Policies</h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="policies-table">
             <thead>
-              <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+              <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-5 py-3">Policy Name</th>
                 <th className="hidden px-5 py-3 sm:table-cell">Namespace</th>
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {NETWORK_POLICIES.map((policy) => (
-                <tr key={policy.id} className="transition-colors hover:bg-gray-50">
+                <tr key={policy.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5">
-                    <span className="font-medium text-gray-900">{policy.name}</span>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{policy.name}</span>
                   </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-600 sm:table-cell">
+                  <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 sm:table-cell">
                     {policy.namespace}
                   </td>
-                  <td className="px-5 py-3.5 text-sm text-gray-600">{policy.type}</td>
+                  <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{policy.type}</td>
                   <td className="px-5 py-3.5">
                     <StatusBadge status={policy.status} />
                   </td>
@@ -149,31 +149,31 @@ export default function Security() {
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-100 px-5 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">Recent Security Events</h2>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent Security Events</h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="events-table">
             <thead>
-              <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+              <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-5 py-3">Event</th>
                 <th className="px-5 py-3">Severity</th>
                 <th className="hidden px-5 py-3 md:table-cell">Source</th>
                 <th className="hidden px-5 py-3 sm:table-cell">Time</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {SECURITY_EVENTS.map((event) => (
-                <tr key={event.id} className="transition-colors hover:bg-gray-50">
-                  <td className="px-5 py-3.5 text-sm text-gray-900">{event.event}</td>
+                <tr key={event.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                  <td className="px-5 py-3.5 text-sm text-gray-900 dark:text-gray-100">{event.event}</td>
                   <td className="px-5 py-3.5">
                     <StatusBadge status={event.severity} label={event.severityLabel} />
                   </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 md:table-cell">
+                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                     {event.source}
                   </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 sm:table-cell">
+                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 sm:table-cell">
                     {event.timestamp}
                   </td>
                 </tr>

@@ -4,10 +4,11 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { hostingPlans } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { createCacheMiddleware } from '../../middleware/cache.js';
 
 export async function planRoutes(app: FastifyInstance) {
   // GET /api/v1/plans — public, no auth
-  app.get('/plans', async () => {
+  app.get('/plans', { preHandler: createCacheMiddleware(300_000) }, async () => {
     const rows = await app.db.select().from(hostingPlans);
     return { data: rows };
   });

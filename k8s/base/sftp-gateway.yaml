@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sftp-gateway
+  namespace: platform-system
+  labels:
+    app: sftp-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sftp-gateway
+  template:
+    metadata:
+      labels:
+        app: sftp-gateway
+    spec:
+      containers:
+        - name: sftp
+          image: atmoz/sftp:latest
+          ports:
+            - containerPort: 22
+              name: sftp
+          volumeMounts:
+            - name: sftp-data
+              mountPath: /home
+            - name: ssh-host-keys
+              mountPath: /etc/ssh/keys
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      volumes:
+        - name: sftp-data
+          persistentVolumeClaim:
+            claimName: sftp-data-pvc
+        - name: ssh-host-keys
+          secret:
+            secretName: sftp-host-keys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sftp-gateway
+  namespace: platform-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: sftp-gateway
+  ports:
+    - port: 2222
+      targetPort: 22
+      name: sftp
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sftp-data-pvc
+  namespace: platform-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 100Gi

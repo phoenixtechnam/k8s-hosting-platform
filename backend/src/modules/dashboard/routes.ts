@@ -2,13 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { clients, domains, databases, backups } from '../../db/schema.js';
+import { createCacheMiddleware } from '../../middleware/cache.js';
 
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('admin', 'super_admin', 'read_only'));
 
   // GET /api/v1/admin/dashboard — aggregated platform metrics
-  app.get('/admin/dashboard', async () => {
+  app.get('/admin/dashboard', { preHandler: createCacheMiddleware(30_000) }, async () => {
     const [clientStats] = await app.db
       .select({
         total_clients: sql<number>`count(*)`,

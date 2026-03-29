@@ -1,12 +1,14 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import fastifyCors from '@fastify/cors';
+import fastifyCompress from '@fastify/compress';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
 import { errorHandler } from './middleware/error-handler.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
 import { registerAuth } from './middleware/auth.js';
+import { createCacheMiddleware, cacheOnSendHook } from './middleware/cache.js';
 import { clientRoutes } from './modules/clients/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
 import { subscriptionRoutes } from './modules/subscriptions/routes.js';
@@ -41,6 +43,7 @@ import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
+import { sslCertRoutes } from './modules/ssl-certs/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -72,6 +75,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       ? [] // No open CORS in production — must be configured
       : true; // Permissive in development/test
   await app.register(fastifyCors, { origin: allowedOrigins });
+  await app.register(fastifyCompress, { global: true });
   await app.register(fastifyJwt, { secret: deps.config.JWT_SECRET });
   await registerRateLimit(app);
 
@@ -85,6 +89,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Audit logging (fire-and-forget on mutations)
   registerAuditHook(app, deps.db);
+
+  // Response caching (global onSend hook captures responses for cached routes)
+  app.addHook('onSend', cacheOnSendHook);
 
   // OpenAPI / Swagger documentation
   await app.register(fastifySwagger, {
@@ -119,6 +126,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Health check
   app.get('/api/v1/admin/status', {
+    preHandler: createCacheMiddleware(10_000),
     schema: {
       tags: ['Admin'],
       summary: 'Health check / system status',
@@ -181,6 +189,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
   await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
+  await app.register(sslCertRoutes, { prefix: '/api/v1' });
 
   return app;
 }

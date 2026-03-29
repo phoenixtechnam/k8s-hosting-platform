@@ -51,12 +51,12 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="create-database-modal">
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-900">Create Database</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Create Database</h2>
           <button
             onClick={handleClose}
-            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
             aria-label="Close"
           >
             <X size={20} />
@@ -64,33 +64,33 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
         </div>
 
         {createDatabase.error && !createdPassword && (
-          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="create-database-error">
+          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="create-database-error">
             {createDatabase.error instanceof Error ? createDatabase.error.message : 'Failed to create database'}
           </div>
         )}
 
         {createdPassword ? (
           <div className="space-y-4" data-testid="password-reveal">
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-4">
               <div className="flex items-start gap-3">
-                <AlertTriangle size={20} className="mt-0.5 shrink-0 text-amber-600" />
+                <AlertTriangle size={20} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
                 <div>
-                  <p className="text-sm font-medium text-amber-800">Save this password now!</p>
-                  <p className="mt-1 text-sm text-amber-700">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Save this password now!</p>
+                  <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
                     This is the only time the password will be shown. Store it securely.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
               <div className="flex items-center justify-between">
-                <code className="text-sm font-mono text-gray-900 break-all" data-testid="created-password">
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100 break-all" data-testid="created-password">
                   {createdPassword}
                 </code>
                 <button
                   onClick={handleCopyPassword}
-                  className="ml-3 shrink-0 rounded-md p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+                  className="ml-3 shrink-0 rounded-md p-1.5 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200"
                   aria-label="Copy password"
                   data-testid="copy-password-button"
                 >
@@ -113,7 +113,7 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-database-form">
             <div>
-              <label htmlFor="db-name" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="db-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Database Name *
               </label>
               <input
@@ -122,7 +122,7 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
                 placeholder="my_database"
                 pattern="^[a-zA-Z0-9_]+$"
                 title="Only alphanumeric characters and underscores"
@@ -131,7 +131,7 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
             </div>
 
             <div>
-              <label htmlFor="db-type" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="db-type" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Database Type *
               </label>
               <select
@@ -139,7 +139,7 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
                 required
                 value={dbType}
                 onChange={(e) => setDbType(e.target.value as 'mysql' | 'postgresql')}
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
                 data-testid="db-type-select"
               >
                 <option value="mysql">MySQL / MariaDB</option>
@@ -151,7 +151,7 @@ export default function CreateDatabaseModal({ open, onClose, clientId }: CreateD
               <button
                 type="button"
                 onClick={handleClose}
-                className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
               >
                 Cancel
               </button>

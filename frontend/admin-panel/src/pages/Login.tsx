@@ -76,24 +76,24 @@ export default function Login() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand-500 to-accent-500 p-4">
-      <div className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-xl">
+      <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500 text-white"><Server size={24} /></div>
-          <h1 className="mt-4 text-xl font-bold text-gray-900">K8s Hosting Platform</h1>
-          <p className="mt-1 text-sm text-gray-500">{isEmergency ? 'Emergency Admin Login' : 'Sign in to admin panel'}</p>
+          <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">K8s Hosting Platform</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{isEmergency ? 'Emergency Admin Login' : 'Sign in to admin panel'}</p>
         </div>
 
         {(error || oidcError) && (
-          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="login-error">
+          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="login-error">
             {error ?? decodeURIComponent(oidcError ?? '')}
           </div>
         )}
 
         {isEmergency ? (
           <form onSubmit={handleBreakGlass} className="space-y-4" data-testid="break-glass-form">
-            <div><label htmlFor="bg-email" className="block text-sm font-medium text-gray-700">Email</label><input id="bg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" data-testid="email-input" /></div>
-            <div><label htmlFor="bg-password" className="block text-sm font-medium text-gray-700">Password</label><input id="bg-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" data-testid="password-input" /></div>
-            <div><label htmlFor="bg-secret" className="block text-sm font-medium text-gray-700">Emergency Secret</label><input id="bg-secret" type="password" required value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} className="mt-1 w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm" data-testid="break-glass-secret-input" /></div>
+            <div><label htmlFor="bg-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="bg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" data-testid="email-input" /></div>
+            <div><label htmlFor="bg-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label><input id="bg-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" data-testid="password-input" /></div>
+            <div><label htmlFor="bg-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Emergency Secret</label><input id="bg-secret" type="password" required value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} className="mt-1 w-full rounded-lg border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm" data-testid="break-glass-secret-input" /></div>
             <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50" data-testid="break-glass-button">
               {submitting && <Loader2 size={16} className="animate-spin" />}<KeyRound size={16} /> Emergency Sign In
             </button>
@@ -101,17 +101,17 @@ export default function Login() {
         ) : (
           <>
             {providers.map((p) => (
-              <button key={p.id} type="button" onClick={() => handleSso(p.id)} className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50" data-testid={`sso-button-${p.id}`}>
+              <button key={p.id} type="button" onClick={() => handleSso(p.id)} className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`sso-button-${p.id}`}>
                 <Shield size={16} /> Sign in with {p.displayName}
               </button>
             ))}
             {providers.length > 0 && showLocalAuth && (
-              <div className="my-4 flex items-center gap-3"><div className="flex-1 border-t border-gray-200" /><span className="text-xs text-gray-400">or</span><div className="flex-1 border-t border-gray-200" /></div>
+              <div className="my-4 flex items-center gap-3"><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /><span className="text-xs text-gray-400">or</span><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /></div>
             )}
             {showLocalAuth && (
               <form onSubmit={handleSubmit} className="space-y-4" data-testid="login-form">
-                <div><label htmlFor="email" className="block text-sm font-medium text-gray-700">Email</label><input id="email" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" placeholder="admin@platform.local" data-testid="email-input" /></div>
-                <div><label htmlFor="password" className="block text-sm font-medium text-gray-700">Password</label><input id="password" type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" placeholder="Enter your password" data-testid="password-input" /></div>
+                <div><label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="email" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" placeholder="admin@platform.local" data-testid="email-input" /></div>
+                <div><label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label><input id="password" type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" placeholder="Enter your password" data-testid="password-input" /></div>
                 <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="login-button">{submitting && <Loader2 size={16} className="animate-spin" />} Sign In</button>
               </form>
             )}

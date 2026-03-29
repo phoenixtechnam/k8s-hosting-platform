@@ -44,12 +44,12 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="create-cron-job-modal">
       <div className="fixed inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-900">Add Cron Job</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Add Cron Job</h2>
           <button
             onClick={handleClose}
-            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
             aria-label="Close"
           >
             <X size={20} />
@@ -57,14 +57,14 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
         </div>
 
         {createCronJob.error && (
-          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600" data-testid="create-cron-job-error">
+          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="create-cron-job-error">
             {createCronJob.error instanceof Error ? createCronJob.error.message : 'Failed to create cron job'}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-cron-job-form">
           <div>
-            <label htmlFor="cron-job-name" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="cron-job-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Name *
             </label>
             <input
@@ -73,14 +73,14 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="My cron job"
               data-testid="cron-job-name-input"
             />
           </div>
 
           <div>
-            <label htmlFor="cron-job-schedule" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="cron-job-schedule" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Schedule *
             </label>
             <input
@@ -89,14 +89,14 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               required
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="*/5 * * * *"
               data-testid="cron-job-schedule-input"
             />
           </div>
 
           <div>
-            <label htmlFor="cron-job-command" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="cron-job-command" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Command *
             </label>
             <input
@@ -105,7 +105,7 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               required
               value={command}
               onChange={(e) => setCommand(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               placeholder="/usr/bin/php /var/www/cron.php"
               data-testid="cron-job-command-input"
             />
@@ -117,10 +117,10 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               type="checkbox"
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500"
+              className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
               data-testid="cron-job-enabled-checkbox"
             />
-            <label htmlFor="cron-job-enabled" className="text-sm font-medium text-gray-700">
+            <label htmlFor="cron-job-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
               Enabled
             </label>
           </div>
@@ -129,7 +129,7 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
             <button
               type="button"
               onClick={handleClose}
-              className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>

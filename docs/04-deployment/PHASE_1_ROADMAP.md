@@ -14,6 +14,44 @@
 
 ---
 
+## Current Status (as of March 29, 2026)
+
+### Completed
+
+- **Backend API (Fastify + TypeScript + Drizzle ORM):** Fully implemented with all core CRUD endpoints for clients, domains, databases, workloads, and users. Cursor-based pagination, standard error envelope, and JWT auth middleware all functional.
+- **Admin Panel (React 18 + Vite + shadcn/ui):** Client management, domain management, database management, user/RBAC management, DNS server configuration, hosting settings, protected directories, and workload catalog UI all built.
+- **Client Panel (React 18 + Vite + shadcn/ui):** Dashboard, domain list, database list, email/mailbox management, file manager integration, and profile settings implemented.
+- **Shared API Contracts (`packages/api-contracts`):** Single source of truth for all Zod schemas and TypeScript types. Backend validates inbound requests; frontend uses inferred types.
+- **Database Schema:** Full MariaDB schema with 30+ tables covering clients, domains, workloads, databases, email (email_domains, mailboxes, mailbox_access, email_aliases), notifications, backup configurations, SMTP relay configs, audit logs, application catalog, SSL certificates, and SFTP users. Drizzle ORM schema in sync.
+- **Email System:** Email domain management with DKIM/SPF/DMARC provisioning, mailbox CRUD, email aliases, mailbox access control, and SMTP relay configuration. Stalwart + Roundcube K8s manifests ready.
+- **Workload Catalog (ADR-025):** Multi-repo sync from external GitHub repositories. Container images and application catalog synced and displayed in admin panel.
+- **DNS Integration:** Multi-provider DNS server support (PowerDNS, RNDC, Cloudflare, Route53, Hetzner, mock). Primary/CNAME/secondary zone modes with domain verification.
+- **Auth & OIDC:** JWT Bearer token auth with RBAC roles (admin, billing, support, read-only). OIDC provider configuration with Dex integration. Break-glass local auth fallback.
+- **Notifications System:** In-app notifications with read/unread tracking, subscription expiry alerts.
+- **Backup Configuration:** SSH and S3 backup target management with test connectivity and scheduling.
+- **K8s Manifests:** Base Kustomize manifests for backend, admin panel, client panel, database, Redis, ingress, RBAC, network policies, resource quotas, namespaces, and Flux GitOps.
+- **SFTP Gateway:** K8s manifest for SFTP file access on port 2222.
+- **WAF (ModSecurity):** OWASP CRS configuration with platform-specific exclusions.
+- **E2E Tests (Playwright):** 43 passing tests covering admin and client panel flows.
+- **CI/CD:** GitHub Actions workflows for backend, frontend-admin, and frontend-client.
+
+### In Progress
+
+- K8s manifest generation from workload/domain configuration (dynamic per-client pod provisioning)
+- Domain verification automation (TXT record checking)
+- Secondary DNS zone transfer support
+- Admin user invitation flow
+- Deployment runbook finalized (see `DEPLOYMENT_RUNBOOK.md`)
+
+### Not Yet Started
+
+- Migration service (Plesk extractor + importer) -- Weeks 9-10
+- Load testing -- Week 11
+- First production migration -- Week 12
+- Monitoring stack deployment (Prometheus + Alertmanager + Loki)
+
+---
+
 ## Phase 1 Timeline Overview
 
 **Total:** 12 weeks (3 months)

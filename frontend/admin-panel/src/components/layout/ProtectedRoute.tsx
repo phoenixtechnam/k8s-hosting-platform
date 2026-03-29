@@ -27,8 +27,8 @@ export default function ProtectedRoute({ children }: { readonly children: React.
   if (user?.panel === 'client') {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 p-8">
-        <p className="text-lg font-medium text-gray-900">Access Denied</p>
-        <p className="text-sm text-gray-500">This panel is for administrators only. Please use the client portal.</p>
+        <p className="text-lg font-medium text-gray-900 dark:text-gray-100">Access Denied</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">This panel is for administrators only. Please use the client portal.</p>
       </div>
     );
   }

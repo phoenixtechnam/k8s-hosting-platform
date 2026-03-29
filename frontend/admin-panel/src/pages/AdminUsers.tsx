@@ -4,7 +4,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { useAdminUsers, useCreateAdminUser, useDeleteAdminUser } from '@/hooks/use-admin-users';
 
 const INPUT_CLASS =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+  'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 const ROLES = [
   { value: 'admin', label: 'Admin', desc: 'Full platform management' },
@@ -54,8 +54,8 @@ export default function AdminUsers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Users size={28} className="text-gray-700" />
-          <h1 className="text-2xl font-bold text-gray-900" data-testid="admin-users-heading">Admin Users</h1>
+          <Users size={28} className="text-gray-700 dark:text-gray-300" />
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="admin-users-heading">Admin Users</h1>
         </div>
         <button
           type="button"
@@ -69,22 +69,22 @@ export default function AdminUsers() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-4" data-testid="admin-user-form">
+        <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="admin-user-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="au-email" className="block text-sm font-medium text-gray-700">Email</label>
+              <label htmlFor="au-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
               <input id="au-email" type="email" className={INPUT_CLASS + ' mt-1'} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required data-testid="au-email" />
             </div>
             <div>
-              <label htmlFor="au-name" className="block text-sm font-medium text-gray-700">Full Name</label>
+              <label htmlFor="au-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Full Name</label>
               <input id="au-name" className={INPUT_CLASS + ' mt-1'} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} required data-testid="au-name" />
             </div>
             <div>
-              <label htmlFor="au-password" className="block text-sm font-medium text-gray-700">Password</label>
+              <label htmlFor="au-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
               <input id="au-password" type="password" className={INPUT_CLASS + ' mt-1'} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={8} data-testid="au-password" />
             </div>
             <div>
-              <label htmlFor="au-role" className="block text-sm font-medium text-gray-700">Role</label>
+              <label htmlFor="au-role" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Role</label>
               <select id="au-role" className={INPUT_CLASS + ' mt-1'} value={form.role_name} onChange={(e) => setForm({ ...form, role_name: e.target.value })} data-testid="au-role">
                 {ROLES.map((r) => (
                   <option key={r.value} value={r.value}>{r.label} — {r.desc}</option>
@@ -94,7 +94,7 @@ export default function AdminUsers() {
           </div>
 
           {createUser.error && (
-            <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{createUser.error instanceof Error ? createUser.error.message : 'Failed to create user'}</div>
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{createUser.error instanceof Error ? createUser.error.message : 'Failed to create user'}</div>
           )}
 
           <div className="flex justify-end">
@@ -106,7 +106,7 @@ export default function AdminUsers() {
         </form>
       )}
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading && (
           <div className="flex items-center justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>
         )}
@@ -114,7 +114,7 @@ export default function AdminUsers() {
         {!isLoading && (
           <table className="w-full" data-testid="admin-users-table">
             <thead>
-              <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+              <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-5 py-3">Name</th>
                 <th className="px-5 py-3">Role</th>
                 <th className="px-5 py-3">Status</th>
@@ -122,30 +122,30 @@ export default function AdminUsers() {
                 <th className="px-5 py-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50">
+                <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5">
-                    <div className="font-medium text-gray-900">{user.fullName}</div>
-                    <div className="text-xs text-gray-500">{user.email}</div>
+                    <div className="font-medium text-gray-900 dark:text-gray-100">{user.fullName}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">{user.email}</div>
                   </td>
                   <td className="px-5 py-3.5">
-                    <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">{user.roleName}</span>
+                    <span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300">{user.roleName}</span>
                   </td>
                   <td className="px-5 py-3.5">
                     <StatusBadge status={user.status === 'active' ? 'active' : 'suspended'} />
                   </td>
-                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 md:table-cell">
+                  <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                     {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
                   </td>
                   <td className="px-5 py-3.5 text-right">
                     {deleteConfirmId === user.id ? (
                       <div className="inline-flex items-center gap-1">
                         <button type="button" onClick={() => handleDelete(user.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">Confirm</button>
-                        <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
+                        <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                       </div>
                     ) : (
-                      <button type="button" onClick={() => setDeleteConfirmId(user.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50" data-testid={`delete-admin-user-${user.id}`}>
+                      <button type="button" onClick={() => setDeleteConfirmId(user.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20" data-testid={`delete-admin-user-${user.id}`}>
                         <Trash2 size={12} /> Delete
                       </button>
                     )}
@@ -153,7 +153,7 @@ export default function AdminUsers() {
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500">No admin users found.</td></tr>
+                <tr><td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No admin users found.</td></tr>
               )}
             </tbody>
           </table>

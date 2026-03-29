@@ -10,7 +10,7 @@ export default function Layout() {
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   return (
-    <div className="flex h-screen overflow-hidden" data-testid="layout">
+    <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900" data-testid="layout">
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
 
       <div className="flex flex-1 flex-col overflow-hidden">

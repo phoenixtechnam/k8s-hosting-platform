@@ -1,7 +1,7 @@
 # Database Schema
 
-**Status:** Pre-Phase 1 Planning  
-**Last Updated:** March 3, 2026  
+**Status:** Phase 1 Implementation
+**Last Updated:** March 29, 2026
 **Owner:** Platform Team
 
 ## Overview
@@ -306,6 +306,22 @@ spec:
 │ created_at           │
 └──────────────────────┘
 
+┌──────────────────────────┐
+│ application_repositories │
+│                          │
+│ id (PK)                  │
+│ name                     │
+│ url (UQ)                 │ ← GitHub repo URL
+│ branch                   │ ← default 'main'
+│ auth_token               │ ← nullable
+│ sync_interval_minutes    │
+│ last_synced_at           │
+│ status                   │
+│ last_error               │
+│ created_at               │
+│ updated_at               │
+└──────────────────────────┘
+
 ┌─────────────────────────────────────────────────────────────┐
 │                    TENANT TABLES (Per-Client)                │
 └─────────────────────────────────────────────────────────────┘
@@ -402,6 +418,151 @@ spec:
 │ status           │
 │ created_at       │
 └──────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│              NOTIFICATIONS & BACKUP CONFIG                    │
+└─────────────────────────────────────────────────────────────┘
+
+┌──────────────────────┐
+│ notifications        │
+│                      │
+│ id (PK)              │
+│ user_id (FK)         │
+│ type                 │ ← 'info', 'warning', 'error', 'success'
+│ title                │
+│ message              │
+│ resource_type        │
+│ resource_id          │
+│ is_read              │
+│ read_at              │
+│ created_at           │
+└──────────────────────┘
+
+┌──────────────────────┐
+│ backup_              │
+│ configurations       │
+│                      │
+│ id (PK)              │
+│ name                 │
+│ storage_type         │ ← 'ssh', 's3'
+│ ssh_host             │
+│ ssh_port             │
+│ ssh_user             │
+│ ssh_key_encrypted    │
+│ ssh_path             │
+│ s3_endpoint          │
+│ s3_bucket            │
+│ s3_region            │
+│ s3_access_key_enc    │
+│ s3_secret_key_enc    │
+│ s3_prefix            │
+│ retention_days       │
+│ schedule_expression  │
+│ enabled              │
+│ last_tested_at       │
+│ last_test_status     │
+│ created_at           │
+│ updated_at           │
+└──────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                    EMAIL SYSTEM                              │
+└─────────────────────────────────────────────────────────────┘
+
+┌──────────────────────┐
+│ email_domains        │
+│                      │
+│ id (PK)              │
+│ domain_id (FK)       │ → domains.id
+│ client_id (FK)       │ → clients.id
+│ enabled              │
+│ dkim_selector        │
+│ dkim_private_key_enc │
+│ dkim_public_key      │
+│ max_mailboxes        │
+│ max_quota_mb         │
+│ catch_all_address    │
+│ mx_provisioned       │
+│ spf_provisioned      │
+│ dkim_provisioned     │
+│ dmarc_provisioned    │
+│ spam_threshold_junk  │
+│ spam_threshold_reject│
+│ created_at           │
+│ updated_at           │
+└──────────┬───────────┘
+           │ 1:N
+           ▼
+┌──────────────────────┐       ┌──────────────────────┐
+│ mailboxes            │       │ email_aliases         │
+│                      │       │                      │
+│ id (PK)              │       │ id (PK)              │
+│ email_domain_id (FK) │       │ email_domain_id (FK) │
+│ client_id (FK)       │       │ client_id (FK)       │
+│ local_part           │       │ source_address (UQ)  │
+│ full_address (UQ)    │       │ destination_addresses│ ← JSON array
+│ password_hash        │       │ enabled              │
+│ display_name         │       │ created_at           │
+│ quota_mb             │       │ updated_at           │
+│ used_mb              │       └──────────────────────┘
+│ status               │
+│ mailbox_type         │ ← 'mailbox', 'forward_only'
+│ auto_reply           │
+│ auto_reply_subject   │
+│ auto_reply_body      │
+│ created_at           │
+│ updated_at           │
+└──────────┬───────────┘
+           │ 1:N
+           ▼
+┌──────────────────────┐
+│ mailbox_access       │
+│                      │
+│ id (PK)              │
+│ user_id (FK)         │ → users.id
+│ mailbox_id (FK)      │ → mailboxes.id
+│ access_level         │ ← 'full', 'read_only'
+│ created_at           │
+│ UQ(user_id,          │
+│   mailbox_id)        │
+└──────────────────────┘
+
+┌──────────────────────┐
+│ smtp_relay_configs   │
+│                      │
+│ id (PK)              │
+│ name                 │
+│ provider_type        │ ← 'direct', 'mailgun', 'postmark'
+│ is_default           │
+│ enabled              │
+│ smtp_host            │
+│ smtp_port            │
+│ auth_username        │
+│ auth_password_enc    │
+│ api_key_encrypted    │
+│ region               │
+│ last_tested_at       │
+│ last_test_status     │
+│ created_at           │
+│ updated_at           │
+└──────────────────────┘
+
+┌──────────────────────┐
+│ ssl_certificates     │
+│                      │
+│ id (PK)              │
+│ domain_id (FK)       │ → domains.id
+│ client_id (FK)       │ → clients.id
+│ issuer               │ ← 'letsencrypt'
+│ cert_type            │ ← 'auto', 'custom'
+│ status               │ ← 'pending', 'active', 'expired', 'failed', 'revoked'
+│ issued_at            │
+│ expires_at           │
+│ last_renewal_attempt │
+│ renewal_failure_count│
+│ serial_number        │
+│ created_at           │
+└──────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    BILLING & USAGE TABLES                    │
@@ -1195,6 +1356,191 @@ CREATE TABLE sftp_users (
   UNIQUE KEY idx_username (username),
 
   FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- NOTIFICATIONS
+-- ============================================================================
+
+CREATE TABLE notifications (
+  id VARCHAR(36) PRIMARY KEY,
+  user_id VARCHAR(36) NOT NULL,
+  type ENUM('info', 'warning', 'error', 'success') NOT NULL DEFAULT 'info',
+  title VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  resource_type VARCHAR(50) DEFAULT NULL,
+  resource_id VARCHAR(36) DEFAULT NULL,
+  is_read INT NOT NULL DEFAULT 0,
+  read_at TIMESTAMP NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  KEY idx_user_id (user_id),
+  KEY idx_is_read (is_read),
+  KEY idx_created_at (created_at),
+
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- BACKUP CONFIGURATIONS
+-- ============================================================================
+
+CREATE TABLE backup_configurations (
+  id VARCHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  storage_type ENUM('ssh', 's3') NOT NULL,
+  ssh_host VARCHAR(255) DEFAULT NULL,
+  ssh_port INT DEFAULT 22,
+  ssh_user VARCHAR(100) DEFAULT NULL,
+  ssh_key_encrypted TEXT DEFAULT NULL,
+  ssh_path VARCHAR(500) DEFAULT NULL,
+  s3_endpoint VARCHAR(500) DEFAULT NULL,
+  s3_bucket VARCHAR(255) DEFAULT NULL,
+  s3_region VARCHAR(50) DEFAULT NULL,
+  s3_access_key_encrypted VARCHAR(500) DEFAULT NULL,
+  s3_secret_key_encrypted VARCHAR(500) DEFAULT NULL,
+  s3_prefix VARCHAR(255) DEFAULT NULL,
+  retention_days INT NOT NULL DEFAULT 30,
+  schedule_expression VARCHAR(100) DEFAULT '0 2 * * *',
+  enabled INT NOT NULL DEFAULT 1,
+  last_tested_at TIMESTAMP NULL,
+  last_test_status VARCHAR(50) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- EMAIL SYSTEM (Stalwart Mail Server Integration)
+-- ============================================================================
+
+-- Email domain configuration — one row per domain with email enabled
+CREATE TABLE email_domains (
+  id VARCHAR(36) PRIMARY KEY,
+  domain_id VARCHAR(36) NOT NULL,
+  client_id VARCHAR(36) NOT NULL,
+  enabled INT NOT NULL DEFAULT 1,
+  dkim_selector VARCHAR(63) NOT NULL DEFAULT 'default',
+  dkim_private_key_encrypted TEXT DEFAULT NULL,
+  dkim_public_key TEXT DEFAULT NULL,
+  max_mailboxes INT NOT NULL DEFAULT 50,
+  max_quota_mb INT NOT NULL DEFAULT 10240,
+  catch_all_address VARCHAR(255) DEFAULT NULL,
+  mx_provisioned INT NOT NULL DEFAULT 0,
+  spf_provisioned INT NOT NULL DEFAULT 0,
+  dkim_provisioned INT NOT NULL DEFAULT 0,
+  dmarc_provisioned INT NOT NULL DEFAULT 0,
+  spam_threshold_junk DECIMAL(4,1) NOT NULL DEFAULT 5.0,
+  spam_threshold_reject DECIMAL(4,1) NOT NULL DEFAULT 10.0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_domain (domain_id),
+  KEY idx_client_id (client_id),
+
+  FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mailboxes — individual email accounts
+CREATE TABLE mailboxes (
+  id VARCHAR(36) PRIMARY KEY,
+  email_domain_id VARCHAR(36) NOT NULL,
+  client_id VARCHAR(36) NOT NULL,
+  local_part VARCHAR(64) NOT NULL,
+  full_address VARCHAR(255) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(255) DEFAULT NULL,
+  quota_mb INT NOT NULL DEFAULT 1024,
+  used_mb INT NOT NULL DEFAULT 0,
+  status ENUM('active', 'disabled') NOT NULL DEFAULT 'active',
+  mailbox_type ENUM('mailbox', 'forward_only') NOT NULL DEFAULT 'mailbox',
+  auto_reply INT NOT NULL DEFAULT 0,
+  auto_reply_subject VARCHAR(255) DEFAULT NULL,
+  auto_reply_body TEXT DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_full_address (full_address),
+  KEY idx_client_id (client_id),
+  KEY idx_email_domain_id (email_domain_id),
+
+  FOREIGN KEY (email_domain_id) REFERENCES email_domains(id) ON DELETE CASCADE,
+  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mailbox access grants — allows panel users to manage specific mailboxes
+CREATE TABLE mailbox_access (
+  id VARCHAR(36) PRIMARY KEY,
+  user_id VARCHAR(36) NOT NULL,
+  mailbox_id VARCHAR(36) NOT NULL,
+  access_level ENUM('full', 'read_only') NOT NULL DEFAULT 'full',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_user_mailbox (user_id, mailbox_id),
+  KEY idx_user_id (user_id),
+  KEY idx_mailbox_id (mailbox_id),
+
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Email aliases — address forwarding rules
+CREATE TABLE email_aliases (
+  id VARCHAR(36) PRIMARY KEY,
+  email_domain_id VARCHAR(36) NOT NULL,
+  client_id VARCHAR(36) NOT NULL,
+  source_address VARCHAR(255) NOT NULL UNIQUE,
+  destination_addresses JSON NOT NULL COMMENT 'Array of target email addresses',
+  enabled INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_source (source_address),
+  KEY idx_client_id (client_id),
+  KEY idx_email_domain_id (email_domain_id),
+
+  FOREIGN KEY (email_domain_id) REFERENCES email_domains(id) ON DELETE CASCADE,
+  FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SMTP relay configuration — outbound email relay services
+CREATE TABLE smtp_relay_configs (
+  id VARCHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  provider_type ENUM('direct', 'mailgun', 'postmark') NOT NULL,
+  is_default INT NOT NULL DEFAULT 0,
+  enabled INT NOT NULL DEFAULT 1,
+  smtp_host VARCHAR(255) DEFAULT NULL,
+  smtp_port INT DEFAULT 587,
+  auth_username VARCHAR(255) DEFAULT NULL,
+  auth_password_encrypted VARCHAR(500) DEFAULT NULL,
+  api_key_encrypted VARCHAR(500) DEFAULT NULL,
+  region VARCHAR(50) DEFAULT NULL,
+  last_tested_at TIMESTAMP NULL,
+  last_test_status VARCHAR(50) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- APPLICATION REPOSITORIES
+-- ============================================================================
+
+-- Application catalog repositories (similar to workload_repositories but for apps)
+CREATE TABLE application_repositories (
+  id VARCHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  url VARCHAR(500) NOT NULL,
+  branch VARCHAR(100) NOT NULL DEFAULT 'main',
+  auth_token VARCHAR(500) DEFAULT NULL,
+  sync_interval_minutes INT NOT NULL DEFAULT 60,
+  last_synced_at TIMESTAMP NULL,
+  status ENUM('active', 'error', 'syncing') NOT NULL DEFAULT 'active',
+  last_error TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  UNIQUE KEY uk_url (url)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 

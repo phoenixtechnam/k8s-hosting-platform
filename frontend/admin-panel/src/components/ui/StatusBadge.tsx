@@ -3,17 +3,17 @@ import clsx from 'clsx';
 type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' | 'error' | 'failed' | 'healthy' | 'warning' | 'running' | 'stopped';
 
 const statusStyles: Record<BadgeStatus, string> = {
-  active: 'bg-green-100 text-green-800',
-  healthy: 'bg-green-100 text-green-800',
-  running: 'bg-green-100 text-green-800',
-  suspended: 'bg-red-100 text-red-800',
-  stopped: 'bg-gray-100 text-gray-600',
-  cancelled: 'bg-gray-100 text-gray-600',
-  error: 'bg-red-100 text-red-800',
-  failed: 'bg-red-100 text-red-800',
-  expired: 'bg-gray-100 text-gray-800',
-  pending: 'bg-amber-100 text-amber-800',
-  warning: 'bg-orange-100 text-orange-800',
+  active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  healthy: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  running: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  suspended: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  stopped: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  cancelled: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  error: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  expired: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  pending: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  warning: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
 };
 
 interface StatusBadgeProps {

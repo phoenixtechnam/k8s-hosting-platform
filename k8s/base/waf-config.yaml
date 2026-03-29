@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: modsecurity-config
+  namespace: platform-system
+data:
+  modsecurity.conf: |
+    # ModSecurity OWASP CRS Configuration for K8s Hosting Platform
+    SecRuleEngine On
+    SecRequestBodyAccess On
+    SecResponseBodyAccess Off
+    SecRequestBodyLimit 52428800
+    SecRequestBodyNoFilesLimit 131072
+
+    # OWASP CRS
+    Include /etc/modsecurity/crs/crs-setup.conf
+    Include /etc/modsecurity/crs/rules/*.conf
+
+    # Platform-specific exclusions
+    # Allow JSON API bodies
+    SecRule REQUEST_HEADERS:Content-Type "application/json" "id:1000,phase:1,t:none,nolog,pass,ctl:requestBodyProcessor=JSON"
+
+    # Exclude admin API from false positives on SQL-like content (DNS records, configs)
+    SecRule REQUEST_URI "@beginsWith /api/v1/admin/" "id:1001,phase:1,t:none,nolog,pass,ctl:ruleRemoveById=942100-942999"
+
+    # Allow large request bodies for file uploads and cert uploads
+    SecRule REQUEST_URI "@rx /ssl-cert|/import" "id:1002,phase:1,t:none,nolog,pass,ctl:requestBodyLimit=104857600"
+
+    # Anomaly scoring threshold (lower = stricter)
+    SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold=10"
+    SecAction "id:900120,phase:1,nolog,pass,t:none,setvar:tx.outbound_anomaly_score_threshold=5"

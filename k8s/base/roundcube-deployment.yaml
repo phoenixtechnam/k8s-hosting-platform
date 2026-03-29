@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roundcube
+  namespace: platform-system
+  labels:
+    app: roundcube
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: roundcube
+  template:
+    metadata:
+      labels:
+        app: roundcube
+    spec:
+      containers:
+        - name: roundcube
+          image: roundcube/roundcubemail:latest-fpm
+          ports:
+            - containerPort: 9000
+          env:
+            - name: ROUNDCUBEMAIL_DEFAULT_HOST
+              value: "ssl://stalwart-mail.platform-system.svc.cluster.local"
+            - name: ROUNDCUBEMAIL_DEFAULT_PORT
+              value: "993"
+            - name: ROUNDCUBEMAIL_SMTP_SERVER
+              value: "tls://stalwart-mail.platform-system.svc.cluster.local"
+            - name: ROUNDCUBEMAIL_SMTP_PORT
+              value: "587"
+            - name: ROUNDCUBEMAIL_DB_TYPE
+              value: "mysql"
+            - name: ROUNDCUBEMAIL_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-credentials
+                  key: db-host
+          volumeMounts:
+            - name: roundcube-config
+              mountPath: /var/roundcube/config
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      volumes:
+        - name: roundcube-config
+          configMap:
+            name: roundcube-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: roundcube
+  namespace: platform-system
+spec:
+  selector:
+    app: roundcube
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: roundcube-ingress
+  namespace: platform-system
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+    - hosts:
+        - webmail.platform.example.com
+      secretName: webmail-tls
+  rules:
+    - host: webmail.platform.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: roundcube
+                port:
+                  number: 9000

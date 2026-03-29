@@ -80,14 +80,14 @@ export default function SearchableClientSelect({
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
         {selectedClientId && !isOpen ? (
           <div
-            className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500 cursor-pointer"
+            className="flex w-full items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-3 text-sm focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500 cursor-pointer"
             onClick={() => {
               setIsOpen(true);
               setTimeout(() => inputRef.current?.focus(), 0);
             }}
             data-testid="client-search-selected"
           >
-            <span className="truncate text-gray-900">
+            <span className="truncate text-gray-900 dark:text-gray-100">
               {selectedClient?.companyName ?? 'Loading...'}
             </span>
             <button
@@ -96,7 +96,7 @@ export default function SearchableClientSelect({
                 e.stopPropagation();
                 handleClear();
               }}
-              className="ml-2 rounded-full p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              className="ml-2 rounded-full p-0.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-400"
               data-testid="client-search-clear"
               aria-label="Clear selection"
             >
@@ -116,7 +116,7 @@ export default function SearchableClientSelect({
               if (query.length > 0) setIsOpen(true);
             }}
             placeholder={placeholder}
-            className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-4 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             data-testid="client-search-input"
           />
         )}
@@ -124,7 +124,7 @@ export default function SearchableClientSelect({
 
       {showDropdown && (
         <div
-          className="absolute z-50 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg"
+          className="absolute z-50 mt-1 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg"
           data-testid="client-search-dropdown"
         >
           {searchLoading && (
@@ -134,7 +134,7 @@ export default function SearchableClientSelect({
           )}
 
           {!searchLoading && debouncedQuery && searchResults.length === 0 && (
-            <div className="px-3 py-4 text-center text-sm text-gray-500" data-testid="client-search-empty">
+            <div className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="client-search-empty">
               No clients found
             </div>
           )}
@@ -146,13 +146,13 @@ export default function SearchableClientSelect({
                   <button
                     type="button"
                     onClick={() => handleSelect(client.id)}
-                    className="flex w-full flex-col px-3 py-2 text-left hover:bg-gray-50"
+                    className="flex w-full flex-col px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50"
                     data-testid={`client-option-${client.id}`}
                   >
-                    <span className="text-sm font-medium text-gray-900">
+                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {client.companyName}
                     </span>
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
                       {client.companyEmail}
                     </span>
                   </button>

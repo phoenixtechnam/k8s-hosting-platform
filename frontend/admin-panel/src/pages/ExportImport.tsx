@@ -50,15 +50,15 @@ export default function ExportImport() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900" data-testid="export-import-heading">Export / Import</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="export-import-heading">Export / Import</h1>
 
       {/* Export Section */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
         <div className="flex items-center gap-3 mb-3">
-          <Download size={20} className="text-green-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Export</h2>
+          <Download size={20} className="text-green-600 dark:text-green-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Export</h2>
         </div>
-        <p className="text-sm text-gray-500 mb-4">Download all clients, domains, plans, and DNS servers as a JSON file.</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Download all clients, domains, plans, and DNS servers as a JSON file.</p>
         <button
           type="button"
           onClick={handleExport}
@@ -70,17 +70,17 @@ export default function ExportImport() {
           Export Data
         </button>
         {exportMut.error && (
-          <div className="mt-2 flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{exportMut.error instanceof Error ? exportMut.error.message : 'Export failed'}</div>
+          <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{exportMut.error instanceof Error ? exportMut.error.message : 'Export failed'}</div>
         )}
       </div>
 
       {/* Import Section */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
         <div className="flex items-center gap-3 mb-3">
-          <Upload size={20} className="text-blue-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Import</h2>
+          <Upload size={20} className="text-blue-600 dark:text-blue-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Import</h2>
         </div>
-        <p className="text-sm text-gray-500 mb-4">Upload a previously exported JSON file to restore or migrate data.</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Upload a previously exported JSON file to restore or migrate data.</p>
 
         <div className="mb-4">
           <input
@@ -94,7 +94,7 @@ export default function ExportImport() {
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
             data-testid="import-file-button"
           >
             <Upload size={14} />
@@ -104,7 +104,7 @@ export default function ExportImport() {
 
         {importData && (
           <div className="space-y-3">
-            <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+            <div className="rounded-lg bg-gray-50 dark:bg-gray-900 p-3 text-xs text-gray-600 dark:text-gray-400">
               <p>Version: {(importData as Record<string, unknown>).version as string ?? 'unknown'}</p>
               <p>Clients: {((importData as Record<string, unknown>).clients as unknown[])?.length ?? 0}</p>
               <p>Domains: {((importData as Record<string, unknown>).domains as unknown[])?.length ?? 0}</p>
@@ -116,7 +116,7 @@ export default function ExportImport() {
                 type="button"
                 onClick={() => handleImport(true)}
                 disabled={importMut.isPending}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                 data-testid="import-dry-run"
               >
                 {importMut.isPending && <Loader2 size={14} className="animate-spin" />}
@@ -137,18 +137,18 @@ export default function ExportImport() {
         )}
 
         {importResult && (
-          <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4" data-testid="import-result">
+          <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="import-result">
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle size={16} className="text-green-500" />
-              <span className="font-medium text-gray-900">{importResult.dryRun ? 'Dry Run Result' : 'Import Complete'}</span>
+              <span className="font-medium text-gray-900 dark:text-gray-100">{importResult.dryRun ? 'Dry Run Result' : 'Import Complete'}</span>
             </div>
             <div className="grid grid-cols-3 gap-4 text-sm">
-              <div><span className="text-green-600 font-medium">{importResult.created}</span> <span className="text-gray-500">created</span></div>
-              <div><span className="text-blue-600 font-medium">{importResult.updated}</span> <span className="text-gray-500">updated</span></div>
-              <div><span className="text-gray-600 font-medium">{importResult.skipped}</span> <span className="text-gray-500">skipped</span></div>
+              <div><span className="text-green-600 dark:text-green-400 font-medium">{importResult.created}</span> <span className="text-gray-500 dark:text-gray-400">created</span></div>
+              <div><span className="text-blue-600 dark:text-blue-400 font-medium">{importResult.updated}</span> <span className="text-gray-500 dark:text-gray-400">updated</span></div>
+              <div><span className="text-gray-600 dark:text-gray-400 font-medium">{importResult.skipped}</span> <span className="text-gray-500 dark:text-gray-400">skipped</span></div>
             </div>
             {importResult.errors.length > 0 && (
-              <div className="mt-2 text-xs text-red-600">
+              <div className="mt-2 text-xs text-red-600 dark:text-red-400">
                 {importResult.errors.map((e, i) => (
                   <p key={i}>{e.resource} {e.id}: {e.error}</p>
                 ))}
@@ -158,7 +158,7 @@ export default function ExportImport() {
         )}
 
         {importMut.error && (
-          <div className="mt-2 flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{importMut.error instanceof Error ? importMut.error.message : 'Import failed'}</div>
+          <div className="mt-2 flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{importMut.error instanceof Error ? importMut.error.message : 'Import failed'}</div>
         )}
       </div>
     </div>

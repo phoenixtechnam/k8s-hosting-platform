@@ -10,7 +10,7 @@ import {
 } from '@/hooks/use-workload-repos';
 
 const INPUT_CLASS =
-  'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+  'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 function formatSyncTime(dateStr: string | null): string {
   if (!dateStr) return 'Never';
@@ -88,11 +88,11 @@ export default function WorkloadRepoSettings() {
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="workload-repos-section">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="workload-repos-section">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <GitBranch size={20} className="text-gray-600" />
-          <h2 className="text-lg font-semibold text-gray-900">Workload Repositories</h2>
+          <GitBranch size={20} className="text-gray-600 dark:text-gray-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Workload Repositories</h2>
         </div>
         <div className="flex items-center gap-2">
           {!hasDefaultRepo && !isLoading && (
@@ -100,7 +100,7 @@ export default function WorkloadRepoSettings() {
               type="button"
               onClick={() => restoreDefault.mutate()}
               disabled={restoreDefault.isPending}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
               data-testid="restore-default-repo-button"
             >
               {restoreDefault.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -121,13 +121,13 @@ export default function WorkloadRepoSettings() {
 
       {showForm && (
         <form
-          className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-4"
+          className="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4"
           onSubmit={handleAddSubmit}
           data-testid="add-repo-form"
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label htmlFor="repo-name" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="repo-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Name
               </label>
               <input
@@ -142,7 +142,7 @@ export default function WorkloadRepoSettings() {
               />
             </div>
             <div>
-              <label htmlFor="repo-url" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="repo-url" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 URL
               </label>
               <input
@@ -157,7 +157,7 @@ export default function WorkloadRepoSettings() {
               />
             </div>
             <div>
-              <label htmlFor="repo-branch" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="repo-branch" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Branch
               </label>
               <input
@@ -171,7 +171,7 @@ export default function WorkloadRepoSettings() {
               />
             </div>
             <div>
-              <label htmlFor="repo-token" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="repo-token" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Auth Token <span className="text-xs text-gray-400">(optional, for private repos)</span>
               </label>
               <input
@@ -186,9 +186,9 @@ export default function WorkloadRepoSettings() {
             </div>
           </div>
           {addRepo.error && (
-            <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5" data-testid="add-repo-error">
-              <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-500" />
-              <p className="text-sm text-red-700">
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5" data-testid="add-repo-error">
+              <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-500 dark:text-red-400" />
+              <p className="text-sm text-red-700 dark:text-red-400">
                 {addRepo.error instanceof Error ? addRepo.error.message : 'Failed to add repository. Check the URL, branch, and auth token.'}
               </p>
             </div>
@@ -210,12 +210,12 @@ export default function WorkloadRepoSettings() {
       {isLoading && (
         <div className="flex items-center justify-center py-8" data-testid="repos-loading">
           <Loader2 size={20} className="animate-spin text-brand-500" />
-          <span className="ml-2 text-sm text-gray-500">Loading repositories...</span>
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading repositories...</span>
         </div>
       )}
 
       {isError && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" data-testid="repos-error">
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400" data-testid="repos-error">
           <AlertCircle size={16} />
           <span>Failed to load repositories: {error?.message ?? 'Unknown error'}</span>
         </div>
@@ -225,7 +225,7 @@ export default function WorkloadRepoSettings() {
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="repos-table">
             <thead>
-              <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+              <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">URL</th>
                 <th className="px-4 py-3">Branch</th>
@@ -234,13 +234,13 @@ export default function WorkloadRepoSettings() {
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {repos.map((repo) => (
-                <tr key={repo.id} className="transition-colors hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{repo.name}</td>
-                  <td className="px-4 py-3 text-sm font-mono text-gray-600 max-w-xs truncate">{repo.url}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{repo.branch}</td>
-                  <td className="hidden px-4 py-3 text-sm text-gray-500 md:table-cell">
+                <tr key={repo.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                  <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">{repo.name}</td>
+                  <td className="px-4 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{repo.url}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{repo.branch}</td>
+                  <td className="hidden px-4 py-3 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                     {formatSyncTime(repo.lastSyncedAt)}
                   </td>
                   <td className="px-4 py-3">
@@ -249,12 +249,12 @@ export default function WorkloadRepoSettings() {
                       label={repo.status === 'syncing' ? 'Syncing' : undefined}
                     />
                     {repo.status === 'error' && repo.lastError && (
-                      <p className="mt-1 max-w-xs truncate text-xs text-red-500" title={repo.lastError}>
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" title={repo.lastError}>
                         {repo.lastError}
                       </p>
                     )}
                     {syncError?.id === repo.id && (
-                      <p className="mt-1 max-w-xs truncate text-xs text-red-500" data-testid={`sync-error-${repo.id}`} title={syncError.message}>
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" data-testid={`sync-error-${repo.id}`} title={syncError.message}>
                         {syncError.message}
                       </p>
                     )}
@@ -265,7 +265,7 @@ export default function WorkloadRepoSettings() {
                         type="button"
                         onClick={() => handleSync(repo.id)}
                         disabled={syncingId === repo.id || repo.status === 'syncing'}
-                        className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                         title="Sync repository"
                         data-testid={`sync-repo-${repo.id}`}
                       >
@@ -290,7 +290,7 @@ export default function WorkloadRepoSettings() {
                           <button
                             type="button"
                             onClick={() => setDeleteConfirmId(null)}
-                            className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                            className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                             data-testid={`cancel-delete-repo-${repo.id}`}
                           >
                             Cancel
@@ -300,7 +300,7 @@ export default function WorkloadRepoSettings() {
                         <button
                           type="button"
                           onClick={() => setDeleteConfirmId(repo.id)}
-                          className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                          className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                           title="Delete repository"
                           data-testid={`delete-repo-${repo.id}`}
                         >
@@ -314,7 +314,7 @@ export default function WorkloadRepoSettings() {
               ))}
               {repos.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                     No workload repositories configured. Add one to get started.
                   </td>
                 </tr>

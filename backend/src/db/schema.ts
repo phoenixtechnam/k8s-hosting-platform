@@ -645,6 +645,25 @@ export const applicationInstances = mysqlTable('application_instances', {
   index('idx_app_instances_status').on(table.status),
 ]);
 
+// ─── SSL Certificates ───
+
+export const sslCertificates = mysqlTable('ssl_certificates', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  certificate: text('certificate').notNull(),
+  privateKeyEncrypted: text('private_key_encrypted').notNull(),
+  caBundle: text('ca_bundle'),
+  issuer: varchar('issuer', { length: 500 }),
+  subject: varchar('subject', { length: 500 }),
+  expiresAt: timestamp('expires_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('ssl_certs_domain_unique').on(table.domainId),
+  index('ssl_certs_client_idx').on(table.clientId),
+]);
+
 // ─── Platform Settings ───
 
 export const platformSettings = mysqlTable('platform_settings', {
@@ -700,3 +719,5 @@ export type ApplicationInstance = typeof applicationInstances.$inferSelect;
 export type NewApplicationInstance = typeof applicationInstances.$inferInsert;
 export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type NewPlatformSetting = typeof platformSettings.$inferInsert;
+export type SslCertificate = typeof sslCertificates.$inferSelect;
+export type NewSslCertificate = typeof sslCertificates.$inferInsert;

@@ -6,7 +6,7 @@ import { useUpdateProfile } from '@/hooks/use-profile';
 import { ApiError } from '@/lib/api-client';
 
 const INPUT_CLASS =
-  'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+  'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 export default function UserSettings() {
   const { user } = useAuth();
@@ -14,8 +14,8 @@ export default function UserSettings() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <User size={28} className="text-gray-700" />
-        <h1 className="text-2xl font-bold text-gray-900" data-testid="user-settings-heading">
+        <User size={28} className="text-gray-700 dark:text-gray-300" />
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="user-settings-heading">
           User Settings
         </h1>
       </div>
@@ -69,14 +69,14 @@ function ProfileForm({
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="profile-section">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="profile-section">
       <div className="mb-4 flex items-center gap-2">
-        <User size={20} className="text-gray-600" />
-        <h2 className="text-lg font-semibold text-gray-900">Profile Information</h2>
+        <User size={20} className="text-gray-600 dark:text-gray-400" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Profile Information</h2>
       </div>
       <form className="max-w-md space-y-4" onSubmit={handleSubmit}>
         <div>
-          <label htmlFor="fullName" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="fullName" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Full Name
           </label>
           <input
@@ -89,7 +89,7 @@ function ProfileForm({
           />
         </div>
         <div>
-          <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Email
           </label>
           <input
@@ -156,14 +156,14 @@ function PasswordForm() {
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="password-section">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="password-section">
       <div className="mb-4 flex items-center gap-2">
-        <KeyRound size={20} className="text-gray-600" />
-        <h2 className="text-lg font-semibold text-gray-900">Change Password</h2>
+        <KeyRound size={20} className="text-gray-600 dark:text-gray-400" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Change Password</h2>
       </div>
       <form className="max-w-md space-y-4" onSubmit={handleSubmit}>
         <div>
-          <label htmlFor="currentPassword" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="currentPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Current Password
           </label>
           <input
@@ -177,7 +177,7 @@ function PasswordForm() {
           />
         </div>
         <div>
-          <label htmlFor="newPassword" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="newPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             New Password
           </label>
           <input
@@ -191,7 +191,7 @@ function PasswordForm() {
           />
         </div>
         <div>
-          <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Confirm New Password
           </label>
           <input

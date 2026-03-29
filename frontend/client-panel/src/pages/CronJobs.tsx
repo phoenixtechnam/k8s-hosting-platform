@@ -5,11 +5,11 @@ import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDele
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
-    success: 'bg-green-50 text-green-700 border-green-200',
-    failed: 'bg-red-50 text-red-700 border-red-200',
-    running: 'bg-blue-50 text-blue-700 border-blue-200',
+    success: 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/40 dark:text-green-300 dark:border-green-700',
+    failed: 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/40 dark:text-red-300 dark:border-red-700',
+    running: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-700',
   };
-  const colors = colorMap[status] ?? 'bg-gray-50 text-gray-600 border-gray-200';
+  const colors = colorMap[status] ?? 'bg-gray-50 text-gray-600 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600';
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${colors}`}>
       {status}
@@ -17,7 +17,7 @@ function StatusBadge({ status }: { readonly status: string }) {
   );
 }
 
-const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
+const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
 export default function CronJobs() {
   const { clientId } = useClientContext();
@@ -57,12 +57,12 @@ export default function CronJobs() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-600 dark:bg-orange-900/40 dark:text-orange-400">
             <Clock size={20} />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-900" data-testid="cron-jobs-heading">Cron Jobs</h1>
-            <p className="text-sm text-gray-500">Schedule recurring tasks.</p>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="cron-jobs-heading">Cron Jobs</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Schedule recurring tasks.</p>
           </div>
         </div>
         <button
@@ -77,18 +77,18 @@ export default function CronJobs() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 bg-gray-50 p-4" data-testid="cron-job-form">
+        <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="cron-job-form">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <div>
-              <label htmlFor="cj-name" className="block text-xs font-medium text-gray-700">Name</label>
+              <label htmlFor="cj-name" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Name</label>
               <input id="cj-name" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="daily-backup" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required data-testid="cron-name-input" />
             </div>
             <div>
-              <label htmlFor="cj-schedule" className="block text-xs font-medium text-gray-700">Schedule (cron)</label>
+              <label htmlFor="cj-schedule" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Schedule (cron)</label>
               <input id="cj-schedule" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="0 2 * * *" value={form.schedule} onChange={(e) => setForm({ ...form, schedule: e.target.value })} required data-testid="cron-schedule-input" />
             </div>
             <div>
-              <label htmlFor="cj-cmd" className="block text-xs font-medium text-gray-700">Command</label>
+              <label htmlFor="cj-cmd" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Command</label>
               <input id="cj-cmd" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="/usr/bin/backup.sh" value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} required data-testid="cron-command-input" />
             </div>
             <div className="flex items-end">
@@ -107,11 +107,11 @@ export default function CronJobs() {
         </form>
       )}
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading && (
           <div className="flex items-center justify-center py-16" data-testid="cron-jobs-loading">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
-            <span className="ml-3 text-sm text-gray-500">Loading cron jobs...</span>
+            <span className="ml-3 text-sm text-gray-500 dark:text-gray-400">Loading cron jobs...</span>
           </div>
         )}
 
@@ -123,9 +123,9 @@ export default function CronJobs() {
 
         {!isLoading && !isError && jobs.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="cron-jobs-empty">
-            <Clock size={40} className="mx-auto text-gray-300" />
-            <p className="mt-3 text-sm font-medium text-gray-900">No cron jobs yet</p>
-            <p className="mt-1 text-sm text-gray-500">Click "Add Cron Job" to schedule one.</p>
+            <Clock size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
+            <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No cron jobs yet</p>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Click "Add Cron Job" to schedule one.</p>
           </div>
         )}
 
@@ -133,21 +133,21 @@ export default function CronJobs() {
           <div className="overflow-x-auto" data-testid="cron-jobs-table">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-gray-200 bg-gray-50/50">
-                  <th className="px-6 py-3 font-medium text-gray-500">Name</th>
-                  <th className="px-6 py-3 font-medium text-gray-500">Schedule</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 md:table-cell">Command</th>
-                  <th className="px-6 py-3 font-medium text-gray-500">Enabled</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 sm:table-cell">Last Run</th>
-                  <th className="px-6 py-3 font-medium text-gray-500">Actions</th>
+                <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
+                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
+                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Schedule</th>
+                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 md:table-cell">Command</th>
+                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Enabled</th>
+                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Last Run</th>
+                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {jobs.map((job) => (
-                  <tr key={job.id} className="border-b border-gray-100 last:border-0">
-                    <td className="px-6 py-4 font-medium text-gray-900">{job.name}</td>
-                    <td className="px-6 py-4 font-mono text-gray-600">{job.schedule}</td>
-                    <td className="hidden px-6 py-4 text-gray-600 md:table-cell max-w-xs truncate">{job.command}</td>
+                  <tr key={job.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                    <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">{job.name}</td>
+                    <td className="px-6 py-4 font-mono text-gray-600 dark:text-gray-400">{job.schedule}</td>
+                    <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">{job.command}</td>
                     <td className="px-6 py-4">
                       <span className={job.enabled ? 'text-green-600' : 'text-gray-400'}>{job.enabled ? 'Yes' : 'No'}</span>
                     </td>
@@ -159,7 +159,7 @@ export default function CronJobs() {
                         <button
                           type="button"
                           onClick={() => updateJob.mutate({ cronJobId: job.id, enabled: !job.enabled })}
-                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                           title={job.enabled ? 'Stop (disable)' : 'Start (enable)'}
                           data-testid={`toggle-cron-${job.id}`}
                         >
@@ -168,7 +168,7 @@ export default function CronJobs() {
                         <button
                           type="button"
                           onClick={() => runJob.mutate(job.id)}
-                          className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                           title="Run Now"
                           data-testid={`run-cron-${job.id}`}
                         >
@@ -177,10 +177,10 @@ export default function CronJobs() {
                         {deleteConfirmId === job.id ? (
                           <>
                             <button type="button" onClick={() => handleDelete(job.id)} disabled={deleteJob.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-cj-${job.id}`}>Confirm</button>
-                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50">Cancel</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                           </>
                         ) : (
-                          <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="rounded-md border border-red-200 bg-white px-2 py-1.5 text-xs text-red-600 hover:bg-red-50" data-testid={`delete-cron-${job.id}`}>
+                          <button type="button" onClick={() => setDeleteConfirmId(job.id)} className="rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-cron-${job.id}`}>
                             <Trash2 size={12} />
                           </button>
                         )}

@@ -49,7 +49,7 @@ export default function Storage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Storage &amp; DB</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Storage &amp; DB</h1>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard title="Total Storage" value="1.2 TB" icon={HardDrive} accent="brand" />
@@ -64,7 +64,7 @@ export default function Storage() {
         />
       </div>
 
-      <div className="border-b border-gray-200">
+      <div className="border-b border-gray-200 dark:border-gray-700">
         <nav className="-mb-px flex gap-6" data-testid="tab-bar">
           {TABS.map((tab) => (
             <button
@@ -73,8 +73,8 @@ export default function Storage() {
               className={clsx(
                 'whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors',
                 activeTab === tab.id
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700',
+                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 dark:hover:border-gray-600 hover:text-gray-700 dark:hover:text-gray-300',
               )}
               data-testid={`tab-${tab.id}`}
             >
@@ -111,8 +111,8 @@ export default function Storage() {
 
 function OverviewTab() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-      <h2 className="mb-4 text-lg font-semibold text-gray-900">Storage Allocation</h2>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm">
+      <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Allocation</h2>
       <div className="space-y-5">
         <ResourceBar label="Block Storage" used={280} total={500} unit=" GB" />
         <ResourceBar label="Database Storage" used={85} total={200} unit=" GB" />
@@ -140,9 +140,9 @@ function DataTab({ selectedClientId, onClientChange, isLoading, error, children 
       />
 
       {!selectedClientId && (
-        <div className="rounded-xl border border-gray-200 bg-white px-5 py-16 text-center shadow-sm">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-16 text-center shadow-sm">
           <Database size={40} className="mx-auto text-gray-300" />
-          <p className="mt-4 text-sm text-gray-500" data-testid="select-client-prompt">
+          <p className="mt-4 text-sm text-gray-500 dark:text-gray-400" data-testid="select-client-prompt">
             Select a client to view their data.
           </p>
         </div>
@@ -155,7 +155,7 @@ function DataTab({ selectedClientId, onClientChange, isLoading, error, children 
       )}
 
       {selectedClientId && error && (
-        <div className="px-5 py-10 text-center text-sm text-red-500" data-testid="data-error">
+        <div className="px-5 py-10 text-center text-sm text-red-500 dark:text-red-400" data-testid="data-error">
           {error instanceof Error ? error.message : 'Failed to load data'}
         </div>
       )}
@@ -171,11 +171,11 @@ interface DatabasesTableProps {
 
 function DatabasesTable({ databases }: DatabasesTableProps) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full" data-testid="databases-table">
           <thead>
-            <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+            <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
               <th className="px-5 py-3">Name</th>
               <th className="px-5 py-3">Type</th>
               <th className="px-5 py-3">Status</th>
@@ -183,32 +183,32 @@ function DatabasesTable({ databases }: DatabasesTableProps) {
               <th className="hidden px-5 py-3 lg:table-cell">Created</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {databases.map((db) => (
-              <tr key={db.id} className="transition-colors hover:bg-gray-50">
+              <tr key={db.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td className="px-5 py-3.5">
                   <div className="flex items-center gap-2">
                     <Database size={14} className="text-gray-400" />
-                    <span className="font-medium text-gray-900">{db.name}</span>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{db.name}</span>
                   </div>
                 </td>
-                <td className="px-5 py-3.5 text-sm text-gray-600">
+                <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
                   {db.databaseType === 'mysql' ? 'MariaDB' : 'PostgreSQL'}
                 </td>
                 <td className="px-5 py-3.5">
                   <StatusBadge status={db.status as 'active' | 'pending' | 'failed'} />
                 </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">
+                <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">
                   {db.sizeBytes ? formatBytes(db.sizeBytes) : '—'}
                 </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
+                <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                   {new Date(db.createdAt).toLocaleDateString()}
                 </td>
               </tr>
             ))}
             {databases.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500">
+                <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                   No databases found for this client.
                 </td>
               </tr>
@@ -226,11 +226,11 @@ interface BackupsTableProps {
 
 function BackupsTable({ backups }: BackupsTableProps) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full" data-testid="backups-table">
           <thead>
-            <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+            <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
               <th className="px-5 py-3">Backup ID</th>
               <th className="px-5 py-3">Type</th>
               <th className="px-5 py-3">Resource</th>
@@ -239,39 +239,39 @@ function BackupsTable({ backups }: BackupsTableProps) {
               <th className="hidden px-5 py-3 lg:table-cell">Expires</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {backups.map((backup) => (
-              <tr key={backup.id} className="transition-colors hover:bg-gray-50">
+              <tr key={backup.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td className="px-5 py-3.5">
-                  <span className="font-mono text-sm text-gray-900">{truncateId(backup.id)}</span>
+                  <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{truncateId(backup.id)}</span>
                 </td>
                 <td className="px-5 py-3.5">
                   <span
                     className={clsx(
                       'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize',
                       backup.backupType === 'auto'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-purple-100 text-purple-800',
+                        ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300'
+                        : 'bg-purple-100 dark:bg-purple-900/20 text-purple-800 dark:text-purple-300',
                     )}
                   >
                     {backup.backupType}
                   </span>
                 </td>
-                <td className="px-5 py-3.5 text-sm text-gray-600">{backup.resourceType}</td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-600 md:table-cell">
+                <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{backup.resourceType}</td>
+                <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">
                   {backup.sizeBytes ? formatBytes(backup.sizeBytes) : '—'}
                 </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
+                <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                   {new Date(backup.createdAt).toLocaleDateString()}
                 </td>
-                <td className="hidden px-5 py-3.5 text-sm text-gray-500 lg:table-cell">
+                <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                   {backup.expiresAt ? new Date(backup.expiresAt).toLocaleDateString() : '—'}
                 </td>
               </tr>
             ))}
             {backups.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500">
+                <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                   No backups found for this client.
                 </td>
               </tr>

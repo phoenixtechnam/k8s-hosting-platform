@@ -22,19 +22,19 @@ export default function Dashboard() {
   const workloadCount = workloadsData?.data?.length ?? 0;
 
   const stats = [
-    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600' },
-    { label: 'Databases', value: databaseCount, icon: Database, color: 'bg-green-50 text-green-600' },
-    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600' },
-    { label: 'Workloads', value: workloadCount, icon: Server, color: 'bg-purple-50 text-purple-600' },
+    { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400' },
+    { label: 'Databases', value: databaseCount, icon: Database, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400' },
+    { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400' },
+    { label: 'Workloads', value: workloadCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400' },
   ];
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900" data-testid="welcome-heading">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="welcome-heading">
           Welcome back, {displayName}
         </h1>
-        <p className="mt-1 text-sm text-gray-500">
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
           Here is an overview of your hosting account.
         </p>
       </div>
@@ -43,24 +43,24 @@ export default function Dashboard() {
         {stats.map(({ label, value, icon: Icon, color }) => (
           <div
             key={label}
-            className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
+            className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
           >
             <div className="flex items-center gap-3">
               <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${color}`}>
                 <Icon size={20} />
               </div>
               <div>
-                <p className="text-sm text-gray-500">{label}</p>
-                <p className="text-xl font-semibold text-gray-900" data-testid={`stat-${label.toLowerCase()}`}>{value}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
+                <p className="text-xl font-semibold text-gray-900 dark:text-gray-100" data-testid={`stat-${label.toLowerCase()}`}>{value}</p>
               </div>
             </div>
           </div>
         ))}
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-900">Getting Started</h2>
-        <p className="mt-2 text-sm text-gray-500">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Getting Started</h2>
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
           Use the sidebar navigation to manage your domains, databases, workloads, cron jobs, and backups.
         </p>
       </div>

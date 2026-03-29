@@ -94,7 +94,7 @@ function AlertTable({
 }) {
   if (isLoading) {
     return (
-      <div className="p-8 text-center text-sm text-gray-500" data-testid="alerts-loading">
+      <div className="p-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="alerts-loading">
         Loading audit logs...
       </div>
     );
@@ -102,7 +102,7 @@ function AlertTable({
 
   if (alerts.length === 0) {
     return (
-      <div className="p-8 text-center text-sm text-gray-500" data-testid="alerts-empty">
+      <div className="p-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="alerts-empty">
         No audit log entries found.
       </div>
     );
@@ -112,7 +112,7 @@ function AlertTable({
     <div className="overflow-x-auto">
       <table className="w-full" data-testid="alerts-table">
         <thead>
-          <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+          <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
             <th className="px-5 py-3">Severity</th>
             <th className="px-5 py-3">Message</th>
             <th className="hidden px-5 py-3 md:table-cell">Service</th>
@@ -120,20 +120,20 @@ function AlertTable({
             {resolved && <th className="px-5 py-3">Status</th>}
           </tr>
         </thead>
-        <tbody className="divide-y divide-gray-100">
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
           {alerts.map((alert) => (
-            <tr key={alert.id} className="transition-colors hover:bg-gray-50">
+            <tr key={alert.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
               <td className="px-5 py-3.5">
                 <StatusBadge
                   status={severityToBadgeStatus[alert.severity]}
                   label={alert.severity}
                 />
               </td>
-              <td className="px-5 py-3.5 text-sm text-gray-900">{alert.message}</td>
-              <td className="hidden px-5 py-3.5 text-sm text-gray-500 md:table-cell">
+              <td className="px-5 py-3.5 text-sm text-gray-900 dark:text-gray-100">{alert.message}</td>
+              <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
                 {alert.service}
               </td>
-              <td className="hidden px-5 py-3.5 text-sm text-gray-500 sm:table-cell">
+              <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 sm:table-cell">
                 {alert.time}
               </td>
               {resolved && (
@@ -172,7 +172,7 @@ export default function Monitoring() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Monitoring</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Monitoring</h1>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
@@ -201,8 +201,8 @@ export default function Monitoring() {
         />
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="border-b border-gray-200 dark:border-gray-700">
           <nav className="flex gap-0" data-testid="tab-bar">
             {TABS.map((tab) => (
               <button
@@ -211,8 +211,8 @@ export default function Monitoring() {
                 onClick={() => setActiveTab(tab.key)}
                 className={
                   activeTab === tab.key
-                    ? 'border-b-2 border-brand-500 px-5 py-3 text-sm font-medium text-brand-600'
-                    : 'border-b-2 border-transparent px-5 py-3 text-sm font-medium text-gray-500 hover:text-gray-700'
+                    ? 'border-b-2 border-brand-500 px-5 py-3 text-sm font-medium text-brand-600 dark:text-brand-400'
+                    : 'border-b-2 border-transparent px-5 py-3 text-sm font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                 }
                 data-testid={`tab-${tab.key}`}
               >

@@ -1,6 +1,7 @@
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { notifications } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { sendNotificationEmail } from './email-sender.js';
 import type { Database } from '../../db/index.js';
 
 interface CreateNotificationInput {
@@ -93,9 +94,17 @@ export async function notifyUser(
     readonly resourceType?: string | null;
     readonly resourceId?: string | null;
   },
+  encryptionKey?: string,
 ): Promise<void> {
   try {
-    await createNotification(db, { userId, ...opts });
+    const created = await createNotification(db, { userId, ...opts });
+
+    // Fire-and-forget email notification if encryption key is available
+    if (encryptionKey && created) {
+      sendNotificationEmail(db, created, encryptionKey).catch(() => {
+        // Silently ignore email failures
+      });
+    }
   } catch {
     // Fire-and-forget: notification failure must not break the caller
   }

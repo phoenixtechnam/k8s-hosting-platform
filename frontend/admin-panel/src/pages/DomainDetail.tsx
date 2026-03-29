@@ -15,7 +15,7 @@ import {
 } from '@/hooks/use-protected-directories';
 
 const INPUT_CLASS =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+  'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 type Tab = 'dns' | 'hosting' | 'protected';
 
@@ -36,7 +36,7 @@ export default function DomainDetail() {
 
   if (!domain) {
     return (
-      <div className="py-20 text-center text-gray-500" data-testid="domain-not-found">
+      <div className="py-20 text-center text-gray-500 dark:text-gray-400" data-testid="domain-not-found">
         <p>Domain not found.</p>
         <Link to="/domains" className="mt-2 text-brand-500 hover:underline">Back to Domains</Link>
       </div>
@@ -54,20 +54,20 @@ export default function DomainDetail() {
       <div className="flex items-center gap-3">
         <Link
           to="/domains"
-          className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700"
+          className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           data-testid="back-to-domains"
         >
           <ArrowLeft size={16} />
           Domains
         </Link>
         <span className="text-gray-300">/</span>
-        <h1 className="text-xl font-bold text-gray-900" data-testid="domain-name-heading">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           {domain.domainName}
         </h1>
         <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
       </div>
 
-      <div className="flex gap-1 border-b border-gray-200">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -76,8 +76,8 @@ export default function DomainDetail() {
             className={clsx(
               'inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors',
               activeTab === tab.key
-                ? 'border-brand-500 text-brand-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700',
+                ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300',
             )}
             data-testid={`tab-${tab.key}`}
           >
@@ -136,9 +136,9 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm" data-testid="dns-records-section">
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-        <h2 className="text-base font-semibold text-gray-900">DNS Records</h2>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-records-section">
+      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Records</h2>
         <button
           type="button"
           onClick={() => setShowForm((p) => !p)}
@@ -151,10 +151,10 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="border-b border-gray-100 bg-gray-50 p-4" data-testid="dns-record-form">
+        <form onSubmit={handleCreate} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="dns-record-form">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
             <div>
-              <label htmlFor="dns-type" className="block text-xs font-medium text-gray-700">Type</label>
+              <label htmlFor="dns-type" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Type</label>
               <select
                 id="dns-type"
                 value={form.record_type}
@@ -168,7 +168,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
               </select>
             </div>
             <div>
-              <label htmlFor="dns-name" className="block text-xs font-medium text-gray-700">Name</label>
+              <label htmlFor="dns-name" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Name</label>
               <input
                 id="dns-name"
                 type="text"
@@ -180,7 +180,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
               />
             </div>
             <div>
-              <label htmlFor="dns-value" className="block text-xs font-medium text-gray-700">Value</label>
+              <label htmlFor="dns-value" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Value</label>
               <input
                 id="dns-value"
                 type="text"
@@ -193,7 +193,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
               />
             </div>
             <div>
-              <label htmlFor="dns-ttl" className="block text-xs font-medium text-gray-700">TTL</label>
+              <label htmlFor="dns-ttl" className="block text-xs font-medium text-gray-700 dark:text-gray-300">TTL</label>
               <input
                 id="dns-ttl"
                 type="number"
@@ -217,7 +217,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
             </div>
           </div>
           {createRecord.error && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-red-600" data-testid="dns-create-error">
+            <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="dns-create-error">
               <AlertCircle size={14} />
               {createRecord.error instanceof Error ? createRecord.error.message : 'Failed to create record'}
             </div>
@@ -232,7 +232,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
       )}
 
       {isError && (
-        <div className="px-5 py-6 text-center text-sm text-red-500" data-testid="dns-records-error">
+        <div className="px-5 py-6 text-center text-sm text-red-500 dark:text-red-400" data-testid="dns-records-error">
           Failed to load DNS records.
         </div>
       )}
@@ -240,7 +240,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
       {!isLoading && !isError && (
         <table className="w-full" data-testid="dns-records-table">
           <thead>
-            <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+            <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
               <th className="px-5 py-3">Type</th>
               <th className="px-5 py-3">Name</th>
               <th className="px-5 py-3">Value</th>
@@ -248,17 +248,17 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
               <th className="px-5 py-3 text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {records.map((record) => (
-              <tr key={record.id} className="hover:bg-gray-50">
+              <tr key={record.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td className="px-5 py-3 text-sm">
-                  <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                  <span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300">
                     {record.recordType}
                   </span>
                 </td>
-                <td className="px-5 py-3 text-sm text-gray-900">{record.recordName ?? '@'}</td>
-                <td className="px-5 py-3 text-sm font-mono text-gray-600 max-w-xs truncate">{record.recordValue}</td>
-                <td className="px-5 py-3 text-sm text-gray-500">{record.ttl}</td>
+                <td className="px-5 py-3 text-sm text-gray-900 dark:text-gray-100">{record.recordName ?? '@'}</td>
+                <td className="px-5 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{record.recordValue}</td>
+                <td className="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{record.ttl}</td>
                 <td className="px-5 py-3 text-right">
                   {deleteConfirmId === record.id ? (
                     <div className="inline-flex items-center gap-1">
@@ -274,7 +274,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
                       <button
                         type="button"
                         onClick={() => setDeleteConfirmId(null)}
-                        className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                        className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                       >
                         Cancel
                       </button>
@@ -283,7 +283,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
                     <button
                       type="button"
                       onClick={() => setDeleteConfirmId(record.id)}
-                      className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                       data-testid={`delete-dns-${record.id}`}
                     >
                       <Trash2 size={12} />
@@ -295,7 +295,7 @@ function DnsRecordsTab({ clientId, domainId }: { readonly clientId: string; read
             ))}
             {records.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500">
+                <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                   No DNS records. Click "Add Record" to create one.
                 </td>
               </tr>
@@ -364,7 +364,7 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
 
   if (isError) {
     return (
-      <div className="text-center text-sm text-red-500 py-8" data-testid="hosting-settings-error">
+      <div className="text-center text-sm text-red-500 dark:text-red-400 py-8" data-testid="hosting-settings-error">
         Failed to load hosting settings.
       </div>
     );
@@ -375,10 +375,10 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
   return (
     <form
       onSubmit={handleSave}
-      className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-5"
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-5"
       data-testid="hosting-settings-form"
     >
-      <h2 className="text-base font-semibold text-gray-900">Hosting Settings</h2>
+      <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Hosting Settings</h2>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="flex items-center gap-3">
@@ -386,10 +386,10 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
             type="checkbox"
             checked={effective.redirect_www}
             onChange={(e) => handleChange('redirect_www', e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
             data-testid="redirect-www-toggle"
           />
-          <span className="text-sm text-gray-700">Redirect WWW</span>
+          <span className="text-sm text-gray-700 dark:text-gray-300">Redirect WWW</span>
         </label>
 
         <label className="flex items-center gap-3">
@@ -397,10 +397,10 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
             type="checkbox"
             checked={effective.redirect_https}
             onChange={(e) => handleChange('redirect_https', e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
             data-testid="redirect-https-toggle"
           />
-          <span className="text-sm text-gray-700">Force HTTPS</span>
+          <span className="text-sm text-gray-700 dark:text-gray-300">Force HTTPS</span>
         </label>
 
         <label className="flex items-center gap-3">
@@ -408,16 +408,16 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
             type="checkbox"
             checked={effective.hosting_enabled}
             onChange={(e) => handleChange('hosting_enabled', e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500"
+            className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
             data-testid="hosting-enabled-toggle"
           />
-          <span className="text-sm text-gray-700">Hosting Enabled</span>
+          <span className="text-sm text-gray-700 dark:text-gray-300">Hosting Enabled</span>
         </label>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <label htmlFor="webroot-path" className="block text-sm font-medium text-gray-700">Webroot Path</label>
+          <label htmlFor="webroot-path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Webroot Path</label>
           <input
             id="webroot-path"
             type="text"
@@ -428,7 +428,7 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
           />
         </div>
         <div>
-          <label htmlFor="forward-external" className="block text-sm font-medium text-gray-700">
+          <label htmlFor="forward-external" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
             Forward to External URL <span className="text-xs text-gray-400">(optional)</span>
           </label>
           <input
@@ -444,7 +444,7 @@ function HostingSettingsTab({ clientId, domainId }: { readonly clientId: string;
       </div>
 
       {updateSettings.error && (
-        <div className="flex items-center gap-2 text-sm text-red-600" data-testid="hosting-save-error">
+        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="hosting-save-error">
           <AlertCircle size={14} />
           {updateSettings.error instanceof Error ? updateSettings.error.message : 'Failed to save settings'}
         </div>
@@ -500,9 +500,9 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
   };
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm" data-testid="protected-dirs-section">
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-        <h2 className="text-base font-semibold text-gray-900">Protected Directories</h2>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="protected-dirs-section">
+      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Protected Directories</h2>
         <button
           type="button"
           onClick={() => setShowForm((p) => !p)}
@@ -515,10 +515,10 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="border-b border-gray-100 bg-gray-50 p-4" data-testid="create-dir-form">
+        <form onSubmit={handleCreate} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="create-dir-form">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
-              <label htmlFor="dir-path" className="block text-xs font-medium text-gray-700">Path</label>
+              <label htmlFor="dir-path" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Path</label>
               <input
                 id="dir-path"
                 type="text"
@@ -531,7 +531,7 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
               />
             </div>
             <div>
-              <label htmlFor="dir-realm" className="block text-xs font-medium text-gray-700">Realm</label>
+              <label htmlFor="dir-realm" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Realm</label>
               <input
                 id="dir-realm"
                 type="text"
@@ -555,7 +555,7 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
             </div>
           </div>
           {createDir.error && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-red-600" data-testid="dir-create-error">
+            <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="dir-create-error">
               <AlertCircle size={14} />
               {createDir.error instanceof Error ? createDir.error.message : 'Failed to create directory'}
             </div>
@@ -570,24 +570,24 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
       )}
 
       {isError && (
-        <div className="px-5 py-6 text-center text-sm text-red-500" data-testid="protected-dirs-error">
+        <div className="px-5 py-6 text-center text-sm text-red-500 dark:text-red-400" data-testid="protected-dirs-error">
           Failed to load protected directories.
         </div>
       )}
 
       {!isLoading && !isError && (
-        <div className="divide-y divide-gray-100">
+        <div className="divide-y divide-gray-100 dark:divide-gray-700">
           {dirs.map((dir) => (
             <div key={dir.id}>
               <div
-                className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 cursor-pointer"
+                className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
                 onClick={() => setExpandedDirId(expandedDirId === dir.id ? null : dir.id)}
                 data-testid={`dir-row-${dir.id}`}
               >
                 <div className="flex items-center gap-2">
                   {expandedDirId === dir.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   <Lock size={14} className="text-gray-400" />
-                  <span className="text-sm font-medium text-gray-900 font-mono">{dir.path}</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100 font-mono">{dir.path}</span>
                   <span className="text-xs text-gray-400">({dir.realm})</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -605,7 +605,7 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
-                        className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                        className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                       >
                         Cancel
                       </button>
@@ -614,7 +614,7 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(dir.id); }}
-                      className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                       data-testid={`delete-dir-${dir.id}`}
                     >
                       <Trash2 size={12} />
@@ -629,7 +629,7 @@ function ProtectedDirectoriesTab({ clientId, domainId }: { readonly clientId: st
             </div>
           ))}
           {dirs.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-gray-500">
+            <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
               No protected directories. Click "Add Directory" to create one.
             </div>
           )}
@@ -667,9 +667,9 @@ function DirectoryUsersPanel({
   };
 
   return (
-    <div className="border-t border-gray-100 bg-gray-50 px-5 py-4" data-testid={`dir-users-${dirId}`}>
+    <div className="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-4" data-testid={`dir-users-${dirId}`}>
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
           <Users size={14} />
           Users
         </div>
@@ -687,7 +687,7 @@ function DirectoryUsersPanel({
       {showForm && (
         <form onSubmit={handleCreateUser} className="mb-3 flex items-end gap-2" data-testid={`create-user-form-${dirId}`}>
           <div>
-            <label htmlFor={`user-name-${dirId}`} className="block text-xs font-medium text-gray-600">Username</label>
+            <label htmlFor={`user-name-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Username</label>
             <input
               id={`user-name-${dirId}`}
               type="text"
@@ -699,7 +699,7 @@ function DirectoryUsersPanel({
             />
           </div>
           <div>
-            <label htmlFor={`user-pass-${dirId}`} className="block text-xs font-medium text-gray-600">Password</label>
+            <label htmlFor={`user-pass-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Password</label>
             <input
               id={`user-pass-${dirId}`}
               type="password"
@@ -728,11 +728,11 @@ function DirectoryUsersPanel({
       ) : (
         <div className="space-y-1">
           {users.map((u) => (
-            <div key={u.id} className="flex items-center justify-between rounded-md bg-white px-3 py-2 text-sm">
+            <div key={u.id} className="flex items-center justify-between rounded-md bg-white dark:bg-gray-800 px-3 py-2 text-sm">
               <div className="flex items-center gap-2">
-                <span className="font-medium text-gray-900">{u.username}</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">{u.username}</span>
                 {!u.enabled && (
-                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-600">disabled</span>
+                  <span className="rounded bg-red-100 dark:bg-red-900/20 px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400">disabled</span>
                 )}
               </div>
               <div className="flex items-center gap-1">
@@ -740,7 +740,7 @@ function DirectoryUsersPanel({
                   <button
                     type="button"
                     onClick={() => disableUser.mutate(u.id)}
-                    className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                    className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                     data-testid={`disable-user-${u.id}`}
                   >
                     Disable
@@ -749,7 +749,7 @@ function DirectoryUsersPanel({
                 <button
                   type="button"
                   onClick={() => deleteUser.mutate(u.id)}
-                  className="rounded-md border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                  className="rounded-md border border-red-200 dark:border-red-800 px-2 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                   data-testid={`delete-user-${u.id}`}
                 >
                   <Trash2 size={12} />

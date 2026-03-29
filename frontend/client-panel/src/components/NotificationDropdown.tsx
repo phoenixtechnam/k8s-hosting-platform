@@ -26,7 +26,7 @@ export default function NotificationDropdown() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="relative rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+        className="relative rounded-md p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200"
         aria-label="Notifications"
         data-testid="notification-bell"
       >
@@ -38,11 +38,11 @@ export default function NotificationDropdown() {
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50"
+          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg z-50"
           data-testid="notification-dropdown"
         >
-          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-            <h3 className="text-sm font-semibold text-gray-900">Notifications</h3>
+          <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-4 py-3">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Notifications</h3>
           </div>
 
           <div className="max-h-72 overflow-y-auto">
@@ -51,7 +51,7 @@ export default function NotificationDropdown() {
             </div>
           </div>
 
-          <div className="border-t border-gray-100 px-4 py-2">
+          <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-2">
             <span className="block w-full rounded-lg py-1.5 text-center text-xs font-medium text-gray-300 cursor-not-allowed">
               View all
             </span>
