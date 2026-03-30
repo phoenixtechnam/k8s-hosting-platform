@@ -66,6 +66,7 @@ cmd_up() {
   echo "Building and starting local stack..."
   compose up -d --build
   echo ""
+  _check_k3s_health
   cmd_status
 }
 
@@ -84,10 +85,35 @@ cmd_reset() {
 }
 
 cmd_rebuild() {
-  echo "Rebuilding local stack..."
-  compose up -d --build --force-recreate
+  echo "Rebuilding app services (backend, admin-panel, client-panel)..."
+  # Only rebuild app services — never touch k3s, MariaDB, or Redis
+  # This prevents accidental removal of infrastructure containers
+  compose build backend admin-panel client-panel
+  compose up -d --no-deps backend admin-panel client-panel
   echo ""
+  # Verify k3s is still running (warn if not)
+  _check_k3s_health
   cmd_status
+}
+
+_check_k3s_health() {
+  local k3s_name
+  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [[ -z "$k3s_name" ]]; then
+    echo "⚠️  k3s cluster is not running! Start it with: ./scripts/local.sh k3s-up"
+    return
+  fi
+  if ! docker exec "$k3s_name" kubectl get nodes --no-headers &>/dev/null; then
+    echo "⚠️  k3s cluster is running but not healthy"
+    return
+  fi
+  # Verify kubeconfig is accessible from backend
+  local backend_name
+  backend_name=$(docker ps --filter "name=backend" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [[ -n "$backend_name" ]] && ! docker exec "$backend_name" test -f /k8s/kubeconfig.yaml 2>/dev/null; then
+    echo "⚠️  Backend cannot see kubeconfig! The k3s-kubeconfig volume may be empty."
+    echo "    Fix: ./scripts/local.sh k3s-up"
+  fi
 }
 
 cmd_logs() {
