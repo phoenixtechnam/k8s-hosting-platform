@@ -66,6 +66,43 @@ export const deleteInputSchema = z.object({
 
 export type DeleteInput = z.infer<typeof deleteInputSchema>;
 
+// ─── Copy ───────────────────────────────────────────────────────────────────
+
+export const copyInputSchema = z.object({
+  sourcePath: z.string().min(1),
+  destPath: z.string().min(1),
+});
+
+export type CopyInput = z.infer<typeof copyInputSchema>;
+
+// ─── Archive ────────────────────────────────────────────────────────────────
+
+export const archiveInputSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1),
+  destPath: z.string().min(1),
+  format: z.enum(['zip', 'tar.gz', 'tar']).default('tar.gz'),
+});
+
+export type ArchiveInput = z.infer<typeof archiveInputSchema>;
+
+// ─── Extract ────────────────────────────────────────────────────────────────
+
+export const extractInputSchema = z.object({
+  path: z.string().min(1),
+  destPath: z.string().min(1).default('/'),
+});
+
+export type ExtractInput = z.infer<typeof extractInputSchema>;
+
+// ─── Git Clone ──────────────────────────────────────────────────────────────
+
+export const gitCloneInputSchema = z.object({
+  url: z.string().url(),
+  destPath: z.string().min(1),
+});
+
+export type GitCloneInput = z.infer<typeof gitCloneInputSchema>;
+
 // ─── File Manager Status ─────────────────────────────────────────────────────
 
 export const fileManagerStatusSchema = z.object({

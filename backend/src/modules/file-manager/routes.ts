@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema } from '@k8s-hosting/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema } from '@k8s-hosting/api-contracts';
 import { clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -21,6 +21,11 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+
+  // Register raw body parser for binary uploads (application/octet-stream)
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => {
+    done(null, body);
+  });
 
   const getK8s = () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -226,7 +231,132 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/upload — upload file (multipart)
+  // POST /api/v1/clients/:clientId/files/copy — copy file or directory
+  app.post('/clients/:clientId/files/copy', {
+    schema: { tags: ['Files'], summary: 'Copy file or directory', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = copyInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/copy', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to copy', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/archive — create archive
+  app.post('/clients/:clientId/files/archive', {
+    schema: { tags: ['Files'], summary: 'Create archive from files', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = archiveInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/archive', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 201) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to create archive', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/extract — extract archive
+  app.post('/clients/:clientId/files/extract', {
+    schema: { tags: ['Files'], summary: 'Extract archive', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = extractInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/extract', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to extract archive', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/git-clone — clone git repository
+  app.post('/clients/:clientId/files/git-clone', {
+    schema: { tags: ['Files'], summary: 'Clone git repository', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = gitCloneInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/git-clone', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 201) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to clone repository', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/upload-raw — raw binary upload
+  // Accepts application/octet-stream body, writes to path from query param
+  app.post('/clients/:clientId/files/upload-raw', {
+    schema: { tags: ['Files'], summary: 'Upload file (raw binary)', security: [{ bearerAuth: [] }] },
+    bodyLimit: 500 * 1024 * 1024, // 500MB per file
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const query = request.query as Record<string, string>;
+    if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const body = request.body as Buffer;
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/write-raw', {
+      method: 'POST',
+      body,
+      contentType: 'application/octet-stream',
+      query: { path: query.path },
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to upload', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/upload — upload file (multipart, legacy)
   app.post('/clients/:clientId/files/upload', {
     schema: { tags: ['Files'], summary: 'Upload file', security: [{ bearerAuth: [] }] },
   }, async (request) => {
@@ -236,7 +366,6 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await resolveNamespace(app, clientId);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    // Forward the raw multipart body to the sidecar
     const contentType = request.headers['content-type'] || '';
     const body = await request.body;
 

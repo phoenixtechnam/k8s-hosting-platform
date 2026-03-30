@@ -3,10 +3,14 @@
 // No auth — protected by NetworkPolicy (only platform namespace can reach it)
 
 import { createServer } from 'node:http';
-import { readdir, stat, readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
+import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { join, resolve, basename, extname } from 'node:path';
+import { join, resolve, basename, extname, dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const PORT = 8111;
 const BASE = '/data';
@@ -251,6 +255,143 @@ async function handleRm(req, res) {
   }
 }
 
+async function handleCopy(req, res) {
+  const body = await readBody(req);
+  const { sourcePath, destPath } = body;
+  if (!sourcePath || !destPath) return sendError(res, 400, 'sourcePath and destPath required');
+  const fullSrc = safePath(sourcePath);
+  const fullDest = safePath(destPath);
+  if (!fullSrc || !fullDest) return sendError(res, 403, 'Access denied');
+
+  try {
+    // Ensure parent directory exists
+    await mkdir(dirname(fullDest), { recursive: true });
+    await cp(fullSrc, fullDest, { recursive: true });
+    sendJson(res, 200, { sourcePath, destPath, copied: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleArchive(req, res) {
+  const body = await readBody(req);
+  const { paths, destPath, format = 'tar.gz' } = body;
+  if (!paths || !Array.isArray(paths) || paths.length === 0) return sendError(res, 400, 'paths array required');
+  if (!destPath) return sendError(res, 400, 'destPath required');
+
+  const fullDest = safePath(destPath);
+  if (!fullDest) return sendError(res, 403, 'Access denied');
+
+  // Validate all source paths
+  const safePaths = [];
+  for (const p of paths) {
+    const full = safePath(p);
+    if (!full) return sendError(res, 403, `Access denied: ${p}`);
+    safePaths.push(full);
+  }
+
+  try {
+    await mkdir(dirname(fullDest), { recursive: true });
+
+    if (format === 'zip') {
+      // zip -r destPath file1 file2 ...  (run from BASE so paths are relative)
+      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
+      await execFileAsync('zip', ['-r', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+    } else if (format === 'tar.gz' || format === 'tgz') {
+      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
+      await execFileAsync('tar', ['czf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+    } else if (format === 'tar') {
+      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
+      await execFileAsync('tar', ['cf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+    } else {
+      return sendError(res, 400, 'Unsupported format. Use: zip, tar.gz, tar');
+    }
+
+    const s = await stat(fullDest);
+    sendJson(res, 201, { path: destPath, size: s.size, format });
+  } catch (err) {
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleExtract(req, res) {
+  const body = await readBody(req);
+  const { path: archivePath, destPath = '/' } = body;
+  if (!archivePath) return sendError(res, 400, 'path required');
+
+  const fullArchive = safePath(archivePath);
+  const fullDest = safePath(destPath);
+  if (!fullArchive || !fullDest) return sendError(res, 403, 'Access denied');
+
+  try {
+    await mkdir(fullDest, { recursive: true });
+    const lower = archivePath.toLowerCase();
+
+    if (lower.endsWith('.zip')) {
+      await execFileAsync('unzip', ['-o', fullArchive, '-d', fullDest], { timeout: 120_000 });
+    } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
+      await execFileAsync('tar', ['xzf', fullArchive, '-C', fullDest], { timeout: 120_000 });
+    } else if (lower.endsWith('.tar')) {
+      await execFileAsync('tar', ['xf', fullArchive, '-C', fullDest], { timeout: 120_000 });
+    } else {
+      return sendError(res, 400, 'Unsupported archive format. Supports: .zip, .tar.gz, .tgz, .tar');
+    }
+
+    sendJson(res, 200, { path: archivePath, extractedTo: destPath, extracted: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return sendError(res, 404, 'Archive not found');
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleWriteRaw(req, res) {
+  const { path: p } = getQuery(req.url);
+  if (!p) return sendError(res, 400, 'path query parameter required');
+  const full = safePath(p);
+  if (!full) return sendError(res, 403, 'Access denied');
+
+  try {
+    // Ensure parent directory exists
+    const dir = dirname(full);
+    await mkdir(dir, { recursive: true });
+
+    // Stream the raw body directly to file
+    const ws = createWriteStream(full);
+    await pipeline(req, ws);
+    const s = await stat(full);
+    sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
+  } catch (err) {
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleGitClone(req, res) {
+  const body = await readBody(req);
+  const { url, destPath } = body;
+  if (!url) return sendError(res, 400, 'url required');
+  if (!destPath) return sendError(res, 400, 'destPath required');
+
+  // Basic URL validation — only allow http/https/git protocols
+  if (!/^(https?|git):\/\//i.test(url)) {
+    return sendError(res, 400, 'Only http, https, and git protocol URLs are allowed');
+  }
+
+  const fullDest = safePath(destPath);
+  if (!fullDest) return sendError(res, 403, 'Access denied');
+
+  try {
+    await mkdir(dirname(fullDest), { recursive: true });
+    await execFileAsync('git', ['clone', '--depth', '1', url, fullDest], {
+      timeout: 300_000, // 5 min for large repos
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, // Prevent auth prompts
+    });
+    sendJson(res, 201, { url, destPath, cloned: true });
+  } catch (err) {
+    sendError(res, 500, err.message);
+  }
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -276,6 +417,11 @@ const server = createServer(async (req, res) => {
     if (path === '/write' && method === 'POST') return handleWrite(req, res);
     if (path === '/rename' && method === 'POST') return handleRename(req, res);
     if (path === '/rm' && (method === 'DELETE' || method === 'POST')) return handleRm(req, res);
+    if (path === '/write-raw' && method === 'POST') return handleWriteRaw(req, res);
+    if (path === '/copy' && method === 'POST') return handleCopy(req, res);
+    if (path === '/archive' && method === 'POST') return handleArchive(req, res);
+    if (path === '/extract' && method === 'POST') return handleExtract(req, res);
+    if (path === '/git-clone' && method === 'POST') return handleGitClone(req, res);
 
     sendError(res, 404, 'Not found');
   } catch (err) {

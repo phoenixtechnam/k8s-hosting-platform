@@ -36,6 +36,28 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-file-manager', () => ({
+  useFileManagerStatus: vi.fn(() => ({ data: { ready: false, phase: 'starting' }, isLoading: false, error: null })),
+  useStartFileManager: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useDirectoryListing: vi.fn(() => ({ data: undefined, isLoading: false, error: null, refetch: vi.fn() })),
+  useFileContent: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useCreateDirectory: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useWriteFile: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRenameFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  useDeleteFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  useDownloadFile: vi.fn(() => vi.fn()),
+  useUploadFiles: vi.fn(() => ({ uploads: [], uploadFiles: vi.fn(), clearUploads: vi.fn(), visible: false, setVisible: vi.fn() })),
+  useCopyFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  useArchiveFiles: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useExtractArchive: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useGitClone: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAuthenticatedBlobUrl: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+}));
+
+vi.mock('@monaco-editor/react', () => ({
+  default: () => null,
+}));
+
 vi.mock('../hooks/use-email', () => ({
   useEmailDomains: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useMailboxes: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
@@ -184,17 +206,9 @@ describe('Files', () => {
     expect(screen.getByText('Files')).toBeInTheDocument();
   });
 
-  it('shows coming soon content', () => {
+  it('shows loading state when starting', () => {
     renderWithProviders(<Files />);
-    expect(screen.getByTestId('files-coming-soon')).toBeInTheDocument();
-    expect(screen.getByText(/Coming Soon/)).toBeInTheDocument();
-  });
-
-  it('lists planned features', () => {
-    renderWithProviders(<Files />);
-    expect(screen.getByText('Upload/download files')).toBeInTheDocument();
-    expect(screen.getByText('Directory management')).toBeInTheDocument();
-    expect(screen.getByText('File editing')).toBeInTheDocument();
-    expect(screen.getByText('SFTP access')).toBeInTheDocument();
+    // File manager status defaults to starting/not_deployed, should show loading
+    expect(screen.getByText('Starting File Manager')).toBeInTheDocument();
   });
 });
