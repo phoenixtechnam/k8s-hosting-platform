@@ -3,6 +3,8 @@ import { eq, inArray } from 'drizzle-orm';
 import { clients, hostingPlans, domains, workloads, containerImages } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
+import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
+import { domainToSecretName } from '../ssl-certs/cert-manager.js';
 import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
 
 export interface ManifestFile {
@@ -244,19 +246,37 @@ export async function generateClientManifests(
       };
     });
 
+    // TLS configuration
+    const autoTls = await isAutoTlsEnabled(db);
+    const annotations: Record<string, string> = {};
+
+    if (autoTls) {
+      const clusterIssuer = await getClusterIssuerName(db);
+      annotations['cert-manager.io/cluster-issuer'] = clusterIssuer;
+    }
+
+    const ingressSpec: Record<string, unknown> = {
+      ingressClassName: 'nginx',
+      rules,
+    };
+
+    if (autoTls && clientDomains.length > 0) {
+      // Group domains by TLS secret (one secret per domain for individual certs)
+      ingressSpec.tls = clientDomains.map(domain => ({
+        hosts: [domain.domainName],
+        secretName: domainToSecretName(domain.domainName),
+      }));
+    }
+
     manifests.push(buildManifest('ingress.yaml', {
       apiVersion: 'networking.k8s.io/v1',
       kind: 'Ingress',
       metadata: {
         name: `${namespace}-ingress`,
         namespace,
-        annotations: {
-          'kubernetes.io/ingress.class': 'nginx',
-        },
+        annotations,
       },
-      spec: {
-        rules,
-      },
+      spec: ingressSpec,
     }));
   }
 

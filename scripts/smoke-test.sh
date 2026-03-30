@@ -180,6 +180,18 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH -H "$AUTH_HEADER" \
   "${API_URL}/api/v1/admin/eol-settings")
 check_status "PATCH /admin/eol-settings" "200" "$STATUS"
 
+# ─── TLS Settings ─────────────────────────────────────────────────────────────
+
+log "── TLS Settings ──"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/tls-settings")
+check_status "GET /admin/tls-settings" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH -H "$AUTH_HEADER" \
+  -H "Content-Type: application/json" \
+  -d '{"autoTlsEnabled":true}' \
+  "${API_URL}/api/v1/admin/tls-settings")
+check_status "PATCH /admin/tls-settings" "200" "$STATUS"
+
 # ─── Auth Protected (no token) ─────────────────────────────────────────────────
 
 log "── Auth Protection ──"

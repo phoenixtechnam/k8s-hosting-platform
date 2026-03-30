@@ -54,12 +54,48 @@ export async function uploadCert(
     throw new ApiError('INVALID_CERTIFICATE', 'Certificate must be in PEM format', 400);
   }
 
+  if (!input.private_key.trimStart().startsWith('-----BEGIN')) {
+    throw new ApiError('INVALID_PRIVATE_KEY', 'Private key must be in PEM format', 400);
+  }
+
   // Parse cert info
   let certInfo: ReturnType<typeof parseCertInfo>;
   try {
     certInfo = parseCertInfo(input.certificate);
   } catch {
     throw new ApiError('INVALID_CERTIFICATE', 'Failed to parse certificate — ensure it is a valid X.509 PEM certificate', 400);
+  }
+
+  // Validate cert covers domain (warning only — admin may have valid reasons)
+  const certSubject = certInfo.subject.toLowerCase();
+  const domainNameLower = domain.domainName.toLowerCase();
+  let domainMatch = certSubject.includes(domainNameLower) || certSubject.includes('*');
+  if (!domainMatch) {
+    try {
+      const x509 = new crypto.X509Certificate(input.certificate);
+      const san = (x509.subjectAltName ?? '').toLowerCase();
+      domainMatch = san.includes(domainNameLower) || san.includes('*');
+    } catch {
+      // SAN check failed — allow upload anyway
+    }
+  }
+  // Note: domainMatch is informational only; we don't reject mismatches
+  // because wildcard certs, multi-domain certs, and custom setups are valid
+
+  // Validate cert matches private key (best-effort — some key formats may not support sign/verify)
+  try {
+    const x509 = new crypto.X509Certificate(input.certificate);
+    const pubKey = x509.publicKey;
+    const privKey = crypto.createPrivateKey(input.private_key);
+    const testData = Buffer.from('cert-key-match-test');
+    const signature = crypto.sign('sha256', testData, privKey);
+    const valid = crypto.verify('sha256', testData, pubKey, signature);
+    if (!valid) {
+      throw new ApiError('CERT_KEY_MISMATCH', 'Certificate and private key do not match', 400);
+    }
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    // Parse/sign failures are non-fatal — allow upload for unusual key formats
   }
 
   // Encrypt private key

@@ -128,7 +128,7 @@ export default function Domains() {
                           domain.sslAutoRenew ? 'text-green-600 dark:text-green-400' : 'text-gray-400',
                         )}>
                           <Shield size={12} />
-                          {domain.sslAutoRenew ? 'Auto' : 'Off'}
+                          {domain.sslAutoRenew ? 'Auto (TLS)' : 'Manual'}
                         </span>
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">

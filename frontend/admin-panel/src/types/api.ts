@@ -26,6 +26,7 @@ export type {
   ApplicationInstanceResponse,
   ApplicationVersionResponse,
   UpgradeStatus,
+  TlsSettingsResponse,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';

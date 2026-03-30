@@ -62,6 +62,13 @@ vi.mock('../storage-settings/service.js', () => ({
   getDefaultStorageClass: vi.fn().mockResolvedValue('local-path'),
 }));
 
+// ─── Mock TLS settings ─────────────────────────────────────────────────────
+
+vi.mock('../tls-settings/service.js', () => ({
+  getClusterIssuerName: vi.fn().mockResolvedValue('local-ca-issuer'),
+  isAutoTlsEnabled: vi.fn().mockResolvedValue(true),
+}));
+
 // ─── Mock DB Helper ─────────────────────────────────────────────────────────
 
 function createMockDb(overrides: {
@@ -336,10 +343,11 @@ describe('generateClientManifests', () => {
         name: 'acme-corp-ingress',
         namespace: 'acme-corp',
         annotations: {
-          'kubernetes.io/ingress.class': 'nginx',
+          'cert-manager.io/cluster-issuer': 'local-ca-issuer',
         },
       },
       spec: {
+        ingressClassName: 'nginx',
         rules: [
           {
             host: 'example.com',
@@ -369,6 +377,10 @@ describe('generateClientManifests', () => {
               ],
             },
           },
+        ],
+        tls: [
+          { hosts: ['example.com'], secretName: 'example-com-tls' },
+          { hosts: ['blog.example.com'], secretName: 'blog-example-com-tls' },
         ],
       },
     });

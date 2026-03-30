@@ -24,6 +24,7 @@ import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
+import TlsSettings from '@/pages/TlsSettings';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="settings/oidc" element={<OidcSettings />} />
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />
+            <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<BackupSettings />} />
             <Route path="settings/users" element={<AdminUsers />} />
             <Route path="settings/export-import" element={<ExportImport />} />
