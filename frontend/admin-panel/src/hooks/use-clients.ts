@@ -60,6 +60,11 @@ interface UpdateClientInput {
   readonly contact_email?: string;
   readonly status?: 'active' | 'suspended' | 'pending' | 'cancelled';
   readonly subscription_expires_at?: string;
+  readonly cpu_limit_override?: number | null;
+  readonly memory_limit_override?: number | null;
+  readonly storage_limit_override?: number | null;
+  readonly max_sub_users_override?: number | null;
+  readonly monthly_price_override?: number | null;
 }
 
 export function useUpdateClient(id: string) {

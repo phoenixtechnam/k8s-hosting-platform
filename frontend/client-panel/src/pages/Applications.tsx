@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useWorkloads, useContainerImages, useUpdateWorkload } from '@/hooks/use-workloads';
@@ -284,7 +284,19 @@ function AvailableTab() {
                       <AppIcon manifestUrl={entry.manifestUrl} size={40} />
                       <div>
                         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">v{entry.version}</p>
+                        <div className="mt-0.5 flex items-center gap-2">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">v{entry.version}</span>
+                          {entry.url && (
+                            <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 text-xs font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors">
+                              <ExternalLink size={10} /> Official Website
+                            </a>
+                          )}
+                          {entry.documentation && (
+                            <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors">
+                              <ExternalLink size={10} /> User Manual
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
@@ -321,18 +333,6 @@ function AvailableTab() {
                       ))}
                     </div>
                   )}
-                  <div className="mt-3 flex gap-2">
-                    {entry.url && (
-                      <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
-                        <ExternalLink size={12} /> Website
-                      </a>
-                    )}
-                    {entry.documentation && (
-                      <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
-                        <ExternalLink size={12} /> Docs
-                      </a>
-                    )}
-                  </div>
                 </button>
               ))}
             </div>
@@ -358,6 +358,27 @@ function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementTyp
       <Icon size={16} className="text-blue-600 dark:text-blue-400" />
       {title}
     </h4>
+  );
+}
+
+function CollapsibleSection({ title, children }: { readonly title: string; readonly children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors rounded-lg"
+      >
+        {title}
+        <ChevronDown size={16} className={clsx('text-gray-400 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-6">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -400,7 +421,19 @@ function AppDetailPanel({
                 <AppIcon manifestUrl={entry.manifestUrl} size={48} />
                 <div>
                   <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                  <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <span className="text-sm text-gray-500 dark:text-gray-400">v{entry.version}</span>
+                    {entry.url && (
+                      <a href={entry.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md bg-brand-100 dark:bg-brand-900/40 px-2.5 py-1 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-200 dark:hover:bg-brand-800/50 transition-colors">
+                        <ExternalLink size={12} /> Official Website
+                      </a>
+                    )}
+                    {entry.documentation && (
+                      <a href={entry.documentation} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md bg-emerald-100 dark:bg-emerald-900/40 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 transition-colors">
+                        <ExternalLink size={12} /> User Manual
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -420,22 +453,38 @@ function AppDetailPanel({
               </div>
             </div>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
-            {(entry.url || entry.documentation) && (
-              <div className="mt-3 flex gap-3">
-                {entry.url && (
-                  <a href={entry.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-50 dark:bg-brand-900/20 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
-                    <ExternalLink size={14} /> Visit Website
-                  </a>
-                )}
-                {entry.documentation && (
-                  <a href={entry.documentation} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
-                    <ExternalLink size={14} /> User Manual
-                  </a>
-                )}
-              </div>
-            )}
           </div>
 
+          {/* Resource Requirements */}
+          {(resources.default ?? resources.minimum) && (
+            <div>
+              <SectionHeading icon={Cpu} title="Resource Requirements" />
+              <div className="grid grid-cols-2 gap-4">
+                {resources.default && (
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Default</p>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.storage}</span></div>
+                    </div>
+                  </div>
+                )}
+                {resources.minimum && (
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Minimum</p>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.storage}</span></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <CollapsibleSection title="App Details">
           {/* Components */}
           {components.length > 0 && (
             <div>
@@ -629,35 +678,6 @@ function AppDetailPanel({
             </div>
           )}
 
-          {/* Resources */}
-          {(resources.default ?? resources.minimum) && (
-            <div>
-              <SectionHeading icon={Cpu} title="Resources" />
-              <div className="grid grid-cols-2 gap-4">
-                {resources.default && (
-                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Default</p>
-                    <div className="space-y-1 text-sm">
-                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.cpu}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.memory}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.storage}</span></div>
-                    </div>
-                  </div>
-                )}
-                {resources.minimum && (
-                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Minimum</p>
-                    <div className="space-y-1 text-sm">
-                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.cpu}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.memory}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.minimum.storage}</span></div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Health Check */}
           {healthCheck.path && (
             <div>
@@ -670,6 +690,8 @@ function AppDetailPanel({
               </div>
             </div>
           )}
+
+          </CollapsibleSection>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">

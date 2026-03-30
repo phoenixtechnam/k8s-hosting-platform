@@ -19,6 +19,11 @@ export const updateClientSchema = z.object({
   status: statusEnum.optional(),
   plan_id: uuidField.optional(),
   subscription_expires_at: z.string().datetime().nullable().optional(),
+  cpu_limit_override: z.number().min(0.1).max(64).nullable().optional(),
+  memory_limit_override: z.number().min(0.1).max(256).nullable().optional(),
+  storage_limit_override: z.number().min(1).max(10000).nullable().optional(),
+  max_sub_users_override: z.number().int().min(1).max(100).nullable().optional(),
+  monthly_price_override: z.number().min(0).max(99999).nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -32,6 +37,11 @@ export const clientResponseSchema = z.object({
   planId: uuidField,
   regionId: uuidField,
   status: statusEnum,
+  cpuLimitOverride: z.string().nullable(),
+  memoryLimitOverride: z.string().nullable(),
+  storageLimitOverride: z.string().nullable(),
+  maxSubUsersOverride: z.number().nullable(),
+  monthlyPriceOverride: z.string().nullable(),
   createdBy: z.string().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),

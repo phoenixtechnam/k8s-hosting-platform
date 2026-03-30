@@ -21,6 +21,7 @@ export const hostingPlanSchema = z.object({
   memoryLimit: z.string(),
   storageLimit: z.string(),
   monthlyPriceUsd: z.string(),
+  maxSubUsers: z.number(),
   features: z.unknown().nullable(),
   status: z.string(),
   createdAt: z.string(),

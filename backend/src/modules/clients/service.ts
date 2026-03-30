@@ -132,6 +132,11 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
       ? new Date(input.subscription_expires_at)
       : null;
   }
+  if (input.cpu_limit_override !== undefined) updateValues.cpuLimitOverride = input.cpu_limit_override === null ? null : String(input.cpu_limit_override);
+  if (input.memory_limit_override !== undefined) updateValues.memoryLimitOverride = input.memory_limit_override === null ? null : String(input.memory_limit_override);
+  if (input.storage_limit_override !== undefined) updateValues.storageLimitOverride = input.storage_limit_override === null ? null : String(input.storage_limit_override);
+  if (input.max_sub_users_override !== undefined) updateValues.maxSubUsersOverride = input.max_sub_users_override;
+  if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));

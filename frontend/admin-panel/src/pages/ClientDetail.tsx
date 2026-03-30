@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -236,6 +236,8 @@ export default function ClientDetail() {
       </div>
 
       <SubscriptionCard clientId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
+
+      <ResourceLimitsCard client={client} clientId={id!} />
 
       {/* Resource tabs */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -503,6 +505,183 @@ function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+function ResourceLimitsCard({
+  client,
+  clientId,
+}: {
+  readonly client: import('@/types/api').Client;
+  readonly clientId: string;
+}) {
+  const updateClient = useUpdateClient(clientId);
+  const { data: plansData } = usePlans();
+  const plans = plansData?.data ?? [];
+  const plan = plans.find((p) => p.id === client.planId);
+
+  const [editing, setEditing] = useState(false);
+  const [cpuOverride, setCpuOverride] = useState<string>('');
+  const [memOverride, setMemOverride] = useState<string>('');
+  const [storageOverride, setStorageOverride] = useState<string>('');
+  const [subUsersOverride, setSubUsersOverride] = useState<string>('');
+  const [priceOverride, setPriceOverride] = useState<string>('');
+  const [cpuCustom, setCpuCustom] = useState(false);
+  const [memCustom, setMemCustom] = useState(false);
+  const [storageCustom, setStorageCustom] = useState(false);
+  const [subUsersCustom, setSubUsersCustom] = useState(false);
+  const [priceCustom, setPriceCustom] = useState(false);
+
+  const effectiveCpu = client.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
+  const effectiveMem = client.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
+  const effectiveStorage = client.storageLimitOverride ?? plan?.storageLimit ?? '—';
+  const effectiveSubUsers = client.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
+  const effectivePrice = client.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
+
+  const startEditing = () => {
+    const hasCpu = client.cpuLimitOverride != null;
+    const hasMem = client.memoryLimitOverride != null;
+    const hasStorage = client.storageLimitOverride != null;
+    const hasSubUsers = client.maxSubUsersOverride != null;
+    const hasPrice = client.monthlyPriceOverride != null;
+    setCpuCustom(hasCpu);
+    setMemCustom(hasMem);
+    setStorageCustom(hasStorage);
+    setSubUsersCustom(hasSubUsers);
+    setPriceCustom(hasPrice);
+    setCpuOverride(hasCpu ? String(client.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
+    setMemOverride(hasMem ? String(client.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
+    setStorageOverride(hasStorage ? String(client.storageLimitOverride) : (plan?.storageLimit ?? ''));
+    setSubUsersOverride(hasSubUsers ? String(client.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
+    setPriceOverride(hasPrice ? String(client.monthlyPriceOverride) : (plan?.monthlyPriceUsd ?? ''));
+    setEditing(true);
+  };
+
+  const handleSave = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await updateClient.mutateAsync({
+        cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
+        memory_limit_override: memCustom ? Number(memOverride) : null,
+        storage_limit_override: storageCustom ? Number(storageOverride) : null,
+        max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
+        monthly_price_override: priceCustom ? Number(priceOverride) : null,
+      });
+      setEditing(false);
+    } catch { /* error via updateClient.error */ }
+  };
+
+  const INPUT_CLS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100';
+
+  const renderField = (
+    label: string,
+    unit: string,
+    effectiveValue: string | number,
+    isCustom: boolean,
+    setCustom: (v: boolean) => void,
+    value: string,
+    setValue: (v: string) => void,
+    isOverridden: boolean,
+    inputType: string = 'number',
+    step: string = '0.01',
+  ) => (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
+        {editing && (
+          <button
+            type="button"
+            onClick={() => setCustom(!isCustom)}
+            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            data-testid={`toggle-${label.toLowerCase().replace(/\s/g, '-')}`}
+          >
+            {isCustom ? <ToggleRight size={16} className="text-brand-500" /> : <ToggleLeft size={16} />}
+            {isCustom ? 'Custom' : 'Plan default'}
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <div className="flex items-center gap-2">
+          <input
+            type={inputType}
+            step={step}
+            className={`${INPUT_CLS} ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : ''}`}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={!isCustom}
+          />
+          <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">{unit}</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{effectiveValue}</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">{unit}</span>
+          {isOverridden && (
+            <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="resource-limits-card">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Cpu size={18} className="text-gray-600 dark:text-gray-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Resource Limits</h2>
+          {plan && <span className="text-sm text-gray-500 dark:text-gray-400">({plan.name} plan)</span>}
+        </div>
+        {!editing && (
+          <button
+            type="button"
+            onClick={startEditing}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            data-testid="edit-limits-button"
+          >
+            <Edit size={14} />
+            Edit
+          </button>
+        )}
+      </div>
+
+      <form onSubmit={handleSave}>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, client.cpuLimitOverride != null, 'number', '0.25')}
+          {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, client.memoryLimitOverride != null, 'number', '0.5')}
+          {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, client.storageLimitOverride != null, 'number', '1')}
+          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, client.maxSubUsersOverride != null, 'number', '1')}
+          {renderField('Monthly Price', 'USD', effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, client.monthlyPriceOverride != null, 'number', '0.01')}
+        </div>
+
+        {updateClient.error && editing && (
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400">
+            {updateClient.error instanceof Error ? updateClient.error.message : 'Failed to update limits'}
+          </p>
+        )}
+
+        {editing && (
+          <div className="mt-4 flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="save-limits-button"
+            >
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              Save
+            </button>
+          </div>
+        )}
+      </form>
+    </div>
   );
 }
 

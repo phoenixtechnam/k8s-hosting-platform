@@ -148,6 +148,13 @@ describe('Application Detail Panel', () => {
     expect(screen.getAllByText('WordPress').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('Managed WordPress CMS with MariaDB').length).toBeGreaterThanOrEqual(1);
 
+    // Resource Requirements section (visible at top, outside collapsible)
+    expect(screen.getAllByText('Default').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Minimum').length).toBeGreaterThanOrEqual(1);
+
+    // Expand "App Details" collapsible
+    await user.click(screen.getByText('App Details'));
+
     // Components table
     expect(screen.getByTestId('components-table')).toBeInTheDocument();
     expect(screen.getByText('wordpress:6.7-php8.4-apache')).toBeInTheDocument();
@@ -160,10 +167,6 @@ describe('Application Detail Panel', () => {
     // Volumes table
     expect(screen.getByTestId('volumes-table')).toBeInTheDocument();
     expect(screen.getByText('wp-content')).toBeInTheDocument();
-
-    // Resources section
-    expect(screen.getAllByText('Default').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Minimum').length).toBeGreaterThanOrEqual(1);
 
     // Health check
     expect(screen.getByText('/wp-login.php')).toBeInTheDocument();
