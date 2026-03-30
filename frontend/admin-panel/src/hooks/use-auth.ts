@@ -41,8 +41,11 @@ export const useAuth = create<AuthState>((set) => ({
         apiFetch<{ data: { id: string; email: string; fullName: string; role: string } }>('/api/v1/auth/me')
           .catch(() => {
             // Token invalid — clear and redirect (handled by api-client 401 handler)
-            localStorage.removeItem('auth_token');
-            localStorage.removeItem('auth_user');
+            // Guard: localStorage may not exist if test environment was torn down
+            try {
+              localStorage.removeItem('auth_token');
+              localStorage.removeItem('auth_user');
+            } catch { /* env torn down */ }
             set({ token: null, user: null, isAuthenticated: false, isLoading: false });
           });
       } catch {
