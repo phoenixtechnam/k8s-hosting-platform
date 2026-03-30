@@ -2,6 +2,7 @@ import * as yaml from 'js-yaml';
 import { eq, inArray } from 'drizzle-orm';
 import { clients, hostingPlans, domains, workloads, containerImages } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { getDefaultStorageClass } from '../storage-settings/service.js';
 import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
 
 export interface ManifestFile {
@@ -120,6 +121,7 @@ export async function generateClientManifests(
   }));
 
   // 4. PVC
+  const storageClass = await getDefaultStorageClass(db);
   manifests.push(buildManifest('pvc.yaml', {
     apiVersion: 'v1',
     kind: 'PersistentVolumeClaim',
@@ -129,6 +131,7 @@ export async function generateClientManifests(
     },
     spec: {
       accessModes: ['ReadWriteOnce'],
+      storageClassName: storageClass,
       resources: {
         requests: {
           storage: `${storageLimit}Gi`,

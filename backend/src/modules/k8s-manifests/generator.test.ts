@@ -56,6 +56,12 @@ const mockImages = [
   { id: 'img-002', code: 'node-api', registryUrl: 'ghcr.io/hosting/node-api:18' },
 ];
 
+// ─── Mock storage settings ──────────────────────────────────────────────────
+
+vi.mock('../storage-settings/service.js', () => ({
+  getDefaultStorageClass: vi.fn().mockResolvedValue('local-path'),
+}));
+
 // ─── Mock DB Helper ─────────────────────────────────────────────────────────
 
 function createMockDb(overrides: {
@@ -305,6 +311,7 @@ describe('generateClientManifests', () => {
       },
       spec: {
         accessModes: ['ReadWriteOnce'],
+        storageClassName: 'local-path',
         resources: {
           requests: {
             storage: '20Gi',

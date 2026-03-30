@@ -49,6 +49,7 @@ services:
       ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
       CORS_ORIGINS: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMIN:-2010},http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
       OIDC_ENCRYPTION_KEY: ${OIDC_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
     depends_on:
       mariadb:
         condition: service_healthy
