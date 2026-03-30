@@ -28,6 +28,7 @@ export function useDomains(clientId: string | undefined, params: ListDomainsPara
 interface CreateDomainInput {
   readonly domain_name: string;
   readonly dns_mode: 'cname' | 'primary' | 'secondary';
+  readonly workload_id?: string;
 }
 
 export function useCreateDomain(clientId: string | undefined) {
@@ -41,6 +42,28 @@ export function useCreateDomain(clientId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+    },
+  });
+}
+
+interface UpdateDomainInput {
+  readonly dns_mode?: 'cname' | 'primary' | 'secondary';
+  readonly ssl_auto_renew?: boolean;
+  readonly workload_id?: string | null;
+  readonly status?: 'active' | 'pending' | 'suspended' | 'deleted';
+}
+
+export function useUpdateDomain(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ domainId, ...input }: UpdateDomainInput & { domainId: string }) =>
+      apiFetch<{ data: Domain }>(`/api/v1/clients/${clientId}/domains/${domainId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
     },
   });
 }

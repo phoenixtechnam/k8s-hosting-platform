@@ -26,6 +26,7 @@ export const domainResponseSchema = z.object({
   domainName: z.string(),
   status: z.string(),
   dnsMode: z.string(),
+  workloadId: z.string().nullable().optional(),
   sslAutoRenew: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),
