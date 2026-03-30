@@ -84,7 +84,7 @@ export async function applicationUpgradeRoutes(app: FastifyInstance): Promise<vo
       instanceId: id,
       fromVersion: instance.installedVersion!,
       toVersion,
-      triggeredBy: (request as any).user?.id ?? 'unknown',
+      triggeredBy: ((request as Record<string, unknown>).user as { id?: string } | undefined)?.id ?? 'unknown',
       triggerType: 'manual',
     });
 
@@ -115,7 +115,7 @@ export async function applicationUpgradeRoutes(app: FastifyInstance): Promise<vo
     }
 
     const { instanceIds, toVersion } = parsed.data;
-    const userId = (request as any).user?.id ?? 'unknown';
+    const userId = ((request as Record<string, unknown>).user as { id?: string } | undefined)?.id ?? 'unknown';
     const results: { instanceId: string; upgradeId?: string; error?: string }[] = [];
 
     for (const instanceId of instanceIds) {

@@ -5,7 +5,7 @@
  * and available upgrade resolution.
  */
 
-import type { UpgradeStatus, TriggerType } from '@k8s-hosting/api-contracts';
+import type { TriggerType } from '@k8s-hosting/api-contracts';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
