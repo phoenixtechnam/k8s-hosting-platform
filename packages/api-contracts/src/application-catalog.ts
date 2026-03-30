@@ -74,6 +74,7 @@ export const applicationInstanceResponseSchema = z.object({
   installedVersion: z.string().nullable(),
   targetVersion: z.string().nullable(),
   lastUpgradedAt: z.string().nullable(),
+  patchAvailable: z.boolean().optional(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

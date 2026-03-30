@@ -75,16 +75,29 @@ export class UpgradeWorker {
   }
 
   private async processUpgrade(upgradeId: string): Promise<void> {
+    const [upgrade] = await this.db
+      .select()
+      .from(applicationUpgrades)
+      .where(eq(applicationUpgrades.id, upgradeId));
+
+    // Detect patch mode: same fromVersion and toVersion means image-only patch
+    const isPatch = upgrade?.fromVersion === upgrade?.toVersion;
+
     const steps: Array<{
       status: string;
       action: (upgradeId: string) => Promise<void>;
+      skipForPatch?: boolean;
     }> = [
-      { status: 'backing_up', action: (id) => this.stepBackup(id) },
+      { status: 'backing_up', action: (id) => this.stepBackup(id), skipForPatch: true },
       { status: 'pre_check', action: (id) => this.stepPreCheck(id) },
       { status: 'upgrading', action: (id) => this.stepUpgrade(id) },
       { status: 'health_check', action: (id) => this.stepHealthCheck(id) },
       { status: 'completed', action: (id) => this.stepComplete(id) },
     ];
+
+    if (isPatch) {
+      console.log(`[upgrade-worker] Patch mode for ${upgradeId} — skipping backup`);
+    }
 
     for (const step of steps) {
       const [current] = await this.db
@@ -93,6 +106,9 @@ export class UpgradeWorker {
         .where(eq(applicationUpgrades.id, upgradeId));
 
       if (!current) return;
+
+      // Skip backup step in patch mode
+      if (step.skipForPatch && isPatch) continue;
 
       // Check if we should run this step
       const transition = transitionUpgrade(current.status, step.status);

@@ -15,6 +15,7 @@ export interface UpgradeContext {
   readonly toVersion: string;
   readonly triggeredBy: string;
   readonly triggerType: TriggerType;
+  readonly isPatch?: boolean;
 }
 
 interface InstanceLike {
