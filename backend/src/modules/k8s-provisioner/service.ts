@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
