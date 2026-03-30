@@ -109,6 +109,25 @@ export function useWriteFile() {
   });
 }
 
+/** Upload a file by reading it as text and writing via the write endpoint */
+export function useUploadFile() {
+  const { clientId } = useClientContext();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, targetDir }: { file: File; targetDir: string }) => {
+      const content = await file.text();
+      const path = targetDir === '/' ? `/${file.name}` : `${targetDir}/${file.name}`;
+      return apiFetch(`/api/v1/clients/${clientId}/files/write`, {
+        method: 'POST',
+        body: JSON.stringify({ path, content }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['files', clientId] });
+    },
+  });
+}
+
 export function useRenameFile() {
   const { clientId } = useClientContext();
   const qc = useQueryClient();

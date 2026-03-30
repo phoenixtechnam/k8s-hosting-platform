@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   FolderOpen, File, ChevronRight, ArrowLeft, Plus, Trash2, Edit3,
-  Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle,
+  Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
 } from 'lucide-react';
+import Editor from '@monaco-editor/react';
 import {
   useFileManagerStatus, useStartFileManager, useDirectoryListing,
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
-  useDeleteFile, useDownloadUrl,
+  useDeleteFile, useDownloadUrl, useUploadFile,
 } from '@/hooks/use-file-manager';
 import type { FileEntry } from '@/hooks/use-file-manager';
 
@@ -51,12 +52,29 @@ export default function Files() {
   const [renameName, setRenameName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const fmStatus = useFileManagerStatus();
   const startFm = useStartFileManager();
   const dirListing = useDirectoryListing(currentPath, fmStatus.data?.ready === true);
   const createDir = useCreateDirectory();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
+  const uploadFile = useUploadFile();
+
+  const handleFileUpload = useCallback((files: FileList | null) => {
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      uploadFile.mutate({ file, targetDir: currentPath });
+    }
+  }, [currentPath, uploadFile]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    handleFileUpload(e.dataTransfer.files);
+  }, [handleFileUpload]);
 
   // Auto-start file manager when page opens
   useEffect(() => {
@@ -156,6 +174,21 @@ export default function Files() {
           >
             <RefreshCw size={14} />
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { handleFileUpload(e.target.files); e.target.value = ''; }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadFile.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          >
+            {uploadFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            Upload
+          </button>
           <button
             onClick={() => { setNewDirOpen(true); setNewDirName(''); }}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
@@ -203,8 +236,19 @@ export default function Files() {
         </div>
       )}
 
-      {/* File list */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+      {/* File list with drag-and-drop */}
+      <div
+        className={`rounded-xl border-2 ${dragging ? 'border-dashed border-brand-400 bg-brand-50 dark:bg-brand-900/20' : 'border-gray-200 dark:border-gray-700'} bg-white dark:bg-gray-800 shadow-sm overflow-hidden transition-colors`}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+      >
+        {dragging && (
+          <div className="flex items-center justify-center gap-2 py-4 text-sm font-medium text-brand-600 dark:text-brand-400">
+            <Upload size={18} />
+            Drop files here to upload
+          </div>
+        )}
         {dirListing.isLoading && (
           <div className="flex items-center justify-center py-12">
             <Loader2 size={24} className="animate-spin text-gray-400" />
@@ -448,11 +492,21 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
       )}
 
       {fileContent.data && (
-        <textarea
+        <Editor
+          height="500px"
+          language={language}
           value={content}
-          onChange={(e) => { setContent(e.target.value); setDirty(true); }}
-          className="w-full h-[500px] px-4 py-3 font-mono text-sm text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-900 border-0 focus:outline-none resize-none"
-          spellCheck={false}
+          onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
+          theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 13,
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            wordWrap: 'on',
+            tabSize: 2,
+            automaticLayout: true,
+          }}
         />
       )}
     </div>
