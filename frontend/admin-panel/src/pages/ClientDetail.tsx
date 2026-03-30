@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -19,7 +19,7 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
-type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
+type TabKey = 'domains' | 'applications' | 'workloads' | 'files' | 'email' | 'backups';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -109,6 +109,7 @@ export default function ClientDetail() {
     { key: 'domains', label: 'Domains', count: domainCount },
     { key: 'applications', label: 'Applications', count: 0 },
     { key: 'workloads', label: 'Workloads', count: workloadCount },
+    { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
   ];
@@ -313,6 +314,13 @@ export default function ClientDetail() {
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
           {activeTab === 'applications' && <ApplicationsTab />}
           {activeTab === 'workloads' && <WorkloadsTab data={workloadsQuery.data} isLoading={workloadsQuery.isLoading} error={workloadsQuery.error} />}
+          {activeTab === 'files' && (
+            <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
+              <FolderOpen size={32} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+              <p>File browser available in the client panel.</p>
+              <p className="mt-1 text-xs">Use "Login as Client" to access the file manager.</p>
+            </div>
+          )}
           {activeTab === 'email' && <EmailTab emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />}
         </div>

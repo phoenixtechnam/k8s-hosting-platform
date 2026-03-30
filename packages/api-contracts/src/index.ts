@@ -46,3 +46,5 @@ export * from './ssl-certs.js';
 export * from './storage-settings.js';
 export * from './eol-settings.js';
 export * from './provisioning.js';
+export * from './files.js';
+export * from './tls-settings.js';
