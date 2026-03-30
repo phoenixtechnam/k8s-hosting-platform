@@ -1,16 +1,26 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, Clock, CheckCircle2, XCircle, History } from 'lucide-react';
 import clsx from 'clsx';
 import ApplicationRepoSettings from '@/components/ApplicationRepoSettings';
 import { useApplicationCatalog, useUpdateBadges } from '@/hooks/use-application-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
-import type { ApplicationCatalogResponse } from '@k8s-hosting/api-contracts';
+import {
+  useApplicationInstances,
+  useApplicationUpgrades,
+  useAvailableUpgrades,
+  useTriggerUpgrade,
+  useRollbackUpgrade,
+  useUpgradeProgress,
+} from '@/hooks/use-application-upgrades';
+import StatusBadge from '@/components/ui/StatusBadge';
+import type { ApplicationCatalogResponse, ApplicationInstanceResponse, ApplicationUpgradeResponse, AvailableUpgrade } from '@k8s-hosting/api-contracts';
 
-type Tab = 'catalog' | 'installed' | 'repos';
+type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'catalog', label: 'Available Applications' },
   { id: 'installed', label: 'Installed Applications' },
+  { id: 'upgrades', label: 'Upgrade History' },
   { id: 'repos', label: 'Repositories' },
 ] as const;
 
@@ -46,6 +56,7 @@ export default function Applications() {
 
       {activeTab === 'catalog' && <CatalogTab />}
       {activeTab === 'installed' && <InstalledTab />}
+      {activeTab === 'upgrades' && <UpgradeHistoryTab />}
       {activeTab === 'repos' && <RepositoriesTab />}
     </div>
   );
@@ -759,15 +770,450 @@ function AppDetailPanel({
   );
 }
 
-// ─── Static Tabs ────────────────────────────────────────────────────────────
+// ─── Installed Applications Tab ─────────────────────────────────────────────
 
 function InstalledTab() {
+  const { data: response, isLoading, isError, error } = useApplicationInstances();
+  const { data: catalogResponse } = useApplicationCatalog();
+  const [upgradeTarget, setUpgradeTarget] = useState<ApplicationInstanceResponse | null>(null);
+
+  const instances = response?.data ?? [];
+  const catalogMap = useMemo(() => {
+    const map = new Map<string, ApplicationCatalogResponse>();
+    for (const entry of catalogResponse?.data ?? []) {
+      map.set(entry.id, entry);
+    }
+    return map;
+  }, [catalogResponse]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12" data-testid="installed-loading">
+        <Loader2 size={24} className="animate-spin text-brand-500" />
+        <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading instances...</span>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+        <AlertCircle size={16} />
+        <span>Failed to load instances: {error?.message ?? 'Unknown error'}</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center" data-testid="installed-tab">
-      <p className="text-sm text-gray-500 dark:text-gray-400">Application deployment coming in Phase 2</p>
+    <div className="space-y-4" data-testid="installed-tab">
+      {instances.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+          No application instances deployed yet.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+          <table className="w-full text-sm" data-testid="instances-table">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Application</th>
+                <th className="px-4 py-3">Version</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Domain</th>
+                <th className="px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+              {instances.map((inst) => {
+                const catalogEntry = catalogMap.get(inst.applicationCatalogId);
+                return (
+                  <tr key={inst.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{inst.name}</td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{catalogEntry?.name ?? inst.applicationCatalogId}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-900 dark:text-gray-100">v{inst.installedVersion ?? '-'}</span>
+                        {inst.targetVersion && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-300">
+                            <ArrowUpCircle size={10} /> {inst.targetVersion}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={inst.status as Parameters<typeof StatusBadge>[0]['status']} />
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{inst.domainName ?? '-'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {inst.status === 'running' && !inst.targetVersion && (
+                          <button
+                            type="button"
+                            onClick={() => setUpgradeTarget(inst)}
+                            className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors"
+                            data-testid={`upgrade-btn-${inst.id}`}
+                          >
+                            <ArrowUpCircle size={12} /> Upgrade
+                          </button>
+                        )}
+                        {inst.status === 'upgrading' && (
+                          <span className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
+                            <Loader2 size={12} className="animate-spin" /> Upgrading...
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="text-sm text-gray-500 dark:text-gray-400">
+        {instances.length} instance{instances.length !== 1 ? 's' : ''}
+      </div>
+
+      {upgradeTarget && (
+        <UpgradeModal instance={upgradeTarget} onClose={() => setUpgradeTarget(null)} />
+      )}
     </div>
   );
 }
+
+// ─── Upgrade Modal ──────────────────────────────────────────────────────────
+
+function UpgradeModal({
+  instance,
+  onClose,
+}: {
+  readonly instance: ApplicationInstanceResponse;
+  readonly onClose: () => void;
+}) {
+  const { data: response, isLoading } = useAvailableUpgrades(instance.id);
+  const triggerUpgrade = useTriggerUpgrade();
+  const [selectedVersion, setSelectedVersion] = useState<string>('');
+  const [activeUpgradeId, setActiveUpgradeId] = useState<string | null>(null);
+  const { progress } = useUpgradeProgress(activeUpgradeId);
+
+  const availableUpgrades = response?.data ?? [];
+
+  const selectedUpgrade = useMemo(
+    () => availableUpgrades.find((u) => u.version === selectedVersion),
+    [availableUpgrades, selectedVersion],
+  );
+
+  const handleTrigger = useCallback(() => {
+    if (!selectedVersion) return;
+    triggerUpgrade.mutate(
+      { instanceId: instance.id, toVersion: selectedVersion },
+      {
+        onSuccess: (data) => {
+          setActiveUpgradeId(data.data.id);
+        },
+      },
+    );
+  }, [instance.id, selectedVersion, triggerUpgrade]);
+
+  const isTerminal = progress && ['completed', 'failed', 'rolled_back'].includes(progress.status);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="upgrade-modal">
+      <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Upgrade {instance.name}
+          </h3>
+          <button type="button" onClick={onClose} className="rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {/* Current version */}
+          <div className="flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-3">
+            <span className="text-sm text-gray-500 dark:text-gray-400">Current Version</span>
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">v{instance.installedVersion}</span>
+          </div>
+
+          {/* Progress display */}
+          {activeUpgradeId && progress && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{progress.statusMessage}</span>
+                <StatusBadge status={progress.status as Parameters<typeof StatusBadge>[0]['status']} />
+              </div>
+              {progress.progressPct >= 0 && (
+                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                  <div
+                    className={clsx(
+                      'h-full rounded-full transition-all duration-500',
+                      progress.status === 'failed' ? 'bg-red-500' : progress.status === 'completed' ? 'bg-green-500' : 'bg-brand-500',
+                    )}
+                    style={{ width: `${Math.max(progress.progressPct, 0)}%` }}
+                  />
+                </div>
+              )}
+              {progress.errorMessage && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+                  <XCircle size={16} className="mt-0.5 shrink-0" />
+                  <span>{progress.errorMessage}</span>
+                </div>
+              )}
+              {isTerminal && (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Version selection (before upgrade starts) */}
+          {!activeUpgradeId && (
+            <>
+              {isLoading ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 size={20} className="animate-spin text-brand-500" />
+                  <span className="ml-2 text-sm text-gray-500">Loading available versions...</span>
+                </div>
+              ) : availableUpgrades.length === 0 ? (
+                <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                  No upgrades available for this instance.
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Target Version
+                    </label>
+                    <select
+                      value={selectedVersion}
+                      onChange={(e) => setSelectedVersion(e.target.value)}
+                      className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-3 pr-8 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      data-testid="version-select"
+                    >
+                      <option value="">Select a version...</option>
+                      {availableUpgrades.map((u) => (
+                        <option key={u.version} value={u.version}>
+                          v{u.version} {u.isDefault ? '(recommended)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Breaking changes warning */}
+                  {selectedUpgrade?.breakingChanges && (
+                    <div className="flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
+                      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                      <div>
+                        <p className="font-medium">Breaking Changes</p>
+                        <p className="mt-1">{selectedUpgrade.breakingChanges}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Migration notes */}
+                  {selectedUpgrade?.migrationNotes && (
+                    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
+                      <p className="font-medium">Migration Notes</p>
+                      <p className="mt-1">{selectedUpgrade.migrationNotes}</p>
+                    </div>
+                  )}
+
+                  {/* Env changes */}
+                  {selectedUpgrade?.envChanges && selectedUpgrade.envChanges.length > 0 && (
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Environment Variable Changes</p>
+                      <div className="space-y-1">
+                        {selectedUpgrade.envChanges.map((change) => (
+                          <div key={change.key} className="flex items-center gap-2 text-xs">
+                            <span className={clsx(
+                              'rounded px-1.5 py-0.5 font-medium',
+                              change.action === 'add' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' :
+                              change.action === 'remove' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
+                              'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+                            )}>
+                              {change.action}
+                            </span>
+                            <code className="text-gray-700 dark:text-gray-300">{change.key}</code>
+                            {change.oldKey && <span className="text-gray-400">(was: {change.oldKey})</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="flex justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTrigger}
+                  disabled={!selectedVersion || triggerUpgrade.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="confirm-upgrade"
+                >
+                  {triggerUpgrade.isPending ? <Loader2 size={14} className="animate-spin" /> : <ArrowUpCircle size={14} />}
+                  Start Upgrade
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Upgrade History Tab ────────────────────────────────────────────────────
+
+function UpgradeHistoryTab() {
+  const [statusFilter, setStatusFilter] = useState('');
+  const { data: response, isLoading, isError, error } = useApplicationUpgrades(
+    statusFilter ? { status: statusFilter } : undefined,
+  );
+  const rollback = useRollbackUpgrade();
+
+  const upgrades = response?.data ?? [];
+
+  return (
+    <div className="space-y-4" data-testid="upgrades-tab">
+      <div className="flex items-center gap-3">
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-3 pr-8 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          data-testid="status-filter"
+        >
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="upgrading">In Progress</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+          <option value="rolled_back">Rolled Back</option>
+        </select>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 size={24} className="animate-spin text-brand-500" />
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading upgrade history...</span>
+        </div>
+      )}
+
+      {isError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+          <AlertCircle size={16} />
+          <span>Failed to load upgrade history: {error?.message ?? 'Unknown error'}</span>
+        </div>
+      )}
+
+      {!isLoading && !isError && (
+        <>
+          {upgrades.length === 0 ? (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+              <History size={32} className="mx-auto mb-2 text-gray-400" />
+              No upgrade records found.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm" data-testid="upgrades-table">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-4 py-3">Instance</th>
+                    <th className="px-4 py-3">From</th>
+                    <th className="px-4 py-3">To</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Progress</th>
+                    <th className="px-4 py-3">Trigger</th>
+                    <th className="px-4 py-3">Started</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {upgrades.map((u) => (
+                    <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400">
+                        {u.instanceId.slice(0, 8)}...
+                      </td>
+                      <td className="px-4 py-3 text-gray-900 dark:text-gray-100">v{u.fromVersion}</td>
+                      <td className="px-4 py-3 text-gray-900 dark:text-gray-100">v{u.toVersion}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={u.status as Parameters<typeof StatusBadge>[0]['status']} />
+                      </td>
+                      <td className="px-4 py-3">
+                        {u.progressPct >= 0 ? (
+                          <div className="flex items-center gap-2">
+                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                              <div
+                                className={clsx(
+                                  'h-full rounded-full',
+                                  u.status === 'failed' ? 'bg-red-500' : u.status === 'completed' ? 'bg-green-500' : 'bg-brand-500',
+                                )}
+                                style={{ width: `${u.progressPct}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-gray-500">{u.progressPct}%</span>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={clsx(
+                          'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
+                          u.triggerType === 'forced' ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300' :
+                          u.triggerType === 'batch' ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300' :
+                          'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400',
+                        )}>
+                          {u.triggerType}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
+                        {u.startedAt ? new Date(u.startedAt).toLocaleString() : '-'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {u.status === 'failed' && (
+                          <button
+                            type="button"
+                            onClick={() => rollback.mutate(u.id)}
+                            disabled={rollback.isPending}
+                            className="inline-flex items-center gap-1 rounded-md bg-orange-50 dark:bg-orange-900/20 px-2.5 py-1 text-xs font-medium text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-800/50 transition-colors"
+                            data-testid={`rollback-btn-${u.id}`}
+                          >
+                            <RotateCcw size={10} /> Rollback
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="text-sm text-gray-500 dark:text-gray-400">
+            {upgrades.length} upgrade record{upgrades.length !== 1 ? 's' : ''}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Repositories Tab ───────────────────────────────────────────────────────
 
 function RepositoriesTab() {
   return (

@@ -7,6 +7,7 @@ import {
   applicationInstances,
   applicationVersions,
   applicationUpgrades,
+  applicationCatalog,
 } from '../../db/schema.js';
 import {
   validateUpgradeRequest,
@@ -23,6 +24,24 @@ const ACTIVE_STATUSES = [
 ] as const;
 
 export async function applicationUpgradeRoutes(app: FastifyInstance): Promise<void> {
+  // ─── GET /api/v1/admin/application-instances ──────────────────────────────
+
+  app.get('/admin/application-instances', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Application Instances'],
+      summary: 'List all application instances across all clients',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const rows = await app.db
+      .select()
+      .from(applicationInstances)
+      .orderBy(desc(applicationInstances.createdAt));
+
+    return success(rows);
+  });
+
   // ─── POST /api/v1/admin/application-instances/:id/upgrade ────────────────
 
   app.post('/admin/application-instances/:id/upgrade', {
@@ -392,5 +411,119 @@ export async function applicationUpgradeRoutes(app: FastifyInstance): Promise<vo
     poll().catch(() => {
       if (!closed) reply.raw.end();
     });
+  });
+
+  // ─── Client-facing: GET /api/v1/clients/:clientId/application-instances ───
+
+  app.get('/clients/:clientId/application-instances', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Application Instances'],
+      summary: 'List application instances for a client',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { clientId: { type: 'string' } },
+        required: ['clientId'],
+      },
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+
+    const rows = await app.db
+      .select()
+      .from(applicationInstances)
+      .where(eq(applicationInstances.clientId, clientId))
+      .orderBy(desc(applicationInstances.createdAt));
+
+    return success(rows);
+  });
+
+  // ─── Client-facing: GET /api/v1/clients/:clientId/application-instances/:id/available-upgrades
+
+  app.get('/clients/:clientId/application-instances/:id/available-upgrades', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Application Instances'],
+      summary: 'List available upgrade versions for a client instance',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { clientId: { type: 'string' }, id: { type: 'string' } },
+        required: ['clientId', 'id'],
+      },
+    },
+  }, async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+
+    const [instance] = await app.db
+      .select()
+      .from(applicationInstances)
+      .where(and(eq(applicationInstances.id, id), eq(applicationInstances.clientId, clientId)));
+
+    if (!instance) {
+      throw new ApiError('INSTANCE_NOT_FOUND', `Application instance '${id}' not found`, 404);
+    }
+
+    const versions = await app.db
+      .select()
+      .from(applicationVersions)
+      .where(eq(applicationVersions.applicationCatalogId, instance.applicationCatalogId));
+
+    const available = getAvailableUpgradesForInstance(instance.installedVersion, versions);
+
+    return success(available.map(v => ({
+      version: v.version,
+      isDefault: v.isDefault,
+      breakingChanges: v.breakingChanges,
+      migrationNotes: v.migrationNotes,
+      envChanges: v.envChanges,
+      minResources: v.minResources,
+    })));
+  });
+
+  // ─── Client-facing: GET /api/v1/clients/:clientId/application-upgrades ────
+
+  app.get('/clients/:clientId/application-upgrades', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Application Upgrades'],
+      summary: 'List upgrade history for a client\'s instances',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { clientId: { type: 'string' } },
+        required: ['clientId'],
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+        },
+      },
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const { limit = 50 } = request.query as { limit?: number };
+
+    // Get client's instances first
+    const clientInstanceRows = await app.db
+      .select({ id: applicationInstances.id })
+      .from(applicationInstances)
+      .where(eq(applicationInstances.clientId, clientId));
+
+    const instanceIds = clientInstanceRows.map(r => r.id);
+    if (instanceIds.length === 0) {
+      return success([]);
+    }
+
+    const rows = await app.db
+      .select()
+      .from(applicationUpgrades)
+      .where(inArray(applicationUpgrades.instanceId, instanceIds))
+      .orderBy(desc(applicationUpgrades.createdAt))
+      .limit(limit);
+
+    return success(rows);
   });
 }

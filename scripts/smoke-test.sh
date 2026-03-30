@@ -158,6 +158,28 @@ check_status "GET /admin/domains" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/workload-repos")
 check_status "GET /admin/workload-repos" "200" "$STATUS"
 
+# ─── Application Upgrade & EOL Endpoints ──────────────────────────────────────
+
+log "── Application Upgrades & EOL ──"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/application-instances")
+check_status "GET /admin/application-instances" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/application-upgrades")
+check_status "GET /admin/application-upgrades" "200" "$STATUS"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/eol-settings")
+check_status "GET /admin/eol-settings" "200" "$STATUS"
+
+EOL_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/eol-scanner/run")
+EOL_CODE=$(echo "$EOL_RESPONSE" | tail -1)
+check_status "POST /admin/eol-scanner/run" "200" "$EOL_CODE"
+
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH -H "$AUTH_HEADER" \
+  -H "Content-Type: application/json" \
+  -d '{"graceDays":14,"autoUpgradeEnabled":false}' \
+  "${API_URL}/api/v1/admin/eol-settings")
+check_status "PATCH /admin/eol-settings" "200" "$STATUS"
+
 # ─── Auth Protected (no token) ─────────────────────────────────────────────────
 
 log "── Auth Protection ──"

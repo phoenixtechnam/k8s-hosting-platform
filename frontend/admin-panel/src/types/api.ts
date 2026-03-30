@@ -21,6 +21,11 @@ export type {
   HostingSettingsResponse,
   ProtectedDirectoryResponse,
   ProtectedDirectoryUserResponse,
+  ApplicationUpgradeResponse,
+  AvailableUpgrade,
+  ApplicationInstanceResponse,
+  ApplicationVersionResponse,
+  UpgradeStatus,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';

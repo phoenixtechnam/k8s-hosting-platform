@@ -14,6 +14,9 @@ export type {
   ProtectedDirectoryResponse,
   ProtectedDirectoryUserResponse,
   ContainerImageResponse,
+  ApplicationInstanceResponse,
+  ApplicationUpgradeResponse,
+  AvailableUpgrade,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
