@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -16,7 +16,7 @@ import type { Domain, PaginatedResponse, Workload } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
-import { useTriggerProvisioning } from '@/hooks/use-provisioning';
+import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
 type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
@@ -39,11 +39,13 @@ export default function ClientDetail() {
   const mailboxesQuery = useMailboxes(id);
 
   const [provisioningOpen, setProvisioningOpen] = useState(false);
+  const [decommissionOpen, setDecommissionOpen] = useState(false);
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
   const impersonate = useImpersonate();
   const triggerProvision = useTriggerProvisioning();
+  const triggerDecommission = useTriggerDecommission();
 
   const handleDelete = async () => {
     if (!id) return;
@@ -199,6 +201,16 @@ export default function ClientDetail() {
               <span className="hidden sm:inline">Suspend</span>
             </button>
           )}
+          {client.status === 'suspended' && ((client as Record<string, unknown>).provisioningStatus === 'provisioned' || (client as Record<string, unknown>).provisioningStatus === 'failed') && (
+            <button
+              onClick={() => setDecommissionOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
+              data-testid="decommission-button"
+            >
+              <ServerCrash size={14} />
+              <span className="hidden sm:inline">Decommission</span>
+            </button>
+          )}
           <button
             onClick={() => setDeleteOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
@@ -325,6 +337,23 @@ export default function ClientDetail() {
           clientId={id}
           clientName={name}
           onClose={() => setProvisioningOpen(false)}
+        />
+      )}
+
+      {decommissionOpen && id && (
+        <DecommissionConfirmDialog
+          open={decommissionOpen}
+          onClose={() => setDecommissionOpen(false)}
+          onConfirm={async () => {
+            try {
+              await triggerDecommission.mutateAsync(id);
+              setDecommissionOpen(false);
+              setProvisioningOpen(true);
+            } catch { /* error shown in dialog */ }
+          }}
+          clientName={name}
+          namespace={client.kubernetesNamespace}
+          isPending={triggerDecommission.isPending}
         />
       )}
     </div>
@@ -897,5 +926,92 @@ function ProvisioningStatusBadge({ status }: { readonly status: string }) {
       {status === 'provisioning' && <Loader2 size={10} className="animate-spin" />}
       {status}
     </span>
+  );
+}
+
+function DecommissionConfirmDialog({
+  open,
+  onClose,
+  onConfirm,
+  clientName,
+  namespace,
+  isPending,
+}: {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly onConfirm: () => void;
+  readonly clientName: string;
+  readonly namespace: string;
+  readonly isPending: boolean;
+}) {
+  const [confirmText, setConfirmText] = useState('');
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="decommission-dialog-backdrop"
+    >
+      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-800" data-testid="decommission-dialog">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+            <ServerCrash size={20} className="text-red-600 dark:text-red-400" />
+          </div>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Decommission Client
+          </h2>
+        </div>
+
+        <div className="space-y-3 text-sm text-gray-600 dark:text-gray-400">
+          <p>
+            This will permanently delete <strong>all Kubernetes resources</strong> for{' '}
+            <strong className="text-gray-900 dark:text-gray-100">{clientName}</strong>:
+          </p>
+          <ul className="list-disc pl-5 space-y-1">
+            <li>Namespace <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">{namespace}</code></li>
+            <li>All deployments, services, and ingress rules</li>
+            <li>Persistent volume claims and stored data</li>
+            <li>Resource quotas and network policies</li>
+          </ul>
+          <p className="font-semibold text-red-600 dark:text-red-400">
+            This action cannot be undone. All customer data on the cluster will be permanently lost.
+          </p>
+        </div>
+
+        <div className="mt-4">
+          <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+            Type <strong>DECOMMISSION</strong> to confirm
+          </label>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            placeholder="DECOMMISSION"
+            data-testid="decommission-confirm-input"
+          />
+        </div>
+
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={confirmText !== 'DECOMMISSION' || isPending}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            data-testid="decommission-confirm-button"
+          >
+            {isPending ? <Loader2 size={14} className="animate-spin inline mr-1" /> : null}
+            Decommission
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

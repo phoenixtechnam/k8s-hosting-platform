@@ -92,4 +92,21 @@ export function useTriggerProvisioning() {
   });
 }
 
+/** Trigger decommission (delete K8s namespace) */
+export function useTriggerDecommission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (clientId: string) =>
+      apiFetch<{ data: TriggerResponse }>(`/api/v1/admin/clients/${clientId}/decommission`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    onSuccess: (_data, clientId) => {
+      qc.invalidateQueries({ queryKey: ['provisioning-active-tasks'] });
+      qc.invalidateQueries({ queryKey: ['provisioning-status', clientId] });
+      qc.invalidateQueries({ queryKey: ['clients'] });
+    },
+  });
+}
+
 export type { ProvisioningTask, ProvisioningStep, ActiveTask, ActiveTasksSummary };

@@ -6,7 +6,7 @@ import { clients, provisioningTasks } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from './k8s-client.js';
-import { runProvisionNamespace, PROVISION_STEPS, buildStepsLog } from './service.js';
+import { runProvisionNamespace, runDeprovision, PROVISION_STEPS, DEPROVISION_STEPS, buildStepsLog } from './service.js';
 
 export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
   // All provisioning routes require auth + admin role
@@ -119,7 +119,7 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
       currentStep: task.currentStep,
       totalSteps: task.totalSteps,
       completedSteps: task.completedSteps,
-      stepsLog: task.stepsLog,
+      stepsLog: typeof task.stepsLog === 'string' ? JSON.parse(task.stepsLog) : task.stepsLog,
       errorMessage: task.errorMessage,
       startedBy: task.startedBy,
       startedAt: task.startedAt?.toISOString() ?? null,
@@ -169,6 +169,71 @@ export async function provisioningRoutes(app: FastifyInstance): Promise<void> {
     return success({
       count: tasks.length,
       tasks,
+    });
+  });
+
+  // POST /api/v1/admin/clients/:clientId/decommission
+  // Deletes the K8s namespace and all resources inside it
+  app.post('/admin/clients/:clientId/decommission', {
+    schema: {
+      tags: ['Provisioning'],
+      summary: 'Decommission a client — delete K8s namespace and all resources',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['clientId'],
+        properties: { clientId: { type: 'string' } },
+      },
+    },
+  }, async (request, reply) => {
+    const { clientId } = request.params as { clientId: string };
+
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+    if (!client) {
+      throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+    }
+
+    // Only allow decommission for suspended clients
+    if (client.status !== 'suspended') {
+      throw new ApiError('CLIENT_NOT_SUSPENDED', 'Client must be suspended before decommissioning', 409);
+    }
+
+    // Must be provisioned (or failed) to decommission
+    if (client.provisioningStatus === 'unprovisioned') {
+      throw new ApiError('NOT_PROVISIONED', 'Client is not provisioned — nothing to decommission', 409);
+    }
+
+    if (client.provisioningStatus === 'provisioning') {
+      throw new ApiError('ALREADY_PROVISIONING', 'Cannot decommission while provisioning is in progress', 409);
+    }
+
+    const taskId = crypto.randomUUID();
+    const stepsLog = buildStepsLog(DEPROVISION_STEPS);
+
+    await app.db.insert(provisioningTasks).values({
+      id: taskId,
+      clientId,
+      type: 'deprovision',
+      status: 'pending',
+      totalSteps: DEPROVISION_STEPS.length,
+      completedSteps: 0,
+      stepsLog,
+      startedBy: request.user!.sub,
+    });
+
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8sClients = createK8sClients(kubeconfigPath);
+
+    runDeprovision(app.db, k8sClients, taskId, clientId).catch((err) => {
+      app.log.error({ err, taskId, clientId }, 'Decommission failed unexpectedly');
+    });
+
+    reply.status(202);
+    return success({
+      taskId,
+      clientId,
+      status: 'pending',
+      totalSteps: DEPROVISION_STEPS.length,
     });
   });
 }

@@ -25,6 +25,10 @@ export const PROVISION_STEPS = [
   'Create PVC',
 ] as const;
 
+export const DEPROVISION_STEPS = [
+  'Delete Namespace',
+] as const;
+
 // ─── Step Log Helpers ────────────────────────────────────────────────────────
 
 export function buildStepsLog(steps: readonly string[]): ProvisioningStep[] {
@@ -271,5 +275,73 @@ export async function runProvisionNamespace(
     await db.update(clients).set({
       provisioningStatus: 'failed',
     }).where(eq(clients.id, clientId));
+  }
+}
+
+// ─── Decommission Orchestrator ───────────────────────────────────────────────
+
+/**
+ * Delete the entire namespace (cascades all resources inside it).
+ * Runs async, updates provisioning_tasks with progress.
+ */
+export async function runDeprovision(
+  db: Database,
+  k8s: K8sClients,
+  taskId: string,
+  clientId: string,
+): Promise<void> {
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+  if (!client) throw new Error(`Client ${clientId} not found`);
+
+  const namespace = client.kubernetesNamespace;
+  let stepsLog = buildStepsLog(DEPROVISION_STEPS);
+  let completedSteps = 0;
+
+  const updateProgress = async (stepName: string, status: ProvisioningStep['status'], error?: string) => {
+    stepsLog = updateStepStatus(stepsLog, stepName, status, error);
+    if (status === 'completed') completedSteps++;
+    await db.update(provisioningTasks).set({
+      currentStep: stepName,
+      completedSteps,
+      stepsLog,
+      ...(status === 'failed' ? { status: 'failed' as const, errorMessage: error, completedAt: new Date() } : {}),
+    }).where(eq(provisioningTasks.id, taskId));
+  };
+
+  await db.update(provisioningTasks).set({
+    status: 'running',
+    startedAt: new Date(),
+    stepsLog,
+  }).where(eq(provisioningTasks.id, taskId));
+
+  try {
+    // Step 1: Delete Namespace (cascades everything inside)
+    await updateProgress('Delete Namespace', 'running');
+    try {
+      await k8s.core.deleteNamespace({ name: namespace });
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+      // Already gone — that's fine
+    }
+    await updateProgress('Delete Namespace', 'completed');
+
+    await db.update(provisioningTasks).set({
+      status: 'completed',
+      completedSteps,
+      completedAt: new Date(),
+      stepsLog,
+    }).where(eq(provisioningTasks.id, taskId));
+
+    await db.update(clients).set({
+      provisioningStatus: 'unprovisioned',
+    }).where(eq(clients.id, clientId));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db.update(provisioningTasks).set({
+      status: 'failed',
+      errorMessage: message,
+      completedAt: new Date(),
+      stepsLog,
+    }).where(eq(provisioningTasks.id, taskId));
   }
 }
