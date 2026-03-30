@@ -174,9 +174,17 @@ describe('DomainDetail page', () => {
 });
 
 describe('DNS Records tab', () => {
+  const switchToDnsTab = async () => {
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-dns')).toBeInTheDocument();
+    });
+    await userEvent.setup().click(screen.getByTestId('tab-dns'));
+  };
+
   it('renders DNS records table', async () => {
     setupMockApi();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDnsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId('dns-records-table')).toBeInTheDocument();
@@ -189,6 +197,7 @@ describe('DNS Records tab', () => {
     setupMockApi();
     const user = userEvent.setup();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDnsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId('add-dns-record-button')).toBeInTheDocument();
@@ -203,6 +212,7 @@ describe('DNS Records tab', () => {
   it('shows delete button per record', async () => {
     setupMockApi();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDnsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId('delete-dns-rec-1')).toBeInTheDocument();
@@ -214,6 +224,7 @@ describe('DNS Records tab', () => {
     setupMockApi();
     const user = userEvent.setup();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDnsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId('delete-dns-rec-1')).toBeInTheDocument();
