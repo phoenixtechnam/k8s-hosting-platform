@@ -39,9 +39,11 @@ export function useFileManagerStatus() {
     queryFn: () => apiFetch<{ data: FileManagerStatus }>(`/api/v1/clients/${clientId}/files/status`),
     select: (res) => res.data,
     refetchInterval: (query) => {
-      const data = query.state.data as FileManagerStatus | undefined;
+      // query.state.data is pre-select: { data: FileManagerStatus }
+      const raw = query.state.data as { data: FileManagerStatus } | undefined;
+      const phase = raw?.data?.phase;
       // Poll every 2s while starting, stop once ready or failed
-      if (data && (data.phase === 'starting' || data.phase === 'not_deployed')) return 2000;
+      if (!phase || phase === 'starting' || phase === 'not_deployed') return 2000;
       return false;
     },
   });
