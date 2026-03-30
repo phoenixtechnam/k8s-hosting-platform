@@ -7,7 +7,6 @@ import {
   applicationInstances,
   applicationVersions,
   applicationUpgrades,
-  applicationCatalog,
 } from '../../db/schema.js';
 import {
   validateUpgradeRequest,

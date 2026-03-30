@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, Clock, CheckCircle2, XCircle, History } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History } from 'lucide-react';
 import clsx from 'clsx';
 import ApplicationRepoSettings from '@/components/ApplicationRepoSettings';
 import { useApplicationCatalog, useUpdateBadges } from '@/hooks/use-application-catalog';
@@ -13,7 +13,7 @@ import {
   useUpgradeProgress,
 } from '@/hooks/use-application-upgrades';
 import StatusBadge from '@/components/ui/StatusBadge';
-import type { ApplicationCatalogResponse, ApplicationInstanceResponse, ApplicationUpgradeResponse, AvailableUpgrade } from '@k8s-hosting/api-contracts';
+import type { ApplicationCatalogResponse, ApplicationInstanceResponse } from '@k8s-hosting/api-contracts';
 
 type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
