@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { clients, hostingPlans, domains, workloads, containerImages } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
@@ -46,7 +46,7 @@ export async function generateClientManifests(
 
   const imageMap = new Map<string, typeof containerImages.$inferSelect>();
   if (imageIds.length > 0) {
-    const allImages = await db.select().from(containerImages).where(eq(containerImages.id, imageIds[0])) as Array<typeof containerImages.$inferSelect>;
+    const allImages = await db.select().from(containerImages).where(inArray(containerImages.id, imageIds)) as Array<typeof containerImages.$inferSelect>;
     for (const img of allImages) {
       imageMap.set(img.id, img);
     }

@@ -45,6 +45,34 @@ export function useCreateDomain(clientId: string | undefined) {
   });
 }
 
+export interface VerificationCheck {
+  readonly type: string;
+  readonly status: 'pass' | 'fail';
+  readonly detail: string;
+}
+
+export interface VerificationResult {
+  readonly verified: boolean;
+  readonly checks: readonly VerificationCheck[];
+  readonly domainId: string;
+  readonly domainName: string;
+}
+
+export function useVerifyDomain(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (domainId: string) =>
+      apiFetch<{ data: VerificationResult }>(
+        `/api/v1/clients/${clientId}/domains/${domainId}/verify`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+    },
+  });
+}
+
 export function useDeleteDomain(clientId: string | undefined) {
   const queryClient = useQueryClient();
 

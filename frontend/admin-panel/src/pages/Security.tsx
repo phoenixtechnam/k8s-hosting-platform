@@ -113,6 +113,10 @@ export default function Security() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Security</h1>
       </div>
 
+      <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
+        Security policies shown below are based on the platform's default configuration. Live status will be available once connected to a cluster.
+      </div>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard title="Network Policies" value={8} icon={Shield} accent="brand" />
         <StatCard title="Sealed Secrets" value={12} icon={Lock} accent="green" />

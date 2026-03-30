@@ -178,6 +178,10 @@ export default function Monitoring() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Monitoring</h1>
 
+      <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
+        Metrics shown are placeholder values. Live monitoring data will be available after connecting Prometheus and deploying the monitoring stack.
+      </div>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Platform Status"

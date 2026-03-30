@@ -251,6 +251,16 @@ describe('generateClientManifests', () => {
       },
       spec: {
         replicas: 1,
+        template: {
+          spec: {
+            containers: [
+              {
+                name: 'api-server',
+                image: 'ghcr.io/hosting/node-api:18',
+              },
+            ],
+          },
+        },
       },
     });
   });

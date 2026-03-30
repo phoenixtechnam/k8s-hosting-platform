@@ -2,11 +2,11 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
-  Users, Lock, ChevronDown, ChevronRight,
+  Users, Lock, ChevronDown, ChevronRight, CheckCircle,
 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useDomains } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -24,6 +24,7 @@ type Tab = 'dns' | 'hosting' | 'protected';
 export default function DomainDetail() {
   const { clientId, domainId } = useParams<{ clientId: string; domainId: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('dns');
+  const verifyDomain = useVerifyDomain(clientId);
 
   const { data: domainsData, isLoading: domainLoading } = useDomains(clientId, { limit: 100 });
   const domain = domainsData?.data?.find((d) => d.id === domainId);
@@ -67,7 +68,41 @@ export default function DomainDetail() {
           {domain.domainName}
         </h1>
         <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
+        <button
+          type="button"
+          onClick={() => verifyDomain.mutate(domainId!)}
+          disabled={verifyDomain.isPending}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-300 dark:border-brand-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 disabled:opacity-50"
+          data-testid="verify-dns-button"
+        >
+          {verifyDomain.isPending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+          Verify DNS
+        </button>
       </div>
+      {verifyDomain.isSuccess && verifyDomain.data?.data && (
+        <div
+          className={clsx(
+            'rounded-lg border px-4 py-3 text-sm',
+            verifyDomain.data.data.verified
+              ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+              : 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
+          )}
+          data-testid="verify-dns-result"
+        >
+          {verifyDomain.data.data.verified ? 'DNS verification passed.' : 'DNS verification failed.'}
+          {verifyDomain.data.data.checks.map((check) => (
+            <div key={check.type} className="mt-1 text-xs opacity-80">
+              [{check.status.toUpperCase()}] {check.type}: {check.detail}
+            </div>
+          ))}
+        </div>
+      )}
+      {verifyDomain.isError && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="verify-dns-error">
+          <AlertCircle size={14} className="mr-1 inline" />
+          {verifyDomain.error instanceof Error ? verifyDomain.error.message : 'Verification request failed.'}
+        </div>
+      )}
 
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {tabs.map((tab) => (
