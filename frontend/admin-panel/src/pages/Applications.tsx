@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, MemoryStick, Heart, Settings2, Network, Box, ExternalLink, Star, Flame } from 'lucide-react';
 import clsx from 'clsx';
 import ApplicationRepoSettings from '@/components/ApplicationRepoSettings';
-import { useApplicationCatalog } from '@/hooks/use-application-catalog';
+import { useApplicationCatalog, useUpdateBadges } from '@/hooks/use-application-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
 import type { ApplicationCatalogResponse } from '@k8s-hosting/api-contracts';
 
@@ -170,8 +170,17 @@ function CatalogTab() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<ApplicationCatalogResponse | null>(null);
   const { data: response, isLoading, isError, error } = useApplicationCatalog();
+  const updateBadges = useUpdateBadges();
 
   const entries = response?.data ?? [];
+
+  const toggleFeatured = useCallback((entry: ApplicationCatalogResponse) => {
+    updateBadges.mutate({ id: entry.id, featured: !entry.featured });
+  }, [updateBadges]);
+
+  const togglePopular = useCallback((entry: ApplicationCatalogResponse) => {
+    updateBadges.mutate({ id: entry.id, popular: !entry.popular });
+  }, [updateBadges]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -198,7 +207,11 @@ function CatalogTab() {
       result = result.filter((entry) => (entry.category ?? 'other') === categoryFilter);
     }
 
-    return result;
+    return [...result].sort((a, b) => {
+      if (a.featured !== b.featured) return (b.featured ?? 0) - (a.featured ?? 0);
+      if (a.popular !== b.popular) return (b.popular ?? 0) - (a.popular ?? 0);
+      return a.name.localeCompare(b.name);
+    });
   }, [search, categoryFilter, entries]);
 
   const handleCardClick = useCallback((entry: ApplicationCatalogResponse) => {
@@ -278,9 +291,21 @@ function CatalogTab() {
                         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">v{entry.version}</p>
                       </div>
                     </div>
-                    <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
-                      {entry.category ?? 'other'}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {entry.featured ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+                          <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+                        </span>
+                      ) : null}
+                      {entry.popular ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
+                          <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+                        </span>
+                      ) : null}
+                      <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
+                        {entry.category ?? 'other'}
+                      </span>
+                    </div>
                   </div>
                   <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -300,6 +325,36 @@ function CatalogTab() {
                       ))}
                     </div>
                   )}
+                  <div className="mt-3 flex gap-2">
+                    {entry.url && (
+                      <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                        <ExternalLink size={12} /> Website
+                      </a>
+                    )}
+                    {entry.documentation && (
+                      <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                        <ExternalLink size={12} /> Docs
+                      </a>
+                    )}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-3">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); toggleFeatured(entry); }}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                      title={entry.featured ? 'Remove Featured' : 'Mark as Featured'}
+                    >
+                      <Star size={14} className={entry.featured ? 'fill-amber-400 text-amber-400' : 'text-gray-400 dark:text-gray-500'} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); togglePopular(entry); }}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                      title={entry.popular ? 'Remove Popular' : 'Mark as Popular'}
+                    >
+                      <Flame size={14} className={entry.popular ? 'fill-orange-400 text-orange-400' : 'text-gray-400 dark:text-gray-500'} />
+                    </button>
+                  </div>
                 </button>
               ))}
             </div>
@@ -389,11 +444,37 @@ function AppDetailPanel({
                   <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
                 </div>
               </div>
-              <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-3 py-1 text-xs font-medium text-brand-700 dark:text-brand-300">
-                {entry.category ?? 'other'}
-              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {entry.featured ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                    <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+                  </span>
+                ) : null}
+                {entry.popular ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-3 py-1 text-xs font-medium text-orange-700 dark:text-orange-300">
+                    <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+                  </span>
+                ) : null}
+                <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-3 py-1 text-xs font-medium text-brand-700 dark:text-brand-300">
+                  {entry.category ?? 'other'}
+                </span>
+              </div>
             </div>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
+            {(entry.url || entry.documentation) && (
+              <div className="mt-3 flex gap-3">
+                {entry.url && (
+                  <a href={entry.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-50 dark:bg-brand-900/20 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
+                    <ExternalLink size={14} /> Visit Website
+                  </a>
+                )}
+                {entry.documentation && (
+                  <a href={entry.documentation} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                    <ExternalLink size={14} /> User Manual
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Components */}

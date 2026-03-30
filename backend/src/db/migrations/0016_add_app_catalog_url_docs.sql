@@ -1,0 +1,2 @@
+ALTER TABLE application_catalog ADD COLUMN url VARCHAR(500) DEFAULT NULL;
+ALTER TABLE application_catalog ADD COLUMN documentation VARCHAR(500) DEFAULT NULL;

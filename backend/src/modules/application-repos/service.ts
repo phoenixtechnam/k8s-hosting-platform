@@ -30,6 +30,8 @@ interface ApplicationManifest {
   readonly health_check?: Record<string, unknown>;
   readonly parameters?: readonly Record<string, unknown>[];
   readonly tags?: readonly string[];
+  readonly url?: string;
+  readonly documentation?: string;
 }
 
 const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-application-catalog';
@@ -215,6 +217,8 @@ export async function syncRepo(db: Database, repoId: string) {
         name: manifest.name,
         version: manifest.version ?? null,
         description: manifest.description ?? null,
+        url: manifest.url ?? null,
+        documentation: manifest.documentation ?? null,
         category: manifest.category ?? null,
         minPlan: manifest.min_plan ?? null,
         tenancy: (manifest.tenancy as unknown as Record<string, unknown> | null) ?? null,
@@ -331,6 +335,34 @@ export async function getCatalogEntry(db: Database, code: string) {
     healthCheck: parseJsonField(row.healthCheck),
     parameters: parseJsonField(row.parameters),
     tenancy: parseJsonField(row.tenancy),
+  };
+}
+
+export async function updateBadges(db: Database, id: string, badges: { featured?: boolean; popular?: boolean }) {
+  const [entry] = await db.select().from(applicationCatalog).where(eq(applicationCatalog.id, id));
+  if (!entry) {
+    throw new ApiError('CATALOG_ENTRY_NOT_FOUND', `Application catalog entry '${id}' not found`, 404);
+  }
+
+  const updateValues: Record<string, unknown> = {};
+  if (badges.featured !== undefined) updateValues.featured = badges.featured ? 1 : 0;
+  if (badges.popular !== undefined) updateValues.popular = badges.popular ? 1 : 0;
+
+  if (Object.keys(updateValues).length > 0) {
+    await db.update(applicationCatalog).set(updateValues).where(eq(applicationCatalog.id, id));
+  }
+
+  const [updated] = await db.select().from(applicationCatalog).where(eq(applicationCatalog.id, id));
+  return {
+    ...updated,
+    tags: parseJsonField(updated.tags),
+    components: parseJsonField(updated.components),
+    networking: parseJsonField(updated.networking),
+    volumes: parseJsonField(updated.volumes),
+    resources: parseJsonField(updated.resources),
+    healthCheck: parseJsonField(updated.healthCheck),
+    parameters: parseJsonField(updated.parameters),
+    tenancy: parseJsonField(updated.tenancy),
   };
 }
 

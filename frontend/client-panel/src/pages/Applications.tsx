@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useWorkloads, useContainerImages, useUpdateWorkload } from '@/hooks/use-workloads';
@@ -201,6 +201,12 @@ function AvailableTab() {
       result = result.filter((entry) => (entry.category ?? 'other') === categoryFilter);
     }
 
+    result = [...result].sort((a, b) => {
+      if ((a.featured ?? 0) !== (b.featured ?? 0)) return (b.featured ?? 0) - (a.featured ?? 0);
+      if ((a.popular ?? 0) !== (b.popular ?? 0)) return (b.popular ?? 0) - (a.popular ?? 0);
+      return a.name.localeCompare(b.name);
+    });
+
     return result;
   }, [search, categoryFilter, entries]);
 
@@ -281,9 +287,21 @@ function AvailableTab() {
                         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">v{entry.version}</p>
                       </div>
                     </div>
-                    <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
-                      {entry.category ?? 'other'}
-                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
+                        {entry.category ?? 'other'}
+                      </span>
+                      {entry.featured ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+                          <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+                        </span>
+                      ) : null}
+                      {entry.popular ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
+                          <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -303,6 +321,18 @@ function AvailableTab() {
                       ))}
                     </div>
                   )}
+                  <div className="mt-3 flex gap-2">
+                    {entry.url && (
+                      <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                        <ExternalLink size={12} /> Website
+                      </a>
+                    )}
+                    {entry.documentation && (
+                      <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2.5 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                        <ExternalLink size={12} /> Docs
+                      </a>
+                    )}
+                  </div>
                 </button>
               ))}
             </div>
@@ -373,11 +403,37 @@ function AppDetailPanel({
                   <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">v{entry.version}</p>
                 </div>
               </div>
-              <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-3 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
-                {entry.category ?? 'other'}
-              </span>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-3 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
+                  {entry.category ?? 'other'}
+                </span>
+                {entry.featured ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                    <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+                  </span>
+                ) : null}
+                {entry.popular ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-3 py-1 text-xs font-medium text-orange-700 dark:text-orange-300">
+                    <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+                  </span>
+                ) : null}
+              </div>
             </div>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
+            {(entry.url || entry.documentation) && (
+              <div className="mt-3 flex gap-3">
+                {entry.url && (
+                  <a href={entry.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-50 dark:bg-brand-900/20 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
+                    <ExternalLink size={14} /> Visit Website
+                  </a>
+                )}
+                {entry.documentation && (
+                  <a href={entry.documentation} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                    <ExternalLink size={14} /> User Manual
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Components */}

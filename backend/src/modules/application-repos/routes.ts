@@ -196,6 +196,32 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
     return success(entries);
   });
 
+  // PATCH /api/v1/admin/application-catalog/:id/badges
+  app.patch('/admin/application-catalog/:id/badges', {
+    schema: {
+      tags: ['Application Catalog'],
+      summary: 'Update featured/popular badges on an application',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+      body: {
+        type: 'object',
+        properties: {
+          featured: { type: 'boolean' },
+          popular: { type: 'boolean' },
+        },
+      },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { featured?: boolean; popular?: boolean };
+    const updated = await service.updateBadges(app.db, id, body);
+    return success(updated);
+  });
+
   // GET /api/v1/admin/application-catalog/:code
   app.get('/admin/application-catalog/:code', {
     schema: {

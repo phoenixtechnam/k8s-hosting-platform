@@ -1,0 +1,3 @@
+ALTER TABLE `application_catalog`
+  ADD COLUMN `featured` TINYINT NOT NULL DEFAULT 0,
+  ADD COLUMN `popular` TINYINT NOT NULL DEFAULT 0;

@@ -54,17 +54,21 @@ describe('Client Workloads page', () => {
     await waitFor(() => expect(screen.getByTestId('workloads-heading')).toHaveTextContent('Workloads'));
   });
 
-  it('renders workload rows', async () => {
+  it('renders workload rows in deployed tab', async () => {
     setupMocks();
+    const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('workloads-table')).toBeInTheDocument());
     expect(screen.getByText('my-app')).toBeInTheDocument();
     expect(screen.getByText('worker')).toBeInTheDocument();
   });
 
-  it('shows deploy button', async () => {
+  it('shows deploy button in deployed tab', async () => {
     setupMocks();
+    const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('deploy-workload-button')).toBeInTheDocument());
   });
 
@@ -72,6 +76,7 @@ describe('Client Workloads page', () => {
     setupMocks();
     const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('deploy-workload-button')).toBeInTheDocument());
     await user.click(screen.getByTestId('deploy-workload-button'));
     expect(screen.getByTestId('deploy-form')).toBeInTheDocument();
@@ -81,14 +86,18 @@ describe('Client Workloads page', () => {
 
   it('has start/stop toggle per workload', async () => {
     setupMocks();
+    const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('toggle-workload-w1')).toBeInTheDocument());
     expect(screen.getByTestId('toggle-workload-w2')).toBeInTheDocument();
   });
 
   it('has delete button per workload', async () => {
     setupMocks();
+    const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('delete-workload-w1')).toBeInTheDocument());
   });
 
@@ -98,7 +107,9 @@ describe('Client Workloads page', () => {
       if (url.includes('/container-images')) return Promise.resolve({ data: MOCK_IMAGES });
       return Promise.resolve({ data: [] });
     });
+    const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('workloads-empty')).toBeInTheDocument());
   });
 });
