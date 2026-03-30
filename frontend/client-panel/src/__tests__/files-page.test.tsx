@@ -30,7 +30,7 @@ const dirEntries = [
   { name: 'style.css', type: 'file' as const, size: 512, modifiedAt: '2026-01-01T00:00:00Z', permissions: '644' },
 ];
 
-const mockFmStatus = vi.fn(() => ({ data: fmStatusData, isLoading: false, error: null }));
+const mockFmStatus = vi.fn((): { data: { ready: boolean; phase: string; message?: string } | null; isLoading: boolean; error: null } => ({ data: fmStatusData, isLoading: false, error: null }));
 const mockDirListing = vi.fn(() => ({
   data: { path: '/', entries: dirEntries },
   isLoading: false,
@@ -139,13 +139,13 @@ describe('Files Page', () => {
 
   describe('Loading states', () => {
     it('shows loading spinner when file manager is starting', () => {
-      mockFmStatus.mockReturnValue({ data: { ready: false, phase: 'starting' }, isLoading: false, error: null });
+      mockFmStatus.mockReturnValue({ data: { ready: false, phase: 'starting' as const }, isLoading: false, error: null });
       renderFiles();
       expect(screen.getByText('Starting File Manager')).toBeInTheDocument();
     });
 
     it('shows failed state with retry button', () => {
-      mockFmStatus.mockReturnValue({ data: { ready: false, phase: 'failed', message: 'Pod crashed' }, isLoading: false, error: null });
+      mockFmStatus.mockReturnValue({ data: { ready: false, phase: 'failed' as const, message: 'Pod crashed' }, isLoading: false, error: null });
       renderFiles();
       expect(screen.getByText('File Manager Failed')).toBeInTheDocument();
       expect(screen.getByText('Pod crashed')).toBeInTheDocument();

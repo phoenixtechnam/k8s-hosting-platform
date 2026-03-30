@@ -83,7 +83,6 @@ export default function Files() {
   const [moveTarget, setMoveTarget] = useState<{ paths: string[]; mode: 'copy' | 'move' } | null>(null);
   const [moveDest, setMoveDest] = useState('');
   const [extractTarget, setExtractTarget] = useState<string | null>(null);
-  const [extractDest, setExtractDest] = useState('');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
 
   const [dragging, setDragging] = useState(false);
@@ -97,10 +96,9 @@ export default function Files() {
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
   const downloadFile = useDownloadFile();
-  const { uploads, uploadFiles, clearUploads, visible: uploadModalVisible, setVisible: setUploadModalVisible } = useUploadFiles();
+  const { uploads, uploadFiles, clearUploads, visible: uploadModalVisible } = useUploadFiles();
   const copyFile = useCopyFile();
   const archiveFiles = useArchiveFiles();
-  const extractArchive = useExtractArchive();
   const gitClone = useGitClone();
 
   // Clear selection on navigate
@@ -341,7 +339,7 @@ export default function Files() {
 
               {dirListing.data.entries.map((entry) => (
                 <FileRow
-                  key={entry.name} entry={entry} currentPath={currentPath}
+                  key={entry.name} entry={entry}
                   isSelected={selected.has(entry.name)}
                   onToggleSelect={() => toggleSelect(entry.name)}
                   onClick={() => handleFileClick(entry)}
@@ -372,7 +370,7 @@ export default function Files() {
           onDelete={(name) => { setDeleteTarget(name); setContextMenu(null); }}
           onCopy={(path) => { setMoveTarget({ paths: [path], mode: 'copy' }); setMoveDest(currentPath); setContextMenu(null); }}
           onMove={(path) => { setMoveTarget({ paths: [path], mode: 'move' }); setMoveDest(currentPath); setContextMenu(null); }}
-          onExtract={(path) => { setExtractTarget(path); setExtractDest(currentPath); setContextMenu(null); }}
+          onExtract={(path) => { setExtractTarget(path); setContextMenu(null); }}
           onNavigate={(path) => { setCurrentPath(path); setContextMenu(null); }}
         />
       )}
@@ -483,10 +481,9 @@ function FilePageHeader() {
 }
 
 function FileRow({
-  entry, currentPath, isSelected, onToggleSelect, onClick, onContextMenu, onActionClick,
+  entry, isSelected, onToggleSelect, onClick, onContextMenu, onActionClick,
 }: {
   readonly entry: FileEntry;
-  readonly currentPath: string;
   readonly isSelected: boolean;
   readonly onToggleSelect: () => void;
   readonly onClick: () => void;
