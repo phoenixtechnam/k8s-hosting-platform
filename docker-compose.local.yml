@@ -106,6 +106,107 @@ services:
       timeout: 3s
       retries: 3
 
+  # ─── k3s — Local Kubernetes cluster for testing PVCs, Helm, manifests ──────
+  k3s-server:
+    image: rancher/k3s:v1.31.4-k3s1
+    command:
+      - server
+      - --disable=traefik
+      - --snapshotter=native
+      - --write-kubeconfig=/output/kubeconfig.yaml
+      - --write-kubeconfig-mode=644
+      - --tls-san=${DOCKER_HOST_NAME:-dind.local}
+      - --tls-san=k3s-server
+    ports:
+      - "${PORT_K3S_API:-2016}:6443"
+    environment:
+      K3S_TOKEN: ${K3S_TOKEN:-local-dev-k3s-token}
+    volumes:
+      - k3s-data:/var/lib/rancher/k3s
+      - k3s-kubeconfig:/output
+      - k3s-storage:/var/lib/rancher/k3s/storage
+    privileged: true
+    tmpfs:
+      - /run
+      - /var/run
+    healthcheck:
+      test: ["CMD", "kubectl", "get", "nodes", "--no-headers"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    profiles:
+      - k3s
+
+  # Init job: wait for k3s ready, install NGINX ingress, verify storage
+  k3s-init:
+    image: rancher/k3s:v1.31.4-k3s1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for kubeconfig..."
+        until [ -f /kubeconfig/kubeconfig.yaml ]; do sleep 1; done
+
+        # Fix kubeconfig server URL so this container can reach k3s
+        cp /kubeconfig/kubeconfig.yaml /tmp/kubeconfig.yaml
+        sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /tmp/kubeconfig.yaml
+        export KUBECONFIG=/tmp/kubeconfig.yaml
+
+        echo "Waiting for k3s API server..."
+        until kubectl get nodes 2>/dev/null | grep -q " Ready"; do
+          sleep 2
+        done
+        echo "k3s is ready!"
+
+        # Also update the shared kubeconfig for backend access
+        sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /kubeconfig/kubeconfig.yaml 2>/dev/null || true
+
+        # Verify local-path StorageClass (built into k3s)
+        echo "Checking StorageClass..."
+        kubectl get storageclass
+        echo ""
+
+        # Install NGINX Ingress Controller
+        echo "Installing NGINX Ingress Controller..."
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml 2>/dev/null || echo "NGINX ingress already installed or network unavailable — skipping"
+
+        # Create hosting-platform namespace
+        kubectl create namespace hosting-platform 2>/dev/null || true
+
+        # Test PVC creation
+        echo "Testing PVC provisioning..."
+        kubectl apply -f - <<PVCEOF
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: test-pvc
+          namespace: hosting-platform
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 64Mi
+          storageClassName: local-path
+        PVCEOF
+
+        echo ""
+        echo "════════════════════════════════════════════════"
+        echo "  k3s cluster ready!"
+        echo "  Nodes:          $(kubectl get nodes --no-headers | wc -l)"
+        echo "  StorageClass:   $(kubectl get sc --no-headers | head -1 | awk '{print $1}')"
+        echo "  Test PVC:       $(kubectl get pvc test-pvc -n hosting-platform --no-headers 2>/dev/null | awk '{print $2}')"
+        echo "════════════════════════════════════════════════"
+    volumes:
+      - k3s-kubeconfig:/kubeconfig
+    depends_on:
+      k3s-server:
+        condition: service_healthy
+    profiles:
+      - k3s
+
 volumes:
   mariadb-data:
   dex-data:
+  k3s-data:
+  k3s-kubeconfig:
+  k3s-storage:
