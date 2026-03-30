@@ -143,7 +143,7 @@ export async function generateClientManifests(
       ? imageMap.get(workload.containerImageId)
       : undefined;
 
-    const containerImage = image?.registryUrl ?? 'nginx:latest';
+    const containerImage = image?.registryUrl ?? 'nginx:1.27-alpine';
 
     manifests.push(buildManifest(`deployment-${workload.name}.yaml`, {
       apiVersion: 'apps/v1',

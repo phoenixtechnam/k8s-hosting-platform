@@ -23,6 +23,7 @@ import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { auditLogRoutes } from './modules/audit-logs/routes.js';
 import { workloadRepoRoutes } from './modules/workload-repos/routes.js';
 import { applicationRepoRoutes } from './modules/application-repos/routes.js';
+import { applicationUpgradeRoutes } from './modules/application-upgrades/routes.js';
 import { workloadRoutes } from './modules/workloads/routes.js';
 import { dnsRecordRoutes } from './modules/dns-records/routes.js';
 import { hostingSettingsRoutes } from './modules/hosting-settings/routes.js';
@@ -168,6 +169,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(workloadRepoRoutes, { prefix: '/api/v1' });
   await app.register(applicationRepoRoutes, { prefix: '/api/v1' });
+  await app.register(applicationUpgradeRoutes, { prefix: '/api/v1' });
   await app.register(workloadRoutes, { prefix: '/api/v1' });
   await app.register(dnsRecordRoutes, { prefix: '/api/v1' });
   await app.register(hostingSettingsRoutes, { prefix: '/api/v1' });

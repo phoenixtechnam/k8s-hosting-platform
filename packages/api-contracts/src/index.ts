@@ -40,5 +40,6 @@ export * from './email-aliases.js';
 export * from './smtp-relay.js';
 export * from './application-repos.js';
 export * from './application-catalog.js';
+export * from './application-upgrades.js';
 export * from './platform-updates.js';
 export * from './ssl-certs.js';

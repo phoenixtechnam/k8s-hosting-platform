@@ -261,6 +261,25 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
     return success(updated);
   });
 
+  // GET /api/v1/admin/application-catalog/:code/versions
+  app.get('/admin/application-catalog/:code/versions', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Application Catalog'],
+      summary: 'List all supported versions for an application',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { code: { type: 'string' } },
+        required: ['code'],
+      },
+    },
+  }, async (request) => {
+    const { code } = request.params as { code: string };
+    const versions = await service.listVersionsForApp(app.db, code);
+    return success(versions);
+  });
+
   // GET /api/v1/admin/application-catalog/:code
   app.get('/admin/application-catalog/:code', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],

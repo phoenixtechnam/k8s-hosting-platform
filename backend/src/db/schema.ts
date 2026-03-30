@@ -591,6 +591,8 @@ export const applicationCatalog = mysqlTable('application_catalog', {
   code: varchar('code', { length: 100 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   version: varchar('version', { length: 50 }),
+  latestVersion: varchar('latest_version', { length: 50 }),
+  defaultVersion: varchar('default_version', { length: 50 }),
   description: text('description'),
   url: varchar('url', { length: 500 }),
   documentation: varchar('documentation', { length: 500 }),
@@ -626,7 +628,10 @@ export const applicationInstances = mysqlTable('application_instances', {
   domainName: varchar('domain_name', { length: 255 }),
   configuration: json('configuration').$type<Record<string, unknown> | null>(),
   helmReleaseName: varchar('helm_release_name', { length: 255 }),
-  status: mysqlEnum('status', ['deploying', 'running', 'stopped', 'failed', 'deleting']).notNull().default('deploying'),
+  installedVersion: varchar('installed_version', { length: 50 }),
+  targetVersion: varchar('target_version', { length: 50 }),
+  lastUpgradedAt: timestamp('last_upgraded_at'),
+  status: mysqlEnum('status', ['deploying', 'running', 'stopped', 'failed', 'deleting', 'upgrading']).notNull().default('deploying'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [
@@ -634,6 +639,63 @@ export const applicationInstances = mysqlTable('application_instances', {
   index('idx_app_instances_client').on(table.clientId),
   index('idx_app_instances_catalog').on(table.applicationCatalogId),
   index('idx_app_instances_status').on(table.status),
+]);
+
+// ─── Application Upgrades ───
+
+export const applicationUpgrades = mysqlTable('application_upgrades', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  instanceId: varchar('instance_id', { length: 36 }).notNull(),
+  fromVersion: varchar('from_version', { length: 50 }).notNull(),
+  toVersion: varchar('to_version', { length: 50 }).notNull(),
+  status: mysqlEnum('status', [
+    'pending',
+    'backing_up',
+    'pre_check',
+    'upgrading',
+    'health_check',
+    'rolling_back',
+    'completed',
+    'failed',
+    'rolled_back',
+  ]).notNull().default('pending'),
+  triggeredBy: varchar('triggered_by', { length: 36 }).notNull(),
+  triggerType: mysqlEnum('trigger_type', ['manual', 'batch', 'forced']).notNull().default('manual'),
+  backupId: varchar('backup_id', { length: 36 }),
+  progressPct: int('progress_pct').notNull().default(0),
+  statusMessage: text('status_message'),
+  errorMessage: text('error_message'),
+  helmValues: json('helm_values').$type<Record<string, unknown> | null>(),
+  rollbackHelmValues: json('rollback_helm_values').$type<Record<string, unknown> | null>(),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('idx_app_upgrades_instance').on(table.instanceId, table.status),
+  index('idx_app_upgrades_status').on(table.status, table.createdAt),
+]);
+
+// ─── Application Versions ───
+
+export const applicationVersions = mysqlTable('application_versions', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  applicationCatalogId: varchar('application_catalog_id', { length: 36 }).notNull(),
+  version: varchar('version', { length: 50 }).notNull(),
+  isDefault: int('is_default').notNull().default(0),
+  eolDate: varchar('eol_date', { length: 10 }),
+  components: json('components').$type<readonly { name: string; image: string }[] | null>(),
+  upgradeFrom: json('upgrade_from').$type<string[] | null>(),
+  breakingChanges: text('breaking_changes'),
+  envChanges: json('env_changes').$type<readonly { key: string; action: string; oldKey?: string; default?: unknown }[] | null>(),
+  migrationNotes: text('migration_notes'),
+  minResources: json('min_resources').$type<{ cpu?: string; memory?: string; storage?: string } | null>(),
+  status: mysqlEnum('status', ['available', 'deprecated', 'eol']).notNull().default('available'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('uk_app_version').on(table.applicationCatalogId, table.version),
+  index('idx_app_versions_catalog').on(table.applicationCatalogId),
+  index('idx_app_versions_status').on(table.applicationCatalogId, table.status),
 ]);
 
 // ─── SSL Certificates ───
@@ -708,6 +770,10 @@ export type ApplicationCatalogEntry = typeof applicationCatalog.$inferSelect;
 export type NewApplicationCatalogEntry = typeof applicationCatalog.$inferInsert;
 export type ApplicationInstance = typeof applicationInstances.$inferSelect;
 export type NewApplicationInstance = typeof applicationInstances.$inferInsert;
+export type ApplicationVersion = typeof applicationVersions.$inferSelect;
+export type NewApplicationVersion = typeof applicationVersions.$inferInsert;
+export type ApplicationUpgrade = typeof applicationUpgrades.$inferSelect;
+export type NewApplicationUpgrade = typeof applicationUpgrades.$inferInsert;
 export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type NewPlatformSetting = typeof platformSettings.$inferInsert;
 export type SslCertificate = typeof sslCertificates.$inferSelect;

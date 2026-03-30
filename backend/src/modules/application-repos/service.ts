@@ -1,7 +1,9 @@
 import { eq, and } from 'drizzle-orm';
-import { applicationRepositories, applicationCatalog } from '../../db/schema.js';
+import { applicationRepositories, applicationCatalog, applicationVersions } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { parseGithubUrl, buildRawUrl, fetchJson } from '../../shared/github-catalog.js';
+import { buildVersionRecords } from './sync-versions.js';
+import { resolveDefaultVersion, type SupportedVersion } from './version-utils.js';
 import type { Database } from '../../db/index.js';
 import type { AddAppRepoInput } from './schema.js';
 
@@ -32,6 +34,7 @@ interface ApplicationManifest {
   readonly tags?: readonly string[];
   readonly url?: string;
   readonly documentation?: string;
+  readonly supportedVersions?: readonly SupportedVersion[];
 }
 
 const OFFICIAL_CATALOG_URL = 'https://github.com/phoenixtechnam/hosting-platform-application-catalog';
@@ -144,6 +147,18 @@ export async function deleteRepo(db: Database, id: string) {
     throw new ApiError('REPO_NOT_FOUND', `Application repository '${id}' not found`, 404);
   }
 
+  // Delete version records for catalog entries from this repo
+  const catalogEntries = await db
+    .select({ id: applicationCatalog.id })
+    .from(applicationCatalog)
+    .where(eq(applicationCatalog.sourceRepoId, id));
+
+  for (const entry of catalogEntries) {
+    await db
+      .delete(applicationVersions)
+      .where(eq(applicationVersions.applicationCatalogId, entry.id));
+  }
+
   // Delete catalog entries that came from this repo
   await db
     .delete(applicationCatalog)
@@ -213,9 +228,17 @@ export async function syncRepo(db: Database, repoId: string) {
           ),
         );
 
+      // Resolve version metadata
+      const latestVersion = manifest.version ?? null;
+      const defaultVersion = manifest.supportedVersions
+        ? resolveDefaultVersion(manifest.supportedVersions as readonly SupportedVersion[])
+        : latestVersion;
+
       const catalogValues = {
         name: manifest.name,
         version: manifest.version ?? null,
+        latestVersion,
+        defaultVersion,
         description: manifest.description ?? null,
         url: manifest.url ?? null,
         documentation: manifest.documentation ?? null,
@@ -234,16 +257,48 @@ export async function syncRepo(db: Database, repoId: string) {
         manifestUrl,
       };
 
+      let catalogId: string;
+
       if (existing) {
+        catalogId = existing.id;
         await db
           .update(applicationCatalog)
           .set(catalogValues)
           .where(eq(applicationCatalog.id, existing.id));
       } else {
+        catalogId = crypto.randomUUID();
         await db.insert(applicationCatalog).values({
-          id: crypto.randomUUID(),
+          id: catalogId,
           code,
           ...catalogValues,
+        });
+      }
+
+      // Sync application versions
+      const versionRecords = buildVersionRecords(
+        { code, version: manifest.version, supportedVersions: manifest.supportedVersions },
+        catalogId,
+      );
+
+      // Delete existing version records for this catalog entry, then re-insert
+      await db
+        .delete(applicationVersions)
+        .where(eq(applicationVersions.applicationCatalogId, catalogId));
+
+      for (const vr of versionRecords) {
+        await db.insert(applicationVersions).values({
+          id: crypto.randomUUID(),
+          applicationCatalogId: vr.applicationCatalogId,
+          version: vr.version,
+          isDefault: vr.isDefault,
+          eolDate: vr.eolDate,
+          components: vr.components as readonly { name: string; image: string }[] | null,
+          upgradeFrom: vr.upgradeFrom as string[] | null,
+          breakingChanges: vr.breakingChanges,
+          envChanges: vr.envChanges as readonly { key: string; action: string; oldKey?: string; default?: unknown }[] | null,
+          migrationNotes: vr.migrationNotes,
+          minResources: vr.minResources,
+          status: vr.status,
         });
       }
     }
@@ -364,6 +419,30 @@ export async function updateBadges(db: Database, id: string, badges: { featured?
     parameters: parseJsonField(updated.parameters),
     tenancy: parseJsonField(updated.tenancy),
   };
+}
+
+export async function listVersionsForApp(db: Database, code: string) {
+  const [catalogEntry] = await db
+    .select()
+    .from(applicationCatalog)
+    .where(eq(applicationCatalog.code, code));
+
+  if (!catalogEntry) {
+    throw new ApiError('CATALOG_ENTRY_NOT_FOUND', `Application catalog entry '${code}' not found`, 404, { code });
+  }
+
+  const versions = await db
+    .select()
+    .from(applicationVersions)
+    .where(eq(applicationVersions.applicationCatalogId, catalogEntry.id));
+
+  return versions.map(row => ({
+    ...row,
+    components: parseJsonField(row.components),
+    upgradeFrom: parseJsonField(row.upgradeFrom),
+    envChanges: parseJsonField(row.envChanges),
+    minResources: parseJsonField(row.minResources),
+  }));
 }
 
 export async function listCatalogEntries(db: Database) {
