@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { statusEnum, uuidField, paginatedResponseSchema } from './shared.js';
+import { provisioningStatusEnum } from './provisioning.js';
 
 // ─── Input Schemas (what the frontend sends) ────────────────────────────────
 
@@ -37,6 +38,7 @@ export const clientResponseSchema = z.object({
   planId: uuidField,
   regionId: uuidField,
   status: statusEnum,
+  provisioningStatus: provisioningStatusEnum,
   cpuLimitOverride: z.string().nullable(),
   memoryLimitOverride: z.string().nullable(),
   storageLimitOverride: z.string().nullable(),

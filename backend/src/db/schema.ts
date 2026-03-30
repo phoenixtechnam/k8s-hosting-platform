@@ -112,6 +112,7 @@ export const clients = mysqlTable('clients', {
   storageLimitOverride: decimal('storage_limit_override', { precision: 10, scale: 2 }),
   maxSubUsersOverride: int('max_sub_users_override'),
   monthlyPriceOverride: decimal('monthly_price_override', { precision: 10, scale: 2 }),
+  provisioningStatus: mysqlEnum('provisioning_status', ['unprovisioned', 'provisioning', 'provisioned', 'failed']).notNull().default('unprovisioned'),
   createdBy: varchar('created_by', { length: 36 }),
   subscriptionExpiresAt: timestamp('subscription_expires_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -338,6 +339,28 @@ export const auditLogs = mysqlTable('audit_logs', {
   index('audit_logs_actor_idx').on(table.actorId),
   index('audit_logs_action_idx').on(table.actionType),
   index('audit_logs_created_idx').on(table.createdAt),
+]);
+
+// ─── Provisioning Tasks ───
+
+export const provisioningTasks = mysqlTable('provisioning_tasks', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  type: mysqlEnum('type', ['provision_namespace', 'deploy_workload', 'deprovision']).notNull(),
+  status: mysqlEnum('status', ['pending', 'running', 'completed', 'failed']).notNull().default('pending'),
+  currentStep: varchar('current_step', { length: 100 }),
+  totalSteps: int('total_steps').notNull().default(0),
+  completedSteps: int('completed_steps').notNull().default(0),
+  stepsLog: json('steps_log').$type<Array<{ name: string; status: string; startedAt: string | null; completedAt: string | null; error?: string | null }>>(),
+  errorMessage: text('error_message'),
+  startedBy: varchar('started_by', { length: 36 }),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  index('provisioning_tasks_client_idx').on(table.clientId),
+  index('provisioning_tasks_status_idx').on(table.status),
 ]);
 
 // ─── Protected Directories ───
@@ -779,3 +802,5 @@ export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type NewPlatformSetting = typeof platformSettings.$inferInsert;
 export type SslCertificate = typeof sslCertificates.$inferSelect;
 export type NewSslCertificate = typeof sslCertificates.$inferInsert;
+export type ProvisioningTask = typeof provisioningTasks.$inferSelect;
+export type NewProvisioningTask = typeof provisioningTasks.$inferInsert;

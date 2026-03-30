@@ -44,3 +44,5 @@ export * from './application-upgrades.js';
 export * from './platform-updates.js';
 export * from './ssl-certs.js';
 export * from './storage-settings.js';
+export * from './eol-settings.js';
+export * from './provisioning.js';

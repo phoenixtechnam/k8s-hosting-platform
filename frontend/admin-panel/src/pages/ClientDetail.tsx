@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -16,6 +16,8 @@ import type { Domain, PaginatedResponse, Workload } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { useTriggerProvisioning } from '@/hooks/use-provisioning';
+import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
 type TabKey = 'domains' | 'applications' | 'workloads' | 'email' | 'backups';
 
@@ -36,9 +38,12 @@ export default function ClientDetail() {
   const emailDomainsQuery = useEmailDomains(id);
   const mailboxesQuery = useMailboxes(id);
 
+  const [provisioningOpen, setProvisioningOpen] = useState(false);
+
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
   const impersonate = useImpersonate();
+  const triggerProvision = useTriggerProvisioning();
 
   const handleDelete = async () => {
     if (!id) return;
@@ -139,6 +144,32 @@ export default function ClientDetail() {
             {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
             <span className="hidden sm:inline">Login as Client</span>
           </button>
+          {(client as Record<string, unknown>).provisioningStatus === 'unprovisioned' || (client as Record<string, unknown>).provisioningStatus === 'failed' ? (
+            <button
+              onClick={async () => {
+                if (!id) return;
+                try {
+                  await triggerProvision.mutateAsync({ clientId: id });
+                  setProvisioningOpen(true);
+                } catch { /* error shown via mutation state */ }
+              }}
+              disabled={triggerProvision.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
+              data-testid="provision-button"
+            >
+              {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+              <span className="hidden sm:inline">Provision</span>
+            </button>
+          ) : (client as Record<string, unknown>).provisioningStatus === 'provisioning' ? (
+            <button
+              onClick={() => setProvisioningOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand-50 dark:bg-brand-900/30 px-4 py-2 text-sm font-medium text-brand-700 dark:text-brand-300 shadow-sm hover:bg-brand-100 dark:hover:bg-brand-900/50"
+              data-testid="provision-status-button"
+            >
+              <Loader2 size={14} className="animate-spin" />
+              <span className="hidden sm:inline">Provisioning...</span>
+            </button>
+          ) : null}
           <button
             onClick={() => setEditOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50"
@@ -187,6 +218,12 @@ export default function ClientDetail() {
               <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
               <dd className="mt-1">
                 <StatusBadge status={client.status} />
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">K8s Status</dt>
+              <dd className="mt-1">
+                <ProvisioningStatusBadge status={((client as Record<string, unknown>).provisioningStatus as string) ?? 'unprovisioned'} />
               </dd>
             </div>
             <div>
@@ -282,6 +319,14 @@ export default function ClientDetail() {
         clientName={name}
         isPending={deleteClient.isPending}
       />
+
+      {provisioningOpen && id && (
+        <ProvisioningProgressModal
+          clientId={id}
+          clientName={name}
+          onClose={() => setProvisioningOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -836,4 +881,21 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(1)} ${units[i]}`;
+}
+
+const provisioningStatusColors: Record<string, string> = {
+  unprovisioned: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  provisioning: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+  provisioned: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+};
+
+function ProvisioningStatusBadge({ status }: { readonly status: string }) {
+  const colors = provisioningStatusColors[status] ?? provisioningStatusColors.unprovisioned;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors}`}>
+      {status === 'provisioning' && <Loader2 size={10} className="animate-spin" />}
+      {status}
+    </span>
+  );
 }

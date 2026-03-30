@@ -34,6 +34,7 @@ import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
+import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
@@ -45,6 +46,7 @@ import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
 import { sslCertRoutes } from './modules/ssl-certs/routes.js';
+import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -181,6 +183,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
+  await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
@@ -192,6 +195,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
   await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
   await app.register(sslCertRoutes, { prefix: '/api/v1' });
+  await app.register(eolScannerRoutes, { prefix: '/api/v1' });
 
   return app;
 }
