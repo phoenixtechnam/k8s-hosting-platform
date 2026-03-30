@@ -26,9 +26,11 @@ export default function Login() {
   const isEmergency = searchParams.get('emergency') === 'true';
 
   useEffect(() => {
+    let cancelled = false;
     apiFetch<{ data: AuthStatus }>('/api/v1/auth/oidc/status?panel=admin')
-      .then((res) => setAuthStatus(res.data))
-      .catch(() => setAuthStatus({ localAuthEnabled: true, providers: [] }));
+      .then((res) => { if (!cancelled) setAuthStatus(res.data); })
+      .catch(() => { if (!cancelled) setAuthStatus({ localAuthEnabled: true, providers: [] }); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {

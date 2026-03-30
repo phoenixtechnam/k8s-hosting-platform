@@ -24,9 +24,11 @@ export default function Login() {
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
 
   useEffect(() => {
+    let cancelled = false;
     apiFetch<{ data: AuthStatus }>('/api/v1/auth/oidc/status?panel=client')
-      .then((res) => setAuthStatus(res.data))
-      .catch(() => setAuthStatus({ localAuthEnabled: true, providers: [] }));
+      .then((res) => { if (!cancelled) setAuthStatus(res.data); })
+      .catch(() => { if (!cancelled) setAuthStatus({ localAuthEnabled: true, providers: [] }); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
