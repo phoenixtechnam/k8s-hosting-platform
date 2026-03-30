@@ -296,6 +296,98 @@ function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementTyp
   );
 }
 
+function ExposesSection({ data }: { readonly data: Record<string, unknown> }) {
+  const exposes = data.exposes as { ports?: { port: number; protocol: string; name: string; publishable: boolean }[]; volumes?: { description: string; local_path: string; container_path: string }[]; env_vars?: { configurable?: string[]; generated?: string[]; fixed?: Record<string, string> }; services?: Record<string, { engine?: string; version?: string; protocol?: string }> } | null;
+  if (!exposes) return null;
+
+  return (
+    <div className="space-y-4">
+      <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+        <Server size={16} className="text-brand-500" /> Exposes
+      </h4>
+
+      {/* Ports */}
+      {exposes.ports && exposes.ports.length > 0 && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Ports</p>
+          <div className="flex flex-wrap gap-2">
+            {exposes.ports.map((p) => (
+              <div key={p.port} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm">
+                <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{p.port}</span>
+                <span className="text-gray-500 dark:text-gray-400">{p.protocol}</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500">{p.name}</span>
+                {p.publishable ? (
+                  <span className="rounded bg-green-100 dark:bg-green-900/20 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">Publishable</span>
+                ) : (
+                  <span className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400">Internal</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Volumes */}
+      {exposes.volumes && exposes.volumes.length > 0 && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Volumes</p>
+          <div className="space-y-1">
+            {exposes.volumes.map((v) => (
+              <div key={v.local_path} className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm">
+                <span className="font-mono text-gray-900 dark:text-gray-100">{v.container_path}</span>
+                <span className="text-gray-400 dark:text-gray-500">→</span>
+                <span className="font-mono text-brand-600 dark:text-brand-400">{v.local_path}</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">({v.description})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Environment */}
+      {exposes.env_vars && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Environment</p>
+          <div className="space-y-2">
+            {exposes.env_vars.configurable && exposes.env_vars.configurable.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {exposes.env_vars.configurable.map((v) => <span key={v} className="rounded bg-blue-100 dark:bg-blue-900/20 px-2 py-0.5 text-xs font-mono text-blue-700 dark:text-blue-300">{v}</span>)}
+              </div>
+            )}
+            {exposes.env_vars.generated && exposes.env_vars.generated.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {exposes.env_vars.generated.map((v) => <span key={v} className="rounded bg-amber-100 dark:bg-amber-900/20 px-2 py-0.5 text-xs font-mono text-amber-700 dark:text-amber-300">{v} (auto)</span>)}
+              </div>
+            )}
+            {exposes.env_vars.fixed && Object.keys(exposes.env_vars.fixed).length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {Object.entries(exposes.env_vars.fixed).map(([k, v]) => <span key={k} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{k}={v}</span>)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Services provided */}
+      {exposes.services && Object.keys(exposes.services).length > 0 && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Services Provided</p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(exposes.services).map(([type, svc]) => (
+              <div key={type} className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-1.5 text-sm">
+                <span className="font-medium text-emerald-700 dark:text-emerald-300">{type}</span>
+                {svc.engine && <span className="text-emerald-600 dark:text-emerald-400">{svc.engine}</span>}
+                {svc.version && <span className="text-xs text-emerald-500 dark:text-emerald-400">v{svc.version}</span>}
+                {svc.protocol && <span className="text-xs text-emerald-400 dark:text-emerald-500">({svc.protocol})</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Workload Detail Panel ──────────────────────────────────────────────────
 
 function WorkloadDetailPanel({
@@ -408,38 +500,8 @@ function WorkloadDetailPanel({
             </div>
           </div>
 
-          {/* Provides (formatted, always visible) */}
-          {provides && Object.keys(provides).length > 0 && (
-            <div>
-              <SectionHeading icon={Server} title="Provides" />
-              <div className="space-y-2">
-                {Object.entries(provides).map(([serviceType, serviceData]) => {
-                  const svc = serviceData as Record<string, unknown> | null;
-                  if (!svc || typeof svc !== 'object') return null;
-                  return (
-                    <div key={serviceType} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="rounded bg-emerald-100 dark:bg-emerald-900/20 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">{serviceType}</span>
-                        {svc.engine != null && <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{String(svc.engine)}</span>}
-                        {svc.version != null && <span className="text-xs text-gray-500 dark:text-gray-400">v{String(svc.version)}</span>}
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-sm">
-                        {svc.protocol != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Protocol</span><p className="text-gray-900 dark:text-gray-100">{String(svc.protocol)}</p></div>}
-                        {svc.port != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-gray-900 dark:text-gray-100">{String(svc.port)}</p></div>}
-                      </div>
-                      {svc.credentials != null && typeof svc.credentials === 'object' && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {Object.entries(svc.credentials as Record<string, string>).map(([key, val]) => (
-                            <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}: {val}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          {/* Exposes — ports, volumes, env vars, services */}
+          <ExposesSection data={image} />
 
           {/* Tags */}
           {tags.length > 0 && (

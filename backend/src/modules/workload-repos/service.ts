@@ -40,6 +40,7 @@ interface WorkloadManifest {
   } | null;
   readonly services?: Record<string, unknown>;
   readonly provides?: Record<string, unknown>;
+  readonly exposes?: Record<string, unknown>;
   readonly version?: string;
   readonly description?: string;
 }
@@ -251,6 +252,7 @@ export async function syncRepo(db: Database, repoId: string) {
         healthCheck: manifest.health_check ?? null,
         services: manifest.services ?? null,
         provides: manifest.provides ?? null,
+        exposes: manifest.exposes ?? null,
         version: manifest.version ?? null,
         description: manifest.description ?? null,
       };

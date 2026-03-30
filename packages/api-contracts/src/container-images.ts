@@ -34,6 +34,7 @@ export const containerImageResponseSchema = z.object({
   }).nullable(),
   services: z.record(z.string(), z.unknown()).nullable(),
   provides: z.record(z.string(), z.unknown()).nullable(),
+  exposes: z.record(z.string(), z.unknown()).nullable(),
   version: z.string().nullable(),
   description: z.string().nullable(),
   createdAt: z.string(),

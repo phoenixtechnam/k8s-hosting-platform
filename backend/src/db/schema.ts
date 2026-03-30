@@ -294,6 +294,7 @@ export const containerImages = mysqlTable('container_images', {
   healthCheck: json('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
   services: json('services').$type<Record<string, unknown> | null>(),
   provides: json('provides').$type<Record<string, unknown> | null>(),
+  exposes: json('exposes').$type<Record<string, unknown> | null>(),
   version: varchar('version', { length: 50 }),
   description: text('description'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
