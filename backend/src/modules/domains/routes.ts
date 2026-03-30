@@ -8,11 +8,21 @@ import { verifyDomain, getPlatformConfig } from './verification.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
   app.addHook('onRequest', requireClientAccess());
+
+  const getK8s = () => {
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      return createK8sClients(kubeconfigPath);
+    } catch {
+      return undefined;
+    }
+  };
 
   // GET /api/v1/admin/domains — list all domains across all clients
   app.get('/admin/domains', async (request) => {
@@ -38,7 +48,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const domain = await service.createDomain(app.db, clientId, parsed.data);
+    const domain = await service.createDomain(app.db, clientId, parsed.data, getK8s());
     reply.status(201).send(success(domain));
   });
 
@@ -74,14 +84,14 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const updated = await service.updateDomain(app.db, clientId, domainId, parsed.data);
+    const updated = await service.updateDomain(app.db, clientId, domainId, parsed.data, getK8s());
     return success(updated);
   });
 
   // DELETE /api/v1/clients/:clientId/domains/:domainId
   app.delete('/clients/:clientId/domains/:domainId', async (request, reply) => {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
-    await service.deleteDomain(app.db, clientId, domainId);
+    await service.deleteDomain(app.db, clientId, domainId, getK8s());
     reply.status(204).send();
   });
 

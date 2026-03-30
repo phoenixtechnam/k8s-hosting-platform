@@ -1,8 +1,10 @@
 import { eq, and, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { workloads, containerImages } from '../../db/schema.js';
+import { workloads, containerImages, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
+import { deployWorkload, stopWorkload, startWorkload, deleteWorkloadResources } from './k8s-deployer.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateWorkloadInput, UpdateWorkloadInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
@@ -13,8 +15,8 @@ export const workloadNotFound = (id: string) =>
 export const imageNotFound = (id: string) =>
   new ApiError('IMAGE_NOT_FOUND', `Container image '${id}' not found`, 404, { image_id: id }, 'Verify image exists');
 
-export async function createWorkload(db: Database, clientId: string, input: CreateWorkloadInput, _actorId: string) {
-  await getClientById(db, clientId);
+export async function createWorkload(db: Database, clientId: string, input: CreateWorkloadInput, _actorId: string, k8s?: K8sClients) {
+  const client = await getClientById(db, clientId);
 
   const [image] = await db.select().from(containerImages).where(eq(containerImages.id, input.image_id));
   if (!image) {
@@ -32,6 +34,28 @@ export async function createWorkload(db: Database, clientId: string, input: Crea
     memoryRequest: input.memory_request,
     status: 'pending',
   });
+
+  // Deploy to k8s if cluster is available
+  if (k8s && client.kubernetesNamespace) {
+    try {
+      await deployWorkload(k8s, {
+        name: input.name,
+        image: image.registryUrl ?? `${image.code}:latest`,
+        containerPort: image.containerPort ?? 8080,
+        replicaCount: input.replica_count ?? 1,
+        cpuRequest: input.cpu_request ?? '100m',
+        memoryRequest: input.memory_request ?? '128Mi',
+        mountPath: image.mountPath,
+        namespace: client.kubernetesNamespace,
+      });
+      await db.update(workloads).set({ status: 'running' }).where(eq(workloads.id, id));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await db.update(workloads).set({ status: 'failed' }).where(eq(workloads.id, id));
+      // Don't throw — workload record exists, just failed to deploy
+      // Caller can see status='failed' and retry
+    }
+  }
 
   const [created] = await db.select().from(workloads).where(eq(workloads.id, id));
   return created;
@@ -98,8 +122,8 @@ export async function listWorkloads(
   };
 }
 
-export async function updateWorkload(db: Database, clientId: string, workloadId: string, input: UpdateWorkloadInput) {
-  await getWorkloadById(db, clientId, workloadId);
+export async function updateWorkload(db: Database, clientId: string, workloadId: string, input: UpdateWorkloadInput, k8s?: K8sClients) {
+  const workload = await getWorkloadById(db, clientId, workloadId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -117,10 +141,41 @@ export async function updateWorkload(db: Database, clientId: string, workloadId:
     await db.update(workloads).set(updateValues).where(eq(workloads.id, workloadId));
   }
 
+  // Apply k8s changes for status transitions
+  if (k8s && input.status) {
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+    const namespace = client?.kubernetesNamespace;
+    if (namespace) {
+      try {
+        if (input.status === 'stopped') {
+          await stopWorkload(k8s, namespace, workload.name);
+        } else if (input.status === 'running') {
+          await startWorkload(k8s, namespace, workload.name, workload.replicaCount ?? 1);
+        }
+      } catch {
+        // K8s operation failed — DB already updated, status will be reconciled
+      }
+    }
+  }
+
   return getWorkloadById(db, clientId, workloadId);
 }
 
-export async function deleteWorkload(db: Database, clientId: string, workloadId: string) {
-  await getWorkloadById(db, clientId, workloadId);
+export async function deleteWorkload(db: Database, clientId: string, workloadId: string, k8s?: K8sClients) {
+  const workload = await getWorkloadById(db, clientId, workloadId);
+
+  // Delete k8s resources first
+  if (k8s) {
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+    const namespace = client?.kubernetesNamespace;
+    if (namespace) {
+      try {
+        await deleteWorkloadResources(k8s, namespace, workload.name);
+      } catch {
+        // K8s cleanup failed — still delete DB record
+      }
+    }
+  }
+
   await db.delete(workloads).where(eq(workloads.id, workloadId));
 }

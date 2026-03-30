@@ -5,11 +5,13 @@ import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
+import { reconcileIngress } from './k8s-ingress.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
-export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string }) {
+export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string }, k8s?: K8sClients) {
   // Verify client exists
   await getClientById(db, clientId);
 
@@ -61,6 +63,18 @@ export async function createDomain(db: Database, clientId: string, input: Create
     }
   } catch {
     // No DNS servers configured — that's fine
+  }
+
+  // Reconcile Ingress in k8s
+  if (k8s) {
+    const client = await getClientById(db, clientId);
+    if (client.kubernetesNamespace) {
+      try {
+        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+      } catch {
+        // Ingress reconciliation failure shouldn't block domain creation
+      }
+    }
   }
 
   return created;
@@ -189,7 +203,7 @@ export async function listDomains(
   };
 }
 
-export async function updateDomain(db: Database, clientId: string, domainId: string, input: UpdateDomainInput) {
+export async function updateDomain(db: Database, clientId: string, domainId: string, input: UpdateDomainInput, k8s?: K8sClients) {
   await getDomainById(db, clientId, domainId);
 
   const updateValues: Record<string, unknown> = {};
@@ -202,10 +216,34 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
     await db.update(domains).set(updateValues).where(eq(domains.id, domainId));
   }
 
+  // Reconcile Ingress if workload mapping or DNS mode changed
+  if (k8s && (input.workload_id !== undefined || input.dns_mode !== undefined)) {
+    const client = await getClientById(db, clientId);
+    if (client.kubernetesNamespace) {
+      try {
+        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
+
   return getDomainById(db, clientId, domainId);
 }
 
-export async function deleteDomain(db: Database, clientId: string, domainId: string) {
+export async function deleteDomain(db: Database, clientId: string, domainId: string, k8s?: K8sClients) {
   await getDomainById(db, clientId, domainId);
   await db.delete(domains).where(eq(domains.id, domainId));
+
+  // Reconcile Ingress after domain removal
+  if (k8s) {
+    const client = await getClientById(db, clientId);
+    if (client.kubernetesNamespace) {
+      try {
+        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
 }
