@@ -40,8 +40,8 @@ export default function TlsSettings() {
       <div className="flex items-center gap-3">
         <Shield size={28} className="text-emerald-500" />
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="tls-settings-heading">TLS / Certificate Settings</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Configure cert-manager integration and automatic TLS for client domains.</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="tls-settings-heading">Ingress & TLS Settings</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Configure ingress routing, cert-manager, and automatic TLS for client domains.</p>
         </div>
       </div>
 
