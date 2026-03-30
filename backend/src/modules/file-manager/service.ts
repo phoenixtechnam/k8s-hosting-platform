@@ -39,10 +39,20 @@ async function waitForReady(
   return { ready: false, phase: 'failed', message: 'Timeout waiting for file manager to start' };
 }
 
+interface ProxyResult {
+  readonly status: number;
+  readonly body: string;
+  readonly bodyBuffer: Buffer;
+  readonly headers: Record<string, string>;
+}
+
 /**
  * Proxy a request to the file-manager sidecar via the K8s API server.
  * Uses the service proxy: /api/v1/namespaces/{ns}/services/{svc}:{port}/proxy/{path}
  * Auth is handled via kubeconfig (client certs or token).
+ *
+ * Returns both body (string) and bodyBuffer (Buffer) so callers can choose.
+ * Binary endpoints (download) should use bodyBuffer to avoid UTF-8 corruption.
  */
 export async function proxyToFileManager(
   kubeconfigPath: string | undefined,
@@ -54,7 +64,7 @@ export async function proxyToFileManager(
     contentType?: string;
     query?: Record<string, string>;
   } = {},
-): Promise<{ status: number; body: string; headers: Record<string, string> }> {
+): Promise<ProxyResult> {
   const kc = loadKubeConfig(kubeconfigPath);
   const cluster = kc.getCurrentCluster();
   if (!cluster) throw new Error('No active cluster in kubeconfig');
@@ -71,6 +81,12 @@ export async function proxyToFileManager(
 
   const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
+
+  // Set Content-Length for bodies to avoid chunked encoding issues
+  if (options.body) {
+    const bodyLen = Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body);
+    headers['Content-Length'] = String(bodyLen);
+  }
 
   // Apply auth headers (token-based auth)
   const user = kc.getCurrentUser();
@@ -95,21 +111,44 @@ export async function proxyToFileManager(
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => {
-        const body = Buffer.concat(chunks).toString();
+        const bodyBuffer = Buffer.concat(chunks);
         const responseHeaders: Record<string, string> = {};
         for (const [k, v] of Object.entries(res.headers)) {
           if (typeof v === 'string') responseHeaders[k] = v;
         }
-        resolve({ status: res.statusCode ?? 500, body, headers: responseHeaders });
+        resolve({
+          status: res.statusCode ?? 500,
+          body: bodyBuffer.toString('utf-8'),
+          bodyBuffer,
+          headers: responseHeaders,
+        });
       });
     });
 
     req.on('error', reject);
 
     if (options.body) {
-      req.write(options.body);
+      // Write in chunks for large bodies to avoid backpressure
+      const buf = Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body);
+      const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+      let offset = 0;
+      const writeChunk = () => {
+        while (offset < buf.length) {
+          const end = Math.min(offset + CHUNK_SIZE, buf.length);
+          const ok = req.write(buf.subarray(offset, end));
+          offset = end;
+          if (!ok) {
+            // Backpressure — wait for drain event
+            req.once('drain', writeChunk);
+            return;
+          }
+        }
+        req.end();
+      };
+      writeChunk();
+    } else {
+      req.end();
     }
-    req.end();
   });
 }
 
@@ -128,7 +167,7 @@ export async function fileManagerRequest(
     contentType?: string;
     query?: Record<string, string>;
   } = {},
-): Promise<{ status: number; body: string; headers: Record<string, string> }> {
+): Promise<ProxyResult> {
   // Ensure deployed
   await ensureFileManagerRunning(k8sClients, namespace, image);
 

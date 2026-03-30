@@ -389,7 +389,7 @@ describe('Files Page', () => {
       await user.click(screen.getByText('Copy'));
 
       expect(screen.getByText('Copy To')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText('/destination/path')).toBeInTheDocument();
+      expect(screen.getByText('Destination: /')).toBeInTheDocument();
     });
 
     it('opens move dialog from bulk toolbar', async () => {

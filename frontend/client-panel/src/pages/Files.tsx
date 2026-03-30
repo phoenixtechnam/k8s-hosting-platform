@@ -1,3 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// Webkit File System API types (non-standard, used for folder drag & drop)
+interface FileSystemEntry { readonly isFile: boolean; readonly isDirectory: boolean; readonly name: string; }
+interface FileSystemFileEntry extends FileSystemEntry { file(cb: (f: File) => void, err?: () => void): void; }
+interface FileSystemDirectoryEntry extends FileSystemEntry { createReader(): FileSystemDirectoryReader; }
+interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[]) => void, err?: () => void): void; }
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   FolderOpen, File, ChevronRight, ArrowLeft, Trash2, Edit3,
@@ -81,7 +89,6 @@ export default function Files() {
   const [gitUrl, setGitUrl] = useState('');
   const [gitDest, setGitDest] = useState('');
   const [moveTarget, setMoveTarget] = useState<{ paths: string[]; mode: 'copy' | 'move' } | null>(null);
-  const [moveDest, setMoveDest] = useState('');
   const [extractTarget, setExtractTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
 
@@ -124,11 +131,61 @@ export default function Files() {
     if (dragCounter.current <= 0) { dragCounter.current = 0; setDragging(false); }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     dragCounter.current = 0;
     setDragging(false);
+
+    // Try to handle folder drops via DataTransferItem.webkitGetAsEntry
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0) {
+      const allFiles: { file: File; relativePath: string }[] = [];
+
+      const readEntry = (entry: FileSystemEntry, path: string): Promise<void> => {
+        return new Promise((resolve) => {
+          if (entry.isFile) {
+            (entry as FileSystemFileEntry).file((file) => {
+              allFiles.push({ file, relativePath: path + file.name });
+              resolve();
+            }, () => resolve());
+          } else if (entry.isDirectory) {
+            const reader = (entry as FileSystemDirectoryEntry).createReader();
+            reader.readEntries(async (entries) => {
+              for (const child of entries) {
+                await readEntry(child, path + entry.name + '/');
+              }
+              resolve();
+            }, () => resolve());
+          } else {
+            resolve();
+          }
+        });
+      };
+
+      const entryPromises: Promise<void>[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.();
+        if (entry) {
+          entryPromises.push(readEntry(entry, ''));
+        }
+      }
+
+      if (entryPromises.length > 0) {
+        await Promise.all(entryPromises);
+        if (allFiles.length > 0) {
+          for (const { file, relativePath } of allFiles) {
+            const dir = relativePath.includes('/')
+              ? joinPath(currentPath, relativePath.substring(0, relativePath.lastIndexOf('/')))
+              : currentPath;
+            uploadFiles([file], dir);
+          }
+          return;
+        }
+      }
+    }
+
+    // Fallback: plain file drop
     if (e.dataTransfer.files.length > 0) {
       uploadFiles(e.dataTransfer.files, currentPath);
     }
@@ -163,6 +220,8 @@ export default function Files() {
       setCurrentPath(fullPath);
     } else if (isImageFile(entry.name)) {
       setViewingImage(fullPath);
+    } else if (isArchiveFile(entry.name)) {
+      setExtractTarget(fullPath);
     } else if (entry.size < 10 * 1024 * 1024) {
       setEditingFile(fullPath);
     }
@@ -250,13 +309,13 @@ export default function Files() {
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <button onClick={() => dirListing.refetch()} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Refresh"><RefreshCw size={14} /></button>
           <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(e.target.files, currentPath); e.target.value = ''; }} />
-          <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+          <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
           </button>
-          <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+          <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <GitBranch size={14} /> Git Clone
           </button>
-          <button onClick={() => { setNewDirOpen(true); setNewDirName(''); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">
+          <button onClick={() => { setNewDirOpen(true); setNewDirName(''); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">
             <FolderPlus size={14} /> New Folder
           </button>
         </div>
@@ -267,8 +326,8 @@ export default function Files() {
         <div className="flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2 flex-wrap">
           <span className="text-sm font-medium text-brand-700 dark:text-brand-300">{selected.size} selected</span>
           <div className="mx-2 h-4 w-px bg-brand-200 dark:bg-brand-700" />
-          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'copy' }); setMoveDest(currentPath); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Copy size={13} /> Copy</button>
-          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'move' }); setMoveDest(currentPath); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Move size={13} /> Move</button>
+          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'copy' }); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Copy size={13} /> Copy</button>
+          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'move' }); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Move size={13} /> Move</button>
           <button onClick={() => { setArchiveOpen(true); setArchiveName(`archive-${Date.now()}`); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><FileArchive size={13} /> Archive</button>
           <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={13} /> Delete</button>
           <div className="flex-1" />
@@ -313,7 +372,7 @@ export default function Files() {
         )}
 
         {dirListing.data && (
-          <table className="w-full text-sm">
+          <table className="w-full text-[15px]">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                 <th className="px-3 py-3 w-8">
@@ -368,8 +427,8 @@ export default function Files() {
           onDownload={(path) => { downloadFile(path); setContextMenu(null); }}
           onRename={(name) => { setRenameTarget(name); setRenameName(name); setContextMenu(null); }}
           onDelete={(name) => { setDeleteTarget(name); setContextMenu(null); }}
-          onCopy={(path) => { setMoveTarget({ paths: [path], mode: 'copy' }); setMoveDest(currentPath); setContextMenu(null); }}
-          onMove={(path) => { setMoveTarget({ paths: [path], mode: 'move' }); setMoveDest(currentPath); setContextMenu(null); }}
+          onCopy={(path) => { setMoveTarget({ paths: [path], mode: 'copy' }); setContextMenu(null); }}
+          onMove={(path) => { setMoveTarget({ paths: [path], mode: 'move' }); setContextMenu(null); }}
           onExtract={(path) => { setExtractTarget(path); setContextMenu(null); }}
           onNavigate={(path) => { setCurrentPath(path); setContextMenu(null); }}
         />
@@ -447,20 +506,22 @@ export default function Files() {
       )}
 
       {moveTarget && (
-        <SimpleDialog title={moveTarget.mode === 'copy' ? 'Copy To' : 'Move To'} onClose={() => setMoveTarget(null)}
-          onConfirm={() => {
+        <FolderPickerDialog
+          title={moveTarget.mode === 'copy' ? 'Copy To' : 'Move To'}
+          description={`${moveTarget.mode === 'copy' ? 'Copy' : 'Move'} ${moveTarget.paths.length} item${moveTarget.paths.length > 1 ? 's' : ''} to:`}
+          initialPath={currentPath}
+          confirmLabel={moveTarget.mode === 'copy' ? 'Copy Here' : 'Move Here'}
+          isPending={copyFile.isPending || renameFile.isPending}
+          onClose={() => setMoveTarget(null)}
+          onConfirm={(destPath) => {
             const promises = moveTarget.paths.map(sourcePath => {
               const name = sourcePath.split('/').pop() || '';
-              const destPath = joinPath(moveDest, name);
-              return moveTarget.mode === 'copy' ? copyFile.mutateAsync({ sourcePath, destPath }) : renameFile.mutateAsync({ oldPath: sourcePath, newPath: destPath });
+              const dest = joinPath(destPath, name);
+              return moveTarget.mode === 'copy' ? copyFile.mutateAsync({ sourcePath, destPath: dest }) : renameFile.mutateAsync({ oldPath: sourcePath, newPath: dest });
             });
             Promise.all(promises).then(() => { setMoveTarget(null); setSelected(new Set()); });
-          }} isPending={copyFile.isPending || renameFile.isPending} confirmLabel={moveTarget.mode === 'copy' ? 'Copy' : 'Move'}>
-          <div className="space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">{moveTarget.mode === 'copy' ? 'Copy' : 'Move'} {moveTarget.paths.length} item{moveTarget.paths.length > 1 ? 's' : ''} to:</p>
-            <input type="text" value={moveDest} onChange={(e) => setMoveDest(e.target.value)} placeholder="/destination/path" className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" autoFocus />
-          </div>
-        </SimpleDialog>
+          }}
+        />
       )}
     </div>
   );
@@ -500,25 +561,25 @@ function FileRow({
       onClick={(e) => { if ((e.target as HTMLElement).closest('[data-action]')) return; onClick(); }}
       onContextMenu={onContextMenu}
     >
-      <td className="px-3 py-2.5" data-action="select">
+      <td className="px-3 py-3" data-action="select">
         <button onClick={(e) => { e.stopPropagation(); onToggleSelect(); }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-          {isSelected ? <CheckSquare size={14} className="text-brand-500" /> : <Square size={14} />}
+          {isSelected ? <CheckSquare size={16} className="text-brand-500" /> : <Square size={16} />}
         </button>
       </td>
-      <td className="px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          {isDir ? <FolderOpen size={16} className="text-amber-500 dark:text-amber-400 shrink-0" />
-            : isImage ? <ImageIcon size={16} className="text-purple-500 dark:text-purple-400 shrink-0" />
-            : isArchive ? <FileArchive size={16} className="text-orange-500 dark:text-orange-400 shrink-0" />
-            : <File size={16} className="text-gray-400 dark:text-gray-500 shrink-0" />}
-          <span className={isDir ? 'font-medium text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'}>{entry.name}</span>
+      <td className="px-3 py-3">
+        <div className="flex items-center gap-2.5">
+          {isDir ? <FolderOpen size={20} className="text-amber-500 dark:text-amber-400 shrink-0" />
+            : isImage ? <ImageIcon size={20} className="text-purple-500 dark:text-purple-400 shrink-0" />
+            : isArchive ? <FileArchive size={20} className="text-orange-500 dark:text-orange-400 shrink-0" />
+            : <File size={20} className="text-gray-400 dark:text-gray-500 shrink-0" />}
+          <span className={isDir ? 'font-medium text-gray-900 dark:text-gray-100 text-[15px]' : 'text-gray-700 dark:text-gray-300 text-[15px]'}>{entry.name}</span>
         </div>
       </td>
-      <td className="px-3 py-2.5 text-xs text-gray-500 dark:text-gray-400">{isDir ? '-' : formatSize(entry.size)}</td>
-      <td className="px-3 py-2.5 text-xs text-gray-500 dark:text-gray-400 hidden sm:table-cell">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : '-'}</td>
-      <td className="px-3 py-2.5 text-right" data-action="actions">
-        <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
-          <MoreVertical size={14} />
+      <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">{isDir ? '-' : formatSize(entry.size)}</td>
+      <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400 hidden sm:table-cell">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : '-'}</td>
+      <td className="px-3 py-3 text-right" data-action="actions">
+        <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
+          <MoreVertical size={16} />
         </button>
       </td>
     </tr>
@@ -797,6 +858,75 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
           theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
           options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
       )}
+    </div>
+  );
+}
+
+function FolderPickerDialog({
+  title, description, initialPath, confirmLabel, isPending, onClose, onConfirm,
+}: {
+  readonly title: string;
+  readonly description: string;
+  readonly initialPath: string;
+  readonly confirmLabel: string;
+  readonly isPending: boolean;
+  readonly onClose: () => void;
+  readonly onConfirm: (path: string) => void;
+}) {
+  const [browsePath, setBrowsePath] = useState(initialPath);
+  const listing = useDirectoryListing(browsePath, true);
+  const folders = listing.data?.entries.filter(e => e.type === 'directory') ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">{title}</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{description}</p>
+
+        {/* Current path breadcrumb */}
+        <div className="flex items-center gap-1 text-sm mb-2 overflow-x-auto">
+          <button onClick={() => setBrowsePath('/')} className="text-brand-600 hover:underline dark:text-brand-400">/</button>
+          {browsePath.split('/').filter(Boolean).map((part, i, arr) => (
+            <span key={i} className="flex items-center gap-1">
+              <ChevronRight size={12} className="text-gray-400" />
+              <button onClick={() => setBrowsePath('/' + arr.slice(0, i + 1).join('/'))} className="text-brand-600 hover:underline dark:text-brand-400">{part}</button>
+            </span>
+          ))}
+        </div>
+
+        {/* Selected destination */}
+        <div className="rounded-lg border-2 border-brand-500 bg-brand-50 dark:bg-brand-900/20 px-3 py-2 mb-3 text-sm font-medium text-brand-700 dark:text-brand-300">
+          Destination: {browsePath}
+        </div>
+
+        {/* Folder list */}
+        <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 mb-3">
+          {browsePath !== '/' && (
+            <button onClick={() => { const parts = browsePath.split('/').filter(Boolean); parts.pop(); setBrowsePath('/' + parts.join('/')); }}
+              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 border-b border-gray-100 dark:border-gray-700">
+              <ArrowLeft size={14} className="text-gray-400" /> ..
+            </button>
+          )}
+          {listing.isLoading && <div className="flex items-center justify-center py-4"><Loader2 size={16} className="animate-spin text-gray-400" /></div>}
+          {folders.length === 0 && !listing.isLoading && (
+            <div className="px-3 py-4 text-sm text-gray-400 text-center">No subfolders</div>
+          )}
+          {folders.map(f => (
+            <button key={f.name} onClick={() => setBrowsePath(joinPath(browsePath, f.name))}
+              className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 border-b border-gray-100 dark:border-gray-700 last:border-b-0">
+              <FolderOpen size={16} className="text-amber-500 shrink-0" />
+              <span className="text-gray-700 dark:text-gray-300">{f.name}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">Cancel</button>
+          <button onClick={() => onConfirm(browsePath)} disabled={isPending} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+            {isPending && <Loader2 size={14} className="animate-spin inline mr-1" />}{confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

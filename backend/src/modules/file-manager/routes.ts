@@ -131,7 +131,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
     reply.header('Content-Type', result.headers['content-type'] || 'application/octet-stream');
     reply.header('Content-Disposition', result.headers['content-disposition'] || 'attachment');
-    return reply.send(result.body);
+    return reply.send(result.bodyBuffer);
   });
 
   // POST /api/v1/clients/:clientId/files/mkdir — create directory
