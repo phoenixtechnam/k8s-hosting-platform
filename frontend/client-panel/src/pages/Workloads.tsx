@@ -259,87 +259,94 @@ function WorkloadDetailPanel({
             )}
           </div>
 
-          {/* Resources */}
+          {/* Resource Requirements (always visible, at top) */}
           <div>
-            <SectionHeading icon={Cpu} title="Resources" />
+            <SectionHeading icon={Cpu} title="Resource Requirements" />
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-              <div>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span>
-                <p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceCpu ?? 'Default'}</p>
-              </div>
-              <div>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span>
-                <p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceMemory ?? 'Default'}</p>
-              </div>
-              <div>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span>
-                <p className="text-sm text-gray-900 dark:text-gray-100">{image.minPlan ?? 'Any'}</p>
-              </div>
-              <div>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span>
-                <p className="text-sm text-gray-900 dark:text-gray-100">{image.containerPort ?? '-'}</p>
-              </div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceCpu ?? 'Default'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceMemory ?? 'Default'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.minPlan ?? 'Any'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.containerPort ?? '-'}</p></div>
             </div>
           </div>
 
-          {/* Health Check */}
-          {healthCheck.path && (
+          {/* Provides (formatted, always visible) */}
+          {image.provides && typeof image.provides === 'object' && Object.keys(image.provides).length > 0 && (
             <div>
-              <SectionHeading icon={Heart} title="Health Check" />
+              <SectionHeading icon={Server} title="Provides" />
+              <div className="space-y-2">
+                {Object.entries(image.provides).map(([serviceType, serviceData]) => {
+                  const svc = serviceData as Record<string, unknown> | null;
+                  if (!svc || typeof svc !== 'object') return null;
+                  return (
+                    <div key={serviceType} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="rounded bg-emerald-100 dark:bg-emerald-900/20 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">{serviceType}</span>
+                        {svc.engine != null && <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{String(svc.engine)}</span>}
+                        {svc.version != null && <span className="text-xs text-gray-500 dark:text-gray-400">v{String(svc.version)}</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-sm">
+                        {svc.protocol != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Protocol</span><p className="text-gray-900 dark:text-gray-100">{String(svc.protocol)}</p></div>}
+                        {svc.port != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-gray-900 dark:text-gray-100">{String(svc.port)}</p></div>}
+                      </div>
+                      {svc.credentials != null && typeof svc.credentials === 'object' && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {Object.entries(svc.credentials as Record<string, string>).map(([key, val]) => (
+                            <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}: {val}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Collapsible: Workload Details */}
+          <details className="rounded-lg border border-gray-200 dark:border-gray-700">
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+              Workload Details
+            </summary>
+            <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-5">
+
+              {/* Deployment Info */}
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Path</span>
-                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.path}</p>
-                </div>
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span>
-                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p>
-                </div>
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span>
-                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p>
-                </div>
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span>
-                  <p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p>
-                </div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.runtime ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.webServer ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deploy Strategy</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.deploymentStrategy ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{image.mountPath ?? '-'}</p></div>
               </div>
-            </div>
-          )}
 
-          {/* Environment Variables */}
-          {envVars.length > 0 && (
-            <div>
-              <SectionHeading icon={Settings2} title="Environment Variables" />
-              <div className="flex flex-wrap gap-1 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                {envVars.map((v, i) => (
-                  <span key={i} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">
-                    {typeof v === 'string' ? v : Object.keys(v)[0]}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+              {/* Health Check */}
+              {healthCheck.path && (
+                <div>
+                  <SectionHeading icon={Heart} title="Health Check" />
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Path</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.path}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p></div>
+                  </div>
+                </div>
+              )}
 
-          {/* Additional Info */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-            <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span>
-              <p className="text-sm text-gray-900 dark:text-gray-100">{image.runtime ?? '-'}</p>
+              {/* Environment Variables */}
+              {envVars.length > 0 && (
+                <div>
+                  <SectionHeading icon={Settings2} title="Environment Variables" />
+                  <div className="flex flex-wrap gap-1 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    {envVars.map((v, i) => (
+                      <span key={i} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">
+                        {typeof v === 'string' ? v : Object.keys(v)[0]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
             </div>
-            <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span>
-              <p className="text-sm text-gray-900 dark:text-gray-100">{image.webServer ?? '-'}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deploy Strategy</span>
-              <p className="text-sm text-gray-900 dark:text-gray-100">{image.deploymentStrategy ?? '-'}</p>
-            </div>
-            <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span>
-              <p className="text-sm font-mono text-gray-900 dark:text-gray-100">{image.mountPath ?? '-'}</p>
-            </div>
-          </div>
+          </details>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">

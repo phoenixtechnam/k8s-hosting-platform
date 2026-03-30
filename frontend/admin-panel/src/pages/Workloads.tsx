@@ -395,130 +395,143 @@ function WorkloadDetailPanel({
             {description && <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{description}</p>}
           </div>
 
-          {/* Deployment Info */}
+          {/* Resource Requirements (always visible, at top) */}
           <div>
-            <SectionHeading icon={Server} title="Deployment Info" />
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span><p className="text-sm text-gray-900 dark:text-gray-100">{runtime ?? '-'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span><p className="text-sm text-gray-900 dark:text-gray-100">{webServer ?? '-'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deployment Strategy</span><p className="text-sm text-gray-900 dark:text-gray-100">{deploymentStrategy ?? '-'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{containerPort ?? '-'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{mountPath ?? '-'}</p></div>
+            <SectionHeading icon={Cpu} title="Resource Requirements" />
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceCpu ?? 'Default'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceMemory ?? 'Default'}</p></div>
+              {resourceStorage && (
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceStorage}</p></div>
+              )}
               <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{minPlan ?? 'Any'}</p></div>
             </div>
           </div>
 
-          {/* Resources */}
-          {(resourceCpu ?? resourceMemory ?? resourceStorage) && (
-            <div>
-              <SectionHeading icon={Cpu} title="Resources" />
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceCpu ?? 'Default'}</p></div>
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceMemory ?? 'Default'}</p></div>
-                {resourceStorage && (
-                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage</span><p className="text-sm text-gray-900 dark:text-gray-100">{resourceStorage}</p></div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Health Check */}
-          {healthCheck && (healthCheck.path ?? healthCheck.command) && (
-            <div>
-              <SectionHeading icon={Heart} title="Health Check" />
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                <div>
-                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{healthCheck.path ? 'Path' : 'Command'}</span>
-                  <p className="text-sm font-mono text-gray-900 dark:text-gray-100">{healthCheck.path ?? healthCheck.command}</p>
-                </div>
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p></div>
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p></div>
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p></div>
-              </div>
-            </div>
-          )}
-
-          {/* Environment Variables */}
-          {(configurableEnvVars.length > 0 || fixedEnvVars.length > 0) && (
-            <div>
-              <SectionHeading icon={Settings2} title="Environment Variables" />
-              <div className="space-y-3">
-                {configurableEnvVars.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Configurable</p>
-                    <div className="flex flex-wrap gap-1">
-                      {configurableEnvVars.map((v) => (
-                        <span key={v} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {fixedEnvVars.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Fixed</p>
-                    <div className="flex flex-wrap gap-1">
-                      {fixedEnvVars.map((v) => (
-                        <span key={v.key} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v.key}={v.value}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Services */}
-          {Array.isArray(services) && services.length > 0 && (
-            <div>
-              <SectionHeading icon={Network} title="Services" />
-              <div className="space-y-2">
-                {services.map((svc, i) => (
-                  <div key={i} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="font-medium text-gray-900 dark:text-gray-100">{svc.engine ?? 'Unknown'}</span>
-                      {svc.minVersion && <span className="text-gray-500 dark:text-gray-400">min v{svc.minVersion}</span>}
-                    </div>
-                    {svc.envMapping && Object.keys(svc.envMapping).length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {Object.entries(svc.envMapping).map(([key, val]) => (
-                          <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}={String(val)}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Provides */}
+          {/* Provides (formatted, always visible) */}
           {provides && Object.keys(provides).length > 0 && (
             <div>
               <SectionHeading icon={Server} title="Provides" />
-              <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  {Object.entries(provides).map(([key, val]) => (
-                    <div key={key}>
-                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{key}</span>
-                      <p className="text-gray-900 dark:text-gray-100">{typeof val === 'object' ? JSON.stringify(val) : String(val ?? '-')}</p>
+              <div className="space-y-2">
+                {Object.entries(provides).map(([serviceType, serviceData]) => {
+                  const svc = serviceData as Record<string, unknown> | null;
+                  if (!svc || typeof svc !== 'object') return null;
+                  return (
+                    <div key={serviceType} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="rounded bg-emerald-100 dark:bg-emerald-900/20 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">{serviceType}</span>
+                        {svc.engine != null && <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{String(svc.engine)}</span>}
+                        {svc.version != null && <span className="text-xs text-gray-500 dark:text-gray-400">v{String(svc.version)}</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-sm">
+                        {svc.protocol != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Protocol</span><p className="text-gray-900 dark:text-gray-100">{String(svc.protocol)}</p></div>}
+                        {svc.port != null && <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-gray-900 dark:text-gray-100">{String(svc.port)}</p></div>}
+                      </div>
+                      {svc.credentials != null && typeof svc.credentials === 'object' && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {Object.entries(svc.credentials as Record<string, string>).map(([key, val]) => (
+                            <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}: {val}</span>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
           {/* Tags */}
           {tags.length > 0 && (
-            <div>
-              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Tags</span>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {tags.map((tag) => (
-                  <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs text-gray-600 dark:text-gray-400">{tag}</span>
-                ))}
-              </div>
+            <div className="flex flex-wrap gap-1">
+              {tags.map((tag) => (
+                <span key={tag} className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs text-gray-600 dark:text-gray-400">{tag}</span>
+              ))}
             </div>
           )}
+
+          {/* Collapsible: Workload Details */}
+          <details className="rounded-lg border border-gray-200 dark:border-gray-700">
+            <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+              Workload Details
+            </summary>
+            <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-5">
+
+              {/* Deployment Info */}
+              <div>
+                <SectionHeading icon={Server} title="Deployment Info" />
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span><p className="text-sm text-gray-900 dark:text-gray-100">{runtime ?? '-'}</p></div>
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span><p className="text-sm text-gray-900 dark:text-gray-100">{webServer ?? '-'}</p></div>
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deploy Strategy</span><p className="text-sm text-gray-900 dark:text-gray-100">{deploymentStrategy ?? '-'}</p></div>
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{containerPort ?? '-'}</p></div>
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{mountPath ?? '-'}</p></div>
+                  <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{minPlan ?? 'Any'}</p></div>
+                </div>
+              </div>
+
+              {/* Health Check */}
+              {healthCheck && (healthCheck.path ?? healthCheck.command) && (
+                <div>
+                  <SectionHeading icon={Heart} title="Health Check" />
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">{healthCheck.path ? 'Path' : 'Command'}</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{healthCheck.path ?? healthCheck.command}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.port ?? '-'}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Initial Delay</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.initial_delay_seconds != null ? `${healthCheck.initial_delay_seconds}s` : '-'}</p></div>
+                    <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Period</span><p className="text-sm text-gray-900 dark:text-gray-100">{healthCheck.period_seconds != null ? `${healthCheck.period_seconds}s` : '-'}</p></div>
+                  </div>
+                </div>
+              )}
+
+              {/* Environment Variables */}
+              {(configurableEnvVars.length > 0 || fixedEnvVars.length > 0) && (
+                <div>
+                  <SectionHeading icon={Settings2} title="Environment Variables" />
+                  <div className="space-y-3">
+                    {configurableEnvVars.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Configurable</p>
+                        <div className="flex flex-wrap gap-1">
+                          {configurableEnvVars.map((v) => <span key={v} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v}</span>)}
+                        </div>
+                      </div>
+                    )}
+                    {fixedEnvVars.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Fixed</p>
+                        <div className="flex flex-wrap gap-1">
+                          {fixedEnvVars.map((v) => <span key={v.key} className="rounded bg-gray-200 dark:bg-gray-600 px-2 py-0.5 text-xs font-mono text-gray-700 dark:text-gray-300">{v.key}={v.value}</span>)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Services (required) */}
+              {Array.isArray(services) && services.length > 0 && (
+                <div>
+                  <SectionHeading icon={Network} title="Service Requirements" />
+                  <div className="space-y-2">
+                    {services.map((svc, i) => (
+                      <div key={i} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                        <div className="flex items-center gap-3 text-sm">
+                          <span className="font-medium text-gray-900 dark:text-gray-100">{svc.engine ?? 'Unknown'}</span>
+                          {svc.minVersion && <span className="text-gray-500 dark:text-gray-400">min v{svc.minVersion}</span>}
+                        </div>
+                        {svc.envMapping && Object.keys(svc.envMapping).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {Object.entries(svc.envMapping).map(([key, val]) => <span key={key} className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-mono text-gray-600 dark:text-gray-400">{key}={String(val)}</span>)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </details>
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
