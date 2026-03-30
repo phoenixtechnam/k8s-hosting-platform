@@ -438,6 +438,28 @@ export const dnsRecords = mysqlTable('dns_records', {
   index('dns_records_type_idx').on(table.recordType),
 ]);
 
+// ─── Ingress Routes ───
+
+export const ingressRoutes = mysqlTable('ingress_routes', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  hostname: varchar('hostname', { length: 255 }).notNull(),
+  workloadId: varchar('workload_id', { length: 36 }),
+  ingressCname: varchar('ingress_cname', { length: 255 }).notNull(),
+  nodeHostname: varchar('node_hostname', { length: 255 }),
+  isApex: int('is_apex').notNull().default(0),
+  tlsMode: mysqlEnum('tls_mode', ['auto', 'custom', 'none']).notNull().default('auto'),
+  status: mysqlEnum('status', ['active', 'pending', 'error']).notNull().default('pending'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('ingress_routes_hostname_unique').on(table.hostname),
+  index('ingress_routes_domain_idx').on(table.domainId),
+  index('ingress_routes_workload_idx').on(table.workloadId),
+]);
+
+export type IngressRoute = typeof ingressRoutes.$inferSelect;
+
 // ─── SSH Keys ───
 
 export const sshKeys = mysqlTable('ssh_keys', {

@@ -51,6 +51,8 @@ services:
       OIDC_ENCRYPTION_KEY: ${OIDC_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
       DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
       CLUSTER_ISSUER_NAME: ${CLUSTER_ISSUER_NAME:-local-ca-issuer}
+      INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}
+      INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
     depends_on:
       mariadb:

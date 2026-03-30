@@ -1,13 +1,13 @@
 /**
  * Ingress reconciler.
  *
- * Creates/updates a single Ingress resource per client namespace,
- * routing all client domains to their assigned workloads.
+ * Builds Ingress resources from ingress_routes table.
+ * Each route with an assigned workload becomes an Ingress rule.
  * Applies cert-manager TLS annotations when auto-TLS is enabled.
  */
 
-import { eq } from 'drizzle-orm';
-import { domains, workloads } from '../../db/schema.js';
+import { eq, and, isNotNull } from 'drizzle-orm';
+import { ingressRoutes, workloads, domains } from '../../db/schema.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -31,8 +31,8 @@ function isK8s409(err: unknown): boolean {
 
 /**
  * Reconcile the Ingress resource for a client namespace.
- * Builds the full Ingress from all client domains + workload mappings.
- * If no domains exist, deletes the Ingress.
+ * Builds rules from ingress_routes that have workloads assigned.
+ * If no routable routes exist, deletes the Ingress.
  */
 export async function reconcileIngress(
   db: Database,
@@ -40,13 +40,13 @@ export async function reconcileIngress(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // Fetch all domains for this client
+  // Get all domains for this client
   const clientDomains = await db.select().from(domains).where(eq(domains.clientId, clientId));
+  const domainIds = clientDomains.map(d => d.id);
 
   const ingressName = `${namespace}-ingress`;
 
-  // No domains → delete Ingress if it exists
-  if (clientDomains.length === 0) {
+  if (domainIds.length === 0) {
     try {
       await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
     } catch (err: unknown) {
@@ -55,20 +55,66 @@ export async function reconcileIngress(
     return;
   }
 
-  // Fetch all workloads for routing
+  // Get all ingress routes with assigned workloads for this client's domains
+  const allRoutes = await db.select().from(ingressRoutes);
+  const clientRoutes = allRoutes.filter(
+    r => domainIds.includes(r.domainId) && r.workloadId && r.status === 'active',
+  );
+
+  if (clientRoutes.length === 0) {
+    // No routable routes — also check legacy domains.workloadId fallback
+    const legacyDomains = clientDomains.filter(d => d.workloadId);
+    if (legacyDomains.length === 0) {
+      try {
+        await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+      } catch (err: unknown) {
+        if (!isK8s404(err)) throw err;
+      }
+      return;
+    }
+  }
+
+  // Build workload name lookup
   const clientWorkloads = await db.select().from(workloads).where(eq(workloads.clientId, clientId));
   const workloadMap = new Map<string, string>();
   for (const w of clientWorkloads) {
     workloadMap.set(w.id, w.name);
   }
 
-  // Build Ingress rules
-  const rules = clientDomains.map(domain => {
-    const serviceName = domain.workloadId
-      ? (workloadMap.get(domain.workloadId) ?? clientWorkloads[0]?.name ?? 'default')
-      : (clientWorkloads[0]?.name ?? 'default');
+  // Build rules from ingress_routes
+  const rules = clientRoutes
+    .map(route => {
+      const serviceName = workloadMap.get(route.workloadId!);
+      if (!serviceName) return null;
 
-    return {
+      return {
+        host: route.hostname,
+        http: {
+          paths: [{
+            path: '/',
+            pathType: 'Prefix',
+            backend: {
+              service: {
+                name: serviceName,
+                port: { number: 80 },
+              },
+            },
+          }],
+        },
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  // Fallback: legacy domains.workloadId (for domains without ingress_routes)
+  for (const domain of clientDomains) {
+    if (!domain.workloadId) continue;
+    const alreadyRouted = clientRoutes.some(r => r.hostname === domain.domainName);
+    if (alreadyRouted) continue;
+
+    const serviceName = workloadMap.get(domain.workloadId);
+    if (!serviceName) continue;
+
+    rules.push({
       host: domain.domainName,
       http: {
         paths: [{
@@ -82,8 +128,17 @@ export async function reconcileIngress(
           },
         }],
       },
-    };
-  });
+    });
+  }
+
+  if (rules.length === 0) {
+    try {
+      await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+    }
+    return;
+  }
 
   // Build annotations
   const annotations: Record<string, string> = {};
@@ -92,11 +147,12 @@ export async function reconcileIngress(
     annotations['cert-manager.io/cluster-issuer'] = await getClusterIssuerName(db);
   }
 
-  // Build TLS section
+  // Build TLS section from all routed hostnames
+  const routedHostnames = rules.map(r => (r as { host: string }).host);
   const tls = autoTls
-    ? clientDomains.map(d => ({
-        hosts: [d.domainName],
-        secretName: domainToSecretName(d.domainName),
+    ? routedHostnames.map(h => ({
+        hosts: [h],
+        secretName: domainToSecretName(h),
       }))
     : undefined;
 
@@ -113,7 +169,6 @@ export async function reconcileIngress(
     },
   };
 
-  // Create or replace Ingress
   try {
     await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
   } catch (err: unknown) {

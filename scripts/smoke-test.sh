@@ -198,6 +198,12 @@ log "── Workload Reconciliation ──"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/workloads/reconcile")
 check_status "POST /admin/workloads/reconcile" "200" "$STATUS"
 
+# ─── Ingress Settings ─────────────────────────────────────────────────────────
+
+log "── Ingress Settings ──"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/ingress-settings")
+check_status "GET /admin/ingress-settings" "200" "$STATUS"
+
 # ─── Auth Protected (no token) ─────────────────────────────────────────────────
 
 log "── Auth Protection ──"
