@@ -9,7 +9,7 @@ interface ApplicationCatalogListResponse {
 export function useApplicationCatalog() {
   return useQuery({
     queryKey: ['application-catalog'],
-    queryFn: () => apiFetch<ApplicationCatalogListResponse>('/api/v1/admin/application-catalog'),
+    queryFn: () => apiFetch<ApplicationCatalogListResponse>('/api/v1/application-catalog'),
     staleTime: 60_000,
   });
 }

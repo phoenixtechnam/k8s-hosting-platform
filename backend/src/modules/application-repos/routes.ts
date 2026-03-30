@@ -6,12 +6,45 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function applicationRepoRoutes(app: FastifyInstance): Promise<void> {
-  // All application-repo routes require admin auth
-  app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin'));
+  // ─── Public: Application catalog (accessible by all authenticated users) ───
+
+  // GET /api/v1/application-catalog — any authenticated user can browse apps
+  app.get('/application-catalog', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Application Catalog'],
+      summary: 'List all application catalog entries (public)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const entries = await service.listCatalogEntries(app.db);
+    return success(entries);
+  });
+
+  // GET /api/v1/application-catalog/:code — any authenticated user
+  app.get('/application-catalog/:code', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Application Catalog'],
+      summary: 'Get a single application catalog entry by code (public)',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { code: { type: 'string' } },
+        required: ['code'],
+      },
+    },
+  }, async (request) => {
+    const { code } = request.params as { code: string };
+    const entry = await service.getCatalogEntry(app.db, code);
+    return success(entry);
+  });
+
+  // ─── Admin: Repository management (all require super_admin/admin) ────────
 
   // GET /api/v1/admin/application-repos
   app.get('/admin/application-repos', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Repos'],
       summary: 'List all application catalog repositories',
@@ -49,6 +82,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // POST /api/v1/admin/application-repos
   app.post('/admin/application-repos', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Repos'],
       summary: 'Add an application catalog repository',
@@ -100,6 +134,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // POST /api/v1/admin/application-repos/restore-default
   app.post('/admin/application-repos/restore-default', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Repos'],
       summary: 'Restore the official default application catalog repository',
@@ -130,6 +165,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // DELETE /api/v1/admin/application-repos/:id
   app.delete('/admin/application-repos/:id', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Repos'],
       summary: 'Remove an application catalog repository',
@@ -153,6 +189,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // POST /api/v1/admin/application-repos/:id/sync
   app.post('/admin/application-repos/:id/sync', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Repos'],
       summary: 'Trigger manual sync of an application catalog repository',
@@ -186,6 +223,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // GET /api/v1/admin/application-catalog
   app.get('/admin/application-catalog', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Catalog'],
       summary: 'List all application catalog entries',
@@ -198,6 +236,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // PATCH /api/v1/admin/application-catalog/:id/badges
   app.patch('/admin/application-catalog/:id/badges', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Catalog'],
       summary: 'Update featured/popular badges on an application',
@@ -224,6 +263,7 @@ export async function applicationRepoRoutes(app: FastifyInstance): Promise<void>
 
   // GET /api/v1/admin/application-catalog/:code
   app.get('/admin/application-catalog/:code', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Application Catalog'],
       summary: 'Get a single application catalog entry by code',
