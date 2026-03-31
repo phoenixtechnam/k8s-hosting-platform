@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Search, Loader2, Globe, Shield } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
+import PaginationBar from '@/components/ui/PaginationBar';
 import CreateDomainModal from '@/components/CreateDomainModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useDomains } from '@/hooks/use-domains';
 import { useClients } from '@/hooks/use-clients';
+import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -17,9 +19,16 @@ export default function Domains() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
 
+  const pagination = useCursorPagination({ defaultLimit: 20 });
+
+  // Reset pagination when search or client filter changes
+  useEffect(() => {
+    pagination.resetPagination();
+  }, [debouncedSearch, selectedClientId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
     selectedClientId ?? undefined,
-    { search: debouncedSearch || undefined, limit: 50 },
+    { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor },
   );
 
   const { data: clientsData } = useClients({ limit: 100 });
@@ -29,6 +38,8 @@ export default function Domains() {
 
   const domains = domainsData?.data ?? [];
   const totalCount = domainsData?.pagination?.total_count ?? 0;
+  const hasMore = domainsData?.pagination?.has_more ?? false;
+  const nextCursor = domainsData?.pagination?.cursor ?? null;
   const { sortedData: sortedDomains, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName');
 
   const handleSearchChange = (value: string) => {
@@ -150,9 +161,16 @@ export default function Domains() {
                 </tbody>
               </table>
             </div>
-            <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
-              {totalCount} domain{totalCount !== 1 ? 's' : ''}
-            </div>
+            <PaginationBar
+              totalCount={totalCount}
+              pageSize={pagination.limit}
+              pageIndex={pagination.pageIndex}
+              hasPrevPage={pagination.hasPrevPage}
+              hasNextPage={hasMore}
+              onNext={() => nextCursor && pagination.goNext(nextCursor)}
+              onPrev={pagination.goPrev}
+              onPageSizeChange={pagination.setPageSize}
+            />
           </>
         )}
       </div>

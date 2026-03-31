@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import type { PaginatedResponse } from '@/types/api';
 
 export interface AuditLogEntry {
   readonly id: string;
@@ -17,14 +18,22 @@ export interface AuditLogEntry {
   readonly createdAt: string;
 }
 
-interface AuditLogsResponse {
-  readonly data: readonly AuditLogEntry[];
+interface ListAuditLogsParams {
+  readonly limit?: number;
+  readonly cursor?: string;
 }
 
-export function useAuditLogs(limit = 50) {
+export function useAuditLogs(params: ListAuditLogsParams = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.limit) searchParams.set('limit', String(params.limit));
+  if (params.cursor) searchParams.set('cursor', params.cursor);
+
+  const qs = searchParams.toString();
+  const path = `/api/v1/admin/audit-logs${qs ? `?${qs}` : ''}`;
+
   return useQuery({
-    queryKey: ['audit-logs', limit],
-    queryFn: () => apiFetch<AuditLogsResponse>(`/api/v1/admin/audit-logs?limit=${limit}`),
+    queryKey: ['audit-logs', params],
+    queryFn: () => apiFetch<PaginatedResponse<AuditLogEntry>>(path),
     refetchInterval: 30_000,
   });
 }

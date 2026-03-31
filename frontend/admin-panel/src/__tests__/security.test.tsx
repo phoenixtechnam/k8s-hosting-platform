@@ -180,6 +180,6 @@ describe('Security page', () => {
 
   it('calls useAuditLogs with limit of 10', () => {
     render(<Security />, { wrapper: createWrapper() });
-    expect(mockUseAuditLogs).toHaveBeenCalledWith(10);
+    expect(mockUseAuditLogs).toHaveBeenCalledWith({ limit: 10 });
   });
 });

@@ -92,7 +92,7 @@ function mapAuditLogToEvent(log: AuditLogEntry): SecurityEvent {
 }
 
 export default function Security() {
-  const { data: auditData, isLoading: auditLoading, error: auditError } = useAuditLogs(10);
+  const { data: auditData, isLoading: auditLoading, error: auditError } = useAuditLogs({ limit: 10 });
   const securityEvents: readonly SecurityEvent[] = (auditData?.data ?? []).map(mapAuditLogToEvent);
 
   const { sortedData: sortedPolicies, sortKey: policySortKey, sortDirection: policySortDir, onSort: onPolicySort } = useSortable(NETWORK_POLICIES, 'name');

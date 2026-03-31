@@ -1,10 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { desc, eq, and, like, gte, lte } from 'drizzle-orm';
+import { desc, eq, and, like, gte, lte, lt, sql } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { auditLogs } from '../../db/schema.js';
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 100;
+import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import { paginated } from '../../shared/response.js';
 
 export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -13,8 +12,7 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/admin/audit-logs — filterable audit log entries
   app.get('/admin/audit-logs', async (request) => {
     const query = request.query as Record<string, string | undefined>;
-    const rawLimit = Number(query.limit) || DEFAULT_LIMIT;
-    const limit = Math.min(Math.max(1, rawLimit), MAX_LIMIT);
+    const { limit, cursor } = parsePaginationParams(query);
 
     const conditions = [];
     if (query.client_id) conditions.push(eq(auditLogs.clientId, query.client_id));
@@ -26,6 +24,11 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
     if (query.from) conditions.push(gte(auditLogs.createdAt, new Date(query.from)));
     if (query.to) conditions.push(lte(auditLogs.createdAt, new Date(query.to)));
 
+    if (cursor) {
+      const decoded = decodeCursor(cursor);
+      conditions.push(lt(auditLogs.createdAt, new Date(decoded.sort)));
+    }
+
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await app.db
@@ -33,8 +36,31 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
       .from(auditLogs)
       .where(where)
       .orderBy(desc(auditLogs.createdAt))
-      .limit(limit);
+      .limit(limit + 1);
 
-    return { data: rows };
+    const hasMore = rows.length > limit;
+    const data = rows.slice(0, limit);
+
+    let nextCursor: string | null = null;
+    if (hasMore && data.length > 0) {
+      const last = data[data.length - 1];
+      nextCursor = encodeCursor({
+        resource: 'audit_log',
+        sort: last.createdAt.toISOString(),
+        id: last.id,
+      });
+    }
+
+    const [countResult] = await app.db
+      .select({ count: sql<number>`count(*)` })
+      .from(auditLogs)
+      .where(where);
+
+    return paginated(data, {
+      cursor: nextCursor,
+      has_more: hasMore,
+      page_size: data.length,
+      total_count: Number(countResult?.count ?? 0),
+    });
   });
 }

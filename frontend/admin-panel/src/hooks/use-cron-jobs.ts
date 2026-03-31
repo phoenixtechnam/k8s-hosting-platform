@@ -2,13 +2,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
 
-export function useCronJobs(clientId: string | undefined) {
-  const path = clientId
+interface UseCronJobsParams {
+  readonly clientId?: string;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export function useCronJobs(params: UseCronJobsParams = {}) {
+  const { clientId, limit, cursor } = params;
+
+  const searchParams = new URLSearchParams();
+  if (limit) searchParams.set('limit', String(limit));
+  if (cursor) searchParams.set('cursor', cursor);
+
+  const qs = searchParams.toString();
+  const basePath = clientId
     ? `/api/v1/clients/${clientId}/cron-jobs`
     : `/api/v1/admin/cron-jobs`;
+  const path = `${basePath}${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['cron-jobs', clientId ?? 'all'],
+    queryKey: ['cron-jobs', clientId ?? 'all', { limit, cursor }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
   });
 }

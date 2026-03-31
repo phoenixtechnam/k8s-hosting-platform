@@ -39,16 +39,34 @@ const MOCK_AUDIT_ROWS = [
 ];
 
 function createMockDb(rows: readonly Record<string, unknown>[] = MOCK_AUDIT_ROWS) {
-  const limitFn = () => Promise.resolve([...rows]);
-  const orderByFn = () => ({ limit: limitFn });
-  const whereFn = () => ({ orderBy: orderByFn, limit: limitFn });
+  // Track whether this is a count query or data query based on select args
   return {
-    select: () => ({
-      from: () => ({
-        where: whereFn,
-        orderBy: orderByFn,
-      }),
-    }),
+    select: (...args: unknown[]) => {
+      const isCountQuery = args.length > 0 && args[0] && typeof args[0] === 'object' && 'count' in (args[0] as Record<string, unknown>);
+
+      if (isCountQuery) {
+        // COUNT query — return [{ count: rows.length }]
+        const countResult = [{ count: rows.length }];
+        const chain = {
+          from: () => ({
+            where: () => Promise.resolve(countResult),
+            then: (r: (v: unknown) => void) => r(countResult),
+          }),
+        };
+        return chain;
+      }
+
+      // Data query — return rows with limit support
+      const limitFn = (n: number) => Promise.resolve([...rows].slice(0, n));
+      const orderByFn = () => ({ limit: limitFn });
+      const whereFn = () => ({ orderBy: orderByFn, limit: limitFn });
+      return {
+        from: () => ({
+          where: whereFn,
+          orderBy: orderByFn,
+        }),
+      };
+    },
   };
 }
 
@@ -98,7 +116,7 @@ describe('audit-logs routes', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('should return data array with audit log entries', async () => {
+  it('should return paginated data with audit log entries', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/audit-logs',
@@ -110,6 +128,10 @@ describe('audit-logs routes', () => {
     expect(body.data).toHaveLength(2);
     expect(body.data[0].actionType).toBe('create');
     expect(body.data[0].resourceType).toBe('client');
+    // Verify pagination metadata
+    expect(body.pagination).toBeDefined();
+    expect(body.pagination.total_count).toBe(2);
+    expect(body.pagination.has_more).toBe(false);
   });
 
   it('should accept a limit query parameter', async () => {
@@ -168,5 +190,6 @@ describe('audit-logs routes', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.data).toBeDefined();
+    expect(body.pagination).toBeDefined();
   });
 });

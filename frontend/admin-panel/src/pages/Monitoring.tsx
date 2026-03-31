@@ -3,8 +3,10 @@ import { Activity, AlertTriangle, Clock, BarChart3 } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import ResourceBar from '@/components/ui/ResourceBar';
+import PaginationBar from '@/components/ui/PaginationBar';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
+import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -166,11 +168,18 @@ function SystemMetrics() {
 
 export default function Monitoring() {
   const [activeTab, setActiveTab] = useState<Tab>('active-alerts');
+  const pagination = useCursorPagination({ defaultLimit: 20 });
   const { data: statusData } = usePlatformStatus();
-  const { data: auditData, isLoading: auditLoading } = useAuditLogs(50);
+  const { data: auditData, isLoading: auditLoading } = useAuditLogs({
+    limit: pagination.limit,
+    cursor: pagination.cursor,
+  });
 
   const platformStatus = statusData?.data?.status ?? 'unknown';
   const entries = auditData?.data ?? [];
+  const totalCount = auditData?.pagination?.total_count ?? 0;
+  const hasMore = auditData?.pagination?.has_more ?? false;
+  const nextCursor = auditData?.pagination?.cursor ?? null;
   const { recent, older } = splitAlerts(entries);
   const alertCount = recent.length;
 
@@ -237,6 +246,19 @@ export default function Monitoring() {
           <AlertTable alerts={older} resolved isLoading={auditLoading} />
         )}
         {activeTab === 'system-metrics' && <SystemMetrics />}
+
+        {activeTab !== 'system-metrics' && (
+          <PaginationBar
+            totalCount={totalCount}
+            pageSize={pagination.limit}
+            pageIndex={pagination.pageIndex}
+            hasPrevPage={pagination.hasPrevPage}
+            hasNextPage={hasMore}
+            onNext={() => nextCursor && pagination.goNext(nextCursor)}
+            onPrev={pagination.goPrev}
+            onPageSizeChange={pagination.setPageSize}
+          />
+        )}
       </div>
     </div>
   );

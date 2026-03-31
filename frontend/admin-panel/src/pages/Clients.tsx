@@ -1,9 +1,11 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Plus, Search, Loader2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import PaginationBar from '@/components/ui/PaginationBar';
 import CreateClientModal from '@/components/CreateClientModal';
 import { useClients } from '@/hooks/use-clients';
+import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -13,14 +15,23 @@ export default function Clients() {
   const [showCreate, setShowCreate] = useState(false);
 
   const navigate = useNavigate();
+  const pagination = useCursorPagination({ defaultLimit: 20 });
+
+  // Reset pagination when search changes
+  useEffect(() => {
+    pagination.resetPagination();
+  }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading, error } = useClients({
     search: debouncedSearch || undefined,
-    limit: 50,
+    limit: pagination.limit,
+    cursor: pagination.cursor,
   });
 
   const clients = data?.data ?? [];
   const totalCount = data?.pagination?.total_count ?? 0;
+  const hasMore = data?.pagination?.has_more ?? false;
+  const nextCursor = data?.pagination?.cursor ?? null;
   const { sortedData: sortedClients, sortKey, sortDirection, onSort } = useSortable(clients, 'companyName');
 
   const handleSearchChange = (value: string) => {
@@ -101,7 +112,7 @@ export default function Clients() {
                         {client.kubernetesNamespace ?? '—'}
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
-                        {(client.createdAt ?? client.createdAt) ? new Date(client.createdAt ?? client.createdAt!).toLocaleDateString() : '—'}
+                        {client.createdAt ? new Date(client.createdAt).toLocaleDateString() : '—'}
                       </td>
                     </tr>
                   ))}
@@ -117,9 +128,16 @@ export default function Clients() {
                 </tbody>
               </table>
             </div>
-            <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
-              {totalCount} client{totalCount !== 1 ? 's' : ''}
-            </div>
+            <PaginationBar
+              totalCount={totalCount}
+              pageSize={pagination.limit}
+              pageIndex={pagination.pageIndex}
+              hasPrevPage={pagination.hasPrevPage}
+              hasNextPage={hasMore}
+              onNext={() => nextCursor && pagination.goNext(nextCursor)}
+              onPrev={pagination.goPrev}
+              onPageSizeChange={pagination.setPageSize}
+            />
           </>
         )}
       </div>

@@ -1,19 +1,29 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
+import PaginationBar from '@/components/ui/PaginationBar';
 import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
+import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs(
-    selectedClientId ?? undefined,
-  );
+  // Reset pagination when client selection changes
+  useEffect(() => {
+    pagination.resetPagination();
+  }, [selectedClientId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs({
+    clientId: selectedClientId ?? undefined,
+    limit: pagination.limit,
+    cursor: pagination.cursor,
+  });
   const updateCronJob = useUpdateCronJob(selectedClientId ?? undefined);
   const runCronJob = useRunCronJob(selectedClientId ?? undefined);
   const deleteCronJob = useDeleteCronJob(selectedClientId ?? undefined);
@@ -21,6 +31,8 @@ export default function CronJobs() {
 
   const cronJobs = cronJobsData?.data ?? [];
   const totalCount = cronJobsData?.pagination?.total_count ?? 0;
+  const hasMore = cronJobsData?.pagination?.has_more ?? false;
+  const nextCursor = cronJobsData?.pagination?.cursor ?? null;
   const { sortedData: sortedCronJobs, sortKey, sortDirection, onSort } = useSortable(cronJobs, 'name');
 
   return (
@@ -176,9 +188,16 @@ export default function CronJobs() {
                 </tbody>
               </table>
             </div>
-            <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-3 text-sm text-gray-500 dark:text-gray-400">
-              {totalCount} cron job{totalCount !== 1 ? 's' : ''}
-            </div>
+            <PaginationBar
+              totalCount={totalCount}
+              pageSize={pagination.limit}
+              pageIndex={pagination.pageIndex}
+              hasPrevPage={pagination.hasPrevPage}
+              hasNextPage={hasMore}
+              onNext={() => nextCursor && pagination.goNext(nextCursor)}
+              onPrev={pagination.goPrev}
+              onPageSizeChange={pagination.setPageSize}
+            />
           </>
         )}
       </div>

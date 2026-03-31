@@ -12,7 +12,7 @@ export default function Dashboard() {
   const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
   const { data: statusData } = usePlatformStatus();
   const { data: metricsData, isLoading: metricsLoading } = useDashboardMetrics();
-  const { data: auditData, isLoading: auditLoading } = useAuditLogs(10);
+  const { data: auditData, isLoading: auditLoading } = useAuditLogs({ limit: 10 });
   const recentActivity = auditData?.data ?? [];
 
   const clients = clientsData?.data ?? [];
