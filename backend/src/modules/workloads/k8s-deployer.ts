@@ -71,6 +71,7 @@ export async function deployWorkload(
     ports: [{ containerPort: input.containerPort }],
     resources: {
       requests: { cpu: input.cpuRequest, memory: input.memoryRequest },
+      limits: { cpu: input.cpuRequest, memory: input.memoryRequest },
     },
     ...(volumeMounts ? { volumeMounts } : {}),
   };
