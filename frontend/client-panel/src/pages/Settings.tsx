@@ -19,19 +19,19 @@ export default function Settings() {
         <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Current Plan</dt>
-            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">Standard</dd>
+            <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">—</dd>
           </div>
           <div>
             <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
             <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
-              <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/40 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:text-green-300">
-                Active
+              <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300">
+                —
               </span>
             </dd>
           </div>
         </dl>
         <p className="mt-4 text-xs text-gray-400 dark:text-gray-500">
-          Contact support to change your subscription plan.
+          Contact support to change your subscription plan. Plan and status will appear here once a client-facing subscription endpoint is available.
         </p>
       </div>
 
@@ -55,6 +55,9 @@ export default function Settings() {
             <span className="text-sm text-gray-700 dark:text-gray-300">Weekly usage summary</span>
           </label>
         </div>
+        <p className="mt-4 text-xs text-gray-400 dark:text-gray-500">
+          (Not yet saved — notification preferences will be available in a future update)
+        </p>
       </div>
     </div>
   );

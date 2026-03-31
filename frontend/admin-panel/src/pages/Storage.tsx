@@ -5,6 +5,7 @@ import StatCard from '@/components/ui/StatCard';
 import ResourceBar from '@/components/ui/ResourceBar';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useBackups } from '@/hooks/use-backups';
+import { useDashboardMetrics } from '@/hooks/use-dashboard';
 import type { BackupResponse } from '@k8s-hosting/api-contracts';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -38,6 +39,9 @@ export default function Storage() {
     error: backupsError,
   } = useBackups(selectedClientId ?? undefined);
 
+  const { data: dashData } = useDashboardMetrics();
+  const metrics = dashData?.data;
+
   const backups = backupsData?.data ?? [];
 
   return (
@@ -45,12 +49,12 @@ export default function Storage() {
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Storage &amp; Backups</h1>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <StatCard title="Total Storage" value="1.2 TB" icon={HardDrive} accent="brand" />
-        <StatCard title="Backups" value={backups.length} icon={Archive} accent="amber" />
+        <StatCard title="Total Storage" value="—" subtitle="No storage aggregation endpoint yet" icon={HardDrive} accent="brand" />
+        <StatCard title="Backups" value={metrics?.total_backups ?? backups.length} icon={Archive} accent="amber" />
         <StatCard
           title="Storage Used"
-          value="31%"
-          subtitle="of allocated capacity"
+          value="—"
+          subtitle="No storage aggregation endpoint yet"
           icon={HardDrive}
           accent="brand"
         />

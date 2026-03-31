@@ -29,8 +29,8 @@ describe('Storage page', () => {
     expect(screen.getByText('Storage Used')).toBeInTheDocument();
     const statCards = screen.getAllByTestId('stat-card');
     expect(statCards).toHaveLength(3);
-    expect(screen.getByText('1.2 TB')).toBeInTheDocument();
-    expect(screen.getByText('31%')).toBeInTheDocument();
+    // Storage values show "—" until real storage aggregation endpoint exists
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
   it('renders Overview tab by default', () => {

@@ -48,8 +48,8 @@ describe('Client Settings page', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('subscription-section')).toBeInTheDocument();
     expect(screen.getByText('Subscription')).toBeInTheDocument();
-    expect(screen.getByText('Standard')).toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
+    // Plan and status show "—" until client-facing subscription endpoint exists
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows Notification Preferences section', () => {
