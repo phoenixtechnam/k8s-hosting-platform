@@ -13,6 +13,27 @@ export function useDomains(clientId: string | undefined) {
   });
 }
 
+interface CreateDomainInput {
+  readonly domain_name: string;
+  readonly dns_mode: 'cname' | 'primary' | 'secondary';
+  readonly workload_id?: string;
+}
+
+export function useCreateDomain(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: CreateDomainInput) =>
+      apiFetch<{ data: Domain }>(`/api/v1/clients/${clientId}/domains`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+    },
+  });
+}
+
 export interface VerificationCheck {
   readonly type: string;
   readonly status: 'pass' | 'fail';

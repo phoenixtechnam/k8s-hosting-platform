@@ -92,7 +92,7 @@ describe('Domains Page', () => {
     renderWithProviders(<Domains />);
     expect(screen.getByTestId('domains-empty')).toBeInTheDocument();
     expect(screen.getByText('No domains yet')).toBeInTheDocument();
-    expect(screen.getByText('Your domain names will appear here once added.')).toBeInTheDocument();
+    expect(screen.getByText('Add a domain to start routing traffic to your workloads.')).toBeInTheDocument();
   });
 
   it('shows error state with error message', () => {
@@ -147,8 +147,8 @@ describe('Domains Page', () => {
       error: null,
     } as unknown as ReturnType<typeof useDomains>);
     renderWithProviders(<Domains />);
-    expect(screen.getByText('Yes')).toBeInTheDocument();
-    expect(screen.getByText('No')).toBeInTheDocument();
+    expect(screen.getByText('Auto (TLS)')).toBeInTheDocument();
+    expect(screen.getByText('Manual')).toBeInTheDocument();
   });
 
   it('shows table header columns', () => {
