@@ -49,3 +49,4 @@ export * from './provisioning.js';
 export * from './files.js';
 export * from './tls-settings.js';
 export * from './ingress-routes.js';
+export * from './ssh-keys.js';
