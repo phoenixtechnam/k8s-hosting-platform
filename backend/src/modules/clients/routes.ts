@@ -5,7 +5,7 @@ import { authenticate, requireRole, requireClientAccess } from '../../middleware
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
 import * as service from './service.js';
-import { bulkUpdateClientStatus } from './bulk.js';
+import { bulkUpdateClientStatus, bulkDeleteClients } from './bulk.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -353,6 +353,20 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const result = await bulkUpdateClientStatus(app.db, body.client_ids, body.action);
+    return success(result);
+  });
+
+  // DELETE /api/v1/admin/clients/bulk
+  app.delete('/admin/clients/bulk', {
+    onRequest: [authenticate, requireRole('super_admin')],
+  }, async (request, reply) => {
+    const body = request.body as { client_ids?: string[] };
+
+    if (!Array.isArray(body.client_ids) || body.client_ids.length === 0) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'client_ids (non-empty array) is required', 400);
+    }
+
+    const result = await bulkDeleteClients(app.db, body.client_ids, getK8s());
     return success(result);
   });
 }

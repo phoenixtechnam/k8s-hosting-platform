@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2 } from 'lucide-react';
+import { Plus, Search, Loader2, Ban, PlayCircle, Trash2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
+import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import CreateClientModal from '@/components/CreateClientModal';
 import { useClients } from '@/hooks/use-clients';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
+import { useSelection } from '@/hooks/use-selection';
+import { useBulkSuspendClients, useBulkReactivateClients, useBulkDeleteClients } from '@/hooks/use-bulk-clients';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -13,11 +16,11 @@ export default function Clients() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'suspend' | 'reactivate' | 'delete' | null>(null);
 
   const navigate = useNavigate();
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
-  // Reset pagination when search changes
   useEffect(() => {
     pagination.resetPagination();
   }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -34,6 +37,11 @@ export default function Clients() {
   const nextCursor = data?.pagination?.cursor ?? null;
   const { sortedData: sortedClients, sortKey, sortDirection, onSort } = useSortable(clients, 'companyName');
 
+  const selection = useSelection<{ id: string }>(pagination.cursor);
+  const bulkSuspend = useBulkSuspendClients();
+  const bulkReactivate = useBulkReactivateClients();
+  const bulkDelete = useBulkDeleteClients();
+
   const handleSearchChange = (value: string) => {
     setSearch(value);
     const key = '__searchTimeout';
@@ -41,6 +49,21 @@ export default function Clients() {
     clearTimeout(w[key]);
     w[key] = setTimeout(() => setDebouncedSearch(value), 300);
   };
+
+  const handleBulkAction = async () => {
+    if (!confirmAction) return;
+    const ids = [...selection.selectedIds];
+    try {
+      if (confirmAction === 'suspend') await bulkSuspend.mutateAsync(ids);
+      else if (confirmAction === 'reactivate') await bulkReactivate.mutateAsync(ids);
+      else if (confirmAction === 'delete') await bulkDelete.mutateAsync(ids);
+      selection.deselectAll();
+    } finally {
+      setConfirmAction(null);
+    }
+  };
+
+  const isBulkPending = bulkSuspend.isPending || bulkReactivate.isPending || bulkDelete.isPending;
 
   return (
     <div className="space-y-6">
@@ -88,6 +111,13 @@ export default function Clients() {
               <table className="w-full" data-testid="clients-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="w-10 px-3 py-3">
+                      <SelectCheckbox
+                        checked={selection.isAllSelected(clients)}
+                        indeterminate={selection.isIndeterminate(clients)}
+                        onChange={() => selection.isAllSelected(clients) ? selection.deselectAll() : selection.selectAll(clients)}
+                      />
+                    </th>
                     <SortableHeader label="Client" sortKey="companyName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Namespace" sortKey="kubernetesNamespace" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
@@ -96,7 +126,21 @@ export default function Clients() {
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {sortedClients.map((client) => (
-                    <tr key={client.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" onClick={() => navigate(`/clients/${client.id}`)}>
+                    <tr
+                      key={client.id}
+                      className={`transition-colors cursor-pointer ${
+                        selection.isSelected(client.id)
+                          ? 'bg-brand-50 dark:bg-brand-900/20'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                      }`}
+                      onClick={() => navigate(`/clients/${client.id}`)}
+                    >
+                      <td className="w-10 px-3 py-3.5" onClick={(e) => e.stopPropagation()}>
+                        <SelectCheckbox
+                          checked={selection.isSelected(client.id)}
+                          onChange={() => selection.toggle(client.id)}
+                        />
+                      </td>
                       <td className="px-5 py-3.5">
                         <span className="font-medium text-gray-900 dark:text-gray-100">
                           {client.companyName}
@@ -118,7 +162,7 @@ export default function Clients() {
                   ))}
                   {clients.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No clients found matching your search.'
                           : 'No clients yet. Click "Add Client" to create one.'}
@@ -141,6 +185,70 @@ export default function Clients() {
           </>
         )}
       </div>
+
+      <BulkActionBar selectedCount={selection.selectedCount} onDeselectAll={selection.deselectAll}>
+        <button
+          onClick={() => setConfirmAction('suspend')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors"
+        >
+          <Ban size={14} />
+          Suspend
+        </button>
+        <button
+          onClick={() => setConfirmAction('reactivate')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-green-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 transition-colors"
+        >
+          <PlayCircle size={14} />
+          Reactivate
+        </button>
+        <button
+          onClick={() => setConfirmAction('delete')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors"
+        >
+          <Trash2 size={14} />
+          Delete
+        </button>
+      </BulkActionBar>
+
+      {/* Confirmation dialog */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
+          <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {confirmAction === 'delete' ? 'Delete' : confirmAction === 'suspend' ? 'Suspend' : 'Reactivate'} {selection.selectedCount} client{selection.selectedCount !== 1 ? 's' : ''}?
+            </h3>
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {confirmAction === 'delete'
+                ? 'This will permanently delete the selected clients and their data. This action cannot be undone.'
+                : confirmAction === 'suspend'
+                  ? 'Suspended clients will lose access to their hosting services.'
+                  : 'Reactivated clients will regain access to their hosting services.'}
+            </p>
+            <div className="mt-4 flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkAction}
+                disabled={isBulkPending}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                  confirmAction === 'delete'
+                    ? 'bg-red-500 hover:bg-red-600'
+                    : confirmAction === 'suspend'
+                      ? 'bg-amber-500 hover:bg-amber-600'
+                      : 'bg-green-500 hover:bg-green-600'
+                }`}
+              >
+                {isBulkPending && <Loader2 size={14} className="animate-spin" />}
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <CreateClientModal open={showCreate} onClose={() => setShowCreate(false)} />
     </div>

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { clients } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 interface BulkResult {
   readonly succeeded: string[];
@@ -32,6 +33,45 @@ export async function bulkUpdateClientStatus(
         .set({ status: targetStatus as typeof clients.$inferInsert['status'] })
         .where(eq(clients.id, id));
 
+      succeeded.push(id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      failed.push({ id, error: message });
+    }
+  }
+
+  return { succeeded, failed };
+}
+
+export async function bulkDeleteClients(
+  db: Database,
+  clientIds: readonly string[],
+  k8sClients?: K8sClients,
+): Promise<BulkResult> {
+  const succeeded: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+
+  for (const id of clientIds) {
+    try {
+      const [client] = await db.select()
+        .from(clients)
+        .where(eq(clients.id, id));
+
+      if (!client) {
+        failed.push({ id, error: `Client '${id}' not found` });
+        continue;
+      }
+
+      // Best-effort k8s namespace cleanup
+      if (k8sClients && client.kubernetesNamespace && client.provisioningStatus === 'provisioned') {
+        try {
+          await k8sClients.core.deleteNamespace({ name: client.kubernetesNamespace });
+        } catch (err: unknown) {
+          console.warn(`[bulk-delete] Failed to delete namespace ${client.kubernetesNamespace}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      await db.delete(clients).where(eq(clients.id, id));
       succeeded.push(id);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
