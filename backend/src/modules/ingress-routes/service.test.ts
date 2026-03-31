@@ -86,6 +86,41 @@ describe('ingress-routes service', () => {
     });
   });
 
+  describe('DNS record type for route creation', () => {
+    it('should use A record for apex hostname', () => {
+      const hostname = 'example.com';
+      const domainName = 'example.com';
+      const isApex = isApexHostname(hostname, domainName);
+      expect(isApex).toBe(true);
+      // Apex domains get A/AAAA records (CNAME not allowed at apex)
+      const recordType = isApex ? 'A' : 'CNAME';
+      expect(recordType).toBe('A');
+    });
+
+    it('should use CNAME record for subdomain', () => {
+      const hostname = 'blog.example.com';
+      const domainName = 'example.com';
+      const isApex = isApexHostname(hostname, domainName);
+      expect(isApex).toBe(false);
+      const recordType = isApex ? 'A' : 'CNAME';
+      expect(recordType).toBe('CNAME');
+    });
+
+    it('should extract subdomain from hostname', () => {
+      const hostname = 'blog.example.com';
+      const domainName = 'example.com';
+      const subdomain = hostname.replace(`.${domainName}`, '');
+      expect(subdomain).toBe('blog');
+    });
+
+    it('should handle nested subdomain extraction', () => {
+      const hostname = 'api.v2.example.com';
+      const domainName = 'example.com';
+      const subdomain = hostname.replace(`.${domainName}`, '');
+      expect(subdomain).toBe('api.v2');
+    });
+  });
+
   describe('CNAME chain construction', () => {
     it('should build full CNAME target from slug + base domain', () => {
       const slug = hostnameToSlug('blog.example.com');

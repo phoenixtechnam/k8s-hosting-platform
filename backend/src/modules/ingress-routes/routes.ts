@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { clients, domains } from '../../db/schema.js';
 import {
   createRoute,
   updateRoute,
@@ -10,9 +12,35 @@ import {
   getIngressSettings,
   updateIngressSettings,
 } from './service.js';
+import { reconcileIngress } from '../domains/k8s-ingress.js';
+import { provisionCertificate } from '../ssl-certs/cert-manager.js';
+import { isAutoTlsEnabled } from '../tls-settings/service.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { createIngressRouteSchema, updateIngressRouteSchema } from '@k8s-hosting/api-contracts';
 
 export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
+  const getK8s = () => {
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      return createK8sClients(kubeconfigPath);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const triggerReconcile = async (clientId: string) => {
+    const k8s = getK8s();
+    if (!k8s) return;
+    const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
+    if (client?.kubernetesNamespace) {
+      try {
+        await reconcileIngress(app.db, k8s, clientId, client.kubernetesNamespace);
+      } catch {
+        // Non-blocking
+      }
+    }
+  };
+
   // ─── Client-scoped routes ─────────────────────────────────────────────────
 
   // GET /api/v1/clients/:clientId/domains/:domainId/routes
@@ -45,6 +73,32 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const route = await createRoute(app.db, domainId, clientId, parsed.data.hostname, parsed.data.workload_id);
+    await triggerReconcile(clientId);
+
+    // Provision TLS certificate if auto-TLS enabled and workload assigned
+    if (parsed.data.workload_id) {
+      const k8s = getK8s();
+      if (k8s) {
+        try {
+          const autoTls = await isAutoTlsEnabled(app.db);
+          if (autoTls) {
+            const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
+            const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
+            if (domain && client?.kubernetesNamespace) {
+              await provisionCertificate(app.db, k8s, {
+                domainName: parsed.data.hostname,
+                namespace: client.kubernetesNamespace,
+                dnsMode: domain.dnsMode,
+                hasDnsServer: domain.dnsMode === 'primary',
+              });
+            }
+          }
+        } catch {
+          // Cert provisioning failure is non-blocking — cert-manager annotation fallback
+        }
+      }
+    }
+
     reply.status(201).send(success(route));
   });
 
@@ -57,7 +111,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { routeId } = request.params as { routeId: string };
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = updateIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
@@ -68,6 +122,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
     });
+    await triggerReconcile(clientId);
     return success(updated);
   });
 
@@ -80,8 +135,9 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { routeId } = request.params as { routeId: string };
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     await deleteRoute(app.db, routeId);
+    await triggerReconcile(clientId);
     reply.status(204).send();
   });
 

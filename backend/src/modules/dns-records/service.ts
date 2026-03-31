@@ -7,7 +7,7 @@ import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 
 const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
-async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
+export async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
   try {
     const servers = await getActiveServers(db);
     for (const server of servers) {

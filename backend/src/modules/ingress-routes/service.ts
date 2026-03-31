@@ -6,8 +6,9 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, domains, platformSettings } from '../../db/schema.js';
+import { ingressRoutes, domains, dnsRecords, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { syncRecordToProviders } from '../dns-records/service.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Platform Ingress Settings ──────────────────────────────────────────────
@@ -125,6 +126,42 @@ export async function createRoute(
     tlsMode: 'auto',
     status: 'active',
   });
+
+  // Auto-create DNS records for PRIMARY domains
+  if (domain.dnsMode === 'primary') {
+    try {
+      if (apex) {
+        // Apex: create A record (CNAME not allowed at apex per RFC 1034)
+        await syncRecordToProviders(db, domain.domainName, 'create', {
+          type: 'A',
+          name: '@',
+          content: settings.ingressDefaultIpv4,
+          ttl: 300,
+        });
+        // Also add AAAA if IPv6 configured
+        const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+        if (ipv6) {
+          await syncRecordToProviders(db, domain.domainName, 'create', {
+            type: 'AAAA',
+            name: '@',
+            content: ipv6,
+            ttl: 300,
+          });
+        }
+      } else {
+        // Subdomain: create CNAME → ingressCname
+        const subdomain = hostname.replace(`.${domain.domainName}`, '');
+        await syncRecordToProviders(db, domain.domainName, 'create', {
+          type: 'CNAME',
+          name: subdomain,
+          content: ingressCname,
+          ttl: 300,
+        });
+      }
+    } catch {
+      // DNS creation failure shouldn't block route creation
+    }
+  }
 
   const [created] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, id));
   return created;
