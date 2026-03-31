@@ -18,7 +18,7 @@ test.describe('Admin Backup Settings', () => {
   });
 
   test('shows config list or empty state', async ({ page }) => {
-    const content = page.getByText('No backup configurations')
+    const content = page.getByText('No backup targets configured')
       .or(page.getByText('SSH'))
       .or(page.getByText('S3'));
     await expect(content).toBeVisible({ timeout: 2000 });

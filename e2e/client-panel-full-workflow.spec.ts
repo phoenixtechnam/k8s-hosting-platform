@@ -3,6 +3,7 @@ import { loginAsAdminClient } from './helpers';
 
 test.describe('Client Panel Full Workflow — End-to-End', () => {
   test('complete client workflow: login, navigate all pages, logout', async ({ page }) => {
+    test.setTimeout(30000);
     // 1. Login
     await loginAsAdminClient(page);
 
@@ -32,13 +33,13 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
       .or(page.getByRole('heading', { name: 'Backups' }));
     await expect(backupsHeading).toBeVisible({ timeout: 2000 });
 
-    // 6. Navigate to Email — shows "Coming Soon"
+    // 6. Navigate to Email — shows email management page
     await page.getByRole('link', { name: 'Email' }).click();
-    await expect(page.getByText('Coming Soon')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('email-heading')).toBeVisible({ timeout: 2000 });
 
-    // 7. Navigate to Files — shows "Coming Soon"
+    // 7. Navigate to Files — shows file manager page
     await page.getByRole('link', { name: 'Files' }).click();
-    await expect(page.getByText('Coming Soon')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('files-heading')).toBeVisible({ timeout: 2000 });
 
     // 8. Navigate to Settings
     await page.getByRole('link', { name: 'Settings' }).click();
@@ -114,18 +115,18 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(heading).toBeVisible({ timeout: 2000 });
   });
 
-  test('Email page shows Coming Soon placeholder', async ({ page }) => {
+  test('Email page shows email management UI', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Email' }).click();
-    await expect(page.getByText('Coming Soon')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('email-heading')).toBeVisible({ timeout: 2000 });
   });
 
-  test('Files page shows Coming Soon placeholder', async ({ page }) => {
+  test('Files page shows file manager UI', async ({ page }) => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Files' }).click();
-    await expect(page.getByText('Coming Soon')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('files-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('user menu shows profile info and change password option', async ({ page }) => {
@@ -136,14 +137,13 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await userMenuBtn.click();
     await page.waitForTimeout(200);
 
-    // User email should be displayed in the dropdown
-    await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 2000 });
+    // User info should be displayed in the dropdown (name and email)
+    await expect(page.getByTestId('user-menu-dropdown')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('user-menu-name')).toBeVisible();
+    await expect(page.getByTestId('user-menu-email')).toBeVisible();
 
-    // Change Password option should be available (as heading or clickable item)
-    const changePwOption = page.getByRole('heading', { name: 'Change Password' })
-      .or(page.getByTestId('change-password-menu-item'))
-      .or(page.getByText('Change Password'));
-    await expect(changePwOption.first()).toBeVisible({ timeout: 2000 });
+    // Change Password option should be available
+    await expect(page.getByTestId('change-password-menu-item')).toBeVisible({ timeout: 2000 });
   });
 
   test('multiple navigation cycles preserve session', async ({ page }) => {

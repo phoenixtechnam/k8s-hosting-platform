@@ -10,6 +10,11 @@ export async function registerRateLimit(
   app: FastifyInstance,
   options?: RateLimitOptions,
 ): Promise<void> {
+  if (process.env.DISABLE_RATE_LIMIT === 'true') {
+    app.log.info('Rate limiting disabled via DISABLE_RATE_LIMIT env var');
+    return;
+  }
+
   await app.register(fastifyRateLimit, {
     max: options?.max ?? 100,
     timeWindow: options?.timeWindow ?? '1 minute',

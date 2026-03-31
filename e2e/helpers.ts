@@ -2,6 +2,8 @@ import { Page, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
+const API_BASE = process.env.API_URL ?? 'http://dind.local:2012';
+
 export async function loginAsAdmin(page: Page) {
   await page.goto('/login');
   await page.evaluate(() => { localStorage.clear(); });
@@ -33,15 +35,113 @@ export async function injectAdminAuth(page: Page) {
   await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible({ timeout: 5000 });
 }
 
-export async function loginAsAdminClient(page: Page) {
-  await page.goto('/login');
-  await page.evaluate(() => { localStorage.clear(); });
-  await page.goto('/login');
-  await page.waitForLoadState('networkidle');
+/**
+ * Get or create a test client and return impersonation credentials.
+ * Uses the admin API to create a client, then impersonates it.
+ * Caches the result to e2e/.auth/client-auth.json for reuse across tests.
+ */
+async function getClientAuth(): Promise<{ token: string; user: string }> {
+  const cachePath = path.join(__dirname, '.auth/client-auth.json');
+  if (fs.existsSync(cachePath)) {
+    const cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    if (cached.token && cached.user) return cached;
+  }
 
-  await page.getByTestId('email-input').fill('admin@platform.local');
-  await page.getByTestId('password-input').fill('admin');
-  await page.getByTestId('login-button').click();
+  // Get admin token
+  const adminAuthPath = path.join(__dirname, '.auth/admin-auth.json');
+  let adminToken: string;
+
+  if (fs.existsSync(adminAuthPath)) {
+    const adminAuth = JSON.parse(fs.readFileSync(adminAuthPath, 'utf-8'));
+    adminToken = adminAuth.token;
+  } else {
+    // Login as admin to get token
+    const loginRes = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' }),
+    });
+    const loginData = await loginRes.json() as { data: { token: string } };
+    adminToken = loginData.data.token;
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${adminToken}`,
+    'Content-Type': 'application/json',
+  };
+
+  // Check if test client already exists
+  const clientsRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
+  const clientsData = await clientsRes.json() as { data: { id: string; companyEmail: string }[] };
+  let clientId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@platform.local')?.id;
+
+  // Create test client if not exists
+  if (!clientId) {
+    // Get first available plan and region
+    const [plansRes, regionsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/v1/plans`, { headers }),
+      fetch(`${API_BASE}/api/v1/regions`, { headers }),
+    ]);
+    const plansData = await plansRes.json() as { data: { id: string }[] };
+    const regionsData = await regionsRes.json() as { data: { id: string }[] };
+    const planId = plansData.data?.[0]?.id;
+    const regionId = regionsData.data?.[0]?.id;
+
+    const createRes = await fetch(`${API_BASE}/api/v1/clients`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        company_name: 'E2E Test Client',
+        company_email: 'e2e-test@platform.local',
+        plan_id: planId,
+        region_id: regionId,
+      }),
+    });
+    const createData = await createRes.json() as { data: { id: string } };
+    if (!createData.data?.id) {
+      throw new Error(`Failed to create test client: ${JSON.stringify(createData)}`);
+    }
+    clientId = createData.data.id;
+  }
+
+  // Impersonate the client to get a client-panel JWT
+  const impersonateRes = await fetch(`${API_BASE}/api/v1/admin/impersonate/${clientId}`, {
+    method: 'POST',
+    headers: { 'Authorization': headers['Authorization'] },
+  });
+  const impersonateData = await impersonateRes.json() as Record<string, unknown>;
+
+  if (!impersonateData.data || !(impersonateData.data as Record<string, unknown>).token) {
+    throw new Error(`Failed to impersonate client ${clientId}: ${JSON.stringify(impersonateData)}`);
+  }
+
+  const impData = impersonateData.data as { token: string; user: Record<string, unknown> };
+  const result = {
+    token: impData.token,
+    user: JSON.stringify(impData.user),
+  };
+
+  // Cache for reuse
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+  fs.writeFileSync(cachePath, JSON.stringify(result));
+
+  return result;
+}
+
+/**
+ * Login to the client panel by injecting an impersonation token.
+ * Creates a test client on first call and caches credentials.
+ */
+export async function loginAsAdminClient(page: Page) {
+  const auth = await getClientAuth();
+
+  await page.goto('/login');
+  await page.evaluate((data) => {
+    localStorage.clear();
+    localStorage.setItem('auth_token', data.token);
+    localStorage.setItem('auth_user', data.user);
+  }, auth);
+  await page.goto('/');
 
   await expect(page.getByTestId('welcome-heading')).toBeVisible({ timeout: 5000 });
 }

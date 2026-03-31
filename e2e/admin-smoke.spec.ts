@@ -18,7 +18,7 @@ test.describe('Admin Panel Smoke Test', () => {
 
     // Check stat cards
     await expect(page.getByText('Total Clients')).toBeVisible();
-    await expect(page.getByText('Storage & Backups')).toBeVisible();
+    await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
   test('can navigate to clients page', async ({ page }) => {
@@ -78,9 +78,15 @@ test.describe('Admin Panel Smoke Test', () => {
     await loginAsAdmin(page);
 
     // Test each nav item
-    for (const item of ['Domains', 'Workloads', 'Monitoring', 'Settings']) {
-      await page.getByRole('link', { name: item }).click();
-      await expect(page.getByRole('heading', { name: item })).toBeVisible();
+    const navItems = [
+      { link: 'Domains', heading: 'Domains' },
+      { link: 'Workloads', heading: 'Workloads' },
+      { link: 'Monitoring', heading: 'Monitoring' },
+      { link: 'Settings', heading: /Settings/i },
+    ];
+    for (const item of navItems) {
+      await page.getByRole('link', { name: item.link }).click();
+      await expect(page.getByRole('heading', { name: item.heading }).first()).toBeVisible({ timeout: 2000 });
     }
   });
 });

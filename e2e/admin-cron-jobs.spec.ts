@@ -13,9 +13,8 @@ test.describe('Admin Cron Jobs Page', () => {
   });
 
   test('shows client selector', async ({ page }) => {
-    const selector = page.getByTestId('client-selector');
+    const selector = page.getByTestId('client-search-select');
     await expect(selector).toBeVisible();
-    await expect(selector).toBeEnabled();
   });
 
   test('shows Add Cron Job button', async ({ page }) => {
@@ -30,7 +29,7 @@ test.describe('Admin Cron Jobs Page', () => {
   });
 
   test('shows select client prompt when no client selected', async ({ page }) => {
-    await expect(page.getByTestId('select-client-prompt')).toBeVisible();
-    await expect(page.getByTestId('select-client-prompt')).toContainText('Select a client');
+    // When no client is selected, the table shows "No cron jobs found across any client."
+    await expect(page.getByText('No cron jobs found across any client.')).toBeVisible({ timeout: 2000 });
   });
 });

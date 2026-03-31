@@ -54,7 +54,7 @@ services:
       INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}
       INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
-      LOGIN_RATE_LIMIT: "200"
+      DISABLE_RATE_LIMIT: "true"
     depends_on:
       mariadb:
         condition: service_healthy

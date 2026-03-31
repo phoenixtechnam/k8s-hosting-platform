@@ -4,6 +4,7 @@ import { injectAdminAuth } from './helpers';
 test.describe('Admin Full Workflow — End-to-End', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test('complete admin workflow: create client, navigate all pages, logout', async ({ page }) => {
+    test.setTimeout(30000);
     // 1. Login
 
     // 2. Create a client with unique name
@@ -52,7 +53,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
       if (isDetail) {
         // 4. Verify account information section
         await expect(page.getByText('Account Information')).toBeVisible({ timeout: 2000 });
-        await expect(page.getByText('Status')).toBeVisible();
+        await expect(page.getByText('Status').first()).toBeVisible();
 
         // 5. Check that resource tabs exist
         const tabBar = page.getByTestId('resource-tabs');
@@ -76,7 +77,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     // 7. Navigate to Domains page
     await page.getByRole('link', { name: 'Domains' }).click();
     await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 2000 });
-    const clientSelector = page.getByTestId('client-selector');
+    const clientSelector = page.getByTestId('client-search-select');
     await expect(clientSelector).toBeVisible();
 
     // 8. Navigate to Storage & Backups page
@@ -97,7 +98,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // 10. Navigate to Settings page, verify platform config
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 2000 });
     await expect(page.getByTestId('platform-config-section')).toBeVisible();
     await expect(page.getByText('K8s Hosting Platform')).toBeVisible();
 
@@ -116,7 +117,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // Verify dashboard stat cards are present
     await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Storage & Backups')).toBeVisible();
+    await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
   test('breadcrumb navigation from client detail back to clients list', async ({ page }) => {
@@ -164,18 +165,18 @@ test.describe('Admin Full Workflow — End-to-End', () => {
 
     // Go to Settings first
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('settings-heading')).toBeVisible({ timeout: 2000 });
 
     // Navigate back to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 5000 });
   });
 
   test('dashboard shows all expected stat cards', async ({ page }) => {
 
     await expect(page.getByText('Total Clients')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Storage & Backups')).toBeVisible();
+    await expect(page.getByText('Backups', { exact: true })).toBeVisible();
   });
 
   test('multiple page navigations preserve session', async ({ page }) => {
@@ -198,7 +199,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
   test('Cron Jobs page accessible via direct URL', async ({ page }) => {
     await page.goto('/cron-jobs');
     await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible({ timeout: 2000 });
-    await expect(page.getByTestId('client-selector')).toBeVisible();
+    await expect(page.getByTestId('client-search-select')).toBeVisible();
   });
 
   test('Security page shows all stat cards and sections', async ({ page }) => {

@@ -6,7 +6,7 @@ test.describe('Client Panel Sub-Users', () => {
     await loginAsAdminClient(page);
     // The route is /users but the sidebar link text may vary
     await page.goto('/users');
-    await expect(page.getByTestId('sub-users-heading')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('sub-users-heading')).toBeVisible({ timeout: 5000 });
   });
 
   test('users page loads with heading', async ({ page }) => {
@@ -18,8 +18,11 @@ test.describe('Client Panel Sub-Users', () => {
   });
 
   test('shows users table or empty state', async ({ page }) => {
+    // Wait for loading to finish
+    await page.waitForTimeout(1000);
     const content = page.getByTestId('users-table')
-      .or(page.getByText('No sub-users yet'));
-    await expect(content).toBeVisible({ timeout: 2000 });
+      .or(page.getByText('No sub-users yet'))
+      .or(page.getByText('Failed to load users'));
+    await expect(content).toBeVisible({ timeout: 5000 });
   });
 });

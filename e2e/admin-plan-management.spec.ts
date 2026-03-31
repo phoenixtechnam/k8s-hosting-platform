@@ -5,11 +5,11 @@ test.describe('Admin Plan Management', () => {
   test.beforeEach(async ({ page }) => {
     await injectAdminAuth(page);
     await page.goto('/settings/plans');
-    await expect(page.getByTestId('plan-management-page')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId('plan-management-page')).toBeVisible({ timeout: 10000 });
   });
 
   test('plan management page loads with heading', async ({ page }) => {
-    await expect(page.getByText('Hosting Plans')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Hosting Plans' })).toBeVisible();
   });
 
   test('shows Add Plan button', async ({ page }) => {

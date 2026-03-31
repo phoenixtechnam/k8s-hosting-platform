@@ -54,13 +54,13 @@ test.describe('Admin Applications Page', () => {
     const installedTab = page.getByTestId('installed-tab');
     await expect(installedTab).toBeVisible({ timeout: 2000 });
 
-    // Should show Phase 2 placeholder or empty state
-    const phase2 = page.getByText('Phase 2');
-    const emptyState = page.getByText(/no.*installed/i);
+    // Should show instances list or empty state
+    const emptyState = page.getByText('No application instances deployed yet.');
+    const instancesList = page.getByTestId('installed-tab').locator('table');
 
-    const phase2Visible = await phase2.isVisible().catch(() => false);
     const emptyVisible = await emptyState.isVisible().catch(() => false);
+    const listVisible = await instancesList.isVisible().catch(() => false);
 
-    expect(phase2Visible || emptyVisible).toBe(true);
+    expect(emptyVisible || listVisible).toBe(true);
   });
 });

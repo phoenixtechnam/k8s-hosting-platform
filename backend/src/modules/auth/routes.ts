@@ -17,7 +17,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/auth/login', {
     config: {
       rateLimit: {
-        max: process.env.LOGIN_RATE_LIMIT ? Number(process.env.LOGIN_RATE_LIMIT) : 10,
+        max: 10,
         timeWindow: '15 minutes',
       },
     },
