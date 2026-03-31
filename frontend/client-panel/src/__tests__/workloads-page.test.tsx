@@ -72,16 +72,14 @@ describe('Client Workloads page', () => {
     await waitFor(() => expect(screen.getByTestId('deploy-workload-button')).toBeInTheDocument());
   });
 
-  it('shows deploy form on click', async () => {
+  it('shows deploy modal on click', async () => {
     setupMocks();
     const user = userEvent.setup();
     render(<Workloads />, { wrapper: createWrapper() });
     await user.click(screen.getByTestId('tab-deployed'));
     await waitFor(() => expect(screen.getByTestId('deploy-workload-button')).toBeInTheDocument());
     await user.click(screen.getByTestId('deploy-workload-button'));
-    expect(screen.getByTestId('deploy-form')).toBeInTheDocument();
-    expect(screen.getByTestId('deploy-name-input')).toBeInTheDocument();
-    expect(screen.getByTestId('deploy-image-select')).toBeInTheDocument();
+    expect(screen.getByTestId('deploy-workload-modal')).toBeInTheDocument();
   });
 
   it('has start/stop toggle per workload', async () => {

@@ -17,7 +17,7 @@ export default function CronJobs() {
   // Reset pagination when client selection changes
   useEffect(() => {
     pagination.resetPagination();
-  }, [selectedClientId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedClientId]);
 
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs({
     clientId: selectedClientId ?? undefined,

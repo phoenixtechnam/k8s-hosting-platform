@@ -1,10 +1,11 @@
 import { useState, useMemo, type FormEvent } from 'react';
-import { Server, Container, Search, Loader2, AlertCircle, Plus, Trash2, X, Play, Square, Cpu, Heart, Settings2 } from 'lucide-react';
+import { Server, Container, Search, Loader2, AlertCircle, Plus, Trash2, X, Play, Square, Cpu, Heart, Settings2, Rocket } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useWorkloads, useContainerImages, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import DeployWorkloadModal from '@/components/DeployWorkloadModal';
 import type { ContainerImageResponse } from '@/types/api';
 
 type Tab = 'available' | 'deployed';
@@ -16,6 +17,13 @@ const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
 
 export default function Workloads() {
   const [activeTab, setActiveTab] = useState<Tab>('available');
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
+
+  const openDeployModal = (imageId?: string) => {
+    setDeployPreSelectedImage(imageId ?? null);
+    setDeployModalOpen(true);
+  };
 
   return (
     <div className="space-y-6">
@@ -49,8 +57,14 @@ export default function Workloads() {
         </nav>
       </div>
 
-      {activeTab === 'available' && <AvailableTab />}
-      {activeTab === 'deployed' && <DeployedTab />}
+      {activeTab === 'available' && <AvailableTab onDeploy={openDeployModal} />}
+      {activeTab === 'deployed' && <DeployedTab onDeploy={() => openDeployModal()} />}
+
+      <DeployWorkloadModal
+        open={deployModalOpen}
+        onClose={() => { setDeployModalOpen(false); setDeployPreSelectedImage(null); }}
+        preSelectedImageId={deployPreSelectedImage}
+      />
     </div>
   );
 }
@@ -71,7 +85,7 @@ function asHealthCheck(val: unknown): HealthCheckData {
 
 // ─── Available Tab ──────────────────────────────────────────────────────────
 
-function AvailableTab() {
+function AvailableTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void }) {
   const [search, setSearch] = useState('');
   const [selectedImage, setSelectedImage] = useState<ContainerImageResponse | null>(null);
   const { data: response, isLoading, isError, error } = useContainerImages();
@@ -188,7 +202,7 @@ function AvailableTab() {
       )}
 
       {selectedImage && (
-        <WorkloadDetailPanel image={selectedImage} onClose={() => setSelectedImage(null)} />
+        <WorkloadDetailPanel image={selectedImage} onClose={() => setSelectedImage(null)} onDeploy={onDeploy} />
       )}
     </div>
   );
@@ -292,9 +306,11 @@ function ExposesSection({ image }: { readonly image: ContainerImageResponse }) {
 function WorkloadDetailPanel({
   image,
   onClose,
+  onDeploy,
 }: {
   readonly image: ContainerImageResponse;
   readonly onClose: () => void;
+  readonly onDeploy: (imageId: string) => void;
 }) {
   const healthCheck = asHealthCheck(image.healthCheck);
   const envVars: readonly Record<string, string>[] = Array.isArray(image.envVars) ? image.envVars : [];
@@ -406,11 +422,12 @@ function WorkloadDetailPanel({
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
             <button
               type="button"
-              disabled
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+              onClick={() => { onDeploy(image.id); onClose(); }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               data-testid="deploy-button"
             >
-              Deploy (Phase 2)
+              <Rocket size={14} />
+              Deploy
             </button>
             <button
               type="button"
@@ -446,35 +463,16 @@ function StatusBadge({ status }: { readonly status: string }) {
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-function DeployedTab() {
+function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
   const { data: response, isLoading, isError, error } = useWorkloads(clientId ?? undefined);
-  const { data: imagesResponse } = useContainerImages();
-  const createWorkload = useCreateWorkload(clientId ?? undefined);
   const updateWorkload = useUpdateWorkload(clientId ?? undefined);
   const deleteWorkload = useDeleteWorkload(clientId ?? undefined);
 
   const workloadsRaw = response?.data ?? [];
-  const images = imagesResponse?.data ?? [];
   const { sortedData: workloads, sortKey: wlSortKey, sortDirection: wlSortDir, onSort: onWlSort } = useSortable(workloadsRaw, 'name');
 
-  const [showDeploy, setShowDeploy] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', image_id: '', replica_count: '1' });
-
-  const handleDeploy = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!form.name.trim() || !form.image_id) return;
-    try {
-      await createWorkload.mutateAsync({
-        name: form.name.trim(),
-        image_id: form.image_id,
-        replica_count: Number(form.replica_count) || 1,
-      });
-      setForm({ name: '', image_id: '', replica_count: '1' });
-      setShowDeploy(false);
-    } catch { /* error via createWorkload.error */ }
-  };
 
   const handleDelete = async (id: string) => {
     try { await deleteWorkload.mutateAsync(id); setDeleteConfirmId(null); }
@@ -486,48 +484,14 @@ function DeployedTab() {
       <div className="flex items-center justify-end">
         <button
           type="button"
-          onClick={() => setShowDeploy((p) => !p)}
+          onClick={onDeploy}
           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
           data-testid="deploy-workload-button"
         >
-          {showDeploy ? <X size={14} /> : <Plus size={14} />}
-          {showDeploy ? 'Cancel' : 'Deploy'}
+          <Rocket size={14} />
+          Deploy a Workload
         </button>
       </div>
-
-      {showDeploy && (
-        <form onSubmit={handleDeploy} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="deploy-form">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-            <div>
-              <label htmlFor="wl-name" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Name</label>
-              <input id="wl-name" type="text" className={INPUT_CLASS + ' mt-1'} placeholder="my-app" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required data-testid="deploy-name-input" />
-            </div>
-            <div>
-              <label htmlFor="wl-image" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Image</label>
-              <select id="wl-image" className={INPUT_CLASS + ' mt-1'} value={form.image_id} onChange={(e) => setForm({ ...form, image_id: e.target.value })} required data-testid="deploy-image-select">
-                <option value="">Select image...</option>
-                {images.map((img) => <option key={img.id} value={img.id}>{img.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="wl-replicas" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Replicas</label>
-              <input id="wl-replicas" type="number" min={1} max={10} className={INPUT_CLASS + ' mt-1'} value={form.replica_count} onChange={(e) => setForm({ ...form, replica_count: e.target.value })} data-testid="deploy-replicas-input" />
-            </div>
-            <div className="flex items-end">
-              <button type="submit" disabled={createWorkload.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-deploy">
-                {createWorkload.isPending && <Loader2 size={14} className="animate-spin" />}
-                Deploy
-              </button>
-            </div>
-          </div>
-          {createWorkload.error && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-red-600" data-testid="deploy-error">
-              <AlertCircle size={14} />
-              {createWorkload.error instanceof Error ? createWorkload.error.message : 'Failed to deploy'}
-            </div>
-          )}
-        </form>
-      )}
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading && (

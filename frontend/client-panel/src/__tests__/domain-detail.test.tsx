@@ -92,9 +92,15 @@ describe('Client DomainDetail page', () => {
 });
 
 describe('Client DNS tab', () => {
+  const switchToDns = async () => {
+    await waitFor(() => expect(screen.getByTestId('tab-dns')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByTestId('tab-dns'));
+  };
+
   it('renders DNS records', async () => {
     setupMocks();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDns();
     await waitFor(() => expect(screen.getByTestId('dns-records-table')).toBeInTheDocument());
     expect(screen.getByText('1.2.3.4')).toBeInTheDocument();
   });
@@ -103,6 +109,7 @@ describe('Client DNS tab', () => {
     setupMocks();
     const user = userEvent.setup();
     render(<DomainDetail />, { wrapper: createWrapper() });
+    await switchToDns();
     await waitFor(() => expect(screen.getByTestId('add-dns-record-button')).toBeInTheDocument());
     await user.click(screen.getByTestId('add-dns-record-button'));
     expect(screen.getByTestId('dns-record-form')).toBeInTheDocument();

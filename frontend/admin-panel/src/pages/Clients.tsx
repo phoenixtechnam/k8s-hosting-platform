@@ -23,7 +23,7 @@ export default function Clients() {
 
   useEffect(() => {
     pagination.resetPagination();
-  }, [debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedSearch]);
 
   const { data, isLoading, error } = useClients({
     search: debouncedSearch || undefined,

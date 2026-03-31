@@ -24,7 +24,7 @@ export default function Domains() {
   // Reset pagination when search or client filter changes
   useEffect(() => {
     pagination.resetPagination();
-  }, [debouncedSearch, selectedClientId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, selectedClientId]);
 
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
     selectedClientId ?? undefined,

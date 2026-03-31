@@ -2,11 +2,13 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
-  Users, Lock, ChevronDown, ChevronRight, CheckCircle,
+  Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
+import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
+import { useWorkloads } from '@/hooks/use-workloads';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -19,12 +21,12 @@ import {
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-type Tab = 'dns' | 'hosting' | 'protected';
+type Tab = 'routing' | 'dns' | 'hosting' | 'protected';
 
 export default function DomainDetail() {
   const { domainId } = useParams<{ domainId: string }>();
   const { clientId } = useClientContext();
-  const [activeTab, setActiveTab] = useState<Tab>('dns');
+  const [activeTab, setActiveTab] = useState<Tab>('routing');
   const verifyDomain = useVerifyDomain(clientId ?? undefined);
 
   const { data: domainsData, isLoading } = useDomains(clientId ?? undefined);
@@ -48,6 +50,7 @@ export default function DomainDetail() {
   }
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
+    { key: 'routing', label: 'Routing', icon: <Network size={14} /> },
     { key: 'dns', label: 'DNS Records', icon: <Globe size={14} /> },
     { key: 'hosting', label: 'Hosting', icon: <Settings size={14} /> },
     { key: 'protected', label: 'Protected Dirs', icon: <Shield size={14} /> },
@@ -124,9 +127,156 @@ export default function DomainDetail() {
         ))}
       </div>
 
+      {activeTab === 'routing' && <RoutingTab clientId={clientId!} domainId={domainId!} domainName={domain.domainName} dnsMode={domain.dnsMode} />}
       {activeTab === 'dns' && <DnsTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'hosting' && <HostingTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'protected' && <ProtectedTab clientId={clientId!} domainId={domainId!} />}
+    </div>
+  );
+}
+
+// ─── Routing Tab ─────────────────────────────────────────────────────────────
+
+function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
+  readonly clientId: string;
+  readonly domainId: string;
+  readonly domainName: string;
+  readonly dnsMode: string;
+}) {
+  const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
+  const { data: workloadsData } = useWorkloads(clientId);
+  const createRoute = useCreateIngressRoute(clientId, domainId);
+  const updateRoute = useUpdateIngressRoute(clientId, domainId);
+  const deleteRoute = useDeleteIngressRoute(clientId, domainId);
+
+  const [newHostname, setNewHostname] = useState('');
+
+  const routes = routesData?.data ?? [];
+  const workloads = workloadsData?.data ?? [];
+
+  const handleAddRoute = (e: FormEvent) => {
+    e.preventDefault();
+    if (!newHostname) return;
+    createRoute.mutate({ hostname: newHostname }, {
+      onSuccess: () => setNewHostname(''),
+    });
+  };
+
+  const handleAssignWorkload = (routeId: string, workloadId: string | null) => {
+    updateRoute.mutate({ routeId, workload_id: workloadId });
+  };
+
+  const isCname = dnsMode === 'cname';
+
+  return (
+    <div className="space-y-6" data-testid="routing-tab">
+      <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
+        {isCname ? (
+          <p>Add a route for your domain and assign it to a deployed workload. Point your DNS to the CNAME target shown below.</p>
+        ) : dnsMode === 'primary' ? (
+          <p>Add routes for your domain or subdomains. DNS records are created automatically for primary domains.</p>
+        ) : (
+          <p>Add routes for hostnames that resolve to the platform. Assign each to a deployed workload.</p>
+        )}
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-4">
+          <Loader2 size={16} className="animate-spin text-blue-600" />
+          <span className="text-sm text-gray-500">Loading routes...</span>
+        </div>
+      ) : routes.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+          No routes configured yet. Add a hostname below to start routing traffic to your workloads.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+          <table className="w-full text-sm" data-testid="routes-table">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-3">Hostname</th>
+                <th className="px-4 py-3">CNAME Target</th>
+                <th className="px-4 py-3">Workload</th>
+                <th className="px-4 py-3">TLS</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+              {routes.map((route) => (
+                <tr key={route.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                  <td className="px-4 py-3">
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{route.hostname}</span>
+                    {route.isApex ? (
+                      <span className="ml-2 inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
+                  <td className="px-4 py-3">
+                    <select
+                      value={route.workloadId ?? ''}
+                      onChange={(e) => handleAssignWorkload(route.id, e.target.value || null)}
+                      className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">Not assigned</option>
+                      {workloads.map((w) => (
+                        <option key={w.id} value={w.id}>{w.name} ({w.status})</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={clsx(
+                      'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
+                      route.tlsMode === 'auto' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' :
+                      route.tlsMode === 'custom' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' :
+                      'bg-gray-100 dark:bg-gray-700 text-gray-500',
+                    )}>
+                      {route.tlsMode}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => deleteRoute.mutate(route.id)}
+                      className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Hostname</label>
+          <input
+            type="text"
+            value={newHostname}
+            onChange={(e) => setNewHostname(e.target.value)}
+            placeholder={isCname ? domainName : `subdomain.${domainName}`}
+            className={INPUT_CLASS}
+            data-testid="new-hostname-input"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={!newHostname || createRoute.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          Add Route
+        </button>
+      </form>
+
+      {createRoute.error && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+          <AlertCircle size={16} />
+          <span>{createRoute.error instanceof Error ? createRoute.error.message : 'Failed to create route'}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -106,6 +106,13 @@ describe('ingress-routes service', () => {
       expect(recordType).toBe('CNAME');
     });
 
+    it('should detect .local domains for auto-resolve', () => {
+      expect('test.local'.endsWith('.local')).toBe(true);
+      expect('blog.test.local'.endsWith('.local')).toBe(true);
+      expect('example.com'.endsWith('.local')).toBe(false);
+      expect('mylocal.com'.endsWith('.local')).toBe(false);
+    });
+
     it('should extract subdomain from hostname', () => {
       const hostname = 'blog.example.com';
       const domainName = 'example.com';

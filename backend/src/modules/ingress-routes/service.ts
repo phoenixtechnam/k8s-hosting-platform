@@ -6,7 +6,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, domains, dnsRecords, platformSettings } from '../../db/schema.js';
+import { ingressRoutes, domains, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders } from '../dns-records/service.js';
 import type { Database } from '../../db/index.js';
@@ -160,6 +160,22 @@ export async function createRoute(
       }
     } catch {
       // DNS creation failure shouldn't block route creation
+    }
+  }
+
+  // Auto-resolve .local domains: create A record pointing to ingress IP
+  // This enables local DinD testing without external DNS
+  if (hostname.endsWith('.local') && domain.dnsMode !== 'primary') {
+    try {
+      const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
+      await syncRecordToProviders(db, domain.domainName, 'create', {
+        type: 'A',
+        name: recordName,
+        content: settings.ingressDefaultIpv4,
+        ttl: 300,
+      });
+    } catch {
+      // Non-blocking
     }
   }
 
