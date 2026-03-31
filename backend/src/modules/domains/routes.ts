@@ -4,6 +4,7 @@ import { authenticate, requireRole, requireClientAccess } from '../../middleware
 import { domains } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
+import { bulkVerifyDomains, bulkDeleteDomains } from './bulk.js';
 import { verifyDomain, getPlatformConfig } from './verification.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
@@ -113,5 +114,30 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     await app.db.update(domains).set(updateValues).where(eq(domains.id, domainId));
 
     return success({ ...result, domainId, domainName: domain.domainName });
+  });
+
+  // ─── Bulk Operations ────────────────────────────────────────────────────────
+
+  // POST /api/v1/admin/domains/bulk
+  app.post('/admin/domains/bulk', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const body = request.body as { domain_ids?: string[]; action?: string };
+
+    if (!Array.isArray(body.domain_ids) || body.domain_ids.length === 0 || !body.action) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'domain_ids (non-empty array) and action are required', 400);
+    }
+
+    if (body.action !== 'verify' && body.action !== 'delete') {
+      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'verify' or 'delete'", 400, { field: 'action' });
+    }
+
+    if (body.action === 'verify') {
+      const result = await bulkVerifyDomains(app.db, body.domain_ids);
+      return success(result);
+    }
+
+    const result = await bulkDeleteDomains(app.db, body.domain_ids, getK8s());
+    return success(result);
   });
 }

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
@@ -139,6 +139,67 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(users.id, id));
 
     return success(updated);
+  });
+
+  // DELETE /api/v1/admin/users/bulk — bulk delete admin users
+  app.delete('/admin/users/bulk', {
+    onRequest: [requireRole('super_admin')],
+  }, async (request, reply) => {
+    const body = request.body as { user_ids?: string[] };
+    const userIds = body?.user_ids;
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      throw new ApiError('VALIDATION_ERROR', 'user_ids must be a non-empty array', 400);
+    }
+
+    // Prevent self-deletion
+    const callerId = ((request as unknown as Record<string, unknown>).user as { sub: string }).sub;
+    if (userIds.includes(callerId)) {
+      throw new ApiError('OPERATION_NOT_ALLOWED', 'Cannot delete your own account', 403);
+    }
+
+    // Verify all targets are admin-panel users
+    const targets = await app.db
+      .select({ id: users.id, roleName: users.roleName })
+      .from(users)
+      .where(and(eq(users.panel, 'admin'), inArray(users.id, userIds)));
+
+    const targetIds = new Set(targets.map((t) => t.id));
+    const superAdminTargetCount = targets.filter((t) => t.roleName === 'super_admin').length;
+
+    // Count current super_admins to ensure at least one remains
+    if (superAdminTargetCount > 0) {
+      const [{ count: totalSuperAdmins }] = await app.db
+        .select({ count: sql<number>`count(*)` })
+        .from(users)
+        .where(and(eq(users.panel, 'admin'), eq(users.roleName, 'super_admin')));
+
+      if (Number(totalSuperAdmins) - superAdminTargetCount < 1) {
+        throw new ApiError(
+          'OPERATION_NOT_ALLOWED',
+          'Bulk delete would remove all super_admin users',
+          403,
+        );
+      }
+    }
+
+    const succeeded: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+
+    for (const id of userIds) {
+      if (!targetIds.has(id)) {
+        failed.push({ id, error: 'Admin user not found' });
+        continue;
+      }
+      try {
+        await app.db.delete(users).where(eq(users.id, id));
+        succeeded.push(id);
+      } catch (err) {
+        failed.push({ id, error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    }
+
+    return reply.send(success({ succeeded, failed }));
   });
 
   // DELETE /api/v1/admin/users/:id — delete admin user

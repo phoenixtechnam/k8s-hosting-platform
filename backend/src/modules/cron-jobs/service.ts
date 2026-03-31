@@ -165,3 +165,57 @@ export async function deleteCronJob(db: Database, clientId: string, cronJobId: s
   await getCronJobById(db, clientId, cronJobId);
   await db.delete(cronJobs).where(eq(cronJobs.id, cronJobId));
 }
+
+export interface BulkCronJobResult {
+  readonly succeeded: readonly string[];
+  readonly failed: readonly { readonly id: string; readonly error: string }[];
+}
+
+export async function bulkUpdateCronJobEnabled(
+  db: Database,
+  cronJobIds: readonly string[],
+  enabled: boolean,
+): Promise<BulkCronJobResult> {
+  const succeeded: string[] = [];
+  const failed: { id: string; error: string }[] = [];
+
+  for (const id of cronJobIds) {
+    try {
+      const [job] = await db.select().from(cronJobs).where(eq(cronJobs.id, id));
+      if (!job) {
+        failed.push({ id, error: 'Cron job not found' });
+        continue;
+      }
+      await db.update(cronJobs).set({ enabled: enabled ? 1 : 0 }).where(eq(cronJobs.id, id));
+      succeeded.push(id);
+    } catch (err) {
+      failed.push({ id, error: err instanceof Error ? err.message : 'Unknown error' });
+    }
+  }
+
+  return { succeeded, failed };
+}
+
+export async function bulkDeleteCronJobs(
+  db: Database,
+  cronJobIds: readonly string[],
+): Promise<BulkCronJobResult> {
+  const succeeded: string[] = [];
+  const failed: { id: string; error: string }[] = [];
+
+  for (const id of cronJobIds) {
+    try {
+      const [job] = await db.select().from(cronJobs).where(eq(cronJobs.id, id));
+      if (!job) {
+        failed.push({ id, error: 'Cron job not found' });
+        continue;
+      }
+      await db.delete(cronJobs).where(eq(cronJobs.id, id));
+      succeeded.push(id);
+    } catch (err) {
+      failed.push({ id, error: err instanceof Error ? err.message : 'Unknown error' });
+    }
+  }
+
+  return { succeeded, failed };
+}

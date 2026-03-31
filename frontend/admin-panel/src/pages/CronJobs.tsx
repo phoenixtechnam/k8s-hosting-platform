@@ -4,14 +4,18 @@ import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import PaginationBar from '@/components/ui/PaginationBar';
+import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
 import { useCronJobs, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
+import { useSelection } from '@/hooks/use-selection';
+import { useBulkEnableCronJobs, useBulkDisableCronJobs, useBulkDeleteCronJobs } from '@/hooks/use-bulk-cron-jobs';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'enable' | 'disable' | 'delete' | null>(null);
   const pagination = useCursorPagination({ defaultLimit: 20 });
 
   // Reset pagination when client selection changes
@@ -34,6 +38,26 @@ export default function CronJobs() {
   const hasMore = cronJobsData?.pagination?.has_more ?? false;
   const nextCursor = cronJobsData?.pagination?.cursor ?? null;
   const { sortedData: sortedCronJobs, sortKey, sortDirection, onSort } = useSortable(cronJobs, 'name');
+
+  const selection = useSelection<{ id: string }>(pagination.cursor);
+  const bulkEnable = useBulkEnableCronJobs();
+  const bulkDisable = useBulkDisableCronJobs();
+  const bulkDelete = useBulkDeleteCronJobs();
+
+  const handleBulkAction = async () => {
+    if (!confirmAction) return;
+    const ids = [...selection.selectedIds];
+    try {
+      if (confirmAction === 'enable') await bulkEnable.mutateAsync(ids);
+      else if (confirmAction === 'disable') await bulkDisable.mutateAsync(ids);
+      else if (confirmAction === 'delete') await bulkDelete.mutateAsync(ids);
+      selection.deselectAll();
+    } finally {
+      setConfirmAction(null);
+    }
+  };
+
+  const isBulkPending = bulkEnable.isPending || bulkDisable.isPending || bulkDelete.isPending;
 
   return (
     <div className="space-y-6">
@@ -84,6 +108,13 @@ export default function CronJobs() {
               <table className="w-full" data-testid="cron-jobs-table">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="w-10 px-3 py-3">
+                      <SelectCheckbox
+                        checked={selection.isAllSelected(cronJobs)}
+                        indeterminate={selection.isIndeterminate(cronJobs)}
+                        onChange={() => selection.isAllSelected(cronJobs) ? selection.deselectAll() : selection.selectAll(cronJobs)}
+                      />
+                    </th>
                     <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Command" sortKey="command" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
@@ -95,7 +126,20 @@ export default function CronJobs() {
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {sortedCronJobs.map((job) => (
-                    <tr key={job.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <tr
+                      key={job.id}
+                      className={`transition-colors ${
+                        selection.isSelected(job.id)
+                          ? 'bg-brand-50 dark:bg-brand-900/20'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                      }`}
+                    >
+                      <td className="w-10 px-3 py-3.5">
+                        <SelectCheckbox
+                          checked={selection.isSelected(job.id)}
+                          onChange={() => selection.toggle(job.id)}
+                        />
+                      </td>
                       <td className="px-5 py-3.5">
                         <span className="font-medium text-gray-900 dark:text-gray-100">{job.name}</span>
                       </td>
@@ -178,7 +222,7 @@ export default function CronJobs() {
                   ))}
                   {cronJobs.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={8} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {selectedClientId
                           ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
                           : 'No cron jobs found across any client.'}
@@ -201,6 +245,70 @@ export default function CronJobs() {
           </>
         )}
       </div>
+
+      <BulkActionBar selectedCount={selection.selectedCount} onDeselectAll={selection.deselectAll}>
+        <button
+          onClick={() => setConfirmAction('enable')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-green-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 transition-colors"
+        >
+          <Play size={14} />
+          Enable Selected
+        </button>
+        <button
+          onClick={() => setConfirmAction('disable')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors"
+        >
+          <Pause size={14} />
+          Disable Selected
+        </button>
+        <button
+          onClick={() => setConfirmAction('delete')}
+          className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors"
+        >
+          <Trash2 size={14} />
+          Delete Selected
+        </button>
+      </BulkActionBar>
+
+      {/* Confirmation dialog */}
+      {confirmAction && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
+          <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {confirmAction === 'delete' ? 'Delete' : confirmAction === 'enable' ? 'Enable' : 'Disable'} {selection.selectedCount} cron job{selection.selectedCount !== 1 ? 's' : ''}?
+            </h3>
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {confirmAction === 'delete'
+                ? 'This will permanently delete the selected cron jobs. This action cannot be undone.'
+                : confirmAction === 'enable'
+                  ? 'The selected cron jobs will be enabled and start running on their schedules.'
+                  : 'The selected cron jobs will be disabled and stop running.'}
+            </p>
+            <div className="mt-4 flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkAction}
+                disabled={isBulkPending}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                  confirmAction === 'delete'
+                    ? 'bg-red-500 hover:bg-red-600'
+                    : confirmAction === 'enable'
+                      ? 'bg-green-500 hover:bg-green-600'
+                      : 'bg-amber-500 hover:bg-amber-600'
+                }`}
+              >
+                {isBulkPending && <Loader2 size={14} className="animate-spin" />}
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedClientId && (
         <CreateCronJobModal

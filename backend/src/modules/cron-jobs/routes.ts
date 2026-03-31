@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { createCronJobSchema, updateCronJobSchema } from './schema.js';
 import * as service from './service.js';
+import { bulkUpdateCronJobEnabled, bulkDeleteCronJobs } from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
@@ -10,6 +11,32 @@ export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
   app.addHook('onRequest', requireClientAccess());
+
+  // POST /api/v1/admin/cron-jobs/bulk — bulk enable/disable/delete
+  app.post('/admin/cron-jobs/bulk', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const body = request.body as { cron_job_ids?: string[]; action?: string };
+
+    if (!Array.isArray(body.cron_job_ids) || !body.action) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'cron_job_ids (array) and action are required', 400);
+    }
+
+    if (body.action !== 'enable' && body.action !== 'disable' && body.action !== 'delete') {
+      throw new ApiError('INVALID_FIELD_VALUE', "action must be 'enable', 'disable', or 'delete'", 400, { field: 'action' });
+    }
+
+    if (body.action === 'enable') {
+      const result = await bulkUpdateCronJobEnabled(app.db, body.cron_job_ids, true);
+      return success(result);
+    } else if (body.action === 'disable') {
+      const result = await bulkUpdateCronJobEnabled(app.db, body.cron_job_ids, false);
+      return success(result);
+    } else {
+      const result = await bulkDeleteCronJobs(app.db, body.cron_job_ids);
+      return success(result);
+    }
+  });
 
   // GET /api/v1/admin/cron-jobs — list all cron jobs across all clients
   app.get('/admin/cron-jobs', async (request) => {
