@@ -6,10 +6,11 @@
  * Applies cert-manager TLS annotations when auto-TLS is enabled.
  */
 
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { ingressRoutes, workloads, domains } from '../../db/schema.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
+import { createRoute } from '../ingress-routes/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -61,17 +62,32 @@ export async function reconcileIngress(
     r => domainIds.includes(r.domainId) && r.workloadId && r.status === 'active',
   );
 
-  if (clientRoutes.length === 0) {
-    // No routable routes — also check legacy domains.workloadId fallback
-    const legacyDomains = clientDomains.filter(d => d.workloadId);
-    if (legacyDomains.length === 0) {
-      try {
-        await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
-      } catch (err: unknown) {
-        if (!isK8s404(err)) throw err;
-      }
-      return;
+  // Auto-migrate: create ingress_routes for legacy domains with workloadId
+  for (const domain of clientDomains) {
+    if (!domain.workloadId) continue;
+    const alreadyRouted = clientRoutes.some(r => r.hostname === domain.domainName);
+    if (alreadyRouted) continue;
+
+    try {
+      await createRoute(db, domain.id, clientId, domain.domainName, domain.workloadId);
+    } catch {
+      // Route already exists or creation failed — continue
     }
+  }
+
+  // Re-fetch routes after migration
+  const updatedAllRoutes = await db.select().from(ingressRoutes);
+  const updatedRoutes = updatedAllRoutes.filter(
+    r => domainIds.includes(r.domainId) && r.workloadId && r.status === 'active',
+  );
+
+  if (updatedRoutes.length === 0) {
+    try {
+      await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+    }
+    return;
   }
 
   // Build workload name lookup
@@ -81,8 +97,8 @@ export async function reconcileIngress(
     workloadMap.set(w.id, w.name);
   }
 
-  // Build rules from ingress_routes
-  const rules = clientRoutes
+  // Build rules from ingress_routes (single source of truth)
+  const rules = updatedRoutes
     .map(route => {
       const serviceName = workloadMap.get(route.workloadId!);
       if (!serviceName) return null;
@@ -104,32 +120,6 @@ export async function reconcileIngress(
       };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
-
-  // Fallback: legacy domains.workloadId (for domains without ingress_routes)
-  for (const domain of clientDomains) {
-    if (!domain.workloadId) continue;
-    const alreadyRouted = clientRoutes.some(r => r.hostname === domain.domainName);
-    if (alreadyRouted) continue;
-
-    const serviceName = workloadMap.get(domain.workloadId);
-    if (!serviceName) continue;
-
-    rules.push({
-      host: domain.domainName,
-      http: {
-        paths: [{
-          path: '/',
-          pathType: 'Prefix',
-          backend: {
-            service: {
-              name: serviceName,
-              port: { number: 80 },
-            },
-          },
-        }],
-      },
-    });
-  }
 
   if (rules.length === 0) {
     try {

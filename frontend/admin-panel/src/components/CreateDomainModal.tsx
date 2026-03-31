@@ -123,28 +123,36 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
             </select>
           </div>
 
-          {effectiveClientId && workloads.length > 0 && (
+          {effectiveClientId && (
             <div>
               <label htmlFor="workload-id" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Route to Workload
               </label>
-              <select
-                id="workload-id"
-                value={workloadId}
-                onChange={(e) => setWorkloadId(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                data-testid="workload-select"
-              >
-                <option value="">None (assign later)</option>
-                {workloads.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name} ({w.status})
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Links this domain to a workload for Ingress routing. Creates the Ingress + TLS certificate automatically.
-              </p>
+              {workloads.length > 0 ? (
+                <>
+                  <select
+                    id="workload-id"
+                    value={workloadId}
+                    onChange={(e) => setWorkloadId(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    data-testid="workload-select"
+                  >
+                    <option value="">None (assign later)</option>
+                    {workloads.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} ({w.status})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Links this domain to a workload for Ingress routing. Creates the Ingress + TLS certificate automatically.
+                  </p>
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-gray-400 dark:text-gray-500 italic" data-testid="no-workloads-message">
+                  No Apps or Workloads deployed yet. You can assign a workload later from the Routing tab.
+                </p>
+              )}
             </div>
           )}
 

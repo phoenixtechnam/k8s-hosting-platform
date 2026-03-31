@@ -6,6 +6,7 @@ import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
 import { reconcileIngress } from './k8s-ingress.js';
+import { createRoute } from '../ingress-routes/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
@@ -63,6 +64,15 @@ export async function createDomain(db: Database, clientId: string, input: Create
     }
   } catch {
     // No DNS servers configured — that's fine
+  }
+
+  // Auto-create ingress route if workload was selected
+  if (input.workload_id && created) {
+    try {
+      await createRoute(db, created.id, clientId, input.domain_name, input.workload_id);
+    } catch {
+      // Route creation failure shouldn't block domain creation
+    }
   }
 
   // Reconcile Ingress in k8s
