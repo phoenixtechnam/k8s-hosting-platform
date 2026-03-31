@@ -27,7 +27,9 @@ test.describe('Admin Security Page', () => {
     await expect(page.getByText('Security Events').first()).toBeVisible({ timeout: 2000 });
   });
 
-  test('displays security score value', async ({ page }) => {
-    await expect(page.getByText('92/100')).toBeVisible({ timeout: 2000 });
+  test('displays stat card placeholder values', async ({ page }) => {
+    // Security score and other metrics show "—" until live endpoints exist
+    const dashes = page.getByText('—');
+    await expect(dashes.first()).toBeVisible({ timeout: 2000 });
   });
 });
