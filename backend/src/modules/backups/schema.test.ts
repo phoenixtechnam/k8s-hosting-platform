@@ -16,8 +16,12 @@ describe('createBackupSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('should reject auto backup type (admin only via system)', () => {
-    expect(createBackupSchema.safeParse({ backup_type: 'auto' }).success).toBe(false);
+  it('should accept auto backup type (used by pre-upgrade backups)', () => {
+    expect(createBackupSchema.safeParse({ backup_type: 'auto' }).success).toBe(true);
+  });
+
+  it('should reject invalid backup type', () => {
+    expect(createBackupSchema.safeParse({ backup_type: 'invalid' }).success).toBe(false);
   });
 
   it('should accept optional resource_id', () => {

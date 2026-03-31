@@ -6,6 +6,7 @@ import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateClientInput, UpdateClientInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 function generateNamespace(companyName: string): string {
   return `client-${companyName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 50)}-${crypto.randomUUID().slice(0, 8)}`;
@@ -152,10 +153,18 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   return getClientById(db, id);
 }
 
-export async function deleteClient(db: Database, id: string) {
-  // Verify client exists (throws CLIENT_NOT_FOUND if missing)
-  await getClientById(db, id);
-  // Allow deletion regardless of status — the UI delete confirmation dialog is sufficient safeguard.
-  // TODO: Future background job should clean up associated Kubernetes resources (namespace, secrets, etc.)
+export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {
+  const client = await getClientById(db, id);
+
+  // Best-effort k8s namespace cleanup
+  if (k8sClients && client.kubernetesNamespace && client.provisioningStatus === 'provisioned') {
+    try {
+      await k8sClients.core.deleteNamespace({ name: client.kubernetesNamespace });
+    } catch (err: unknown) {
+      // Log but don't block — namespace may already be gone
+      console.warn(`[client-delete] Failed to delete k8s namespace ${client.kubernetesNamespace}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   await db.delete(clients).where(eq(clients.id, id));
 }

@@ -9,8 +9,19 @@ import { bulkUpdateClientStatus } from './bulk.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function clientRoutes(app: FastifyInstance): Promise<void> {
+  // Lazy-init K8s clients (undefined if no kubeconfig available)
+  const getK8s = () => {
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      return createK8sClients(kubeconfigPath);
+    } catch {
+      return undefined;
+    }
+  };
+
   // All client routes require auth + admin role
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
@@ -163,7 +174,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   // DELETE /api/v1/clients/:id
   app.delete('/clients/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    await service.deleteClient(app.db, id);
+    await service.deleteClient(app.db, id, getK8s());
     return reply.status(204).send();
   });
 

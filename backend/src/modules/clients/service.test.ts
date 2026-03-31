@@ -189,4 +189,99 @@ describe('deleteClient', () => {
       code: 'CLIENT_NOT_FOUND',
     });
   });
+
+  it('should delete k8s namespace for provisioned client', async () => {
+    const client = {
+      id: 'c1',
+      status: 'active',
+      kubernetesNamespace: 'client-acme-abc12345',
+      provisioningStatus: 'provisioned',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = {
+      select: selectFn,
+      delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    await deleteClient(db, 'c1', k8sClients);
+    expect(mockDeleteNamespace).toHaveBeenCalledWith({ name: 'client-acme-abc12345' });
+    expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('should skip k8s cleanup when client is not provisioned', async () => {
+    const client = {
+      id: 'c1',
+      status: 'pending',
+      kubernetesNamespace: 'client-acme-abc12345',
+      provisioningStatus: 'pending',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = {
+      select: selectFn,
+      delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const mockDeleteNamespace = vi.fn();
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    await deleteClient(db, 'c1', k8sClients);
+    expect(mockDeleteNamespace).not.toHaveBeenCalled();
+    expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('should handle k8s namespace deletion failure gracefully', async () => {
+    const client = {
+      id: 'c1',
+      status: 'active',
+      kubernetesNamespace: 'client-acme-abc12345',
+      provisioningStatus: 'provisioned',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = {
+      select: selectFn,
+      delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const mockDeleteNamespace = vi.fn().mockRejectedValue(new Error('k8s API unreachable'));
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await deleteClient(db, 'c1', k8sClients);
+    expect(mockDeleteNamespace).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[client-delete] Failed to delete k8s namespace client-acme-abc12345'),
+    );
+    // DB deletion should still proceed
+    expect(deleteFn).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
 });

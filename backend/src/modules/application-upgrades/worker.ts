@@ -15,6 +15,7 @@ import {
   applicationVersions,
 } from '../../db/schema.js';
 import { transitionUpgrade } from './service.js';
+import { createBackup } from '../backups/service.js';
 import type { Database } from '../../db/index.js';
 
 const POLL_INTERVAL_MS = 5_000;
@@ -136,16 +137,42 @@ export class UpgradeWorker {
   }
 
   private async stepBackup(upgradeId: string): Promise<void> {
-    // In production: trigger backup via backup service and wait for completion
-    // For now, simulate backup by recording a placeholder backup ID
-    const backupId = `backup-${crypto.randomUUID().slice(0, 8)}`;
-
-    await this.db
-      .update(applicationUpgrades)
-      .set({ backupId })
+    // Get upgrade and instance to find clientId
+    const [upgrade] = await this.db
+      .select()
+      .from(applicationUpgrades)
       .where(eq(applicationUpgrades.id, upgradeId));
 
-    console.log(`[upgrade-worker] Backup created: ${backupId}`);
+    if (!upgrade) return;
+
+    const [instance] = await this.db
+      .select()
+      .from(applicationInstances)
+      .where(eq(applicationInstances.id, upgrade.instanceId));
+
+    if (!instance) {
+      console.warn(`[upgrade-worker] Instance ${upgrade.instanceId} not found — skipping backup`);
+      return;
+    }
+
+    try {
+      const backup = await createBackup(this.db, instance.clientId, {
+        backup_type: 'auto',
+        resource_type: 'application_instance',
+        resource_id: upgrade.instanceId,
+        notes: `Pre-upgrade backup for ${instance.applicationCatalogId} ${upgrade.fromVersion} → ${upgrade.toVersion}`,
+      });
+
+      await this.db
+        .update(applicationUpgrades)
+        .set({ backupId: backup.id })
+        .where(eq(applicationUpgrades.id, upgradeId));
+
+      console.log(`[upgrade-worker] Backup created: ${backup.id}`);
+    } catch (err) {
+      console.error(`[upgrade-worker] Backup failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw err; // Let the worker handle the failure
+    }
   }
 
   private async stepPreCheck(upgradeId: string): Promise<void> {
