@@ -58,6 +58,25 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     return success(entry);
   });
 
+  // GET /api/v1/catalog/:id/versions — list supported versions for an entry
+  app.get('/catalog/:id/versions', {
+    onRequest: [authenticate],
+    schema: {
+      tags: ['Catalog'],
+      summary: 'List supported versions for a catalog entry',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const versions = await service.listVersionsForEntry(app.db, id);
+    return success(versions);
+  });
+
   // GET /api/v1/catalog/:id/icon — serve icon from local cache (fast, no remote fetch)
   app.get('/catalog/:id/icon', {
     schema: {

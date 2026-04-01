@@ -7,6 +7,8 @@ import { useDeployments, useUpdateDeployment, useDeleteDeployment } from '@/hook
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
+import InstalledAppDetailModal from '@/components/InstalledAppDetailModal';
+import { getStatusColor } from '@/lib/status-colors';
 import type { CatalogEntry } from '@/types/api';
 
 type Tab = 'catalog' | 'installed';
@@ -791,16 +793,7 @@ function AppDetailPanel({
 
 // ─── Installed Tab ──────────────────────────────────────────────────────────
 
-const statusColors: Record<string, string> = {
-  running: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
-  stopped: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-  pending: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400',
-  upgrading: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400',
-  deploying: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400',
-  completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
-  rolled_back: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400',
-};
+// Status colors now imported from @/lib/status-colors
 
 function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
@@ -809,6 +802,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const updateDeployment = useUpdateDeployment(clientId ?? undefined);
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
 
   const deployments = deploymentsData?.data ?? [];
 
@@ -825,6 +819,11 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
     const entry = catalogMap.get(catalogEntryId);
     return entry?.name ?? 'Unknown';
   };
+
+  const selectedDeployment = deployments.find(d => d.id === selectedDeploymentId) ?? null;
+  const selectedCatalogEntry = selectedDeployment
+    ? catalogMap.get(selectedDeployment.catalogEntryId) ?? null
+    : null;
 
   const handleToggleStatus = (deploymentId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'running' ? 'stopped' : 'running';
@@ -861,7 +860,8 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
             {deployments.map((deployment) => (
               <div
                 key={deployment.id}
-                className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+                className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md"
+                onClick={() => setSelectedDeploymentId(deployment.id)}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -883,7 +883,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     </div>
                   </div>
                   <span
-                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusColors[deployment.status] ?? statusColors.stopped}`}
+                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}
                   >
                     {deployment.status}
                   </span>
@@ -913,7 +913,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
-                    onClick={() => handleToggleStatus(deployment.id, deployment.status)}
+                    onClick={(e) => { e.stopPropagation(); handleToggleStatus(deployment.id, deployment.status); }}
                     disabled={updateDeployment.isPending || deployment.status === 'pending'}
                     className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                       deployment.status === 'running'
@@ -933,13 +933,13 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                   </button>
                   {deleteConfirmId === deployment.id ? (
                     <div className="flex gap-1">
-                      <button type="button" onClick={async () => { try { await deleteDeployment.mutateAsync(deployment.id); setDeleteConfirmId(null); } catch { /* error via hook */ } }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
-                      <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                      <button type="button" onClick={async (e) => { e.stopPropagation(); try { await deleteDeployment.mutateAsync(deployment.id); setDeleteConfirmId(null); } catch { /* error via hook */ } }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                     </div>
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setDeleteConfirmId(deployment.id)}
+                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(deployment.id); }}
                       className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
                       data-testid={`delete-app-${deployment.id}`}
                     >
@@ -964,6 +964,17 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
           </p>
         </div>
       )}
+
+      <InstalledAppDetailModal
+        open={!!selectedDeploymentId}
+        deployment={selectedDeployment}
+        catalogEntry={selectedCatalogEntry}
+        onClose={() => setSelectedDeploymentId(null)}
+        onToggleStatus={(id, newStatus) => {
+          updateDeployment.mutate({ deploymentId: id, status: newStatus });
+        }}
+        isToggling={updateDeployment.isPending}
+      />
     </div>
   );
 }

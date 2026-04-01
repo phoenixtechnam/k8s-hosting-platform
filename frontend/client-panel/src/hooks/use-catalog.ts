@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { PaginatedResponse } from '@/types/api';
-import type { CatalogEntry } from '@/types/api';
+import type { PaginatedResponse, CatalogEntry, CatalogEntryVersionResponse } from '@/types/api';
 
 export function useCatalog(type?: string) {
   const params = new URLSearchParams();
@@ -20,5 +19,14 @@ export function useCatalogEntry(id: string | undefined) {
     queryKey: ['catalog', id],
     queryFn: () => apiFetch<{ data: CatalogEntry }>(`/api/v1/catalog/${id}`),
     enabled: Boolean(id),
+  });
+}
+
+export function useCatalogEntryVersions(entryId: string | undefined) {
+  return useQuery({
+    queryKey: ['catalog', entryId, 'versions'],
+    queryFn: () => apiFetch<{ data: CatalogEntryVersionResponse[] }>(`/api/v1/catalog/${entryId}/versions`),
+    enabled: Boolean(entryId),
+    staleTime: 300_000,
   });
 }

@@ -34,6 +34,7 @@ vi.mock('../hooks/use-deployments', () => ({
 
 vi.mock('../hooks/use-catalog', () => ({
   useCatalog: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false, error: null })),
+  useCatalogEntryVersions: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
 }));
 
 function createTestQueryClient() {

@@ -14,7 +14,9 @@ export type {
   ProtectedDirectoryResponse,
   ProtectedDirectoryUserResponse,
   CatalogEntryResponse as CatalogEntry,
+  CatalogEntryVersionResponse,
   DeploymentUpgradeResponse,
+  Parameter,
 } from '@k8s-hosting/api-contracts';
 
 export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';

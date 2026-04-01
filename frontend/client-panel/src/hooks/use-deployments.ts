@@ -8,6 +8,8 @@ interface CreateDeploymentInput {
   readonly replica_count?: number;
   readonly cpu_request?: string;
   readonly memory_request?: string;
+  readonly configuration?: Record<string, unknown>;
+  readonly version?: string;
 }
 
 interface UpdateDeploymentInput {
