@@ -361,7 +361,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       // Rate-limit GitHub raw requests (~60/min limit for unauthenticated)
       fetchCount++;
       if (fetchCount > 1 && source.type === 'github' && !repo.authToken) {
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 500));
       }
 
       let manifest: EntryManifest;

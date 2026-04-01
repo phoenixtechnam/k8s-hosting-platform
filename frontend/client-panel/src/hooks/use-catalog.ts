@@ -6,10 +6,11 @@ import type { CatalogEntry } from '@/types/api';
 export function useCatalog(type?: string) {
   const params = new URLSearchParams();
   if (type) params.set('type', type);
+  params.set('limit', '100');
   const qs = params.toString();
   return useQuery({
     queryKey: ['catalog', type],
-    queryFn: () => apiFetch<PaginatedResponse<CatalogEntry>>(`/api/v1/catalog${qs ? `?${qs}` : ''}`),
+    queryFn: () => apiFetch<PaginatedResponse<CatalogEntry>>(`/api/v1/catalog?${qs}`),
     staleTime: 300_000,
   });
 }

@@ -54,11 +54,12 @@ interface CatalogSingleResponse {
 export function useCatalog(type?: string) {
   const params = new URLSearchParams();
   if (type) params.set('type', type);
+  params.set('limit', '100');
   const qs = params.toString();
 
   return useQuery({
     queryKey: ['catalog', type],
-    queryFn: () => apiFetch<CatalogListResponse>(`/api/v1/catalog${qs ? `?${qs}` : ''}`),
+    queryFn: () => apiFetch<CatalogListResponse>(`/api/v1/catalog?${qs}`),
     staleTime: 60_000,
   });
 }
