@@ -8,7 +8,12 @@
 import { eq, and, like, sql, desc, asc, lt, gt, or } from 'drizzle-orm';
 import { catalogRepositories, catalogEntries, catalogEntryVersions } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { parseRepoUrl, buildCatalogFileUrl, fetchJson } from '../../shared/github-catalog.js';
+import { join } from 'node:path';
+import {
+  parseRepoUrl, buildCatalogFileUrl, fetchJson,
+  downloadCatalogRepo, readLocalJson, fileExists, persistCatalogCache,
+  type RepoSource,
+} from '../../shared/github-catalog.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateCatalogRepoInput, UpdateCatalogRepoInput } from './schema.js';
@@ -338,41 +343,51 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
 
   try {
     const source = parseRepoUrl(repo.url);
+    let localRoot: string;
+    let usedTarball = false;
 
-    // Fetch catalog.json
-    const catalogUrl = buildCatalogFileUrl(source, repo.branch, 'catalog.json');
-    const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, repo.authToken);
+    // Strategy: download tarball for GitHub repos (1 request), fallback to per-file for HTTP
+    if (source.type === 'github') {
+      console.log(`[catalog-sync] Downloading tarball for ${source.owner}/${source.repo}@${repo.branch}`);
+      const extracted = await downloadCatalogRepo(source, repo.branch, repo.authToken);
+      localRoot = await persistCatalogCache(extracted, repoId);
+      usedTarball = true;
+      console.log(`[catalog-sync] Tarball extracted to ${localRoot}`);
+    } else {
+      // HTTP source: no tarball, fall back to per-file fetch
+      // Create a temporary local cache by fetching catalog.json + each manifest
+      localRoot = await syncViaPerFileFetch(source, repo.branch, repo.authToken);
+    }
 
+    // Read catalog.json from local files
+    const catalogRaw = await readLocalJson<CatalogJson>(join(localRoot, 'catalog.json'));
     const entryCodes: readonly string[] = catalogRaw.entries ?? [];
     const manifestErrors: string[] = [];
     let syncedCount = 0;
 
-    // Fetch each entry manifest and upsert (with small delay to avoid GitHub rate limiting)
-    let fetchCount = 0;
     for (const code of entryCodes) {
       if (!VALID_ENTRY_NAME.test(code)) {
-        console.warn(`[catalog-sync] Skipping entry with invalid code: "${code}"`);
         manifestErrors.push(`Invalid entry code: "${code}"`);
         continue;
       }
 
-      const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
-
-      // Rate-limit GitHub raw requests (~60/min limit for unauthenticated)
-      fetchCount++;
-      if (fetchCount > 1 && source.type === 'github' && !repo.authToken) {
-        await new Promise(r => setTimeout(r, 500));
+      const manifestPath = join(localRoot, code, 'manifest.json');
+      if (!(await fileExists(manifestPath))) {
+        manifestErrors.push(`${code}: manifest.json not found`);
+        continue;
       }
 
       let manifest: EntryManifest;
       try {
-        manifest = await fetchJson<EntryManifest>(manifestUrl, repo.authToken);
+        manifest = await readLocalJson<EntryManifest>(manifestPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[catalog-sync] Failed to fetch manifest for "${code}": ${msg}`);
-        manifestErrors.push(`${code}: ${msg}`);
+        manifestErrors.push(`${code}: Invalid JSON — ${msg}`);
         continue;
       }
+
+      // Build the remote manifestUrl for display (even though we read locally)
+      const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
 
       const entryCode = manifest.code ?? code;
       const [existing] = await db
@@ -385,7 +400,6 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
           ),
         );
 
-      // Resolve version metadata
       const latestVersion = manifest.version ?? null;
       const defaultVersion = manifest.supportedVersions
         ? resolveDefaultVersion(manifest.supportedVersions)
@@ -427,23 +441,14 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
 
       if (existing) {
         catalogId = existing.id;
-        await db
-          .update(catalogEntries)
-          .set(catalogValues)
-          .where(eq(catalogEntries.id, existing.id));
+        await db.update(catalogEntries).set(catalogValues).where(eq(catalogEntries.id, existing.id));
       } else {
         catalogId = crypto.randomUUID();
-        await db.insert(catalogEntries).values({
-          id: catalogId,
-          code: entryCode,
-          ...catalogValues,
-        });
+        await db.insert(catalogEntries).values({ id: catalogId, code: entryCode, ...catalogValues });
       }
 
       // Sync entry versions
-      await db
-        .delete(catalogEntryVersions)
-        .where(eq(catalogEntryVersions.catalogEntryId, catalogId));
+      await db.delete(catalogEntryVersions).where(eq(catalogEntryVersions.catalogEntryId, catalogId));
 
       if (manifest.supportedVersions && manifest.supportedVersions.length > 0) {
         for (const sv of manifest.supportedVersions) {
@@ -463,39 +468,32 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
           });
         }
       } else if (manifest.version) {
-        // Legacy single-version format
         await db.insert(catalogEntryVersions).values({
           id: crypto.randomUUID(),
           catalogEntryId: catalogId,
           version: manifest.version,
           isDefault: 1,
-          eolDate: null,
-          components: null,
-          upgradeFrom: null,
-          breakingChanges: null,
-          envChanges: null,
-          migrationNotes: null,
-          minResources: null,
-          status: 'available',
+          eolDate: null, components: null, upgradeFrom: null,
+          breakingChanges: null, envChanges: null, migrationNotes: null,
+          minResources: null, status: 'available',
         });
       }
 
       syncedCount++;
     }
 
-    // Mark sync complete
-    const syncLastError = manifestErrors.length > 0
-      ? `${manifestErrors.length} manifest(s) failed to fetch`
-      : null;
-
+    // Store the local cache path for icon serving
     await db
       .update(catalogRepositories)
       .set({
         status: 'active',
         lastSyncedAt: new Date(),
-        lastError: syncLastError,
+        lastError: manifestErrors.length > 0 ? `${manifestErrors.length} entry error(s)` : null,
+        localCachePath: localRoot,
       })
       .where(eq(catalogRepositories.id, repoId));
+
+    console.log(`[catalog-sync] Synced ${syncedCount}/${entryCodes.length} entries${usedTarball ? ' (tarball)' : ' (per-file)'}`);
 
     return {
       synced: syncedCount,
@@ -512,6 +510,36 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       .where(eq(catalogRepositories.id, repoId));
     throw error;
   }
+}
+
+// ─── Per-File Fetch Fallback (HTTP sources) ──────────────────────────────────
+
+async function syncViaPerFileFetch(
+  source: RepoSource,
+  branch: string,
+  authToken?: string | null,
+): Promise<string> {
+  const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'catalog-http-'));
+  const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
+  const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, authToken);
+
+  await writeFile(join(tempDir, 'catalog.json'), JSON.stringify(catalogRaw));
+
+  for (const code of (catalogRaw.entries ?? [])) {
+    const manifestUrl = buildCatalogFileUrl(source, branch, `${code}/manifest.json`);
+    try {
+      const manifest = await fetchJson<Record<string, unknown>>(manifestUrl, authToken);
+      await mkdir(join(tempDir, code), { recursive: true });
+      await writeFile(join(tempDir, code, 'manifest.json'), JSON.stringify(manifest));
+    } catch {
+      // Skip entries that fail
+    }
+  }
+
+  return tempDir;
 }
 
 // ─── Catalog Entry Queries ──────────────────────────────────────────────────

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS `catalog_repositories` (
   `sync_interval_minutes` int NOT NULL DEFAULT 60,
   `last_synced_at` timestamp NULL,
   `status` enum('active','error','syncing') NOT NULL DEFAULT 'active',
+  `local_cache_path` varchar(500),
   `last_error` text,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

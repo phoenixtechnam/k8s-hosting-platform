@@ -171,6 +171,7 @@ export const catalogRepositories = mysqlTable('catalog_repositories', {
   lastSyncedAt: timestamp('last_synced_at'),
   status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
   lastError: text('last_error'),
+  localCachePath: varchar('local_cache_path', { length: 500 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [

@@ -1,10 +1,15 @@
+import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { createCatalogRepoSchema, updateCatalogRepoSchema } from './schema.js';
+import { catalogRepositories } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
+import { fileExists } from '../../shared/github-catalog.js';
 
 export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   // ─── Public: Catalog browsing (any authenticated user) ────────────────────
@@ -53,7 +58,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     return success(entry);
   });
 
-  // GET /api/v1/catalog/:id/icon — proxy the catalog entry's icon.png
+  // GET /api/v1/catalog/:id/icon — serve icon from local cache (fast, no remote fetch)
   app.get('/catalog/:id/icon', {
     schema: {
       tags: ['Catalog'],
@@ -68,26 +73,40 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const entry = await service.getCatalogEntryById(app.db, id);
 
-    if (!entry.manifestUrl) {
-      reply.status(404).send();
-      return;
-    }
+    // Try local cache first (populated by tarball sync)
+    if (entry.sourceRepoId) {
+      const [repo] = await app.db.select().from(catalogRepositories)
+        .where(eq(catalogRepositories.id, entry.sourceRepoId));
 
-    const iconUrl = entry.manifestUrl.replace(/manifest\.json$/, 'icon.png');
-
-    try {
-      const response = await fetch(iconUrl, { signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) {
-        reply.status(404).send();
-        return;
+      if (repo?.localCachePath) {
+        const localIconPath = join(repo.localCachePath, entry.code, 'icon.png');
+        if (await fileExists(localIconPath)) {
+          const buffer = await readFile(localIconPath);
+          reply.header('Content-Type', 'image/png');
+          reply.header('Cache-Control', 'public, max-age=86400');
+          reply.send(buffer);
+          return;
+        }
       }
-      reply.header('Content-Type', 'image/png');
-      reply.header('Cache-Control', 'public, max-age=86400');
-      const buffer = Buffer.from(await response.arrayBuffer());
-      reply.send(buffer);
-    } catch {
-      reply.status(404).send();
     }
+
+    // Fallback: proxy from remote manifestUrl
+    if (entry.manifestUrl) {
+      const iconUrl = entry.manifestUrl.replace(/manifest\.json$/, 'icon.png');
+      try {
+        const response = await fetch(iconUrl, { signal: AbortSignal.timeout(10_000) });
+        if (response.ok) {
+          reply.header('Content-Type', 'image/png');
+          reply.header('Cache-Control', 'public, max-age=86400');
+          reply.send(Buffer.from(await response.arrayBuffer()));
+          return;
+        }
+      } catch {
+        // Fall through to 404
+      }
+    }
+
+    reply.status(404).send();
   });
 
   // ─── Admin: Repository management ────────────────────────────────────────
