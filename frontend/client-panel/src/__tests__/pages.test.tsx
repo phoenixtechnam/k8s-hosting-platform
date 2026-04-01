@@ -115,7 +115,7 @@ describe('Dashboard', () => {
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('Workloads')).toBeInTheDocument();
+    expect(screen.getByText('Deployments')).toBeInTheDocument();
   });
 
   it('renders getting started section', () => {

@@ -1,7 +1,0 @@
-// Re-export from shared api-contracts (single source of truth)
-export {
-  createWorkloadSchema,
-  updateWorkloadSchema,
-  type CreateWorkloadInput,
-  type UpdateWorkloadInput,
-} from '@k8s-hosting/api-contracts';

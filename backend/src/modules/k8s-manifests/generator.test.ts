@@ -24,26 +24,26 @@ const mockPlan = {
 };
 
 const mockDomains = [
-  { id: 'd1', domainName: 'example.com', clientId: 'client-001', workloadId: 'w1', status: 'active' },
-  { id: 'd2', domainName: 'blog.example.com', clientId: 'client-001', workloadId: 'w1', status: 'active' },
+  { id: 'd1', domainName: 'example.com', clientId: 'client-001', deploymentId: 'dep1', status: 'active' },
+  { id: 'd2', domainName: 'blog.example.com', clientId: 'client-001', deploymentId: 'dep1', status: 'active' },
 ];
 
-const mockWorkloads = [
+const mockDeployments = [
   {
-    id: 'w1',
+    id: 'dep1',
     clientId: 'client-001',
+    catalogEntryId: 'entry-001',
     name: 'web-app',
-    containerImageId: 'img-001',
     replicaCount: 2,
     cpuRequest: '250m',
     memoryRequest: '256Mi',
     status: 'running',
   },
   {
-    id: 'w2',
+    id: 'dep2',
     clientId: 'client-001',
+    catalogEntryId: 'entry-002',
     name: 'api-server',
-    containerImageId: 'img-002',
     replicaCount: 1,
     cpuRequest: '500m',
     memoryRequest: '512Mi',
@@ -51,9 +51,9 @@ const mockWorkloads = [
   },
 ];
 
-const mockImages = [
-  { id: 'img-001', code: 'wordpress', registryUrl: 'ghcr.io/hosting/wordpress:latest' },
-  { id: 'img-002', code: 'node-api', registryUrl: 'ghcr.io/hosting/node-api:18' },
+const mockEntries = [
+  { id: 'entry-001', code: 'wordpress', image: 'ghcr.io/hosting/wordpress:latest', components: [{ name: 'wordpress', type: 'web', image: 'ghcr.io/hosting/wordpress:latest', ports: [{ port: 8080, protocol: 'tcp' }] }] },
+  { id: 'entry-002', code: 'node-api', image: 'ghcr.io/hosting/node-api:18', components: [{ name: 'node-api', type: 'web', image: 'ghcr.io/hosting/node-api:18', ports: [{ port: 8080, protocol: 'tcp' }] }] },
 ];
 
 // ─── Mock storage settings ──────────────────────────────────────────────────
@@ -75,24 +75,24 @@ function createMockDb(overrides: {
   client?: typeof mockClient | null;
   plan?: typeof mockPlan | null;
   domains?: typeof mockDomains;
-  workloads?: typeof mockWorkloads;
-  images?: typeof mockImages;
+  deployments?: typeof mockDeployments;
+  entries?: typeof mockEntries;
 } = {}) {
   const {
     client = mockClient,
     plan = mockPlan,
     domains = mockDomains,
-    workloads = mockWorkloads,
-    images = mockImages,
+    deployments = mockDeployments,
+    entries = mockEntries,
   } = overrides;
 
-  // Queries arrive in order: client, plan, domains, workloads, images
+  // Queries arrive in order: client, plan, domains, deployments, catalogEntries
   const selectResults: unknown[][] = [
     client ? [client] : [],
     plan ? [plan] : [],
     domains,
-    workloads,
-    images,
+    deployments,
+    entries,
   ];
 
   let selectCallIndex = 0;
@@ -217,7 +217,7 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should generate one Deployment per workload with correct image and resources', async () => {
+  it('should generate one Deployment per deployment with correct image and resources', async () => {
     const db = createMockDb();
     const result = await generateClientManifests(db, 'client-001');
 
@@ -278,7 +278,7 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should generate one Service per workload (ClusterIP, 80 -> 8080)', async () => {
+  it('should generate one Service per deployment (ClusterIP, 80 -> 8080)', async () => {
     const db = createMockDb();
     const result = await generateClientManifests(db, 'client-001');
 
@@ -411,8 +411,8 @@ describe('generateClientManifests', () => {
     expect(resources).toContain('service-api-server.yaml');
   });
 
-  it('should skip deployment/service when client has no workloads', async () => {
-    const db = createMockDb({ workloads: [], images: [] });
+  it('should skip deployment/service when client has no deployments', async () => {
+    const db = createMockDb({ deployments: [], entries: [] });
     const result = await generateClientManifests(db, 'client-001');
 
     const depFiles = result.filter(f => f.filename.startsWith('deployment-'));
@@ -477,20 +477,20 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should handle workload without container image gracefully', async () => {
-    const workloadNoImage = [
+  it('should handle deployment without catalog entry gracefully', async () => {
+    const deploymentNoEntry = [
       {
-        id: 'w1',
+        id: 'dep1',
         clientId: 'client-001',
+        catalogEntryId: 'missing-entry',
         name: 'static-site',
-        containerImageId: null,
         replicaCount: 1,
         cpuRequest: '100m',
         memoryRequest: '128Mi',
         status: 'running',
       },
     ];
-    const db = createMockDb({ workloads: workloadNoImage, images: [] });
+    const db = createMockDb({ deployments: deploymentNoEntry, entries: [] });
     const result = await generateClientManifests(db, 'client-001');
 
     // Should still generate deployment but with a placeholder image

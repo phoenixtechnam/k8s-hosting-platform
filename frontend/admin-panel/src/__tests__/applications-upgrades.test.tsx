@@ -44,7 +44,7 @@ const mockInstances = {
     {
       id: 'inst-001',
       clientId: 'client-001',
-      applicationCatalogId: 'cat-001',
+      catalogEntryId: 'cat-001',
       name: 'my-wordpress',
       domainName: 'example.com',
       configuration: null,
@@ -59,7 +59,7 @@ const mockInstances = {
     {
       id: 'inst-002',
       clientId: 'client-002',
-      applicationCatalogId: 'cat-001',
+      catalogEntryId: 'cat-001',
       name: 'blog-wordpress',
       domainName: 'blog.example.com',
       configuration: null,
@@ -78,7 +78,7 @@ const mockUpgrades = {
   data: [
     {
       id: 'upg-001',
-      instanceId: 'inst-002',
+      deploymentId: 'inst-002',
       fromVersion: '6.8',
       toVersion: '6.9',
       status: 'upgrading',
@@ -94,7 +94,7 @@ const mockUpgrades = {
     },
     {
       id: 'upg-002',
-      instanceId: 'inst-001',
+      deploymentId: 'inst-001',
       fromVersion: '6.6',
       toVersion: '6.7',
       status: 'completed',
@@ -113,7 +113,7 @@ const mockUpgrades = {
 
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn().mockImplementation((url: string) => {
-    if (url.includes('/admin/application-catalog')) return Promise.resolve(mockCatalog);
+    if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
     if (url.includes('/admin/application-instances') && !url.includes('upgrade')) return Promise.resolve(mockInstances);
     if (url.includes('/admin/application-upgrades')) return Promise.resolve(mockUpgrades);
     return Promise.resolve({ data: [] });
@@ -212,13 +212,14 @@ describe('Applications page', () => {
           data: [{
             ...mockUpgrades.data[0],
             id: 'upg-fail',
+            deploymentId: 'inst-002',
             status: 'failed',
             progressPct: -1,
             errorMessage: 'Health check failed',
           }],
         });
       }
-      if (url.includes('/admin/application-catalog')) return Promise.resolve(mockCatalog);
+      if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
       if (url.includes('/admin/application-instances')) return Promise.resolve(mockInstances);
       return Promise.resolve({ data: [] });
     });

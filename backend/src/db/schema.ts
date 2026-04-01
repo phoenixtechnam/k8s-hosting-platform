@@ -128,7 +128,7 @@ export const domains = mysqlTable('domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
   clientId: varchar('client_id', { length: 36 }).notNull(),
   domainName: varchar('domain_name', { length: 255 }).notNull(),
-  workloadId: varchar('workload_id', { length: 36 }),
+  deploymentId: varchar('deployment_id', { length: 36 }),
   status: mysqlEnum('status', ['active', 'pending', 'suspended', 'deleted']).notNull().default('pending'),
   dnsMode: mysqlEnum('dns_mode', ['primary', 'cname', 'secondary']).notNull().default('cname'),
   masterIp: varchar('master_ip', { length: 45 }),
@@ -159,20 +159,96 @@ export const dnsServers = mysqlTable('dns_servers', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 });
 
-export const workloads = mysqlTable('workloads', {
+// ─── Catalog Repositories ───
+
+export const catalogRepositories = mysqlTable('catalog_repositories', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
-  containerImageId: varchar('container_image_id', { length: 36 }),
-  replicaCount: int('replica_count').notNull().default(1),
-  cpuRequest: varchar('cpu_request', { length: 20 }).notNull().default('100m'),
-  memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('128Mi'),
-  status: mysqlEnum('status', ['running', 'stopped', 'pending', 'failed']).notNull().default('pending'),
+  url: varchar('url', { length: 500 }).notNull(),
+  branch: varchar('branch', { length: 100 }).notNull().default('main'),
+  authToken: varchar('auth_token', { length: 500 }),
+  syncIntervalMinutes: int('sync_interval_minutes').notNull().default(60),
+  lastSyncedAt: timestamp('last_synced_at'),
+  status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
+  lastError: text('last_error'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [
-  index('workloads_client_idx').on(table.clientId),
-  index('workloads_status_idx').on(table.status),
+  uniqueIndex('catalog_repos_url_unique').on(table.url),
+]);
+
+// ─── Catalog Entries ───
+
+export const catalogEntries = mysqlTable('catalog_entries', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  code: varchar('code', { length: 100 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  type: mysqlEnum('type', ['application', 'runtime', 'database', 'service']).notNull(),
+  version: varchar('version', { length: 50 }),
+  latestVersion: varchar('latest_version', { length: 50 }),
+  defaultVersion: varchar('default_version', { length: 50 }),
+  description: text('description'),
+  url: varchar('url', { length: 500 }),
+  documentation: varchar('documentation', { length: 500 }),
+  category: varchar('category', { length: 50 }),
+  minPlan: varchar('min_plan', { length: 50 }),
+  tenancy: json('tenancy').$type<string[] | null>(),
+  components: json('components').$type<Array<{ name: string; type: string; image: string; ports?: Array<{ port: number; protocol: string; ingress?: boolean }>; optional?: boolean; schedule?: string }> | null>(),
+  networking: json('networking').$type<{ ingress_ports: Array<{ port: number; protocol: string; tls: boolean; description?: string }>; host_ports?: Array<{ port: number; protocol: string; component: string; description: string }>; websocket?: boolean } | null>(),
+  volumes: json('volumes').$type<Array<{ name: string; mount_path: string; default_size: string; description?: string; optional?: boolean }> | null>(),
+  resources: json('resources').$type<{ default: { cpu: string; memory: string; storage?: string }; minimum: { cpu: string; memory: string; storage?: string } } | null>(),
+  healthCheck: json('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
+  parameters: json('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string }> | null>(),
+  tags: json('tags').$type<string[] | null>(),
+  // Runtime/database/service-specific fields
+  runtime: varchar('runtime', { length: 50 }),
+  webServer: varchar('web_server', { length: 50 }),
+  image: varchar('image', { length: 500 }),
+  hasDockerfile: int('has_dockerfile').notNull().default(0),
+  deploymentStrategy: varchar('deployment_strategy', { length: 20 }),
+  services: json('services').$type<Record<string, unknown> | null>(),
+  provides: json('provides').$type<Record<string, unknown> | null>(),
+  envVars: json('env_vars').$type<{ configurable?: string[]; generated?: string[]; fixed?: Record<string, string> } | null>(),
+  // Metadata
+  status: mysqlEnum('status', ['available', 'beta', 'deprecated']).notNull().default('available'),
+  featured: int('featured').notNull().default(0),
+  popular: int('popular').notNull().default(0),
+  sourceRepoId: varchar('source_repo_id', { length: 36 }),
+  manifestUrl: varchar('manifest_url', { length: 500 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('catalog_entries_code_repo_unique').on(table.code, table.sourceRepoId),
+  index('catalog_entries_type_idx').on(table.type),
+  index('catalog_entries_status_idx').on(table.status),
+  index('catalog_entries_category_idx').on(table.category),
+  index('catalog_entries_source_repo_idx').on(table.sourceRepoId),
+]);
+
+// ─── Deployments (replaces both workloads and application_instances) ───
+
+export const deployments = mysqlTable('deployments', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  catalogEntryId: varchar('catalog_entry_id', { length: 36 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  domainName: varchar('domain_name', { length: 255 }),
+  replicaCount: int('replica_count').notNull().default(1),
+  cpuRequest: varchar('cpu_request', { length: 20 }).notNull().default('0.25'),
+  memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('256Mi'),
+  configuration: json('configuration').$type<Record<string, unknown> | null>(),
+  helmReleaseName: varchar('helm_release_name', { length: 255 }),
+  installedVersion: varchar('installed_version', { length: 50 }),
+  targetVersion: varchar('target_version', { length: 50 }),
+  lastUpgradedAt: timestamp('last_upgraded_at'),
+  status: mysqlEnum('status', ['deploying', 'running', 'stopped', 'failed', 'deleting', 'upgrading', 'pending']).notNull().default('pending'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
+}, (table) => [
+  uniqueIndex('deployments_client_name_unique').on(table.clientId, table.name),
+  index('deployments_client_idx').on(table.clientId),
+  index('deployments_catalog_entry_idx').on(table.catalogEntryId),
+  index('deployments_status_idx').on(table.status),
 ]);
 
 // ─── Notifications ───
@@ -244,7 +320,7 @@ export const usageMetrics = mysqlTable('usage_metrics', {
   id: varchar('id', { length: 36 }).primaryKey(),
   clientId: varchar('client_id', { length: 36 }).notNull(),
   metricType: mysqlEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']).notNull(),
-  workloadId: varchar('workload_id', { length: 36 }),
+  deploymentId: varchar('deployment_id', { length: 36 }),
   value: decimal('value', { precision: 10, scale: 4 }).notNull(),
   measurementTimestamp: timestamp('measurement_timestamp').notNull().defaultNow(),
 }, (table) => [
@@ -253,55 +329,6 @@ export const usageMetrics = mysqlTable('usage_metrics', {
   index('usage_metrics_ts_idx').on(table.measurementTimestamp),
 ]);
 
-export const workloadRepositories = mysqlTable('workload_repositories', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  name: varchar('name', { length: 255 }).notNull(),
-  url: varchar('url', { length: 500 }).notNull(),
-  branch: varchar('branch', { length: 100 }).notNull().default('main'),
-  authToken: varchar('auth_token', { length: 500 }),
-  syncIntervalMinutes: int('sync_interval_minutes').notNull().default(60),
-  lastSyncedAt: timestamp('last_synced_at'),
-  status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
-  lastError: text('last_error'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
-}, (table) => [
-  uniqueIndex('workload_repos_url_unique').on(table.url),
-]);
-
-export const containerImages = mysqlTable('container_images', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  code: varchar('code', { length: 50 }).notNull(),
-  name: varchar('name', { length: 255 }).notNull(),
-  imageType: varchar('image_type', { length: 50 }).notNull(),
-  registryUrl: varchar('registry_url', { length: 500 }),
-  digest: varchar('digest', { length: 255 }),
-  supportedVersions: json('supported_versions').$type<string[]>(),
-  status: mysqlEnum('status', ['active', 'deprecated']).notNull().default('active'),
-  sourceRepoId: varchar('source_repo_id', { length: 36 }),
-  manifestUrl: varchar('manifest_url', { length: 500 }),
-  hasDockerfile: int('has_dockerfile').notNull().default(0),
-  minPlan: varchar('min_plan', { length: 50 }),
-  resourceCpu: varchar('resource_cpu', { length: 20 }),
-  resourceMemory: varchar('resource_memory', { length: 20 }),
-  resourceStorage: varchar('resource_storage', { length: 20 }),
-  envVars: json('env_vars').$type<{ configurable: string[]; fixed: Record<string, string> } | Record<string, string>[] | null>(),
-  tags: json('tags').$type<string[]>(),
-  runtime: varchar('runtime', { length: 50 }),
-  webServer: varchar('web_server', { length: 50 }),
-  deploymentStrategy: varchar('deployment_strategy', { length: 20 }),
-  containerPort: int('container_port'),
-  mountPath: varchar('mount_path', { length: 500 }),
-  healthCheck: json('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
-  services: json('services').$type<Record<string, unknown> | null>(),
-  provides: json('provides').$type<Record<string, unknown> | null>(),
-  exposes: json('exposes').$type<Record<string, unknown> | null>(),
-  version: varchar('version', { length: 50 }),
-  description: text('description'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex('container_images_code_repo_unique').on(table.code, table.sourceRepoId),
-]);
 
 // ─── Cron Jobs & Audit Tables ───
 
@@ -444,7 +471,7 @@ export const ingressRoutes = mysqlTable('ingress_routes', {
   id: varchar('id', { length: 36 }).primaryKey(),
   domainId: varchar('domain_id', { length: 36 }).notNull(),
   hostname: varchar('hostname', { length: 255 }).notNull(),
-  workloadId: varchar('workload_id', { length: 36 }),
+  deploymentId: varchar('deployment_id', { length: 36 }),
   ingressCname: varchar('ingress_cname', { length: 255 }).notNull(),
   nodeHostname: varchar('node_hostname', { length: 255 }),
   isApex: int('is_apex').notNull().default(0),
@@ -455,7 +482,7 @@ export const ingressRoutes = mysqlTable('ingress_routes', {
 }, (table) => [
   uniqueIndex('ingress_routes_hostname_unique').on(table.hostname),
   index('ingress_routes_domain_idx').on(table.domainId),
-  index('ingress_routes_workload_idx').on(table.workloadId),
+  index('ingress_routes_deployment_idx').on(table.deploymentId),
 ]);
 
 export type IngressRoute = typeof ingressRoutes.$inferSelect;
@@ -614,96 +641,16 @@ export const smtpRelayConfigs = mysqlTable('smtp_relay_configs', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 });
 
-// ─── Application Catalog ───
+// ─── Deployment Upgrades ───
 
-export const applicationRepositories = mysqlTable('application_repositories', {
+export const deploymentUpgrades = mysqlTable('deployment_upgrades', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  name: varchar('name', { length: 255 }).notNull(),
-  url: varchar('url', { length: 500 }).notNull(),
-  branch: varchar('branch', { length: 100 }).notNull().default('main'),
-  authToken: varchar('auth_token', { length: 500 }),
-  syncIntervalMinutes: int('sync_interval_minutes').notNull().default(60),
-  lastSyncedAt: timestamp('last_synced_at'),
-  status: mysqlEnum('status', ['active', 'error', 'syncing']).notNull().default('active'),
-  lastError: text('last_error'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
-}, (table) => [
-  uniqueIndex('app_repos_url_unique').on(table.url),
-]);
-
-export const applicationCatalog = mysqlTable('application_catalog', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  code: varchar('code', { length: 100 }).notNull(),
-  name: varchar('name', { length: 255 }).notNull(),
-  version: varchar('version', { length: 50 }),
-  latestVersion: varchar('latest_version', { length: 50 }),
-  defaultVersion: varchar('default_version', { length: 50 }),
-  description: text('description'),
-  url: varchar('url', { length: 500 }),
-  documentation: varchar('documentation', { length: 500 }),
-  category: varchar('category', { length: 50 }),
-  minPlan: varchar('min_plan', { length: 50 }),
-  tenancy: json('tenancy').$type<Record<string, unknown> | null>(),
-  components: json('components').$type<Record<string, unknown> | null>(),
-  networking: json('networking').$type<Record<string, unknown> | null>(),
-  volumes: json('volumes').$type<Record<string, unknown> | null>(),
-  resources: json('resources').$type<Record<string, unknown> | null>(),
-  healthCheck: json('health_check').$type<Record<string, unknown> | null>(),
-  parameters: json('parameters').$type<Record<string, unknown> | null>(),
-  tags: json('tags').$type<string[] | null>(),
-  status: mysqlEnum('status', ['available', 'beta', 'deprecated']).notNull().default('available'),
-  featured: int('featured').notNull().default(0),
-  popular: int('popular').notNull().default(0),
-  sourceRepoId: varchar('source_repo_id', { length: 36 }),
-  manifestUrl: varchar('manifest_url', { length: 500 }),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
-}, (table) => [
-  uniqueIndex('uk_app_catalog_code_repo').on(table.code, table.sourceRepoId),
-  index('idx_app_catalog_status').on(table.status),
-  index('idx_app_catalog_category').on(table.category),
-  index('idx_app_catalog_source_repo').on(table.sourceRepoId),
-]);
-
-export const applicationInstances = mysqlTable('application_instances', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
-  applicationCatalogId: varchar('application_catalog_id', { length: 36 }).notNull(),
-  name: varchar('name', { length: 255 }).notNull(),
-  domainName: varchar('domain_name', { length: 255 }),
-  configuration: json('configuration').$type<Record<string, unknown> | null>(),
-  helmReleaseName: varchar('helm_release_name', { length: 255 }),
-  installedVersion: varchar('installed_version', { length: 50 }),
-  targetVersion: varchar('target_version', { length: 50 }),
-  lastUpgradedAt: timestamp('last_upgraded_at'),
-  status: mysqlEnum('status', ['deploying', 'running', 'stopped', 'failed', 'deleting', 'upgrading']).notNull().default('deploying'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
-}, (table) => [
-  uniqueIndex('uk_client_app_name').on(table.clientId, table.name),
-  index('idx_app_instances_client').on(table.clientId),
-  index('idx_app_instances_catalog').on(table.applicationCatalogId),
-  index('idx_app_instances_status').on(table.status),
-]);
-
-// ─── Application Upgrades ───
-
-export const applicationUpgrades = mysqlTable('application_upgrades', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  instanceId: varchar('instance_id', { length: 36 }).notNull(),
+  deploymentId: varchar('deployment_id', { length: 36 }).notNull(),
   fromVersion: varchar('from_version', { length: 50 }).notNull(),
   toVersion: varchar('to_version', { length: 50 }).notNull(),
   status: mysqlEnum('status', [
-    'pending',
-    'backing_up',
-    'pre_check',
-    'upgrading',
-    'health_check',
-    'rolling_back',
-    'completed',
-    'failed',
-    'rolled_back',
+    'pending', 'backing_up', 'pre_check', 'upgrading', 'health_check',
+    'rolling_back', 'completed', 'failed', 'rolled_back',
   ]).notNull().default('pending'),
   triggeredBy: varchar('triggered_by', { length: 36 }).notNull(),
   triggerType: mysqlEnum('trigger_type', ['manual', 'batch', 'forced']).notNull().default('manual'),
@@ -717,15 +664,15 @@ export const applicationUpgrades = mysqlTable('application_upgrades', {
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  index('idx_app_upgrades_instance').on(table.instanceId, table.status),
-  index('idx_app_upgrades_status').on(table.status, table.createdAt),
+  index('idx_deploy_upgrades_deployment').on(table.deploymentId, table.status),
+  index('idx_deploy_upgrades_status').on(table.status, table.createdAt),
 ]);
 
-// ─── Application Versions ───
+// ─── Catalog Entry Versions ───
 
-export const applicationVersions = mysqlTable('application_versions', {
+export const catalogEntryVersions = mysqlTable('catalog_entry_versions', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  applicationCatalogId: varchar('application_catalog_id', { length: 36 }).notNull(),
+  catalogEntryId: varchar('catalog_entry_id', { length: 36 }).notNull(),
   version: varchar('version', { length: 50 }).notNull(),
   isDefault: int('is_default').notNull().default(0),
   eolDate: varchar('eol_date', { length: 10 }),
@@ -739,9 +686,9 @@ export const applicationVersions = mysqlTable('application_versions', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().onUpdateNow(),
 }, (table) => [
-  uniqueIndex('uk_app_version').on(table.applicationCatalogId, table.version),
-  index('idx_app_versions_catalog').on(table.applicationCatalogId),
-  index('idx_app_versions_status').on(table.applicationCatalogId, table.status),
+  uniqueIndex('uk_catalog_entry_version').on(table.catalogEntryId, table.version),
+  index('idx_catalog_versions_entry').on(table.catalogEntryId),
+  index('idx_catalog_versions_status').on(table.catalogEntryId, table.status),
 ]);
 
 // ─── SSL Certificates ───
@@ -783,14 +730,15 @@ export type Region = typeof regions.$inferSelect;
 export type Backup = typeof backups.$inferSelect;
 export type NewBackup = typeof backups.$inferInsert;
 export type UsageMetric = typeof usageMetrics.$inferSelect;
-export type ContainerImage = typeof containerImages.$inferSelect;
 export type CronJob = typeof cronJobs.$inferSelect;
 export type NewCronJob = typeof cronJobs.$inferInsert;
 export type AuditLog = typeof auditLogs.$inferSelect;
-export type Workload = typeof workloads.$inferSelect;
-export type NewWorkload = typeof workloads.$inferInsert;
-export type WorkloadRepository = typeof workloadRepositories.$inferSelect;
-export type NewWorkloadRepository = typeof workloadRepositories.$inferInsert;
+export type CatalogRepository = typeof catalogRepositories.$inferSelect;
+export type NewCatalogRepository = typeof catalogRepositories.$inferInsert;
+export type CatalogEntry = typeof catalogEntries.$inferSelect;
+export type NewCatalogEntry = typeof catalogEntries.$inferInsert;
+export type Deployment = typeof deployments.$inferSelect;
+export type NewDeployment = typeof deployments.$inferInsert;
 export type UserRole = typeof userRoles.$inferSelect;
 export type DnsRecord = typeof dnsRecords.$inferSelect;
 export type NewDnsRecord = typeof dnsRecords.$inferInsert;
@@ -810,16 +758,10 @@ export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
 export type EmailAlias = typeof emailAliases.$inferSelect;
 export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
-export type ApplicationRepository = typeof applicationRepositories.$inferSelect;
-export type NewApplicationRepository = typeof applicationRepositories.$inferInsert;
-export type ApplicationCatalogEntry = typeof applicationCatalog.$inferSelect;
-export type NewApplicationCatalogEntry = typeof applicationCatalog.$inferInsert;
-export type ApplicationInstance = typeof applicationInstances.$inferSelect;
-export type NewApplicationInstance = typeof applicationInstances.$inferInsert;
-export type ApplicationVersion = typeof applicationVersions.$inferSelect;
-export type NewApplicationVersion = typeof applicationVersions.$inferInsert;
-export type ApplicationUpgrade = typeof applicationUpgrades.$inferSelect;
-export type NewApplicationUpgrade = typeof applicationUpgrades.$inferInsert;
+export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
+export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
+export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;
+export type NewDeploymentUpgrade = typeof deploymentUpgrades.$inferInsert;
 export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type NewPlatformSetting = typeof platformSettings.$inferInsert;
 export type SslCertificate = typeof sslCertificates.$inferSelect;

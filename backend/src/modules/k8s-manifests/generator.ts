@@ -1,6 +1,6 @@
 import * as yaml from 'js-yaml';
 import { eq, inArray } from 'drizzle-orm';
-import { clients, hostingPlans, domains, workloads, containerImages } from '../../db/schema.js';
+import { clients, hostingPlans, domains, deployments, catalogEntries } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
@@ -39,19 +39,19 @@ export async function generateClientManifests(
   // Fetch domains for this client
   const clientDomains = await db.select().from(domains).where(eq(domains.clientId, clientId)) as Array<typeof domains.$inferSelect>;
 
-  // Fetch workloads for this client
-  const clientWorkloads = await db.select().from(workloads).where(eq(workloads.clientId, clientId)) as Array<typeof workloads.$inferSelect>;
+  // Fetch deployments for this client
+  const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId)) as Array<typeof deployments.$inferSelect>;
 
-  // Fetch container images for workloads that have image IDs
-  const imageIds = clientWorkloads
-    .map(w => w.containerImageId)
+  // Fetch catalog entries for deployments
+  const entryIds = clientDeployments
+    .map(d => d.catalogEntryId)
     .filter((id): id is string => id !== null);
 
-  const imageMap = new Map<string, typeof containerImages.$inferSelect>();
-  if (imageIds.length > 0) {
-    const allImages = await db.select().from(containerImages).where(inArray(containerImages.id, imageIds)) as Array<typeof containerImages.$inferSelect>;
-    for (const img of allImages) {
-      imageMap.set(img.id, img);
+  const entryMap = new Map<string, typeof catalogEntries.$inferSelect>();
+  if (entryIds.length > 0) {
+    const allEntries = await db.select().from(catalogEntries).where(inArray(catalogEntries.id, entryIds)) as Array<typeof catalogEntries.$inferSelect>;
+    for (const entry of allEntries) {
+      entryMap.set(entry.id, entry);
     }
   }
 
@@ -142,47 +142,48 @@ export async function generateClientManifests(
     },
   }));
 
-  // 5. Deployments + Services (one per workload)
-  for (const workload of clientWorkloads) {
-    const image = workload.containerImageId
-      ? imageMap.get(workload.containerImageId)
-      : undefined;
+  // 5. Deployments + Services (one per deployment)
+  for (const deployment of clientDeployments) {
+    const entry = entryMap.get(deployment.catalogEntryId);
 
-    const containerImage = image?.registryUrl ?? 'nginx:1.27-alpine';
+    // Resolve container image from catalog entry components or fallback
+    const primaryComponent = entry?.components?.[0];
+    const containerImage = primaryComponent?.image ?? entry?.image ?? 'nginx:1.27-alpine';
+    const containerPort = primaryComponent?.ports?.[0]?.port ?? 8080;
 
-    manifests.push(buildManifest(`deployment-${workload.name}.yaml`, {
+    manifests.push(buildManifest(`deployment-${deployment.name}.yaml`, {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
       metadata: {
-        name: workload.name,
+        name: deployment.name,
         namespace,
         labels: {
-          app: workload.name,
+          app: deployment.name,
         },
       },
       spec: {
-        replicas: workload.replicaCount,
+        replicas: deployment.replicaCount,
         selector: {
           matchLabels: {
-            app: workload.name,
+            app: deployment.name,
           },
         },
         template: {
           metadata: {
             labels: {
-              app: workload.name,
+              app: deployment.name,
             },
           },
           spec: {
             containers: [
               {
-                name: workload.name,
+                name: deployment.name,
                 image: containerImage,
-                ports: [{ containerPort: 8080 }],
+                ports: [{ containerPort: containerPort }],
                 resources: {
                   requests: {
-                    cpu: workload.cpuRequest,
-                    memory: workload.memoryRequest,
+                    cpu: deployment.cpuRequest,
+                    memory: deployment.memoryRequest,
                   },
                 },
               },
@@ -192,22 +193,22 @@ export async function generateClientManifests(
       },
     }));
 
-    manifests.push(buildManifest(`service-${workload.name}.yaml`, {
+    manifests.push(buildManifest(`service-${deployment.name}.yaml`, {
       apiVersion: 'v1',
       kind: 'Service',
       metadata: {
-        name: workload.name,
+        name: deployment.name,
         namespace,
       },
       spec: {
         type: 'ClusterIP',
         selector: {
-          app: workload.name,
+          app: deployment.name,
         },
         ports: [
           {
             port: 80,
-            targetPort: 8080,
+            targetPort: containerPort,
           },
         ],
       },
@@ -216,16 +217,16 @@ export async function generateClientManifests(
 
   // 6. Ingress (one per client, with rules per domain)
   if (clientDomains.length > 0) {
-    // Build a map of workloadId -> workload name for routing
-    const workloadMap = new Map<string, string>();
-    for (const w of clientWorkloads) {
-      workloadMap.set(w.id, w.name);
+    // Build a map of deploymentId -> deployment name for routing
+    const deploymentMap = new Map<string, string>();
+    for (const d of clientDeployments) {
+      deploymentMap.set(d.id, d.name);
     }
 
     const rules = clientDomains.map(domain => {
-      const serviceName = domain.workloadId
-        ? (workloadMap.get(domain.workloadId) ?? clientWorkloads[0]?.name ?? 'default')
-        : (clientWorkloads[0]?.name ?? 'default');
+      const serviceName = domain.deploymentId
+        ? (deploymentMap.get(domain.deploymentId) ?? clientDeployments[0]?.name ?? 'default')
+        : (clientDeployments[0]?.name ?? 'default');
 
       return {
         host: domain.domainName,

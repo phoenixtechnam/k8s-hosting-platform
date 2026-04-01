@@ -1,20 +1,53 @@
 /**
  * EOL Scanner Service
  *
- * Scans applicationVersions for approaching/passed EOL dates.
+ * Scans catalogEntryVersions for approaching/passed EOL dates.
  * Notifies admins, and optionally triggers forced upgrades after grace period.
  */
 
 import { eq, and, lte, isNotNull, inArray } from 'drizzle-orm';
 import {
-  applicationVersions,
-  applicationInstances,
-  applicationUpgrades,
+  catalogEntryVersions,
+  deployments,
+  deploymentUpgrades,
   platformSettings,
 } from '../../db/schema.js';
-import { createUpgradeRecord, getAvailableUpgradesForInstance } from '../application-upgrades/service.js';
 import { notifyUser } from '../notifications/service.js';
 import type { Database } from '../../db/index.js';
+
+// ─── Inline upgrade helpers (previously from application-upgrades/service) ───
+
+interface UpgradeRecordInput {
+  readonly deploymentId: string;
+  readonly fromVersion: string;
+  readonly toVersion: string;
+  readonly triggeredBy: string;
+  readonly triggerType: 'manual' | 'batch' | 'forced';
+}
+
+function createUpgradeRecord(input: UpgradeRecordInput) {
+  return {
+    id: crypto.randomUUID(),
+    deploymentId: input.deploymentId,
+    fromVersion: input.fromVersion,
+    toVersion: input.toVersion,
+    triggeredBy: input.triggeredBy,
+    triggerType: input.triggerType,
+    status: 'pending' as const,
+    progressPct: 0,
+  };
+}
+
+function getAvailableUpgradesForDeployment(
+  currentVersion: string,
+  allVersions: Array<{ version: string; status: string; upgradeFrom?: string[] | readonly string[] | null }>,
+) {
+  return allVersions.filter(v => {
+    if (v.version === currentVersion) return false;
+    if (v.upgradeFrom && !v.upgradeFrom.includes(currentVersion)) return false;
+    return true;
+  });
+}
 
 // ─── Settings Keys ──────────────────────────────────────────────────────────
 
@@ -105,15 +138,15 @@ export async function runEolScan(
   // Find versions approaching EOL (eolDate <= warningThreshold AND eolDate > now)
   const approachingEol = await db
     .select()
-    .from(applicationVersions)
+    .from(catalogEntryVersions)
     .where(
       and(
-        isNotNull(applicationVersions.eolDate),
-        lte(applicationVersions.eolDate, warningThreshold.toISOString().split('T')[0]),
+        isNotNull(catalogEntryVersions.eolDate),
+        lte(catalogEntryVersions.eolDate, warningThreshold.toISOString().split('T')[0]),
       ),
     );
 
-  // Find instances on approaching-EOL versions
+  // Find deployments on approaching-EOL versions
   for (const version of approachingEol) {
     const eolDate = version.eolDate ? new Date(version.eolDate) : null;
     if (!eolDate) continue;
@@ -121,38 +154,38 @@ export async function runEolScan(
     const isPastEol = eolDate <= now;
     const isPastGrace = eolDate <= forceThreshold;
 
-    // Find all instances on this version
-    const instances = await db
+    // Find all deployments on this version
+    const affectedDeployments = await db
       .select()
-      .from(applicationInstances)
+      .from(deployments)
       .where(
         and(
-          eq(applicationInstances.applicationCatalogId, version.applicationCatalogId),
-          eq(applicationInstances.installedVersion, version.version),
+          eq(deployments.catalogEntryId, version.catalogEntryId),
+          eq(deployments.installedVersion, version.version),
         ),
       );
 
-    if (instances.length === 0) continue;
+    if (affectedDeployments.length === 0) continue;
 
     // Get all versions for upgrade path resolution
     const allVersions = await db
       .select()
-      .from(applicationVersions)
-      .where(eq(applicationVersions.applicationCatalogId, version.applicationCatalogId));
+      .from(catalogEntryVersions)
+      .where(eq(catalogEntryVersions.catalogEntryId, version.catalogEntryId));
 
-    for (const instance of instances) {
-      // Skip instances that are not running or already upgrading
-      if (instance.status !== 'running') continue;
-      if (instance.targetVersion) continue;
+    for (const deployment of affectedDeployments) {
+      // Skip deployments that are not running or already upgrading
+      if (deployment.status !== 'running') continue;
+      if (deployment.targetVersion) continue;
 
       // Check for active upgrades
       const [activeUpgrade] = await db
-        .select({ id: applicationUpgrades.id })
-        .from(applicationUpgrades)
+        .select({ id: deploymentUpgrades.id })
+        .from(deploymentUpgrades)
         .where(
           and(
-            eq(applicationUpgrades.instanceId, instance.id),
-            inArray(applicationUpgrades.status, ['pending', 'backing_up', 'pre_check', 'upgrading', 'health_check', 'rolling_back']),
+            eq(deploymentUpgrades.deploymentId, deployment.id),
+            inArray(deploymentUpgrades.status, ['pending', 'backing_up', 'pre_check', 'upgrading', 'health_check', 'rolling_back']),
           ),
         );
 
@@ -160,24 +193,24 @@ export async function runEolScan(
 
       if (isPastGrace && settings.autoUpgradeEnabled) {
         // Force upgrade: find best available upgrade
-        const available = getAvailableUpgradesForInstance(instance.installedVersion, allVersions);
+        const available = getAvailableUpgradesForDeployment(deployment.installedVersion!, allVersions);
         const target = available.find(v => v.status !== 'eol') ?? available[0];
 
         if (target) {
           try {
             const record = createUpgradeRecord({
-              instanceId: instance.id,
-              fromVersion: instance.installedVersion!,
+              deploymentId: deployment.id,
+              fromVersion: deployment.installedVersion!,
               toVersion: target.version,
               triggeredBy: adminUserId,
               triggerType: 'forced',
             });
 
-            await db.insert(applicationUpgrades).values(record);
+            await db.insert(deploymentUpgrades).values(record);
             await db
-              .update(applicationInstances)
+              .update(deployments)
               .set({ targetVersion: target.version })
-              .where(eq(applicationInstances.id, instance.id));
+              .where(eq(deployments.id, deployment.id));
 
             forcedUpgradesTriggered++;
 
@@ -185,15 +218,15 @@ export async function runEolScan(
             await notifyUser(db, adminUserId, {
               type: 'warning',
               title: 'Forced Upgrade Triggered',
-              message: `Instance '${instance.name}' auto-upgraded from v${instance.installedVersion} to v${target.version} (EOL passed + grace period expired)`,
-              resourceType: 'application_instance',
-              resourceId: instance.id,
+              message: `Deployment '${deployment.name}' auto-upgraded from v${deployment.installedVersion} to v${target.version} (EOL passed + grace period expired)`,
+              resourceType: 'deployment',
+              resourceId: deployment.id,
             });
           } catch (err) {
-            errors.push(`Failed to force-upgrade instance '${instance.name}': ${err instanceof Error ? err.message : String(err)}`);
+            errors.push(`Failed to force-upgrade deployment '${deployment.name}': ${err instanceof Error ? err.message : String(err)}`);
           }
         } else {
-          errors.push(`No upgrade target found for instance '${instance.name}' on EOL version v${version.version}`);
+          errors.push(`No upgrade target found for deployment '${deployment.name}' on EOL version v${version.version}`);
         }
       } else if (isPastEol) {
         // EOL passed but still in grace period → warning
@@ -201,9 +234,9 @@ export async function runEolScan(
         await notifyUser(db, adminUserId, {
           type: 'warning',
           title: 'Version EOL - Grace Period',
-          message: `Instance '${instance.name}' is running EOL version v${version.version}. ${settings.autoUpgradeEnabled ? `Auto-upgrade in ${daysUntilForce} days.` : 'Manual upgrade required.'}`,
-          resourceType: 'application_instance',
-          resourceId: instance.id,
+          message: `Deployment '${deployment.name}' is running EOL version v${version.version}. ${settings.autoUpgradeEnabled ? `Auto-upgrade in ${daysUntilForce} days.` : 'Manual upgrade required.'}`,
+          resourceType: 'deployment',
+          resourceId: deployment.id,
         });
         warningsSent++;
       } else {
@@ -212,9 +245,9 @@ export async function runEolScan(
         await notifyUser(db, adminUserId, {
           type: 'info',
           title: 'Version Approaching EOL',
-          message: `Instance '${instance.name}' is running v${version.version} which reaches EOL in ${daysUntilEol} days (${version.eolDate}).`,
-          resourceType: 'application_instance',
-          resourceId: instance.id,
+          message: `Deployment '${deployment.name}' is running v${version.version} which reaches EOL in ${daysUntilEol} days (${version.eolDate}).`,
+          resourceType: 'deployment',
+          resourceId: deployment.id,
         });
         warningsSent++;
       }

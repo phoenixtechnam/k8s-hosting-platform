@@ -39,7 +39,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
     domainName: input.domain_name,
     dnsMode: input.dns_mode,
     masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
-    workloadId: input.workload_id ?? null,
+    deploymentId: input.workload_id ?? null,
     status: 'pending',
   });
 
@@ -220,7 +220,7 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
   if (input.dns_mode !== undefined) updateValues.dnsMode = input.dns_mode;
   if (input.ssl_auto_renew !== undefined) updateValues.sslAutoRenew = input.ssl_auto_renew ? 1 : 0;
   if (input.status !== undefined) updateValues.status = input.status;
-  if (input.workload_id !== undefined) updateValues.workloadId = input.workload_id;
+  if (input.workload_id !== undefined) updateValues.deploymentId = input.workload_id;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(domains).set(updateValues).where(eq(domains.id, domainId));

@@ -3,10 +3,10 @@ import { domainToSecretName } from '../ssl-certs/cert-manager.js';
 
 describe('k8s-ingress reconciler', () => {
   describe('Ingress spec construction', () => {
-    it('should build correct rule for domain-to-workload mapping', () => {
-      const domain = { domainName: 'example.com', workloadId: 'w1' };
-      const workloadMap = new Map([['w1', 'web-app']]);
-      const serviceName = workloadMap.get(domain.workloadId!) ?? 'default';
+    it('should build correct rule for domain-to-deployment mapping', () => {
+      const domain = { domainName: 'example.com', deploymentId: 'dep1' };
+      const deploymentMap = new Map([['dep1', 'web-app']]);
+      const serviceName = deploymentMap.get(domain.deploymentId!) ?? 'default';
 
       const rule = {
         host: domain.domainName,
@@ -25,17 +25,17 @@ describe('k8s-ingress reconciler', () => {
       expect(rule.http.paths[0].backend.service.name).toBe('web-app');
     });
 
-    it('should fallback to first workload when domain has no workloadId', () => {
-      const domain = { domainName: 'blog.example.com', workloadId: null };
-      const firstWorkload = 'api-server';
-      const serviceName = domain.workloadId
+    it('should fallback to first deployment when domain has no deploymentId', () => {
+      const domain = { domainName: 'blog.example.com', deploymentId: null };
+      const firstDeployment = 'api-server';
+      const serviceName = domain.deploymentId
         ? 'should-not-be-used'
-        : firstWorkload;
+        : firstDeployment;
 
       expect(serviceName).toBe('api-server');
     });
 
-    it('should fallback to default when no workloads exist', () => {
+    it('should fallback to default when no deployments exist', () => {
       const serviceName = null ?? 'default';
       expect(serviceName).toBe('default');
     });

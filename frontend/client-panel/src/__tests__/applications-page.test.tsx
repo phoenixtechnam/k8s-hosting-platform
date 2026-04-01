@@ -25,14 +25,13 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
-vi.mock('../hooks/use-workloads', () => ({
-  useWorkloads: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
-  useContainerImages: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
-  useUpdateWorkload: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+vi.mock('../hooks/use-deployments', () => ({
+  useDeployments: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useUpdateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock('../hooks/use-application-catalog', () => ({
-  useApplicationCatalog: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false, error: null })),
+vi.mock('../hooks/use-catalog', () => ({
+  useCatalog: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false, error: null })),
 }));
 
 function createTestQueryClient() {

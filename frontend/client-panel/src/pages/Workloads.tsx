@@ -2,11 +2,12 @@ import { useState, useMemo, type FormEvent } from 'react';
 import { Server, Container, Search, Loader2, AlertCircle, Plus, Trash2, X, Play, Square, Cpu, Heart, Settings2, Rocket } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useWorkloads, useContainerImages, useCreateWorkload, useUpdateWorkload, useDeleteWorkload } from '@/hooks/use-workloads';
+import { useCatalog } from '@/hooks/use-catalog';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
-import type { ContainerImageResponse } from '@/types/api';
+import type { CatalogEntry } from '@/types/api';
 
 type Tab = 'available' | 'deployed';
 
@@ -87,8 +88,8 @@ function asHealthCheck(val: unknown): HealthCheckData {
 
 function AvailableTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void }) {
   const [search, setSearch] = useState('');
-  const [selectedImage, setSelectedImage] = useState<ContainerImageResponse | null>(null);
-  const { data: response, isLoading, isError, error } = useContainerImages();
+  const [selectedImage, setSelectedImage] = useState<CatalogEntry | null>(null);
+  const { data: response, isLoading, isError, error } = useCatalog();
 
   const images = response?.data ?? [];
 
@@ -170,7 +171,7 @@ function AvailableTab({ onDeploy }: { readonly onDeploy: (imageId: string) => vo
                           )}
                         </div>
                       </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{image.imageType}</td>
+                      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{image.type}</td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">{image.version ?? '-'}</td>
                       <td className="px-5 py-3.5">
                         <span className={clsx(
@@ -219,8 +220,8 @@ function SectionHeading({ icon: Icon, title }: { readonly icon: React.ElementTyp
   );
 }
 
-function ExposesSection({ image }: { readonly image: ContainerImageResponse }) {
-  const exposes = image.exposes as { ports?: { port: number; protocol: string; name: string; publishable: boolean }[]; volumes?: { description: string; local_path: string; container_path: string }[]; env_vars?: { configurable?: string[]; generated?: string[]; fixed?: Record<string, string> }; services?: Record<string, { engine?: string; version?: string; protocol?: string }> } | null | undefined;
+function ExposesSection({ image }: { readonly image: CatalogEntry }) {
+  const exposes = image.provides as { ports?: { port: number; protocol: string; name: string; publishable: boolean }[]; volumes?: { description: string; local_path: string; container_path: string }[]; env_vars?: { configurable?: string[]; generated?: string[]; fixed?: Record<string, string> }; services?: Record<string, { engine?: string; version?: string; protocol?: string }> } | null | undefined;
   if (!exposes) return null;
 
   return (
@@ -308,7 +309,7 @@ function WorkloadDetailPanel({
   onClose,
   onDeploy,
 }: {
-  readonly image: ContainerImageResponse;
+  readonly image: CatalogEntry;
   readonly onClose: () => void;
   readonly onDeploy: (imageId: string) => void;
 }) {
@@ -344,7 +345,7 @@ function WorkloadDetailPanel({
                 </p>
               </div>
               <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-3 py-1 text-xs font-medium text-purple-700 dark:text-purple-300">
-                {image.imageType}
+                {image.type}
               </span>
             </div>
             {image.description && (
@@ -363,10 +364,10 @@ function WorkloadDetailPanel({
           <div>
             <SectionHeading icon={Cpu} title="Resource Requirements" />
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceCpu ?? 'Default'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resourceMemory ?? 'Default'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">CPU</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resources?.default?.cpu ?? 'Default'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Memory</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.resources?.default?.memory ?? 'Default'}</p></div>
               <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Min Plan</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.minPlan ?? 'Any'}</p></div>
-              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.containerPort ?? '-'}</p></div>
+              <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Container Port</span><p className="text-sm text-gray-900 dark:text-gray-100">-</p></div>
             </div>
           </div>
 
@@ -385,7 +386,7 @@ function WorkloadDetailPanel({
                 <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Runtime</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.runtime ?? '-'}</p></div>
                 <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Web Server</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.webServer ?? '-'}</p></div>
                 <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Deploy Strategy</span><p className="text-sm text-gray-900 dark:text-gray-100">{image.deploymentStrategy ?? '-'}</p></div>
-                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">{image.mountPath ?? '-'}</p></div>
+                <div><span className="text-xs font-medium text-gray-500 dark:text-gray-400">Mount Path</span><p className="text-sm font-mono text-gray-900 dark:text-gray-100">-</p></div>
               </div>
 
               {/* Health Check */}
@@ -465,9 +466,9 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 
 function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
-  const { data: response, isLoading, isError, error } = useWorkloads(clientId ?? undefined);
-  const updateWorkload = useUpdateWorkload(clientId ?? undefined);
-  const deleteWorkload = useDeleteWorkload(clientId ?? undefined);
+  const { data: response, isLoading, isError, error } = useDeployments(clientId ?? undefined);
+  const updateDeployment = useUpdateDeployment(clientId ?? undefined);
+  const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
 
   const workloadsRaw = response?.data ?? [];
   const { sortedData: workloads, sortKey: wlSortKey, sortDirection: wlSortDir, onSort: onWlSort } = useSortable(workloadsRaw, 'name');
@@ -475,8 +476,8 @@ function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
-    try { await deleteWorkload.mutateAsync(id); setDeleteConfirmId(null); }
-    catch { /* error via deleteWorkload.error */ }
+    try { await deleteDeployment.mutateAsync(id); setDeleteConfirmId(null); }
+    catch { /* error via deleteDeployment.error */ }
   };
 
   return (
@@ -540,7 +541,7 @@ function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       <div className="inline-flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => updateWorkload.mutate({ workloadId: w.id, status: w.status === 'running' ? 'stopped' : 'running' })}
+                          onClick={() => updateDeployment.mutate({ deploymentId: w.id, status: w.status === 'running' ? 'stopped' : 'running' })}
                           disabled={w.status === 'pending' || w.status === 'failed'}
                           className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                           title={w.status === 'running' ? 'Stop' : 'Start'}
@@ -550,7 +551,7 @@ function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
                         </button>
                         {deleteConfirmId === w.id ? (
                           <>
-                            <button type="button" onClick={() => handleDelete(w.id)} disabled={deleteWorkload.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-wl-${w.id}`}>Confirm</button>
+                            <button type="button" onClick={() => handleDelete(w.id)} disabled={deleteDeployment.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-wl-${w.id}`}>Confirm</button>
                             <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                           </>
                         ) : (

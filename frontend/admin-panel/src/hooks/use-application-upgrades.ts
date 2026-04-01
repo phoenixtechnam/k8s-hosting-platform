@@ -2,10 +2,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import type {
-  ApplicationUpgradeResponse,
-  AvailableUpgrade,
-  ApplicationInstanceResponse,
+  DeploymentUpgradeResponse,
+  CatalogEntryVersionResponse,
+  DeploymentResponse,
 } from '@k8s-hosting/api-contracts';
+
+type ApplicationUpgradeResponse = DeploymentUpgradeResponse;
+type AvailableUpgrade = CatalogEntryVersionResponse;
+type ApplicationInstanceResponse = DeploymentResponse;
 
 // ─── Response wrappers ──────────────────────────────────────────────────────
 

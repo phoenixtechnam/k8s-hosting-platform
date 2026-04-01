@@ -9,7 +9,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
-import { useWorkloads } from '@/hooks/use-workloads';
+import { useDeployments } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useHostingSettings, useUpdateHostingSettings } from '@/hooks/use-hosting-settings';
@@ -144,7 +144,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   readonly dnsMode: string;
 }) {
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
-  const { data: workloadsData } = useWorkloads(clientId);
+  const { data: deploymentsData } = useDeployments(clientId);
   const createRoute = useCreateIngressRoute(clientId, domainId);
   const updateRoute = useUpdateIngressRoute(clientId, domainId);
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
@@ -152,7 +152,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const [newHostname, setNewHostname] = useState('');
 
   const routes = routesData?.data ?? [];
-  const workloads = workloadsData?.data ?? [];
+  const deployments = deploymentsData?.data ?? [];
 
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
@@ -162,8 +162,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     });
   };
 
-  const handleAssignWorkload = (routeId: string, workloadId: string | null) => {
-    updateRoute.mutate({ routeId, workload_id: workloadId });
+  const handleAssignDeployment = (routeId: string, deploymentId: string | null) => {
+    updateRoute.mutate({ routeId, deployment_id: deploymentId });
   };
 
   const isCname = dnsMode === 'cname';
@@ -174,13 +174,13 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       {/* Explanation */}
       <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
         {isCname && (
-          <p>This is a <strong>CNAME domain</strong>. Add a route and assign a workload. The client points their DNS to the platform's ingress hostname.</p>
+          <p>This is a <strong>CNAME domain</strong>. Add a route and assign a deployment. The client points their DNS to the platform's ingress hostname.</p>
         )}
         {dnsMode === 'primary' && (
           <p>This is a <strong>Primary DNS domain</strong>. Add routes for hostnames (apex or subdomains). For subdomains, a CNAME record is auto-created. For the apex, A/AAAA records point to the platform ingress.</p>
         )}
         {isSecondary && (
-          <p>This is a <strong>Secondary DNS domain</strong> (read-only zone). Add routes for hostnames that resolve to the platform ingress, then assign workloads.</p>
+          <p>This is a <strong>Secondary DNS domain</strong> (read-only zone). Add routes for hostnames that resolve to the platform ingress, then assign deployments.</p>
         )}
       </div>
 
@@ -201,7 +201,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Hostname</th>
                 <th className="px-4 py-3">CNAME Target</th>
-                <th className="px-4 py-3">Workload</th>
+                <th className="px-4 py-3">Deployment</th>
                 <th className="px-4 py-3">TLS</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3"></th>
@@ -223,14 +223,14 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                   </td>
                   <td className="px-4 py-3">
                     <select
-                      value={route.workloadId ?? ''}
-                      onChange={(e) => handleAssignWorkload(route.id, e.target.value || null)}
+                      value={route.deploymentId ?? ''}
+                      onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
                       className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none"
-                      data-testid={`route-workload-${route.id}`}
+                      data-testid={`route-deployment-${route.id}`}
                     >
                       <option value="">Not assigned</option>
-                      {workloads.map((w) => (
-                        <option key={w.id} value={w.id}>{w.name} ({w.status})</option>
+                      {deployments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
                       ))}
                     </select>
                   </td>

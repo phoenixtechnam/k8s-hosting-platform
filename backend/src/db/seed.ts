@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, users, workloadRepositories, applicationRepositories } from './schema.js';
+import { rbacRoles, regions, hostingPlans, users, catalogRepositories } from './schema.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -39,7 +39,7 @@ await db.insert(hostingPlans).values([
 ]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
 console.log('  Seeded hosting plans');
 
-// Container images are populated by syncing workload catalog repositories — no built-in seed.
+// Catalog entries are populated by syncing catalog repositories — no built-in seed.
 
 // Default admin user
 const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';
@@ -63,27 +63,16 @@ await db.insert(users).values([
 ]).onDuplicateKeyUpdate({ set: { fullName: sql`VALUES(full_name)` } });
 console.log(`  Seeded default admin user (${adminEmail})`);
 
-// Workload Repositories
-await db.insert(workloadRepositories).values([{
+// Catalog Repositories (unified — workloads + applications)
+await db.insert(catalogRepositories).values([{
   id: crypto.randomUUID(),
   name: 'Official Catalog',
-  url: 'https://github.com/phoenixtechnam/hosting-platform-workload-catalog',
+  url: 'https://github.com/phoenixtechnam/k8s-application-catalog',
   branch: 'main',
   syncIntervalMinutes: 60,
   status: 'active',
 }]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
-console.log('  Seeded workload repositories');
-
-// Application Repositories (separate repo from workloads — managed stacks like WordPress, Nextcloud)
-await db.insert(applicationRepositories).values([{
-  id: crypto.randomUUID(),
-  name: 'Official Application Catalog',
-  url: 'https://github.com/phoenixtechnam/hosting-platform-application-catalog',
-  branch: 'main',
-  syncIntervalMinutes: 60,
-  status: 'active',
-}]).onDuplicateKeyUpdate({ set: { name: sql`VALUES(name)` } });
-console.log('  Seeded application repositories');
+console.log('  Seeded catalog repositories');
 
 console.log('Seed complete.');
 await closeDb();

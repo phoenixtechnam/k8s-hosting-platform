@@ -2,12 +2,12 @@
  * Ingress reconciler.
  *
  * Builds Ingress resources from ingress_routes table.
- * Each route with an assigned workload becomes an Ingress rule.
+ * Each route with an assigned deployment becomes an Ingress rule.
  * Applies cert-manager TLS annotations when auto-TLS is enabled.
  */
 
 import { eq } from 'drizzle-orm';
-import { ingressRoutes, workloads, domains } from '../../db/schema.js';
+import { ingressRoutes, deployments, domains } from '../../db/schema.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
 import { createRoute } from '../ingress-routes/service.js';
@@ -32,7 +32,7 @@ function isK8s409(err: unknown): boolean {
 
 /**
  * Reconcile the Ingress resource for a client namespace.
- * Builds rules from ingress_routes that have workloads assigned.
+ * Builds rules from ingress_routes that have deployments assigned.
  * If no routable routes exist, deletes the Ingress.
  */
 export async function reconcileIngress(
@@ -56,20 +56,20 @@ export async function reconcileIngress(
     return;
   }
 
-  // Get all ingress routes with assigned workloads for this client's domains
+  // Get all ingress routes with assigned deployments for this client's domains
   const allRoutes = await db.select().from(ingressRoutes);
   const clientRoutes = allRoutes.filter(
-    r => domainIds.includes(r.domainId) && r.workloadId && r.status === 'active',
+    r => domainIds.includes(r.domainId) && r.deploymentId && r.status === 'active',
   );
 
-  // Auto-migrate: create ingress_routes for legacy domains with workloadId
+  // Auto-migrate: create ingress_routes for legacy domains with deploymentId
   for (const domain of clientDomains) {
-    if (!domain.workloadId) continue;
+    if (!domain.deploymentId) continue;
     const alreadyRouted = clientRoutes.some(r => r.hostname === domain.domainName);
     if (alreadyRouted) continue;
 
     try {
-      await createRoute(db, domain.id, clientId, domain.domainName, domain.workloadId);
+      await createRoute(db, domain.id, clientId, domain.domainName, domain.deploymentId);
     } catch {
       // Route already exists or creation failed — continue
     }
@@ -78,7 +78,7 @@ export async function reconcileIngress(
   // Re-fetch routes after migration
   const updatedAllRoutes = await db.select().from(ingressRoutes);
   const updatedRoutes = updatedAllRoutes.filter(
-    r => domainIds.includes(r.domainId) && r.workloadId && r.status === 'active',
+    r => domainIds.includes(r.domainId) && r.deploymentId && r.status === 'active',
   );
 
   if (updatedRoutes.length === 0) {
@@ -90,17 +90,17 @@ export async function reconcileIngress(
     return;
   }
 
-  // Build workload name lookup
-  const clientWorkloads = await db.select().from(workloads).where(eq(workloads.clientId, clientId));
-  const workloadMap = new Map<string, string>();
-  for (const w of clientWorkloads) {
-    workloadMap.set(w.id, w.name);
+  // Build deployment name lookup
+  const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId));
+  const deploymentMap = new Map<string, string>();
+  for (const d of clientDeployments) {
+    deploymentMap.set(d.id, d.name);
   }
 
   // Build rules from ingress_routes (single source of truth)
   const rules = updatedRoutes
     .map(route => {
-      const serviceName = workloadMap.get(route.workloadId!);
+      const serviceName = deploymentMap.get(route.deploymentId!);
       if (!serviceName) return null;
 
       return {

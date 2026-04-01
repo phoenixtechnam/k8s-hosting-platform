@@ -1,9 +1,10 @@
 import { useState, useMemo, type FormEvent } from 'react';
 import { X, Loader2, Search, Rocket, Globe } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useContainerImages, useCreateWorkload } from '@/hooks/use-workloads';
+import { useCatalog } from '@/hooks/use-catalog';
+import { useCreateDeployment } from '@/hooks/use-deployments';
 import { useDomains } from '@/hooks/use-domains';
-import type { ContainerImageResponse } from '@k8s-hosting/api-contracts';
+import type { CatalogEntry } from '@/types/api';
 
 interface DeployWorkloadModalProps {
   readonly open: boolean;
@@ -16,9 +17,9 @@ const INPUT_CLASS =
 
 export default function DeployWorkloadModal({ open, onClose, preSelectedImageId }: DeployWorkloadModalProps) {
   const { clientId } = useClientContext();
-  const { data: imagesData } = useContainerImages();
+  const { data: catalogData } = useCatalog();
   const { data: domainsData } = useDomains(clientId ?? undefined);
-  const createWorkload = useCreateWorkload(clientId ?? undefined);
+  const createDeployment = useCreateDeployment(clientId ?? undefined);
 
   const [imageSearch, setImageSearch] = useState('');
   const [selectedImageId, setSelectedImageId] = useState<string>(preSelectedImageId ?? '');
@@ -28,7 +29,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
   const [memoryRequest, setMemoryRequest] = useState('128Mi');
   const [selectedDomainId, setSelectedDomainId] = useState<string>('');
 
-  const images = imagesData?.data ?? [];
+  const images = catalogData?.data ?? [];
   const domains = domainsData?.data ?? [];
 
   // Set name from image when selected
@@ -42,14 +43,14 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
     );
   }, [images, imageSearch]);
 
-  const handleSelectImage = (img: ContainerImageResponse) => {
+  const handleSelectImage = (img: CatalogEntry) => {
     setSelectedImageId(img.id);
     if (!name) {
       setName(img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50));
     }
     // Pre-fill resources from image metadata
-    if (img.resourceCpu) setCpuRequest(img.resourceCpu);
-    if (img.resourceMemory) setMemoryRequest(img.resourceMemory);
+    if (img.resources?.default?.cpu) setCpuRequest(img.resources.default.cpu);
+    if (img.resources?.default?.memory) setMemoryRequest(img.resources.default.memory);
   };
 
   const resetForm = () => {
@@ -60,7 +61,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
     setCpuRequest('100m');
     setMemoryRequest('128Mi');
     setSelectedDomainId('');
-    createWorkload.reset();
+    createDeployment.reset();
   };
 
   const handleClose = () => {
@@ -73,15 +74,15 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
     if (!selectedImageId || !name) return;
 
     try {
-      await createWorkload.mutateAsync({
+      await createDeployment.mutateAsync({
         name,
-        image_id: selectedImageId,
+        catalog_entry_id: selectedImageId,
         replica_count: replicas,
         cpu_request: cpuRequest,
         memory_request: memoryRequest,
       });
-      // TODO: If selectedDomainId is set, create ingress route after workload creation
-      // This requires the workload ID from the response + domain route creation
+      // TODO: If selectedDomainId is set, create ingress route after deployment creation
+      // This requires the deployment ID from the response + domain route creation
       handleClose();
     } catch {
       // error shown in modal
@@ -151,7 +152,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
                       >
                         <div>
                           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{img.name}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{img.imageType} {img.version ? `· v${img.version}` : ''}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{img.type} {img.version ? `· v${img.version}` : ''}</p>
                         </div>
                         <span className="text-xs text-gray-400">{img.code}</span>
                       </button>
@@ -252,9 +253,9 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
             </div>
           )}
 
-          {createWorkload.error && (
+          {createDeployment.error && (
             <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-              {createWorkload.error instanceof Error ? createWorkload.error.message : 'Deployment failed'}
+              {createDeployment.error instanceof Error ? createDeployment.error.message : 'Deployment failed'}
             </div>
           )}
 
@@ -269,11 +270,11 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
             </button>
             <button
               type="submit"
-              disabled={!selectedImageId || !name || createWorkload.isPending}
+              disabled={!selectedImageId || !name || createDeployment.isPending}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >
-              {createWorkload.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+              {createDeployment.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
               Deploy
             </button>
           </div>

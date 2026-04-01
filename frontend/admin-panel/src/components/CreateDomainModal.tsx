@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { useCreateDomain } from '@/hooks/use-domains';
-import { useWorkloads } from '@/hooks/use-workloads';
+import { useDeployments } from '@/hooks/use-deployments';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 
 interface CreateDomainModalProps {
@@ -13,19 +13,19 @@ interface CreateDomainModalProps {
 export default function CreateDomainModal({ open, onClose, clientId }: CreateDomainModalProps) {
   const [domainName, setDomainName] = useState('');
   const [dnsMode, setDnsMode] = useState<'cname' | 'primary' | 'secondary'>('cname');
-  const [workloadId, setWorkloadId] = useState<string>('');
+  const [deploymentId, setDeploymentId] = useState<string>('');
   const [internalClientId, setInternalClientId] = useState<string | null>(clientId ?? null);
 
   const effectiveClientId = clientId ?? internalClientId;
 
   const createDomain = useCreateDomain(effectiveClientId ?? undefined);
-  const { data: workloadsResponse } = useWorkloads(effectiveClientId ?? undefined);
-  const workloads = workloadsResponse?.data ?? [];
+  const { data: deploymentsResponse } = useDeployments(effectiveClientId ?? undefined);
+  const deployments = deploymentsResponse?.data ?? [];
 
   const resetForm = () => {
     setDomainName('');
     setDnsMode('cname');
-    setWorkloadId('');
+    setDeploymentId('');
     if (!clientId) {
       setInternalClientId(null);
     }
@@ -44,7 +44,7 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
       await createDomain.mutateAsync({
         domain_name: domainName,
         dns_mode: dnsMode,
-        ...(workloadId ? { workload_id: workloadId } : {}),
+        ...(deploymentId ? { deployment_id: deploymentId } : {}),
       });
       handleClose();
     } catch {
@@ -125,32 +125,32 @@ export default function CreateDomainModal({ open, onClose, clientId }: CreateDom
 
           {effectiveClientId && (
             <div>
-              <label htmlFor="workload-id" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Route to Workload
+              <label htmlFor="deployment-id" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Route to Deployment
               </label>
-              {workloads.length > 0 ? (
+              {deployments.length > 0 ? (
                 <>
                   <select
-                    id="workload-id"
-                    value={workloadId}
-                    onChange={(e) => setWorkloadId(e.target.value)}
+                    id="deployment-id"
+                    value={deploymentId}
+                    onChange={(e) => setDeploymentId(e.target.value)}
                     className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                    data-testid="workload-select"
+                    data-testid="deployment-select"
                   >
                     <option value="">None (assign later)</option>
-                    {workloads.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} ({w.status})
+                    {deployments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.status})
                       </option>
                     ))}
                   </select>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Links this domain to a workload for Ingress routing. Creates the Ingress + TLS certificate automatically.
+                    Links this domain to a deployment for Ingress routing. Creates the Ingress + TLS certificate automatically.
                   </p>
                 </>
               ) : (
-                <p className="mt-1 text-sm text-gray-400 dark:text-gray-500 italic" data-testid="no-workloads-message">
-                  No Apps or Workloads deployed yet. You can assign a workload later from the Routing tab.
+                <p className="mt-1 text-sm text-gray-400 dark:text-gray-500 italic" data-testid="no-deployments-message">
+                  No deployments active yet. You can assign a deployment later from the Routing tab.
                 </p>
               )}
             </div>

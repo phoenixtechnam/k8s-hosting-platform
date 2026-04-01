@@ -59,8 +59,8 @@ describe('Admin Settings page', () => {
     expect(screen.queryByTestId('change-password-section')).not.toBeInTheDocument();
   });
 
-  it('does not show Workload Repositories section (moved to Workloads page)', () => {
+  it('does not show Catalog Repositories section (moved to Workloads page)', () => {
     render(<Settings />, { wrapper: createWrapper() });
-    expect(screen.queryByTestId('workload-repos-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('catalog-repos-section')).not.toBeInTheDocument();
   });
 });

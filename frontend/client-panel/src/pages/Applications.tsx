@@ -1,11 +1,10 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, History } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useWorkloads, useContainerImages, useUpdateWorkload } from '@/hooks/use-workloads';
-import { useApplicationCatalog } from '@/hooks/use-application-catalog';
-import { useApplicationInstances, useClientUpgradeHistory } from '@/hooks/use-application-instances';
-import type { ApplicationCatalogResponse } from '@k8s-hosting/api-contracts';
+import { useCatalog } from '@/hooks/use-catalog';
+import { useDeployments, useUpdateDeployment } from '@/hooks/use-deployments';
+import type { CatalogEntry } from '@/types/api';
 
 type Tab = 'available' | 'installed';
 
@@ -172,8 +171,8 @@ function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | n
 function AvailableTab() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [selectedEntry, setSelectedEntry] = useState<ApplicationCatalogResponse | null>(null);
-  const { data: response, isLoading, isError, error } = useApplicationCatalog();
+  const [selectedEntry, setSelectedEntry] = useState<CatalogEntry | null>(null);
+  const { data: response, isLoading, isError, error } = useCatalog('application');
 
   const entries = response?.data ?? [];
 
@@ -211,7 +210,7 @@ function AvailableTab() {
     return result;
   }, [search, categoryFilter, entries]);
 
-  const handleCardClick = useCallback((entry: ApplicationCatalogResponse) => {
+  const handleCardClick = useCallback((entry: CatalogEntry) => {
     setSelectedEntry(entry);
   }, []);
 
@@ -387,7 +386,7 @@ function AppDetailPanel({
   entry,
   onClose,
 }: {
-  readonly entry: ApplicationCatalogResponse;
+  readonly entry: CatalogEntry;
   readonly onClose: () => void;
 }) {
   const components = asComponents(entry.components);
@@ -734,38 +733,32 @@ const statusColors: Record<string, string> = {
 
 function InstalledTab() {
   const { clientId } = useClientContext();
-  const { data: instancesData, isLoading: instancesLoading } = useApplicationInstances(clientId);
-  const { data: catalogData } = useApplicationCatalog();
-  const { data: upgradesData } = useClientUpgradeHistory(clientId);
-  const { data: workloadsData, isLoading: workloadsLoading, error } = useWorkloads(clientId ?? undefined);
-  const { data: imagesData } = useContainerImages();
-  const updateWorkload = useUpdateWorkload(clientId ?? undefined);
+  const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(clientId ?? undefined);
+  const { data: catalogData } = useCatalog();
+  const updateDeployment = useUpdateDeployment(clientId ?? undefined);
 
-  const instances = instancesData?.data ?? [];
-  const upgrades = upgradesData?.data ?? [];
-  const workloads = workloadsData?.data ?? [];
-  const images = imagesData?.data ?? [];
+  const deployments = deploymentsData?.data ?? [];
 
   const catalogMap = useMemo(() => {
-    const map = new Map<string, ApplicationCatalogResponse>();
+    const map = new Map<string, CatalogEntry>();
     for (const entry of catalogData?.data ?? []) {
       map.set(entry.id, entry);
     }
     return map;
   }, [catalogData]);
 
-  const getImageName = (imageId: string | null) => {
-    if (!imageId) return 'Unknown';
-    const img = images.find((i) => i.id === imageId);
-    return img?.name ?? 'Unknown';
+  const getCatalogEntryName = (catalogEntryId: string | null) => {
+    if (!catalogEntryId) return 'Unknown';
+    const entry = catalogMap.get(catalogEntryId);
+    return entry?.name ?? 'Unknown';
   };
 
-  const handleToggleStatus = (workloadId: string, currentStatus: string) => {
+  const handleToggleStatus = (deploymentId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'running' ? 'stopped' : 'running';
-    updateWorkload.mutate({ workloadId, status: newStatus as 'running' | 'stopped' });
+    updateDeployment.mutate({ deploymentId, status: newStatus as 'running' | 'stopped' });
   };
 
-  const isLoading = instancesLoading || workloadsLoading;
+  const isLoading = deploymentsLoading;
 
   if (isLoading) {
     return (
@@ -787,125 +780,14 @@ function InstalledTab() {
 
   return (
     <div className="space-y-8" data-testid="installed-tab">
-      {/* ── Application Instances ── */}
-      {instances.length > 0 && (
+      {/* ── Deployments ── */}
+      {deployments.length > 0 && (
         <div className="space-y-4">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Managed Applications</h3>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Deployments</h3>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {instances.map((inst) => {
-              const catalogEntry = catalogMap.get(inst.applicationCatalogId);
-              return (
-                <div
-                  key={inst.id}
-                  className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
-                        <AppWindow size={20} />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                          {inst.name}
-                        </h3>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          {catalogEntry?.name ?? 'Application'}
-                        </p>
-                      </div>
-                    </div>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusColors[inst.status] ?? statusColors.stopped}`}
-                    >
-                      {inst.status}
-                    </span>
-                  </div>
-
-                  <div className="mt-4 space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-500 dark:text-gray-400">Version</span>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-900 dark:text-gray-100">
-                          v{inst.installedVersion ?? '-'}
-                        </span>
-                        {inst.targetVersion && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-300">
-                            <ArrowUpCircle size={10} /> {inst.targetVersion}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {inst.domainName && (
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-500 dark:text-gray-400">Domain</span>
-                        <span className="font-medium text-gray-900 dark:text-gray-100">{inst.domainName}</span>
-                      </div>
-                    )}
-                    {inst.lastUpgradedAt && (
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-500 dark:text-gray-400">Last Upgraded</span>
-                        <span className="text-gray-600 dark:text-gray-400 text-xs">{new Date(inst.lastUpgradedAt).toLocaleDateString()}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {inst.status === 'upgrading' && (
-                    <div className="mt-3 flex items-center gap-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
-                      <Loader2 size={12} className="animate-spin" />
-                      Upgrade in progress...
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ── Recent Upgrades ── */}
-      {upgrades.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-            <History size={14} /> Recent Upgrades
-          </h3>
-          <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-4 py-2">From</th>
-                  <th className="px-4 py-2">To</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Date</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {upgrades.slice(0, 5).map((u) => (
-                  <tr key={u.id}>
-                    <td className="px-4 py-2 text-gray-900 dark:text-gray-100">v{u.fromVersion}</td>
-                    <td className="px-4 py-2 text-gray-900 dark:text-gray-100">v{u.toVersion}</td>
-                    <td className="px-4 py-2">
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusColors[u.status] ?? statusColors.stopped}`}>
-                        {u.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
-                      {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── Workloads (existing) ── */}
-      {workloads.length > 0 && (
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Custom Workloads</h3>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {workloads.map((workload) => (
+            {deployments.map((deployment) => (
               <div
-                key={workload.id}
+                key={deployment.id}
                 className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
               >
                 <div className="flex items-start justify-between">
@@ -915,17 +797,17 @@ function InstalledTab() {
                     </div>
                     <div>
                       <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        {workload.name}
+                        {deployment.name}
                       </h3>
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {getImageName(workload.containerImageId)}
+                        {getCatalogEntryName(deployment.catalogEntryId)}
                       </p>
                     </div>
                   </div>
                   <span
-                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusColors[workload.status] ?? statusColors.stopped}`}
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusColors[deployment.status] ?? statusColors.stopped}`}
                   >
-                    {workload.status}
+                    {deployment.status}
                   </span>
                 </div>
 
@@ -933,19 +815,19 @@ function InstalledTab() {
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
                     <p className="text-xs text-gray-500 dark:text-gray-400">Replicas</p>
                     <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {workload.replicaCount}
+                      {deployment.replicaCount}
                     </p>
                   </div>
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
                     <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
                     <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {workload.cpuRequest}
+                      {deployment.cpuRequest}
                     </p>
                   </div>
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
                     <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
                     <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {workload.memoryRequest}
+                      {deployment.memoryRequest}
                     </p>
                   </div>
                 </div>
@@ -953,23 +835,23 @@ function InstalledTab() {
                 <div className="mt-4">
                   <button
                     type="button"
-                    onClick={() => handleToggleStatus(workload.id, workload.status)}
-                    disabled={updateWorkload.isPending || workload.status === 'pending'}
+                    onClick={() => handleToggleStatus(deployment.id, deployment.status)}
+                    disabled={updateDeployment.isPending || deployment.status === 'pending'}
                     className={`flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                      workload.status === 'running'
+                      deployment.status === 'running'
                         ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
                         : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40'
                     }`}
-                    data-testid={`toggle-app-${workload.id}`}
+                    data-testid={`toggle-app-${deployment.id}`}
                   >
-                    {updateWorkload.isPending ? (
+                    {updateDeployment.isPending ? (
                       <Loader2 size={16} className="animate-spin" />
-                    ) : workload.status === 'running' ? (
+                    ) : deployment.status === 'running' ? (
                       <Square size={16} />
                     ) : (
                       <Play size={16} />
                     )}
-                    {workload.status === 'running' ? 'Stop' : 'Start'}
+                    {deployment.status === 'running' ? 'Stop' : 'Start'}
                   </button>
                 </div>
               </div>
@@ -978,7 +860,7 @@ function InstalledTab() {
         </div>
       )}
 
-      {instances.length === 0 && workloads.length === 0 && (
+      {deployments.length === 0 && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-12 text-center" data-testid="installed-empty">
           <Box className="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600" />
           <h3 className="mt-4 text-sm font-medium text-gray-900 dark:text-gray-100">

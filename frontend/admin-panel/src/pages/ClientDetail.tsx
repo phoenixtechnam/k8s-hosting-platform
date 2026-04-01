@@ -7,19 +7,20 @@ import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
-import { useWorkloads } from '@/hooks/use-workloads';
+import { useDeployments } from '@/hooks/use-deployments';
+import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
 import { useEmailDomains, useMailboxes } from '@/hooks/use-email';
-import type { Domain, PaginatedResponse, Workload } from '@/types/api';
+import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
-type TabKey = 'domains' | 'applications' | 'workloads' | 'files' | 'email' | 'backups';
+type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -32,7 +33,7 @@ export default function ClientDetail() {
   const [activeTab, setActiveTab] = useState<TabKey>('domains');
 
   const domainsQuery = useDomains(id);
-  const workloadsQuery = useWorkloads(id);
+  const deploymentsQuery = useDeployments(id);
   const backupsQuery = useBackups(id);
   const subscriptionQuery = useSubscription(id);
   const emailDomainsQuery = useEmailDomains(id);
@@ -101,14 +102,14 @@ export default function ClientDetail() {
   const created = client.createdAt;
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
-  const workloadCount = workloadsQuery.data?.data.length ?? 0;
+  const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
   const backupCount = backupsQuery.data?.data.length ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
     { key: 'applications', label: 'Applications', count: 0 },
-    { key: 'workloads', label: 'Workloads', count: workloadCount },
+    { key: 'deployments', label: 'Deployments', count: deploymentCount },
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
@@ -313,7 +314,7 @@ export default function ClientDetail() {
         <div className="p-5">
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
           {activeTab === 'applications' && <ApplicationsTab />}
-          {activeTab === 'workloads' && <WorkloadsTab data={workloadsQuery.data} isLoading={workloadsQuery.isLoading} error={workloadsQuery.error} />}
+          {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} />}
           {activeTab === 'files' && (
             <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
               <FolderOpen size={32} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
@@ -522,18 +523,19 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
   );
 }
 
-function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
+function DeploymentsTab({ data, isLoading, error }: TabContentProps<Deployment>) {
   if (isLoading) return <TabLoading />;
-  if (error) return <TabError message="Failed to load workloads." />;
+  if (error) return <TabError message="Failed to load deployments." />;
   const items = data?.data ?? [];
   const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'name');
-  if (items.length === 0) return <TabEmpty resource="workloads" />;
+  if (items.length === 0) return <TabEmpty resource="deployments" />;
 
   return (
-    <table className="w-full text-left text-sm" data-testid="workloads-table">
+    <table className="w-full text-left text-sm" data-testid="deployments-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
           <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
@@ -542,14 +544,15 @@ function WorkloadsTab({ data, isLoading, error }: TabContentProps<Workload>) {
         </tr>
       </thead>
       <tbody>
-        {sortedItems.map((w) => (
-          <tr key={w.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{w.name}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{w.replicaCount}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{w.cpuRequest}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{w.memoryRequest}</td>
-            <td className="py-2"><StatusBadge status={w.status} /></td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(w.createdAt).toLocaleDateString()}</td>
+        {sortedItems.map((d) => (
+          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
+            <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
           </tr>
         ))}
       </tbody>

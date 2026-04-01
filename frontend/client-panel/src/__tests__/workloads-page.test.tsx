@@ -22,11 +22,11 @@ vi.mock('@/lib/api-client', () => ({
 const mockApiFetch = vi.mocked(apiFetch);
 
 const _MOCK_CLIENT = { id: 'c1', companyName: 'Test Corp' };
-const MOCK_WORKLOADS = [
-  { id: 'w1', clientId: 'c1', name: 'my-app', containerImageId: 'img1', replicaCount: 2, cpuRequest: '0.5', memoryRequest: '512Mi', status: 'running', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
-  { id: 'w2', clientId: 'c1', name: 'worker', containerImageId: 'img2', replicaCount: 1, cpuRequest: '0.25', memoryRequest: '256Mi', status: 'stopped', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
+const MOCK_DEPLOYMENTS = [
+  { id: 'w1', clientId: 'c1', name: 'my-app', catalogEntryId: 'img1', replicaCount: 2, cpuRequest: '0.5', memoryRequest: '512Mi', status: 'running', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
+  { id: 'w2', clientId: 'c1', name: 'worker', catalogEntryId: 'img2', replicaCount: 1, cpuRequest: '0.25', memoryRequest: '256Mi', status: 'stopped', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
 ];
-const MOCK_IMAGES = [
+const MOCK_CATALOG = [
   { id: 'img1', code: 'nginx', name: 'NGINX', imageType: 'web', registryUrl: null, status: 'active', createdAt: '2026-01-01T00:00:00Z' },
 ];
 
@@ -39,8 +39,8 @@ function createWrapper() {
 
 function setupMocks() {
   mockApiFetch.mockImplementation((url: string) => {
-    if (url.includes('/workloads')) return Promise.resolve({ data: MOCK_WORKLOADS, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
-    if (url.includes('/container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+    if (url.includes('/deployments')) return Promise.resolve({ data: MOCK_DEPLOYMENTS, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
+    if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG, pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
     return Promise.resolve({ data: [] });
   });
 }
@@ -101,8 +101,8 @@ describe('Client Workloads page', () => {
 
   it('shows empty state when no workloads', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/workloads')) return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } });
-      if (url.includes('/container-images')) return Promise.resolve({ data: MOCK_IMAGES });
+      if (url.includes('/deployments')) return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } });
+      if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG, pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
     const user = userEvent.setup();

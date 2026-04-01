@@ -122,7 +122,7 @@ describe('Application Detail Panel', () => {
 
   it('opens the detail panel when clicking an app card', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/application-catalog')) {
+      if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
       if (url.includes('/capacity-check')) {
@@ -177,7 +177,7 @@ describe('Application Detail Panel', () => {
 
   it('closes the detail panel when clicking Close', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/application-catalog')) {
+      if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
       if (url.includes('/capacity-check')) {
@@ -208,7 +208,7 @@ describe('Application Detail Panel', () => {
 
   it('shows capacity warning when resources do not fit', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/application-catalog')) {
+      if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
       if (url.includes('/capacity-check')) {
@@ -236,7 +236,7 @@ describe('Application Detail Panel', () => {
 
   it('does not show capacity warning when resources fit', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('/application-catalog')) {
+      if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
       if (url.includes('/capacity-check')) {

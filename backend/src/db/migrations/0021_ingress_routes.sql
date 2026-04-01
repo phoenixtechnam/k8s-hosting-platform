@@ -22,6 +22,6 @@ CREATE TABLE IF NOT EXISTS `ingress_routes` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Platform ingress settings (defaults for local DinD)
-INSERT IGNORE INTO `platform_settings` (`key`, `value`) VALUES
+INSERT IGNORE INTO `platform_settings` (`setting_key`, `setting_value`) VALUES
   ('ingress_base_domain', 'ingress.localhost'),
   ('ingress_default_ipv4', '127.0.0.1');

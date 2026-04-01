@@ -28,7 +28,7 @@ export function useDomains(clientId: string | undefined, params: ListDomainsPara
 interface CreateDomainInput {
   readonly domain_name: string;
   readonly dns_mode: 'cname' | 'primary' | 'secondary';
-  readonly workload_id?: string;
+  readonly deployment_id?: string;
 }
 
 export function useCreateDomain(clientId: string | undefined) {
@@ -49,7 +49,7 @@ export function useCreateDomain(clientId: string | undefined) {
 interface UpdateDomainInput {
   readonly dns_mode?: 'cname' | 'primary' | 'secondary';
   readonly ssl_auto_renew?: boolean;
-  readonly workload_id?: string | null;
+  readonly deployment_id?: string | null;
   readonly status?: 'active' | 'pending' | 'suspended' | 'deleted';
 }
 

@@ -53,8 +53,9 @@ export async function cleanTables() {
   await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   const tables = [
     'audit_logs', 'cron_jobs', 'usage_metrics', 'backups',
-    'domains', 'workloads', '`databases`', 'clients',
-    'hosting_plans', 'regions', 'rbac_roles', 'container_images', 'users',
+    'deployment_upgrades', 'catalog_entry_versions',
+    'domains', 'deployments', 'clients',
+    'hosting_plans', 'regions', 'rbac_roles', 'catalog_entries', 'catalog_repositories', 'users',
   ];
   for (const table of tables) {
     try {

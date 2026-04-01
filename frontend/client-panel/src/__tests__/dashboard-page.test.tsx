@@ -29,11 +29,8 @@ vi.mock('../hooks/use-backups', () => ({
   useBackups: vi.fn(() => ({ data: { data: [] } })),
 }));
 
-vi.mock('../hooks/use-workloads', () => ({
-  useWorkloads: vi.fn(() => ({ data: { data: [] } })),
-  useContainerImages: vi.fn(() => ({ data: { data: [] } })),
-  useCreateWorkload: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
-  useDeleteWorkload: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+vi.mock('../hooks/use-deployments', () => ({
+  useDeployments: vi.fn(() => ({ data: { data: [] } })),
 }));
 
 import { useAuth } from '../hooks/use-auth';
@@ -76,7 +73,7 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
-    expect(screen.getByText('Workloads')).toBeInTheDocument();
+    expect(screen.getByText('Deployments')).toBeInTheDocument();
   });
 
   it('shows zero values in stats cards when no data', () => {

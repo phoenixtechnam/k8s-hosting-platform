@@ -1,6 +1,6 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
-import { clients, domains, workloads, cronJobs, users } from '../../db/schema.js';
+import { clients, domains, deployments, cronJobs, users } from '../../db/schema.js';
 import { clientNotFound } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
@@ -146,7 +146,7 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   // Cascade suspension to related resources
   if (input.status === 'suspended') {
     await db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, id));
-    await db.update(workloads).set({ status: 'stopped' }).where(eq(workloads.clientId, id));
+    await db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, id));
     await db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, id));
   }
 

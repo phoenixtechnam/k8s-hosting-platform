@@ -5,14 +5,10 @@ export type {
   DomainResponse as Domain,
   DomainListResponse,
   PaginationMeta,
-  WorkloadResponse as Workload,
-  WorkloadListResponse,
   CronJobResponse as CronJob,
   CronJobListResponse,
   BackupResponse as Backup,
   BackupListResponse,
-  ContainerImageResponse as ContainerImage,
-  WorkloadRepoResponse as WorkloadRepo,
   DashboardResponse as DashboardMetrics,
   MetricsResponse,
   SubscriptionResponse,
@@ -21,11 +17,6 @@ export type {
   HostingSettingsResponse,
   ProtectedDirectoryResponse,
   ProtectedDirectoryUserResponse,
-  ApplicationUpgradeResponse,
-  AvailableUpgrade,
-  ApplicationInstanceResponse,
-  ApplicationVersionResponse,
-  UpgradeStatus,
   TlsSettingsResponse,
 } from '@k8s-hosting/api-contracts';
 
@@ -33,6 +24,12 @@ export { MAX_PAGE_LIMIT } from '@k8s-hosting/api-contracts';
 
 // Generic paginated response for hooks — also from contracts
 export type { PaginationMeta as PaginationInfo } from '@k8s-hosting/api-contracts';
+
+// Re-export deployment type from the new hook
+export type { Deployment } from '@/hooks/use-deployments';
+
+// Re-export catalog entry type from the new hook
+export type { CatalogEntry } from '@/hooks/use-catalog';
 
 // Generic paginated response wrapper for hooks that need it
 export interface PaginatedResponse<T> {

@@ -118,7 +118,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = await updateRoute(app.db, routeId, {
-      workloadId: parsed.data.workload_id,
+      deploymentId: parsed.data.workload_id,
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
     });

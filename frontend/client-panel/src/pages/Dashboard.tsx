@@ -3,7 +3,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
-import { useWorkloads } from '@/hooks/use-workloads';
+import { useDeployments } from '@/hooks/use-deployments';
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -12,17 +12,17 @@ export default function Dashboard() {
 
   const { data: domainsData } = useDomains(clientId ?? undefined);
   const { data: backupsData } = useBackups(clientId ?? undefined);
-  const { data: workloadsData } = useWorkloads(clientId ?? undefined);
+  const { data: deploymentsData } = useDeployments(clientId ?? undefined);
 
   const domainCount = domainsData?.data?.length ?? 0;
   const backupCount = backupsData?.data?.length ?? 0;
-  const workloadCount = workloadsData?.data?.length ?? 0;
+  const deploymentCount = deploymentsData?.data?.length ?? 0;
 
   const stats = [
     { label: 'Domains', value: domainCount, icon: Globe, color: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400' },
-    { label: 'Applications', value: workloadCount, icon: AppWindow, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400' },
+    { label: 'Applications', value: deploymentCount, icon: AppWindow, color: 'bg-green-50 text-green-600 dark:bg-green-900/40 dark:text-green-400' },
     { label: 'Backups', value: backupCount, icon: Archive, color: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400' },
-    { label: 'Workloads', value: workloadCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400' },
+    { label: 'Deployments', value: deploymentCount, icon: Server, color: 'bg-purple-50 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400' },
   ];
 
   return (

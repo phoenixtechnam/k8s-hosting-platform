@@ -22,7 +22,7 @@ export function useCreateIngressRoute(clientId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: { hostname: string; workload_id?: string | null }) =>
+    mutationFn: (input: { hostname: string; deployment_id?: string | null }) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/clients/${clientId}/domains/${domainId}/routes`,
         { method: 'POST', body: JSON.stringify(input) },
@@ -37,7 +37,7 @@ export function useUpdateIngressRoute(clientId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ routeId, ...input }: { routeId: string; workload_id?: string | null }) =>
+    mutationFn: ({ routeId, ...input }: { routeId: string; deployment_id?: string | null }) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/clients/${clientId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },

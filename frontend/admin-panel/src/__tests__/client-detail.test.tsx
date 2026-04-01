@@ -51,11 +51,11 @@ const MOCK_DATABASES = {
   pagination: { total_count: 1, cursor: null, has_more: false, page_size: 25 },
 };
 
-const MOCK_WORKLOADS = {
+const MOCK_DEPLOYMENTS = {
   data: [
-    { id: 'w1', clientId: 'client-001', name: 'web-app', containerImageId: 'img-1', status: 'running', replicaCount: 2, cpuRequest: '500m', memoryRequest: '256Mi', createdAt: '2026-02-01T00:00:00Z', updatedAt: '2026-02-01T00:00:00Z' },
-    { id: 'w2', clientId: 'client-001', name: 'worker', containerImageId: 'img-2', status: 'stopped', replicaCount: 1, cpuRequest: '250m', memoryRequest: '128Mi', createdAt: '2026-02-05T00:00:00Z', updatedAt: '2026-02-05T00:00:00Z' },
-    { id: 'w3', clientId: 'client-001', name: 'cron-runner', containerImageId: 'img-1', status: 'pending', replicaCount: 1, cpuRequest: '100m', memoryRequest: '64Mi', createdAt: '2026-02-10T00:00:00Z', updatedAt: '2026-02-10T00:00:00Z' },
+    { id: 'w1', clientId: 'client-001', name: 'web-app', catalogEntryId: 'entry-1', type: 'runtime', status: 'running', replicaCount: 2, cpuRequest: '500m', memoryRequest: '256Mi', installedVersion: null, targetVersion: null, domainName: null, createdAt: '2026-02-01T00:00:00Z', updatedAt: '2026-02-01T00:00:00Z' },
+    { id: 'w2', clientId: 'client-001', name: 'worker', catalogEntryId: 'entry-2', type: 'runtime', status: 'stopped', replicaCount: 1, cpuRequest: '250m', memoryRequest: '128Mi', installedVersion: null, targetVersion: null, domainName: null, createdAt: '2026-02-05T00:00:00Z', updatedAt: '2026-02-05T00:00:00Z' },
+    { id: 'w3', clientId: 'client-001', name: 'cron-runner', catalogEntryId: 'entry-1', type: 'service', status: 'pending', replicaCount: 1, cpuRequest: '100m', memoryRequest: '64Mi', installedVersion: null, targetVersion: null, domainName: null, createdAt: '2026-02-10T00:00:00Z', updatedAt: '2026-02-10T00:00:00Z' },
   ],
   pagination: { total_count: 3, cursor: null, has_more: false, page_size: 25 },
 };
@@ -72,7 +72,7 @@ const MOCK_MAILBOXES = { data: [] };
 
 function setupMockApi() {
   mockApiFetch.mockImplementation((path: string) => {
-    if (path.includes('/workloads')) return Promise.resolve(MOCK_WORKLOADS);
+    if (path.includes('/deployments')) return Promise.resolve(MOCK_DEPLOYMENTS);
     if (path.includes('/databases')) return Promise.resolve(MOCK_DATABASES);
     if (path.includes('/backups')) return Promise.resolve(MOCK_BACKUPS);
     if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
@@ -113,7 +113,7 @@ describe('ClientDetail resource tabs', () => {
 
     expect(screen.getByTestId('tab-domains')).toBeInTheDocument();
     expect(screen.getByTestId('tab-applications')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-workloads')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-deployments')).toBeInTheDocument();
     expect(screen.getByTestId('tab-email')).toBeInTheDocument();
     expect(screen.getByTestId('tab-backups')).toBeInTheDocument();
   });
@@ -124,7 +124,7 @@ describe('ClientDetail resource tabs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('tab-domains')).toHaveTextContent('Domains (2)');
     });
-    expect(screen.getByTestId('tab-workloads')).toHaveTextContent('Workloads (3)');
+    expect(screen.getByTestId('tab-deployments')).toHaveTextContent('Deployments (3)');
     expect(screen.getByTestId('tab-backups')).toHaveTextContent('Backups (1)');
   });
 
@@ -138,32 +138,32 @@ describe('ClientDetail resource tabs', () => {
     expect(screen.getByText('shop.acme.com')).toBeInTheDocument();
   });
 
-  it('switches to workloads tab on click', async () => {
+  it('switches to deployments tab on click', async () => {
     renderClientDetail();
 
     await waitFor(() => {
-      expect(screen.getByTestId('tab-workloads')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-deployments')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('tab-workloads'));
+    fireEvent.click(screen.getByTestId('tab-deployments'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('workloads-table')).toBeInTheDocument();
+      expect(screen.getByTestId('deployments-table')).toBeInTheDocument();
     });
     expect(screen.getByText('web-app')).toBeInTheDocument();
   });
 
-  it('switches to workloads tab on click and shows workload data', async () => {
+  it('switches to deployments tab on click and shows deployment data', async () => {
     renderClientDetail();
 
     await waitFor(() => {
-      expect(screen.getByTestId('tab-workloads')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-deployments')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('tab-workloads'));
+    fireEvent.click(screen.getByTestId('tab-deployments'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('workloads-table')).toBeInTheDocument();
+      expect(screen.getByTestId('deployments-table')).toBeInTheDocument();
     });
     expect(screen.getByText('web-app')).toBeInTheDocument();
     expect(screen.getByText('worker')).toBeInTheDocument();

@@ -1,8 +1,9 @@
 import { useState, useMemo, useCallback } from 'react';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History } from 'lucide-react';
 import clsx from 'clsx';
-import ApplicationRepoSettings from '@/components/ApplicationRepoSettings';
-import { useApplicationCatalog, useUpdateBadges } from '@/hooks/use-application-catalog';
+import CatalogRepoSettings from '@/components/CatalogRepoSettings';
+import { useCatalog, useUpdateCatalogBadges } from '@/hooks/use-catalog';
+import type { CatalogEntry } from '@/hooks/use-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
 import {
   useApplicationInstances,
@@ -13,7 +14,7 @@ import {
   useUpgradeProgress,
 } from '@/hooks/use-application-upgrades';
 import StatusBadge from '@/components/ui/StatusBadge';
-import type { ApplicationCatalogResponse, ApplicationInstanceResponse } from '@k8s-hosting/api-contracts';
+import type { DeploymentResponse as ApplicationInstanceResponse } from '@k8s-hosting/api-contracts';
 
 type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
@@ -179,17 +180,17 @@ function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | n
 function CatalogTab() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [selectedEntry, setSelectedEntry] = useState<ApplicationCatalogResponse | null>(null);
-  const { data: response, isLoading, isError, error } = useApplicationCatalog();
-  const updateBadges = useUpdateBadges();
+  const [selectedEntry, setSelectedEntry] = useState<CatalogEntry | null>(null);
+  const { data: response, isLoading, isError, error } = useCatalog('application');
+  const updateBadges = useUpdateCatalogBadges();
 
   const entries = response?.data ?? [];
 
-  const toggleFeatured = useCallback((entry: ApplicationCatalogResponse) => {
+  const toggleFeatured = useCallback((entry: CatalogEntry) => {
     updateBadges.mutate({ id: entry.id, featured: !entry.featured });
   }, [updateBadges]);
 
-  const togglePopular = useCallback((entry: ApplicationCatalogResponse) => {
+  const togglePopular = useCallback((entry: CatalogEntry) => {
     updateBadges.mutate({ id: entry.id, popular: !entry.popular });
   }, [updateBadges]);
 
@@ -225,7 +226,7 @@ function CatalogTab() {
     });
   }, [search, categoryFilter, entries]);
 
-  const handleCardClick = useCallback((entry: ApplicationCatalogResponse) => {
+  const handleCardClick = useCallback((entry: CatalogEntry) => {
     setSelectedEntry(entry);
   }, []);
 
@@ -338,7 +339,7 @@ function CatalogTab() {
                   </div>
                   {(Array.isArray(entry.tags) ? entry.tags : []).length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-1">
-                      {(Array.isArray(entry.tags) ? entry.tags : []).map((tag) => (
+                      {(Array.isArray(entry.tags) ? entry.tags as string[] : []).map((tag: string) => (
                         <span
                           key={tag}
                           className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400"
@@ -419,7 +420,7 @@ function AppDetailPanel({
   entry,
   onClose,
 }: {
-  readonly entry: ApplicationCatalogResponse;
+  readonly entry: CatalogEntry;
   readonly onClose: () => void;
 }) {
   const resources = asResources(entry.resources);
@@ -774,12 +775,12 @@ function AppDetailPanel({
 
 function InstalledTab() {
   const { data: response, isLoading, isError, error } = useApplicationInstances();
-  const { data: catalogResponse } = useApplicationCatalog();
+  const { data: catalogResponse } = useCatalog('application');
   const [upgradeTarget, setUpgradeTarget] = useState<ApplicationInstanceResponse | null>(null);
 
   const instances = response?.data ?? [];
   const catalogMap = useMemo(() => {
-    const map = new Map<string, ApplicationCatalogResponse>();
+    const map = new Map<string, CatalogEntry>();
     for (const entry of catalogResponse?.data ?? []) {
       map.set(entry.id, entry);
     }
@@ -825,11 +826,11 @@ function InstalledTab() {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {instances.map((inst) => {
-                const catalogEntry = catalogMap.get(inst.applicationCatalogId);
+                const catalogEntry = catalogMap.get(inst.catalogEntryId);
                 return (
                   <tr key={inst.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{inst.name}</td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{catalogEntry?.name ?? inst.applicationCatalogId}</td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{catalogEntry?.name ?? inst.catalogEntryId}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <span className="text-gray-900 dark:text-gray-100">v{inst.installedVersion ?? '-'}</span>
@@ -1031,7 +1032,7 @@ function UpgradeModal({
                     <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
                       <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Environment Variable Changes</p>
                       <div className="space-y-1">
-                        {selectedUpgrade.envChanges.map((change) => (
+                        {selectedUpgrade.envChanges.map((change: { key: string; action: string; oldKey?: string | null }) => (
                           <div key={change.key} className="flex items-center gap-2 text-xs">
                             <span className={clsx(
                               'rounded px-1.5 py-0.5 font-medium',
@@ -1147,7 +1148,7 @@ function UpgradeHistoryTab() {
                   {upgrades.map((u) => (
                     <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                       <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400">
-                        {u.instanceId.slice(0, 8)}...
+                        {u.deploymentId.slice(0, 8)}...
                       </td>
                       <td className="px-4 py-3 text-gray-900 dark:text-gray-100">v{u.fromVersion}</td>
                       <td className="px-4 py-3 text-gray-900 dark:text-gray-100">v{u.toVersion}</td>
@@ -1218,7 +1219,7 @@ function UpgradeHistoryTab() {
 function RepositoriesTab() {
   return (
     <div data-testid="repos-tab">
-      <ApplicationRepoSettings />
+      <CatalogRepoSettings />
     </div>
   );
 }

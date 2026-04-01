@@ -87,7 +87,7 @@ export async function createRoute(
   domainId: string,
   clientId: string,
   hostname: string,
-  workloadId?: string | null,
+  deploymentId?: string | null,
 ) {
   // Verify domain ownership
   const [domain] = await db
@@ -119,7 +119,7 @@ export async function createRoute(
     id,
     domainId,
     hostname,
-    workloadId: workloadId ?? null,
+    deploymentId: deploymentId ?? null,
     ingressCname,
     nodeHostname: null, // uses default node
     isApex: apex ? 1 : 0,
@@ -186,7 +186,7 @@ export async function createRoute(
 export async function updateRoute(
   db: Database,
   routeId: string,
-  input: { workloadId?: string | null; tlsMode?: string; nodeHostname?: string | null },
+  input: { deploymentId?: string | null; tlsMode?: string; nodeHostname?: string | null },
 ) {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
@@ -194,7 +194,7 @@ export async function updateRoute(
   }
 
   const updateValues: Record<string, unknown> = {};
-  if (input.workloadId !== undefined) updateValues.workloadId = input.workloadId;
+  if (input.deploymentId !== undefined) updateValues.deploymentId = input.deploymentId;
   if (input.tlsMode !== undefined) updateValues.tlsMode = input.tlsMode;
   if (input.nodeHostname !== undefined) updateValues.nodeHostname = input.nodeHostname;
 

@@ -16,7 +16,7 @@ export function useDomains(clientId: string | undefined) {
 interface CreateDomainInput {
   readonly domain_name: string;
   readonly dns_mode: 'cname' | 'primary' | 'secondary';
-  readonly workload_id?: string;
+  readonly deployment_id?: string;
 }
 
 export function useCreateDomain(clientId: string | undefined) {

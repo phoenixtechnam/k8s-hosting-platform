@@ -5,23 +5,57 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Workloads from '../pages/Workloads';
 import { apiFetch } from '@/lib/api-client';
 
-const MOCK_IMAGES = [
+const MOCK_CATALOG_ENTRIES = [
   {
-    id: 'img-1',
+    id: 'entry-1',
     code: 'nginx-php84',
     name: 'NGINX + PHP 8.4',
-    imageType: 'php',
-    registryUrl: 'ghcr.io/k8s-hosting/nginx-php84',
+    type: 'runtime',
+    version: '8.4.0',
+    description: null,
+    category: null,
+    tags: null,
+    components: null,
+    resources: null,
     status: 'active',
+    featured: 0,
+    popular: 0,
+    url: null,
+    documentation: null,
+    manifestUrl: null,
+    parameters: null,
+    networking: null,
+    volumes: null,
+    healthCheck: null,
+    sourceRepoId: null,
+    registryUrl: 'ghcr.io/k8s-hosting/nginx-php84',
+    imageType: 'runtime',
     createdAt: '2026-01-15T00:00:00Z',
   },
   {
-    id: 'img-2',
-    code: 'wordpress-php84',
-    name: 'WordPress (PHP 8.4)',
-    imageType: 'wordpress',
-    registryUrl: 'ghcr.io/k8s-hosting/wordpress-php84',
+    id: 'entry-2',
+    code: 'mariadb-106',
+    name: 'MariaDB 10.6',
+    type: 'database',
+    version: '10.6.0',
+    description: null,
+    category: null,
+    tags: null,
+    components: null,
+    resources: null,
     status: 'active',
+    featured: 0,
+    popular: 0,
+    url: null,
+    documentation: null,
+    manifestUrl: null,
+    parameters: null,
+    networking: null,
+    volumes: null,
+    healthCheck: null,
+    sourceRepoId: null,
+    registryUrl: 'ghcr.io/k8s-hosting/mariadb-106',
+    imageType: 'database',
     createdAt: '2026-01-16T00:00:00Z',
   },
 ] as const;
@@ -83,13 +117,13 @@ describe('Workloads page', () => {
   it('shows "Select a client" prompt on Deployed tab when no client selected', () => {
     render(<Workloads />, { wrapper: createWrapper() });
     expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
-    expect(screen.getByText('Select a client to view their deployed workloads.')).toBeInTheDocument();
+    expect(screen.getByText(/Select a client to view their deployed/)).toBeInTheDocument();
   });
 
   it('switches to "Available Workloads" tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
-      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
 
@@ -111,13 +145,13 @@ describe('Workloads page', () => {
 
     expect(screen.getByTestId('repos-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('deployed-tab')).not.toBeInTheDocument();
-    expect(screen.getByTestId('workload-repos-section')).toBeInTheDocument();
+    expect(screen.getByTestId('catalog-repos-section')).toBeInTheDocument();
   });
 
   it('shows search input on Available Workloads tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
-      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
 
@@ -130,8 +164,8 @@ describe('Workloads page', () => {
 
   it('filters images by search on Available Workloads tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
-      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
 
@@ -143,16 +177,16 @@ describe('Workloads page', () => {
     });
 
     const searchInput = screen.getByTestId('image-search');
-    fireEvent.change(searchInput, { target: { value: 'WordPress' } });
+    fireEvent.change(searchInput, { target: { value: 'MariaDB' } });
 
-    expect(screen.getByText('WordPress (PHP 8.4)')).toBeInTheDocument();
+    expect(screen.getByText('MariaDB 10.6')).toBeInTheDocument();
     expect(screen.queryByText('NGINX + PHP 8.4')).not.toBeInTheDocument();
   });
 
   it('shows stat cards on Available Workloads tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url.includes('container-images')) return Promise.resolve({ data: MOCK_IMAGES });
-      if (url.includes('workload-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
+      if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
       return Promise.resolve({ data: [] });
     });
 
@@ -175,7 +209,7 @@ describe('Workloads page', () => {
     await waitFor(() => {
       expect(screen.getByTestId('error-message')).toBeInTheDocument();
     });
-    expect(screen.getByText(/Failed to load container images/)).toBeInTheDocument();
+    expect(screen.getByText(/Failed to load catalog entries/)).toBeInTheDocument();
   });
 
   it('renders client search on Deployed tab', () => {
