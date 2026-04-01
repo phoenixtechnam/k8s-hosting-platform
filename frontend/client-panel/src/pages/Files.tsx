@@ -8,7 +8,7 @@ interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  FolderOpen, File, ChevronRight, ArrowLeft, Trash2, Edit3,
+  FolderOpen, File, FilePlus, ChevronRight, ArrowLeft, Trash2, Edit3,
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical,
@@ -77,6 +77,8 @@ export default function Files() {
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   const [newDirOpen, setNewDirOpen] = useState(false);
   const [newDirName, setNewDirName] = useState('');
+  const [newFileOpen, setNewFileOpen] = useState(false);
+  const [newFileName, setNewFileName] = useState('');
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [renameName, setRenameName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -100,6 +102,7 @@ export default function Files() {
   const startFm = useStartFileManager();
   const dirListing = useDirectoryListing(currentPath, fmStatus.data?.ready === true);
   const createDir = useCreateDirectory();
+  const createFile = useWriteFile();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
   const downloadFile = useDownloadFile();
@@ -315,6 +318,9 @@ export default function Files() {
           <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <GitBranch size={14} /> Git Clone
           </button>
+          <button onClick={() => { setNewFileOpen(true); setNewFileName(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+            <FilePlus size={14} /> New File
+          </button>
           <button onClick={() => { setNewDirOpen(true); setNewDirName(''); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">
             <FolderPlus size={14} /> New Folder
           </button>
@@ -332,6 +338,22 @@ export default function Files() {
           <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={13} /> Delete</button>
           <div className="flex-1" />
           <button onClick={() => setSelected(new Set())} className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Clear</button>
+        </div>
+      )}
+
+      {/* New file input */}
+      {newFileOpen && (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3">
+          <FilePlus size={16} className="text-blue-500" />
+          <input type="text" value={newFileName} onChange={(e) => setNewFileName(e.target.value)} placeholder="filename.txt"
+            className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && newFileName.trim()) createFile.mutate({ path: joinPath(currentPath, newFileName), content: '' }, { onSuccess: () => setNewFileOpen(false) });
+              if (e.key === 'Escape') setNewFileOpen(false);
+            }}
+          />
+          <button onClick={() => { if (newFileName.trim()) createFile.mutate({ path: joinPath(currentPath, newFileName), content: '' }, { onSuccess: () => setNewFileOpen(false) }); }} disabled={!newFileName.trim() || createFile.isPending} className="rounded bg-blue-500 px-3 py-1 text-xs text-white hover:bg-blue-600 disabled:opacity-50">Create</button>
+          <button onClick={() => setNewFileOpen(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={14} /></button>
         </div>
       )}
 
