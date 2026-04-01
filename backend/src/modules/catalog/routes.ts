@@ -193,8 +193,8 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    await service.syncCatalogRepo(app.db, id);
-    return success({ message: 'Sync completed successfully' });
+    const result = await service.syncCatalogRepo(app.db, id);
+    return success(result);
   });
 
   // POST /api/v1/admin/catalog-repos/restore-default

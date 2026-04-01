@@ -316,7 +316,13 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
 
 // ─── Sync ───────────────────────────────────────────────────────────────────
 
-export async function syncCatalogRepo(db: Database, repoId: string) {
+interface SyncResult {
+  readonly synced: number;
+  readonly errors: readonly string[];
+  readonly message: string;
+}
+
+export async function syncCatalogRepo(db: Database, repoId: string): Promise<SyncResult> {
   const [repo] = await db
     .select()
     .from(catalogRepositories)
@@ -339,8 +345,10 @@ export async function syncCatalogRepo(db: Database, repoId: string) {
 
     const entryCodes: readonly string[] = catalogRaw.entries ?? [];
     const manifestErrors: string[] = [];
+    let syncedCount = 0;
 
-    // Fetch each entry manifest and upsert
+    // Fetch each entry manifest and upsert (with small delay to avoid GitHub rate limiting)
+    let fetchCount = 0;
     for (const code of entryCodes) {
       if (!VALID_ENTRY_NAME.test(code)) {
         console.warn(`[catalog-sync] Skipping entry with invalid code: "${code}"`);
@@ -349,6 +357,12 @@ export async function syncCatalogRepo(db: Database, repoId: string) {
       }
 
       const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
+
+      // Rate-limit GitHub raw requests (~60/min limit for unauthenticated)
+      fetchCount++;
+      if (fetchCount > 1 && source.type === 'github' && !repo.authToken) {
+        await new Promise(r => setTimeout(r, 200));
+      }
 
       let manifest: EntryManifest;
       try {
@@ -465,6 +479,8 @@ export async function syncCatalogRepo(db: Database, repoId: string) {
           status: 'available',
         });
       }
+
+      syncedCount++;
     }
 
     // Mark sync complete
@@ -480,6 +496,14 @@ export async function syncCatalogRepo(db: Database, repoId: string) {
         lastError: syncLastError,
       })
       .where(eq(catalogRepositories.id, repoId));
+
+    return {
+      synced: syncedCount,
+      errors: manifestErrors,
+      message: manifestErrors.length > 0
+        ? `Synced ${syncedCount} entries with ${manifestErrors.length} error(s)`
+        : `Synced ${syncedCount} entries successfully`,
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     await db
