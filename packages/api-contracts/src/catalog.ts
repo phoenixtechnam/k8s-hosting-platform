@@ -68,7 +68,7 @@ export const catalogEntryResponseSchema = z.object({
   id: uuidField,
   code: z.string(),
   name: z.string(),
-  type: z.enum(['application', 'runtime', 'database', 'service']),
+  type: z.enum(['application', 'runtime', 'database', 'service', 'static']),
   version: z.string().nullable(),
   latestVersion: z.string().nullable(),
   defaultVersion: z.string().nullable(),

@@ -184,7 +184,7 @@ export const catalogEntries = mysqlTable('catalog_entries', {
   id: varchar('id', { length: 36 }).primaryKey(),
   code: varchar('code', { length: 100 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
-  type: mysqlEnum('type', ['application', 'runtime', 'database', 'service']).notNull(),
+  type: mysqlEnum('type', ['application', 'runtime', 'database', 'service', 'static']).notNull(),
   version: varchar('version', { length: 50 }),
   latestVersion: varchar('latest_version', { length: 50 }),
   defaultVersion: varchar('default_version', { length: 50 }),

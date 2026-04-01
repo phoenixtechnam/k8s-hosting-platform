@@ -7,7 +7,7 @@ export interface Deployment {
   readonly clientId: string;
   readonly name: string;
   readonly catalogEntryId: string;
-  readonly type: 'application' | 'runtime' | 'database' | 'service';
+  readonly type: 'application' | 'runtime' | 'database' | 'service' | 'static';
   readonly status: string;
   readonly replicaCount: number;
   readonly cpuRequest: string;

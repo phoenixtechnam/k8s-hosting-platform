@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS `catalog_entries` (
   `id` varchar(36) PRIMARY KEY,
   `code` varchar(100) NOT NULL,
   `name` varchar(255) NOT NULL,
-  `type` enum('application','runtime','database','service') NOT NULL,
+  `type` enum('application','runtime','database','service','static') NOT NULL,
   `version` varchar(50),
   `latest_version` varchar(50),
   `default_version` varchar(50),

@@ -16,12 +16,13 @@ const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'installed', label: 'Installed' },
 ] as const;
 
-const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Databases', 'Services'] as const;
+const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Static', 'Databases', 'Services'] as const;
 type TypeFilter = typeof TYPE_FILTERS[number];
 const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
   All: null,
   Applications: 'application',
   Runtimes: 'runtime',
+  Static: 'static',
   Databases: 'database',
   Services: 'service',
 };

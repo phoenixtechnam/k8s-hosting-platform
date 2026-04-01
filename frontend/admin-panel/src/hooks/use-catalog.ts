@@ -5,7 +5,7 @@ export interface CatalogEntry {
   readonly id: string;
   readonly code: string;
   readonly name: string;
-  readonly type: 'application' | 'runtime' | 'database' | 'service';
+  readonly type: 'application' | 'runtime' | 'database' | 'service' | 'static';
   readonly version: string | null;
   readonly description: string | null;
   readonly category: string | null;
