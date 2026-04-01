@@ -47,11 +47,11 @@ function setupMocks() {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('Client Workloads page', () => {
+describe('Client Deployments page', () => {
   it('renders heading', async () => {
     setupMocks();
     render(<Workloads />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('workloads-heading')).toHaveTextContent('Workloads'));
+    await waitFor(() => expect(screen.getByTestId('workloads-heading')).toHaveTextContent('Deployments'));
   });
 
   it('renders workload rows in deployed tab', async () => {

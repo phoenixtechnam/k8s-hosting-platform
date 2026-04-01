@@ -55,7 +55,7 @@ export default function App() {
             <Route path="clients/:id" element={<ClientDetail />} />
             <Route path="domains" element={<Domains />} />
             <Route path="clients/:clientId/domains/:domainId" element={<DomainDetail />} />
-            <Route path="workloads" element={<Workloads />} />
+            <Route path="deployments" element={<Workloads />} />
             <Route path="applications" element={<Applications />} />
             <Route path="storage" element={<Storage />} />
             <Route path="cron-jobs" element={<CronJobs />} />

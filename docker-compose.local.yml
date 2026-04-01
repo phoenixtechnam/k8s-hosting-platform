@@ -54,6 +54,7 @@ services:
       INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}
       INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
+      CATALOG_REPO_URL: http://catalog-server
       DISABLE_RATE_LIMIT: "true"
     depends_on:
       mariadb:
@@ -96,6 +97,17 @@ services:
       - "${PORT_CLIENT:-2011}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  # Serves the local application catalog over HTTP for sync
+  catalog-server:
+    image: nginx:1.27-alpine
+    volumes:
+      - ${CATALOG_PATH:-../k8s-application-catalog}:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/catalog.json"]
       interval: 15s
       timeout: 3s
       retries: 3

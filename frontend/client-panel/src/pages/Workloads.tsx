@@ -33,8 +33,8 @@ export default function Workloads() {
           <Server size={20} />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="workloads-heading">Workloads</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Browse available workloads and manage deployed instances.</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="workloads-heading">Deployments</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Browse available deployments and manage deployed instances.</p>
         </div>
       </div>
 
@@ -374,10 +374,10 @@ function WorkloadDetailPanel({
           {/* Exposes — ports, volumes, env vars, services */}
           <ExposesSection image={image} />
 
-          {/* Collapsible: Workload Details */}
+          {/* Collapsible: Deployment Details */}
           <details className="rounded-lg border border-gray-200 dark:border-gray-700">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-              Workload Details
+              Deployment Details
             </summary>
             <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-5">
 
@@ -490,7 +490,7 @@ function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
           data-testid="deploy-workload-button"
         >
           <Rocket size={14} />
-          Deploy a Workload
+          Deploy
         </button>
       </div>
 
@@ -498,20 +498,20 @@ function DeployedTab({ onDeploy }: { readonly onDeploy: () => void }) {
         {isLoading && (
           <div className="flex items-center justify-center py-16" data-testid="workloads-loading">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
-            <span className="ml-3 text-sm text-gray-500 dark:text-gray-400">Loading workloads...</span>
+            <span className="ml-3 text-sm text-gray-500 dark:text-gray-400">Loading deployments...</span>
           </div>
         )}
 
         {isError && (
           <div className="px-6 py-16 text-center" data-testid="workloads-error">
-            <p className="text-sm text-red-600">Failed to load workloads: {error instanceof Error ? error.message : 'Unknown error'}</p>
+            <p className="text-sm text-red-600">Failed to load deployments: {error instanceof Error ? error.message : 'Unknown error'}</p>
           </div>
         )}
 
         {!isLoading && !isError && workloadsRaw.length === 0 && (
           <div className="px-6 py-16 text-center" data-testid="workloads-empty">
             <Server size={40} className="mx-auto text-gray-300 dark:text-gray-600" />
-            <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No workloads yet</p>
+            <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">No deployments yet</p>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Click "Deploy" to launch your first application.</p>
           </div>
         )}

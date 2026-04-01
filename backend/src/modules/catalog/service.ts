@@ -16,7 +16,7 @@ import type { PaginationMeta } from '../../shared/response.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_CATALOG_URL = 'https://github.com/phoenixtechnam/k8s-application-catalog';
+const DEFAULT_CATALOG_URL = process.env.CATALOG_REPO_URL ?? 'https://github.com/phoenixtechnam/k8s-application-catalog';
 const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 
 // ─── Types ──────────────────────────────────────────────────────────────────

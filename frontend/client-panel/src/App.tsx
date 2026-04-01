@@ -44,7 +44,7 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
-            <Route path="workloads" element={<Workloads />} />
+            <Route path="deployments" element={<Workloads />} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="files" element={<Files />} />
             <Route path="email" element={<Email />} />

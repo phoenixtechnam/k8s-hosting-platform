@@ -89,25 +89,25 @@ function createWrapper() {
   };
 }
 
-describe('Workloads page', () => {
+describe('Deployments page', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it('renders page heading "Workloads"', () => {
+  it('renders page heading "Deployments"', () => {
     render(<Workloads />, { wrapper: createWrapper() });
-    expect(screen.getByRole('heading', { name: 'Workloads' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Deployments' })).toBeInTheDocument();
   });
 
   it('renders all three tabs', () => {
     render(<Workloads />, { wrapper: createWrapper() });
     expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-deployed')).toHaveTextContent('Deployed Workloads');
-    expect(screen.getByTestId('tab-available')).toHaveTextContent('Available Workloads');
+    expect(screen.getByTestId('tab-deployed')).toHaveTextContent('Deployed');
+    expect(screen.getByTestId('tab-available')).toHaveTextContent('Available');
     expect(screen.getByTestId('tab-repos')).toHaveTextContent('Repositories');
   });
 
-  it('defaults to "Deployed Workloads" tab', () => {
+  it('defaults to "Deployed" tab', () => {
     render(<Workloads />, { wrapper: createWrapper() });
     expect(screen.getByTestId('deployed-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('available-tab')).not.toBeInTheDocument();
@@ -117,10 +117,10 @@ describe('Workloads page', () => {
   it('shows "Select a client" prompt on Deployed tab when no client selected', () => {
     render(<Workloads />, { wrapper: createWrapper() });
     expect(screen.getByTestId('select-client-prompt')).toBeInTheDocument();
-    expect(screen.getByText(/Select a client to view their deployed/)).toBeInTheDocument();
+    expect(screen.getByText(/Select a client to view their deployed services/)).toBeInTheDocument();
   });
 
-  it('switches to "Available Workloads" tab', async () => {
+  it('switches to "Available" tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
       if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
@@ -148,7 +148,7 @@ describe('Workloads page', () => {
     expect(screen.getByTestId('catalog-repos-section')).toBeInTheDocument();
   });
 
-  it('shows search input on Available Workloads tab', async () => {
+  it('shows search input on Available tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
       if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
@@ -162,7 +162,7 @@ describe('Workloads page', () => {
     expect(screen.getByPlaceholderText('Search images...')).toBeInTheDocument();
   });
 
-  it('filters images by search on Available Workloads tab', async () => {
+  it('filters images by search on Available tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
       if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
@@ -183,7 +183,7 @@ describe('Workloads page', () => {
     expect(screen.queryByText('NGINX + PHP 8.4')).not.toBeInTheDocument();
   });
 
-  it('shows stat cards on Available Workloads tab', async () => {
+  it('shows stat cards on Available tab', async () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url.includes('/catalog-repos')) return Promise.resolve({ data: [] });
       if (url.includes('/catalog')) return Promise.resolve({ data: MOCK_CATALOG_ENTRIES, pagination: { total_count: 2, cursor: null, has_more: false, page_size: 50 } });
@@ -196,11 +196,11 @@ describe('Workloads page', () => {
     await waitFor(() => {
       expect(screen.getByText('Total Images')).toBeInTheDocument();
     });
-    expect(screen.getByText('Active Workloads')).toBeInTheDocument();
+    expect(screen.getByText('Active Deployments')).toBeInTheDocument();
     expect(screen.getByText('Deployments Today')).toBeInTheDocument();
   });
 
-  it('shows error state on Available Workloads tab when API fails', async () => {
+  it('shows error state on Available tab when API fails', async () => {
     mockApiFetch.mockRejectedValue(new Error('Network error'));
 
     render(<Workloads />, { wrapper: createWrapper() });

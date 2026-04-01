@@ -18,7 +18,7 @@ const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/clients', icon: Users, label: 'Clients' },
   { to: '/domains', icon: Globe, label: 'Domains' },
-  { to: '/workloads', icon: Server, label: 'Workloads' },
+  { to: '/deployments', icon: Server, label: 'Deployments' },
   { to: '/applications', icon: AppWindow, label: 'Applications' },
   { to: '/storage', icon: Database, label: 'Storage & Backups' },
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },

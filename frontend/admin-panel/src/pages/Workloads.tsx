@@ -14,8 +14,8 @@ import SortableHeader from '@/components/ui/SortableHeader';
 type Tab = 'deployed' | 'available' | 'repos';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
-  { id: 'deployed', label: 'Deployed Workloads' },
-  { id: 'available', label: 'Available Workloads' },
+  { id: 'deployed', label: 'Deployed' },
+  { id: 'available', label: 'Available' },
   { id: 'repos', label: 'Repositories' },
 ] as const;
 
@@ -26,7 +26,7 @@ export default function Workloads() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Server size={28} className="text-brand-500" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Workloads</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Deployments</h1>
       </div>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
@@ -165,7 +165,7 @@ function DeployedWorkloadsTab() {
 
       {!selectedClientId && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="select-client-prompt">
-          Select a client to view their deployed workloads and services.
+          Select a client to view their deployed services.
         </div>
       )}
 
@@ -512,10 +512,10 @@ function WorkloadDetailPanel({
             </div>
           )}
 
-          {/* Collapsible: Workload Details */}
+          {/* Collapsible: Deployment Details */}
           <details className="rounded-lg border border-gray-200 dark:border-gray-700">
             <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-              Workload Details
+              Deployment Details
             </summary>
             <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-5">
 
@@ -688,7 +688,7 @@ function AvailableWorkloadsTab() {
     <div className="space-y-4" data-testid="available-tab">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard title="Total Images" value={images.length} icon={Container} accent="brand" />
-        <StatCard title="Active Workloads" value={12} icon={Server} accent="green" />
+        <StatCard title="Active Deployments" value={12} icon={Server} accent="green" />
         <StatCard title="Deployments Today" value={3} icon={Rocket} accent="amber" />
       </div>
 
