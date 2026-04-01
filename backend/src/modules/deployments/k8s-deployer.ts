@@ -121,7 +121,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, volumes);
         break;
 
       case 'statefulset':
@@ -152,8 +152,36 @@ async function deployK8sDeployment(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   replicaCount: number,
+  volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }> = [],
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
+
+  // Mount shared client PVC with subPath per volume
+  const volumeMounts = volumes.map(v => ({
+    name: 'client-storage',
+    mountPath: v.container_path,
+    subPath: v.local_path,
+  }));
+
+  const containerWithMounts = volumes.length > 0
+    ? { ...container, volumeMounts }
+    : container;
+
+  // Init container: ensures local_path directories exist on the shared PVC
+  const initContainers = volumes.length > 0
+    ? [{
+        name: 'init-dirs',
+        image: 'busybox:1.36',
+        command: ['sh', '-c', volumes.map(v => `mkdir -p /data/${v.local_path}`).join(' && ')],
+        volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
+        resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+      }]
+    : undefined;
+
+  const podVolumes = volumes.length > 0
+    ? [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }]
+    : undefined;
+
   const body = {
     metadata: { name, namespace, labels },
     spec: {
@@ -161,7 +189,11 @@ async function deployK8sDeployment(
       selector: { matchLabels: selectorLabels },
       template: {
         metadata: { labels },
-        spec: { containers: [container] },
+        spec: {
+          ...(initContainers ? { initContainers } : {}),
+          containers: [containerWithMounts],
+          ...(podVolumes ? { volumes: podVolumes } : {}),
+        },
       },
     },
   } as Record<string, unknown>;
@@ -207,6 +239,17 @@ async function deployK8sStatefulSet(
     },
   }));
 
+  // Init container ensures mount point directories exist inside PVCs
+  const initContainers = volumes.length > 0
+    ? [{
+        name: 'init-dirs',
+        image: 'busybox:1.36',
+        command: ['sh', '-c', volumeMounts.map(vm => `mkdir -p ${vm.mountPath}`).join(' && ')],
+        volumeMounts,
+        resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+      }]
+    : undefined;
+
   const selectorLabels = { app: labels.app, component: labels.component };
   const body = {
     metadata: { name, namespace, labels },
@@ -216,7 +259,10 @@ async function deployK8sStatefulSet(
       selector: { matchLabels: selectorLabels },
       template: {
         metadata: { labels },
-        spec: { containers: [containerWithMounts] },
+        spec: {
+          ...(initContainers ? { initContainers } : {}),
+          containers: [containerWithMounts],
+        },
       },
       volumeClaimTemplates,
     },
