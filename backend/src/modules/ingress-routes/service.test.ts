@@ -58,10 +58,10 @@ describe('ingress-routes service', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should validate create input with workload_id', () => {
+    it('should validate create input with deployment_id', () => {
       const result = createIngressRouteSchema.safeParse({
         hostname: 'blog.example.com',
-        workload_id: '550e8400-e29b-41d4-a716-446655440000',
+        deployment_id: '550e8400-e29b-41d4-a716-446655440000',
       });
       expect(result.success).toBe(true);
     });
@@ -71,8 +71,8 @@ describe('ingress-routes service', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should validate update input with workload_id null (unassign)', () => {
-      const result = updateIngressRouteSchema.safeParse({ workload_id: null });
+    it('should validate update input with deployment_id null (unassign)', () => {
+      const result = updateIngressRouteSchema.safeParse({ deployment_id: null });
       expect(result.success).toBe(true);
     });
 

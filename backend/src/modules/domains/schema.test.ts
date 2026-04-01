@@ -28,10 +28,10 @@ describe('createDomainSchema', () => {
     expect(createDomainSchema.safeParse({ domain_name: 'a.com', dns_mode: 'invalid' }).success).toBe(false);
   });
 
-  it('should accept optional workload_id', () => {
+  it('should accept optional deployment_id', () => {
     const result = createDomainSchema.safeParse({
       domain_name: 'example.com',
-      workload_id: '550e8400-e29b-41d4-a716-446655440000',
+      deployment_id: '550e8400-e29b-41d4-a716-446655440000',
     });
     expect(result.success).toBe(true);
   });
@@ -47,8 +47,8 @@ describe('updateDomainSchema', () => {
     expect(updateDomainSchema.safeParse({ ssl_auto_renew: false }).success).toBe(true);
   });
 
-  it('should accept nullable workload_id', () => {
-    expect(updateDomainSchema.safeParse({ workload_id: null }).success).toBe(true);
-    expect(updateDomainSchema.safeParse({ workload_id: '550e8400-e29b-41d4-a716-446655440000' }).success).toBe(true);
+  it('should accept nullable deployment_id', () => {
+    expect(updateDomainSchema.safeParse({ deployment_id: null }).success).toBe(true);
+    expect(updateDomainSchema.safeParse({ deployment_id: '550e8400-e29b-41d4-a716-446655440000' }).success).toBe(true);
   });
 });

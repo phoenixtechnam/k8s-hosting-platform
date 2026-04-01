@@ -72,11 +72,11 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     }
 
-    const route = await createRoute(app.db, domainId, clientId, parsed.data.hostname, parsed.data.workload_id);
+    const route = await createRoute(app.db, domainId, clientId, parsed.data.hostname, parsed.data.deployment_id);
     await triggerReconcile(clientId);
 
     // Provision TLS certificate if auto-TLS enabled and workload assigned
-    if (parsed.data.workload_id) {
+    if (parsed.data.deployment_id) {
       const k8s = getK8s();
       if (k8s) {
         try {
@@ -118,7 +118,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = await updateRoute(app.db, routeId, {
-      deploymentId: parsed.data.workload_id,
+      deploymentId: parsed.data.deployment_id,
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
     });

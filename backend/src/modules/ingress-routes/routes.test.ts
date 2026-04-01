@@ -91,7 +91,7 @@ describe('ingress-routes routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         hostname: 'app.example.com',
-        workload_id: '550e8400-e29b-41d4-a716-446655440000',
+        deployment_id: '550e8400-e29b-41d4-a716-446655440000',
       },
     });
     expect(res.statusCode).toBe(201);

@@ -39,7 +39,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
     domainName: input.domain_name,
     dnsMode: input.dns_mode,
     masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
-    deploymentId: input.workload_id ?? null,
+    deploymentId: input.deployment_id ?? null,
     status: 'pending',
   });
 
@@ -67,9 +67,9 @@ export async function createDomain(db: Database, clientId: string, input: Create
   }
 
   // Auto-create ingress route if workload was selected
-  if (input.workload_id && created) {
+  if (input.deployment_id && created) {
     try {
-      await createRoute(db, created.id, clientId, input.domain_name, input.workload_id);
+      await createRoute(db, created.id, clientId, input.domain_name, input.deployment_id);
     } catch {
       // Route creation failure shouldn't block domain creation
     }
@@ -220,14 +220,14 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
   if (input.dns_mode !== undefined) updateValues.dnsMode = input.dns_mode;
   if (input.ssl_auto_renew !== undefined) updateValues.sslAutoRenew = input.ssl_auto_renew ? 1 : 0;
   if (input.status !== undefined) updateValues.status = input.status;
-  if (input.workload_id !== undefined) updateValues.deploymentId = input.workload_id;
+  if (input.deployment_id !== undefined) updateValues.deploymentId = input.deployment_id;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(domains).set(updateValues).where(eq(domains.id, domainId));
   }
 
   // Reconcile Ingress if workload mapping or DNS mode changed
-  if (k8s && (input.workload_id !== undefined || input.dns_mode !== undefined)) {
+  if (k8s && (input.deployment_id !== undefined || input.dns_mode !== undefined)) {
     const client = await getClientById(db, clientId);
     if (client.kubernetesNamespace) {
       try {
