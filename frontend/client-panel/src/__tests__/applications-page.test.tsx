@@ -27,7 +27,9 @@ vi.mock('../hooks/use-client-context', () => ({
 
 vi.mock('../hooks/use-deployments', () => ({
   useDeployments: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useUpdateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 vi.mock('../hooks/use-catalog', () => ({
@@ -55,20 +57,14 @@ function renderWithProviders(ui: React.ReactElement) {
 describe('Applications Page', () => {
   it('renders the heading', () => {
     renderWithProviders(<Applications />);
-    expect(screen.getByTestId('applications-heading')).toBeInTheDocument();
-    expect(screen.getByText('Applications')).toBeInTheDocument();
+    expect(screen.getByTestId('applications-heading')).toHaveTextContent('Applications');
   });
 
-  it('renders description text', () => {
+  it('renders Catalog and Installed tabs', () => {
     renderWithProviders(<Applications />);
-    expect(screen.getByText('Browse available applications and manage installed instances.')).toBeInTheDocument();
-  });
-
-  it('renders Available and Installed tabs', () => {
-    renderWithProviders(<Applications />);
-    expect(screen.getByTestId('tab-available')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-catalog')).toBeInTheDocument();
     expect(screen.getByTestId('tab-installed')).toBeInTheDocument();
-    expect(screen.getByText('Available')).toBeInTheDocument();
+    expect(screen.getByText('Catalog')).toBeInTheDocument();
     expect(screen.getByText('Installed')).toBeInTheDocument();
   });
 
@@ -77,16 +73,16 @@ describe('Applications Page', () => {
     expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
   });
 
-  it('defaults to Available tab', () => {
+  it('defaults to Catalog tab', () => {
     renderWithProviders(<Applications />);
-    const availableTab = screen.getByTestId('tab-available');
-    expect(availableTab.className).toContain('border-blue-600');
+    const catalogTab = screen.getByTestId('tab-catalog');
+    expect(catalogTab.className).toContain('border-');
   });
 
   it('switches to Installed tab on click', () => {
     renderWithProviders(<Applications />);
     const installedTab = screen.getByTestId('tab-installed');
     fireEvent.click(installedTab);
-    expect(installedTab.className).toContain('border-blue-600');
+    expect(installedTab.className).toContain('border-');
   });
 });

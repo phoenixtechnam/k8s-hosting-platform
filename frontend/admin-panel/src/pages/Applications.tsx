@@ -19,8 +19,8 @@ import type { DeploymentResponse as ApplicationInstanceResponse } from '@k8s-hos
 type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
-  { id: 'catalog', label: 'Available Applications' },
-  { id: 'installed', label: 'Installed Applications' },
+  { id: 'catalog', label: 'Catalog' },
+  { id: 'installed', label: 'Installed' },
   { id: 'upgrades', label: 'Upgrade History' },
   { id: 'repos', label: 'Repositories' },
 ] as const;
@@ -177,11 +177,22 @@ function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | n
 
 // ─── Catalog Tab ────────────────────────────────────────────────────────────
 
+const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Databases', 'Services'] as const;
+type TypeFilter = typeof TYPE_FILTERS[number];
+const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
+  All: null,
+  Applications: 'application',
+  Runtimes: 'runtime',
+  Databases: 'database',
+  Services: 'service',
+};
+
 function CatalogTab() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('All');
   const [selectedEntry, setSelectedEntry] = useState<CatalogEntry | null>(null);
-  const { data: response, isLoading, isError, error } = useCatalog('application');
+  const { data: response, isLoading, isError, error } = useCatalog();
   const updateBadges = useUpdateCatalogBadges();
 
   const entries = response?.data ?? [];
@@ -205,6 +216,11 @@ function CatalogTab() {
   const filteredEntries = useMemo(() => {
     let result = entries;
 
+    const typeValue = TYPE_FILTER_MAP[typeFilter];
+    if (typeValue) {
+      result = result.filter((entry) => entry.type === typeValue);
+    }
+
     if (search.trim()) {
       const term = search.toLowerCase();
       result = result.filter(
@@ -224,7 +240,7 @@ function CatalogTab() {
       if (a.popular !== b.popular) return (b.popular ?? 0) - (a.popular ?? 0);
       return a.name.localeCompare(b.name);
     });
-  }, [search, categoryFilter, entries]);
+  }, [search, categoryFilter, typeFilter, entries]);
 
   const handleCardClick = useCallback((entry: CatalogEntry) => {
     setSelectedEntry(entry);
@@ -241,7 +257,7 @@ function CatalogTab() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="search"
-            placeholder="Search applications..."
+            placeholder="Search catalog..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
@@ -265,10 +281,29 @@ function CatalogTab() {
         )}
       </div>
 
+      <div className="flex flex-wrap gap-2" data-testid="type-filter-pills">
+        {TYPE_FILTERS.map((tf) => (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => setTypeFilter(tf)}
+            className={clsx(
+              'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+              typeFilter === tf
+                ? 'bg-brand-500 text-white dark:bg-brand-600'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
+            )}
+            data-testid={`type-filter-${tf.toLowerCase()}`}
+          >
+            {tf}
+          </button>
+        ))}
+      </div>
+
       {isLoading && (
         <div className="flex items-center justify-center py-12" data-testid="loading-spinner">
           <Loader2 size={24} className="animate-spin text-brand-500" />
-          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading application catalog...</span>
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading catalog...</span>
         </div>
       )}
 
@@ -283,7 +318,7 @@ function CatalogTab() {
         <>
           {filteredEntries.length === 0 ? (
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="catalog-empty">
-              No applications found matching your search.
+              No entries found matching your filters.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="catalog-grid">
@@ -316,6 +351,9 @@ function CatalogTab() {
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
+                        {entry.type ?? 'unknown'}
+                      </span>
                       {entry.featured ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
                           <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
@@ -372,7 +410,7 @@ function CatalogTab() {
             </div>
           )}
           <div className="text-sm text-gray-500 dark:text-gray-400">
-            {filteredEntries.length} application{filteredEntries.length !== 1 ? 's' : ''}
+            {filteredEntries.length} entr{filteredEntries.length !== 1 ? 'ies' : 'y'}
           </div>
         </>
       )}
@@ -775,7 +813,7 @@ function AppDetailPanel({
 
 function InstalledTab() {
   const { data: response, isLoading, isError, error } = useApplicationInstances();
-  const { data: catalogResponse } = useCatalog('application');
+  const { data: catalogResponse } = useCatalog();
   const [upgradeTarget, setUpgradeTarget] = useState<ApplicationInstanceResponse | null>(null);
 
   const instances = response?.data ?? [];
@@ -817,7 +855,8 @@ function InstalledTab() {
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Application</th>
+                <th className="px-4 py-3">Catalog Entry</th>
+                <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3">Version</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Domain</th>
@@ -831,6 +870,11 @@ function InstalledTab() {
                   <tr key={inst.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{inst.name}</td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{catalogEntry?.name ?? inst.catalogEntryId}</td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300">
+                        {catalogEntry?.type ?? 'unknown'}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <span className="text-gray-900 dark:text-gray-100">v{inst.installedVersion ?? '-'}</span>

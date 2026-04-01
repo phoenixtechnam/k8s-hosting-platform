@@ -64,11 +64,10 @@ await db.insert(users).values([
 console.log(`  Seeded default admin user (${adminEmail})`);
 
 // Catalog Repositories (unified — workloads + applications)
-const catalogRepoUrl = process.env.CATALOG_REPO_URL ?? 'https://github.com/phoenixtechnam/k8s-application-catalog';
 await db.insert(catalogRepositories).values([{
   id: crypto.randomUUID(),
   name: 'Official Catalog',
-  url: catalogRepoUrl,
+  url: 'https://github.com/phoenixtechnam/k8s-application-catalog',
   branch: 'main',
   syncIntervalMinutes: 60,
   status: 'active',

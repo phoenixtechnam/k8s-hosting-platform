@@ -1,31 +1,62 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog } from '@/hooks/use-catalog';
-import { useDeployments, useUpdateDeployment } from '@/hooks/use-deployments';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment } from '@/hooks/use-deployments';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+import DeployWorkloadModal from '@/components/DeployWorkloadModal';
 import type { CatalogEntry } from '@/types/api';
 
-type Tab = 'available' | 'installed';
+type Tab = 'catalog' | 'installed';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
-  { id: 'available', label: 'Available' },
+  { id: 'catalog', label: 'Catalog' },
   { id: 'installed', label: 'Installed' },
 ] as const;
 
+const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Databases', 'Services'] as const;
+type TypeFilter = typeof TYPE_FILTERS[number];
+const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
+  All: null,
+  Applications: 'application',
+  Runtimes: 'runtime',
+  Databases: 'database',
+  Services: 'service',
+};
+
 export default function Applications() {
-  const [activeTab, setActiveTab] = useState<Tab>('available');
+  const [activeTab, setActiveTab] = useState<Tab>('catalog');
+  const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
+
+  const openDeployModal = (imageId?: string) => {
+    setDeployPreSelectedImage(imageId ?? null);
+    setDeployModalOpen(true);
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
-          <AppWindow size={20} />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
+            <AppWindow size={20} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="applications-heading">Applications</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Browse the catalog and manage your deployed applications.</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="applications-heading">Applications</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Browse available applications and manage installed instances.</p>
-        </div>
+        <button
+          type="button"
+          onClick={() => openDeployModal()}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          data-testid="deploy-button"
+        >
+          <Rocket size={14} />
+          Deploy
+        </button>
       </div>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
@@ -48,8 +79,14 @@ export default function Applications() {
         </nav>
       </div>
 
-      {activeTab === 'available' && <AvailableTab />}
-      {activeTab === 'installed' && <InstalledTab />}
+      {activeTab === 'catalog' && <CatalogTab onDeploy={openDeployModal} />}
+      {activeTab === 'installed' && <InstalledTab onDeploy={() => openDeployModal()} />}
+
+      <DeployWorkloadModal
+        open={deployModalOpen}
+        onClose={() => { setDeployModalOpen(false); setDeployPreSelectedImage(null); }}
+        preSelectedImageId={deployPreSelectedImage}
+      />
     </div>
   );
 }
@@ -166,13 +203,14 @@ function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | n
   );
 }
 
-// ─── Available Tab ──────────────────────────────────────────────────────────
+// ─── Catalog Tab ───────────────────────────────────────────────────────────
 
-function AvailableTab() {
+function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void }) {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('All');
   const [selectedEntry, setSelectedEntry] = useState<CatalogEntry | null>(null);
-  const { data: response, isLoading, isError, error } = useCatalog('application');
+  const { data: response, isLoading, isError, error } = useCatalog();
 
   const entries = response?.data ?? [];
 
@@ -186,6 +224,11 @@ function AvailableTab() {
 
   const filteredEntries = useMemo(() => {
     let result = entries;
+
+    const typeValue = TYPE_FILTER_MAP[typeFilter];
+    if (typeValue) {
+      result = result.filter((entry) => entry.type === typeValue);
+    }
 
     if (search.trim()) {
       const term = search.toLowerCase();
@@ -208,7 +251,7 @@ function AvailableTab() {
     });
 
     return result;
-  }, [search, categoryFilter, entries]);
+  }, [search, categoryFilter, typeFilter, entries]);
 
   const handleCardClick = useCallback((entry: CatalogEntry) => {
     setSelectedEntry(entry);
@@ -219,13 +262,13 @@ function AvailableTab() {
   }, []);
 
   return (
-    <div className="space-y-4" data-testid="available-tab">
+    <div className="space-y-4" data-testid="catalog-tab">
       <div className="flex items-center gap-3">
         <div className="relative max-w-sm flex-1">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="search"
-            placeholder="Search applications..."
+            placeholder="Search catalog..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -249,10 +292,29 @@ function AvailableTab() {
         )}
       </div>
 
+      <div className="flex flex-wrap gap-2" data-testid="type-filter-pills">
+        {TYPE_FILTERS.map((tf) => (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => setTypeFilter(tf)}
+            className={clsx(
+              'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+              typeFilter === tf
+                ? 'bg-blue-600 text-white dark:bg-blue-500'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
+            )}
+            data-testid={`type-filter-${tf.toLowerCase()}`}
+          >
+            {tf}
+          </button>
+        ))}
+      </div>
+
       {isLoading && (
         <div className="flex items-center justify-center py-12" data-testid="loading-spinner">
           <Loader2 size={24} className="animate-spin text-blue-600" />
-          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading application catalog...</span>
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading catalog...</span>
         </div>
       )}
 
@@ -267,7 +329,7 @@ function AvailableTab() {
         <>
           {filteredEntries.length === 0 ? (
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="catalog-empty">
-              No applications found matching your search.
+              No entries found matching your filters.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="catalog-grid">
@@ -300,6 +362,9 @@ function AvailableTab() {
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
+                      <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
+                        {entry.type ?? 'unknown'}
+                      </span>
                       <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
                         {entry.category ?? 'other'}
                       </span>
@@ -338,7 +403,7 @@ function AvailableTab() {
             </div>
           )}
           <div className="text-sm text-gray-500 dark:text-gray-400">
-            {filteredEntries.length} application{filteredEntries.length !== 1 ? 's' : ''}
+            {filteredEntries.length} entr{filteredEntries.length !== 1 ? 'ies' : 'y'}
           </div>
         </>
       )}
@@ -731,11 +796,13 @@ const statusColors: Record<string, string> = {
   rolled_back: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400',
 };
 
-function InstalledTab() {
+function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
   const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(clientId ?? undefined);
   const { data: catalogData } = useCatalog();
   const updateDeployment = useUpdateDeployment(clientId ?? undefined);
+  const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const deployments = deploymentsData?.data ?? [];
 
@@ -799,9 +866,14 @@ function InstalledTab() {
                       <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                         {deployment.name}
                       </h3>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {getCatalogEntryName(deployment.catalogEntryId)}
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {getCatalogEntryName(deployment.catalogEntryId)}
+                        </p>
+                        <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
+                          {deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown'}
+                        </span>
+                      </div>
                     </div>
                   </div>
                   <span
@@ -832,12 +904,12 @@ function InstalledTab() {
                   </div>
                 </div>
 
-                <div className="mt-4">
+                <div className="mt-4 flex gap-2">
                   <button
                     type="button"
                     onClick={() => handleToggleStatus(deployment.id, deployment.status)}
                     disabled={updateDeployment.isPending || deployment.status === 'pending'}
-                    className={`flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                       deployment.status === 'running'
                         ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
                         : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40'
@@ -853,6 +925,21 @@ function InstalledTab() {
                     )}
                     {deployment.status === 'running' ? 'Stop' : 'Start'}
                   </button>
+                  {deleteConfirmId === deployment.id ? (
+                    <div className="flex gap-1">
+                      <button type="button" onClick={async () => { try { await deleteDeployment.mutateAsync(deployment.id); setDeleteConfirmId(null); } catch { /* error via hook */ } }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
+                      <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirmId(deployment.id)}
+                      className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      data-testid={`delete-app-${deployment.id}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

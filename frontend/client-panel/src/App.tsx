@@ -6,7 +6,6 @@ import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Domains from '@/pages/Domains';
 import Applications from '@/pages/Applications';
-import Workloads from '@/pages/Workloads';
 import CronJobs from '@/pages/CronJobs';
 import Backups from '@/pages/Backups';
 import Email from '@/pages/Email';
@@ -44,7 +43,6 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="domains/:domainId" element={<DomainDetail />} />
             <Route path="applications" element={<Applications />} />
-            <Route path="deployments" element={<Workloads />} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="files" element={<Files />} />
             <Route path="email" element={<Email />} />
