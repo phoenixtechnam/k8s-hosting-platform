@@ -8,14 +8,14 @@ const domainNameRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a
 export const createDomainSchema = z.object({
   domain_name: z.string().min(1).max(255).regex(domainNameRegex, 'Invalid domain name format'),
   dns_mode: z.enum(['primary', 'cname', 'secondary']).default('cname'),
-  workload_id: uuidField.optional(),
+  deployment_id: uuidField.optional(),
 });
 
 export const updateDomainSchema = z.object({
   dns_mode: z.enum(['primary', 'cname', 'secondary']).optional(),
   ssl_auto_renew: z.boolean().optional(),
   status: z.enum(['active', 'pending', 'suspended', 'deleted']).optional(),
-  workload_id: uuidField.nullable().optional(),
+  deployment_id: uuidField.nullable().optional(),
 });
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ export const domainResponseSchema = z.object({
   domainName: z.string(),
   status: z.string(),
   dnsMode: z.string(),
-  workloadId: z.string().nullable().optional(),
+  deploymentId: z.string().nullable().optional(),
   sslAutoRenew: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),

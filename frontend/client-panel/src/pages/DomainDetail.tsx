@@ -213,7 +213,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                   <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
                   <td className="px-4 py-3">
                     <select
-                      value={route.workloadId ?? ''}
+                      value={route.deploymentId ?? ''}
                       onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
                       className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
                     >
