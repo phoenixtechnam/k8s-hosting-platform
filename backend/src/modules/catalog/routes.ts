@@ -5,6 +5,9 @@ import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
+import { eq } from 'drizzle-orm';
+import { catalogRepositories } from '../../db/schema.js';
+import { parseRepoUrl, buildCatalogFileUrl } from '../../shared/github-catalog.js';
 
 export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   // ─── Public: Catalog browsing (any authenticated user) ────────────────────
@@ -51,6 +54,55 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const entry = await service.getCatalogEntryById(app.db, id);
     return success(entry);
+  });
+
+  // GET /api/v1/catalog/:id/icon — proxy the catalog entry's icon.png
+  app.get('/catalog/:id/icon', {
+    schema: {
+      tags: ['Catalog'],
+      summary: 'Get catalog entry icon',
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+    },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const entry = await service.getCatalogEntryById(app.db, id);
+
+    if (!entry.manifestUrl) {
+      reply.status(404).send();
+      return;
+    }
+
+    const iconUrl = entry.manifestUrl.replace(/manifest\.json$/, 'icon.png');
+
+    // If CATALOG_REPO_URL is set (local dev), rewrite the URL to use the override
+    const fetchOverride = process.env.CATALOG_REPO_URL;
+    let fetchUrl = iconUrl;
+    if (fetchOverride && entry.sourceRepoId) {
+      const [repo] = await app.db.select().from(catalogRepositories)
+        .where(eq(catalogRepositories.id, entry.sourceRepoId));
+      if (repo) {
+        const source = parseRepoUrl(fetchOverride);
+        fetchUrl = buildCatalogFileUrl(source, repo.branch, `${entry.code}/icon.png`);
+      }
+    }
+
+    try {
+      const response = await fetch(fetchUrl, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) {
+        reply.status(404).send();
+        return;
+      }
+      reply.header('Content-Type', 'image/png');
+      reply.header('Cache-Control', 'public, max-age=86400');
+      const buffer = Buffer.from(await response.arrayBuffer());
+      reply.send(buffer);
+    } catch {
+      reply.status(404).send();
+    }
   });
 
   // ─── Admin: Repository management ────────────────────────────────────────

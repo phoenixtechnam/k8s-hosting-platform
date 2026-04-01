@@ -171,8 +171,8 @@ describe('Application Detail Panel', () => {
     // Health check
     expect(screen.getByText('/wp-login.php')).toBeInTheDocument();
 
-    // Install button disabled
-    expect(screen.getByTestId('install-button')).toBeDisabled();
+    // Deploy note for admin
+    expect(screen.getByText('Deploy from client panel')).toBeInTheDocument();
   });
 
   it('closes the detail panel when clicking Close', async () => {

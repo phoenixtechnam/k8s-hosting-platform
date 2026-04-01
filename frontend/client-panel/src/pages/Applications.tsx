@@ -176,14 +176,15 @@ function asHealthCheck(val: unknown): HealthCheckData {
   return (val && typeof val === 'object' ? val : {}) as HealthCheckData;
 }
 
-function getIconUrl(manifestUrl: string | null | undefined): string | null {
-  if (!manifestUrl) return null;
-  return manifestUrl.replace(/manifest\.json$/, 'icon.png');
+function getIconUrl(entryId: string | null | undefined): string | null {
+  if (!entryId) return null;
+  const base = import.meta.env.VITE_API_URL || '';
+  return `${base}/api/v1/catalog/${entryId}/icon`;
 }
 
-function AppIcon({ manifestUrl, size = 40 }: { readonly manifestUrl?: string | null; readonly size?: number }) {
+function AppIcon({ entryId, size = 40 }: { readonly entryId?: string | null; readonly size?: number }) {
   const [failed, setFailed] = useState(false);
-  const url = getIconUrl(manifestUrl);
+  const url = getIconUrl(entryId);
   if (!url || failed) {
     return (
       <div className="flex items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-700" style={{ width: size, height: size }}>
@@ -343,7 +344,7 @@ function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void
                 >
                   <div className="mb-3 flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <AppIcon manifestUrl={entry.manifestUrl} size={40} />
+                      <AppIcon entryId={entry.id} size={40} />
                       <div>
                         <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
                         <div className="mt-0.5 flex items-center gap-2">
@@ -409,7 +410,7 @@ function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void
       )}
 
       {selectedEntry && (
-        <AppDetailPanel entry={selectedEntry} onClose={handleClose} />
+        <AppDetailPanel entry={selectedEntry} onClose={handleClose} onDeploy={onDeploy} />
       )}
     </div>
   );
@@ -450,9 +451,11 @@ function CollapsibleSection({ title, children }: { readonly title: string; reado
 function AppDetailPanel({
   entry,
   onClose,
+  onDeploy,
 }: {
   readonly entry: CatalogEntry;
   readonly onClose: () => void;
+  readonly onDeploy?: (entryId: string) => void;
 }) {
   const components = asComponents(entry.components);
   const parameters = asParameters(entry.parameters);
@@ -483,7 +486,7 @@ function AppDetailPanel({
           <div>
             <div className="flex items-start justify-between pr-8">
               <div className="flex items-center gap-4">
-                <AppIcon manifestUrl={entry.manifestUrl} size={48} />
+                <AppIcon entryId={entry.id} size={48} />
                 <div>
                   <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{entry.name}</h3>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -762,11 +765,12 @@ function AppDetailPanel({
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
             <button
               type="button"
-              disabled
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+              onClick={() => { if (onDeploy) { onDeploy(entry.id); onClose(); } }}
+              disabled={!onDeploy}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="install-button"
             >
-              Install (Phase 2)
+              Deploy
             </button>
             <button
               type="button"
