@@ -86,6 +86,7 @@ export default function Applications() {
         open={deployModalOpen}
         onClose={() => { setDeployModalOpen(false); setDeployPreSelectedImage(null); }}
         preSelectedImageId={deployPreSelectedImage}
+        onSuccess={() => setActiveTab('installed')}
       />
     </div>
   );

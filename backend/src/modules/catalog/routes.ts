@@ -5,9 +5,6 @@ import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
-import { eq } from 'drizzle-orm';
-import { catalogRepositories } from '../../db/schema.js';
-import { parseRepoUrl, buildCatalogFileUrl } from '../../shared/github-catalog.js';
 
 export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   // ─── Public: Catalog browsing (any authenticated user) ────────────────────
@@ -78,20 +75,8 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
 
     const iconUrl = entry.manifestUrl.replace(/manifest\.json$/, 'icon.png');
 
-    // If CATALOG_REPO_URL is set (local dev), rewrite the URL to use the override
-    const fetchOverride = process.env.CATALOG_REPO_URL;
-    let fetchUrl = iconUrl;
-    if (fetchOverride && entry.sourceRepoId) {
-      const [repo] = await app.db.select().from(catalogRepositories)
-        .where(eq(catalogRepositories.id, entry.sourceRepoId));
-      if (repo) {
-        const source = parseRepoUrl(fetchOverride);
-        fetchUrl = buildCatalogFileUrl(source, repo.branch, `${entry.code}/icon.png`);
-      }
-    }
-
     try {
-      const response = await fetch(fetchUrl, { signal: AbortSignal.timeout(10_000) });
+      const response = await fetch(iconUrl, { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) {
         reply.status(404).send();
         return;

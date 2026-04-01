@@ -1,4 +1,4 @@
-import { useState, useMemo, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import { X, Loader2, Search, Rocket, Globe } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog } from '@/hooks/use-catalog';
@@ -10,12 +10,13 @@ interface DeployWorkloadModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly preSelectedImageId?: string | null;
+  readonly onSuccess?: () => void;
 }
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-export default function DeployWorkloadModal({ open, onClose, preSelectedImageId }: DeployWorkloadModalProps) {
+export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess }: DeployWorkloadModalProps) {
   const { clientId } = useClientContext();
   const { data: catalogData } = useCatalog();
   const { data: domainsData } = useDomains(clientId ?? undefined);
@@ -23,6 +24,13 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
 
   const [imageSearch, setImageSearch] = useState('');
   const [selectedImageId, setSelectedImageId] = useState<string>(preSelectedImageId ?? '');
+
+  useEffect(() => {
+    if (preSelectedImageId) {
+      setSelectedImageId(preSelectedImageId);
+    }
+  }, [preSelectedImageId]);
+
   const [name, setName] = useState('');
   const [replicas, setReplicas] = useState(1);
   const [cpuRequest, setCpuRequest] = useState('100m');
@@ -71,6 +79,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!clientId) return;
     if (!selectedImageId || !name) return;
 
     try {
@@ -83,6 +92,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
       });
       // TODO: If selectedDomainId is set, create ingress route after deployment creation
       // This requires the deployment ID from the response + domain route creation
+      onSuccess?.();
       handleClose();
     } catch {
       // error shown in modal
@@ -270,7 +280,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId 
             </button>
             <button
               type="submit"
-              disabled={!selectedImageId || !name || createDeployment.isPending}
+              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >

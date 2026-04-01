@@ -25,11 +25,13 @@ export function useDeployments(clientId: string | undefined) {
 export function useCreateDeployment(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: CreateDeploymentInput) =>
-      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments`, {
+    mutationFn: (input: CreateDeploymentInput) => {
+      if (!clientId) throw new Error('No client selected');
+      return apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments`, {
         method: 'POST',
         body: JSON.stringify(input),
-      }),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
     },

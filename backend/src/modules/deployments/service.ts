@@ -183,7 +183,7 @@ export async function createDeployment(
         configuration: input.configuration,
         envVars: parseJsonField<{ fixed?: Record<string, string> }>(entry.envVars) ?? undefined,
       });
-      await db.update(deployments).set({ status: 'running' }).where(eq(deployments.id, id));
+      await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[deployments] K8s deploy failed for ${input.name}:`, message);

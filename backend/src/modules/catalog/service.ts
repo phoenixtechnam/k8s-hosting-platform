@@ -17,8 +17,6 @@ import type { PaginationMeta } from '../../shared/response.js';
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const DEFAULT_CATALOG_URL = 'https://github.com/phoenixtechnam/k8s-application-catalog';
-// For local dev, CATALOG_REPO_URL overrides where we actually fetch from (e.g. http://catalog-server)
-const CATALOG_FETCH_OVERRIDE = process.env.CATALOG_REPO_URL;
 const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -268,8 +266,7 @@ export async function restoreDefaultRepo(db: Database) {
 // ─── Repo Validation ────────────────────────────────────────────────────────
 
 async function validateRepoAccess(url: string, branch: string, authToken?: string | null): Promise<void> {
-  const fetchUrl = CATALOG_FETCH_OVERRIDE ?? url;
-  const source = parseRepoUrl(fetchUrl);
+  const source = parseRepoUrl(url);
   const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
 
   let response: Response;
@@ -334,9 +331,7 @@ export async function syncCatalogRepo(db: Database, repoId: string) {
     .where(eq(catalogRepositories.id, repoId));
 
   try {
-    // Use CATALOG_REPO_URL override for local dev (fetches from Docker sidecar instead of GitHub)
-    const fetchUrl = CATALOG_FETCH_OVERRIDE ?? repo.url;
-    const source = parseRepoUrl(fetchUrl);
+    const source = parseRepoUrl(repo.url);
 
     // Fetch catalog.json
     const catalogUrl = buildCatalogFileUrl(source, repo.branch, 'catalog.json');

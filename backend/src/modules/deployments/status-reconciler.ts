@@ -35,10 +35,16 @@ function phaseToDbStatus(phase: string): 'running' | 'stopped' | 'pending' | 'fa
 
 // ─── Component Resolution (duplicated from service.ts to avoid circular deps) ─
 
+function parseJson<T>(value: unknown): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') { try { return JSON.parse(value) as T; } catch { return null; } }
+  return value as T;
+}
+
 function resolveComponentsForReconcile(
   entry: typeof catalogEntries.$inferSelect,
 ): DeployComponentInput[] {
-  const baseComponents = (entry.components ?? []) as Array<{
+  const baseComponents = (parseJson<unknown[]>(entry.components) ?? []) as Array<{
     name: string;
     type: 'deployment' | 'statefulset' | 'cronjob' | 'job';
     image: string;
