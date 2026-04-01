@@ -82,9 +82,9 @@ interface ParameterEntry {
 }
 
 interface VolumeEntry {
-  readonly name?: string;
-  readonly mount_path?: string;
-  readonly default_size?: string;
+  readonly local_path?: string;
+  readonly container_path?: string;
+  readonly size_megabytes?: number;
   readonly description?: string;
   readonly optional?: boolean;
 }
@@ -742,19 +742,19 @@ function AppDetailPanel({
                 <table className="w-full text-sm" data-testid="volumes-table">
                   <thead>
                     <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                      <th className="px-3 py-2">Name</th>
-                      <th className="px-3 py-2">Mount Path</th>
-                      <th className="px-3 py-2">Default Size</th>
+                      <th className="px-3 py-2">Local Path</th>
+                      <th className="px-3 py-2">Container Path</th>
+                      <th className="px-3 py-2">Size</th>
                       <th className="px-3 py-2">Description</th>
                       <th className="px-3 py-2"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                    {volumes.map((vol) => (
-                      <tr key={vol.name ?? Math.random()}>
-                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{vol.name}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.mount_path}</td>
-                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.default_size ?? '-'}</td>
+                    {volumes.map((vol, i) => (
+                      <tr key={vol.local_path ?? i}>
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{vol.local_path}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path}</td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.size_megabytes != null ? `${vol.size_megabytes} MB` : '-'}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.description ?? '-'}</td>
                         <td className="px-3 py-2">
                           {vol.optional && (

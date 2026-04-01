@@ -26,7 +26,7 @@ const MOCK_CATALOG_ENTRIES = [
       websocket: false,
     },
     volumes: [
-      { name: 'wp-content', mount_path: '/var/www/html/wp-content', default_size: '10Gi', description: 'Themes, plugins' },
+      { local_path: 'applications/wordpress/content', container_path: '/var/www/html/wp-content', size_megabytes: 10240, description: 'Themes, plugins' },
     ],
     resources: {
       default: { cpu: '0.50', memory: '512Mi', storage: '15Gi' },
@@ -166,7 +166,7 @@ describe('Application Detail Panel', () => {
 
     // Volumes table
     expect(screen.getByTestId('volumes-table')).toBeInTheDocument();
-    expect(screen.getByText('wp-content')).toBeInTheDocument();
+    expect(screen.getByText('applications/wordpress/content')).toBeInTheDocument();
 
     // Health check
     expect(screen.getByText('/wp-login.php')).toBeInTheDocument();

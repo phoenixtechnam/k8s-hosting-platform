@@ -23,7 +23,7 @@ export interface DeployCatalogEntryInput {
   readonly deploymentName: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ name: string; mount_path: string; default_size: string }>;
+  readonly volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -184,12 +184,12 @@ async function deployK8sStatefulSet(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   replicaCount: number,
-  volumes: Array<{ name: string; mount_path: string; default_size: string }>,
+  volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }>,
 ): Promise<void> {
   // Add volume mounts to container
-  const volumeMounts = volumes.map(v => ({
-    name: v.name,
-    mountPath: v.mount_path,
+  const volumeMounts = volumes.map((v, i) => ({
+    name: `vol-${i}`,
+    mountPath: v.container_path,
   }));
 
   const containerWithMounts = {
@@ -197,12 +197,12 @@ async function deployK8sStatefulSet(
     volumeMounts,
   };
 
-  const volumeClaimTemplates = volumes.map(v => ({
-    metadata: { name: v.name },
+  const volumeClaimTemplates = volumes.map((v, i) => ({
+    metadata: { name: `vol-${i}` },
     spec: {
       accessModes: ['ReadWriteOnce'],
       resources: {
-        requests: { storage: v.default_size },
+        requests: { storage: `${v.size_megabytes}Mi` },
       },
     },
   }));

@@ -150,7 +150,7 @@ export async function createDeployment(
 
   const components = resolveComponents(entry, versionComponents);
   const namespace = client.kubernetesNamespace;
-  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ name: string; mount_path: string; default_size: string }>;
+  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string; size_megabytes: number }>;
 
   const id = crypto.randomUUID();
 

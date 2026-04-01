@@ -48,9 +48,9 @@ export const componentSchema = z.object({
 });
 
 export const volumeSchema = z.object({
-  name: z.string(),
-  mount_path: z.string(),
-  default_size: z.string(),
+  local_path: z.string(),
+  container_path: z.string(),
+  size_megabytes: z.number().int(),
   description: z.string().optional(),
   optional: z.boolean().optional(),
 });

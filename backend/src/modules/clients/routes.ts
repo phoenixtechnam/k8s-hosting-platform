@@ -10,6 +10,8 @@ import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { provisioningTasks } from '../../db/schema.js';
+import { runProvisionNamespace, PROVISION_STEPS, buildStepsLog } from '../k8s-provisioner/service.js';
 
 export async function clientRoutes(app: FastifyInstance): Promise<void> {
   // Lazy-init K8s clients (undefined if no kubeconfig available)
@@ -76,6 +78,31 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     const result = await service.createClient(app.db, parsed.data, request.user.sub);
     const { _generatedPassword, _clientUserId, ...client } = result;
+
+    // Auto-provision: trigger namespace provisioning in the background
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = createK8sClients(kubeconfigPath);
+      if (k8sClients) {
+        const taskId = crypto.randomUUID();
+        await app.db.insert(provisioningTasks).values({
+          id: taskId,
+          clientId: client.id,
+          type: 'provision_namespace',
+          status: 'pending',
+          totalSteps: PROVISION_STEPS.length,
+          completedSteps: 0,
+          stepsLog: buildStepsLog(PROVISION_STEPS),
+          startedBy: request.user!.sub,
+        });
+        runProvisionNamespace(app.db, k8sClients, taskId, client.id, {}).catch((err) => {
+          app.log.error({ err, taskId, clientId: client.id }, 'Auto-provisioning failed');
+        });
+      }
+    } catch {
+      // K8s not available — skip auto-provisioning
+    }
+
     reply.status(201).send(success({
       ...client,
       clientUser: {

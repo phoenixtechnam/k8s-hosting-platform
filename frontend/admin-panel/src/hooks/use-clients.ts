@@ -28,6 +28,11 @@ export function useClient(id: string | undefined) {
     queryKey: ['clients', id],
     queryFn: () => apiFetch<{ data: Client }>(`/api/v1/clients/${id}`),
     enabled: !!id,
+    // Poll every 3s while provisioning is in progress (stops once provisioned/failed)
+    refetchInterval: (query) => {
+      const status = (query.state.data?.data as Record<string, unknown> | undefined)?.provisioningStatus;
+      return (status === 'provisioning' || status === 'unprovisioned') ? 3000 : false;
+    },
   });
 }
 

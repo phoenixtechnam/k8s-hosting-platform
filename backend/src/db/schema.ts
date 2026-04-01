@@ -196,7 +196,7 @@ export const catalogEntries = mysqlTable('catalog_entries', {
   tenancy: json('tenancy').$type<string[] | null>(),
   components: json('components').$type<Array<{ name: string; type: string; image: string; ports?: Array<{ port: number; protocol: string; ingress?: boolean }>; optional?: boolean; schedule?: string }> | null>(),
   networking: json('networking').$type<{ ingress_ports: Array<{ port: number; protocol: string; tls: boolean; description?: string }>; host_ports?: Array<{ port: number; protocol: string; component: string; description: string }>; websocket?: boolean } | null>(),
-  volumes: json('volumes').$type<Array<{ name: string; mount_path: string; default_size: string; description?: string; optional?: boolean }> | null>(),
+  volumes: json('volumes').$type<Array<{ local_path: string; container_path: string; size_megabytes: number; description?: string; optional?: boolean }> | null>(),
   resources: json('resources').$type<{ default: { cpu: string; memory: string; storage?: string }; minimum: { cpu: string; memory: string; storage?: string } } | null>(),
   healthCheck: json('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
   parameters: json('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string }> | null>(),
