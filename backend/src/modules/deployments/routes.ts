@@ -7,6 +7,7 @@ import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileDeploymentStatuses } from './status-reconciler.js';
+import { restartDeployment } from './k8s-deployer.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -89,6 +90,30 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const body = (request.body ?? {}) as { keys?: string[] };
     const result = await service.regenerateDeploymentCredentials(app.db, clientId, id, body.keys);
     return success(result);
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/restart
+  app.post('/clients/:clientId/deployments/:id/restart', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const deployment = await service.getDeploymentById(app.db, clientId, id);
+
+    const k8s = getK8s();
+    if (!k8s) {
+      throw new ApiError(
+        'K8S_UNAVAILABLE',
+        'Kubernetes cluster is not available',
+        503,
+        {},
+        'Check that kubeconfig is configured',
+      );
+    }
+
+    const components = await service.resolveDeploymentComponents(app.db, deployment);
+    const namespace = await service.getClientNamespace(app.db, clientId);
+
+    await restartDeployment(k8s, namespace, deployment.name, components);
+
+    return success({ message: 'Rolling restart initiated' });
   });
 
   // DELETE /api/v1/clients/:clientId/deployments/:id

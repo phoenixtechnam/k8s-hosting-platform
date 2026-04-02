@@ -87,6 +87,20 @@ export function useDeploymentCredentials(clientId: string | undefined, deploymen
   });
 }
 
+export function useRestartDeployment(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<{ data: { message: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/restart`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+    },
+  });
+}
+
 export function useRegenerateCredentials(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

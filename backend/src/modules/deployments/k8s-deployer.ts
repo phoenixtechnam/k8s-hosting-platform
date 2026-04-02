@@ -469,6 +469,66 @@ export async function startDeployment(
   }
 }
 
+// ─── Restart (rolling restart via annotation) ───────────────────────────────
+
+export async function restartDeployment(
+  k8s: K8sClients,
+  namespace: string,
+  deploymentName: string,
+  components: readonly DeployComponentInput[],
+): Promise<void> {
+  // Restart by deleting pods — the Deployment/StatefulSet controller will recreate them
+  const componentCount = components.length;
+
+  for (const component of components) {
+    if (component.type === 'cronjob' || component.type === 'job') continue;
+
+    const name = resourceName(deploymentName, component.name, componentCount);
+
+    try {
+      // Find all pods owned by this component
+      const pods = await k8s.core.listNamespacedPod({
+        namespace,
+        labelSelector: `app=${deploymentName},component=${component.name}`,
+      });
+
+      const podList = (pods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [];
+
+      // Delete each pod — the controller will recreate them
+      for (const pod of podList) {
+        const podName = pod.metadata?.name;
+        if (podName) {
+          try {
+            await k8s.core.deleteNamespacedPod({ name: podName, namespace });
+          } catch (err: unknown) {
+            if (!isK8s404(err)) throw err;
+          }
+        }
+      }
+
+      // If no pods found by label, try by resource name prefix
+      if (podList.length === 0) {
+        const allPods = await k8s.core.listNamespacedPod({ namespace });
+        const matchingPods = ((allPods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [])
+          .filter(p => p.metadata?.name?.startsWith(name));
+
+        for (const pod of matchingPods) {
+          const podName = pod.metadata?.name;
+          if (podName) {
+            try {
+              await k8s.core.deleteNamespacedPod({ name: podName, namespace });
+            } catch (err: unknown) {
+              if (!isK8s404(err)) throw err;
+            }
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+    }
+  }
+}
+
 // ─── Delete ─────────────────────────────────────────────────────────────────
 
 export async function deleteDeploymentResources(

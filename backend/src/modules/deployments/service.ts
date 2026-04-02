@@ -370,6 +370,30 @@ export async function deleteDeployment(
   await db.delete(deployments).where(eq(deployments.id, deploymentId));
 }
 
+// ─── Shared Helpers (used by routes for restart, etc.) ───────────────────────
+
+export async function resolveDeploymentComponents(
+  db: Database,
+  deployment: typeof deployments.$inferSelect,
+): Promise<DeployComponentInput[]> {
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+  return resolveComponents(entry, null);
+}
+
+export async function getClientNamespace(
+  db: Database,
+  clientId: string,
+): Promise<string> {
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  return client.kubernetesNamespace;
+}
+
 // ─── Credentials ─────────────────────────────────────────────────────────────
 
 interface ConnectionInfo {
