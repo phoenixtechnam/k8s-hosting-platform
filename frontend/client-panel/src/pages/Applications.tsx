@@ -969,6 +969,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         open={!!selectedDeploymentId}
         deployment={selectedDeployment}
         catalogEntry={selectedCatalogEntry}
+        clientId={clientId ?? undefined}
         onClose={() => setSelectedDeploymentId(null)}
         onToggleStatus={(id, newStatus) => {
           updateDeployment.mutate({ deploymentId: id, status: newStatus });

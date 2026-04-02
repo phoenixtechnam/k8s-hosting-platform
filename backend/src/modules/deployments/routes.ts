@@ -76,6 +76,21 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
+  // GET /api/v1/clients/:clientId/deployments/:id/credentials
+  app.get('/clients/:clientId/deployments/:id/credentials', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const result = await service.getDeploymentCredentials(app.db, clientId, id);
+    return success(result);
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/regenerate-credentials
+  app.post('/clients/:clientId/deployments/:id/regenerate-credentials', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const body = (request.body ?? {}) as { keys?: string[] };
+    const result = await service.regenerateDeploymentCredentials(app.db, clientId, id, body.keys);
+    return success(result);
+  });
+
   // DELETE /api/v1/clients/:clientId/deployments/:id
   app.delete('/clients/:clientId/deployments/:id', async (request, reply) => {
     const { clientId, id } = request.params as { clientId: string; id: string };

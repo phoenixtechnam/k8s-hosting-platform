@@ -64,3 +64,40 @@ export function useDeleteDeployment(clientId: string | undefined) {
     },
   });
 }
+
+interface DeploymentCredentials {
+  readonly credentials: Record<string, string>;
+  readonly connectionInfo: {
+    readonly host?: string;
+    readonly port?: number;
+    readonly database?: string;
+    readonly username?: string;
+    readonly connectionUrl?: string;
+  } | null;
+  readonly generatedKeys: readonly string[];
+}
+
+export function useDeploymentCredentials(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['deployment-credentials', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: DeploymentCredentials }>(
+      `/api/v1/clients/${clientId}/deployments/${deploymentId}/credentials`
+    ),
+    enabled: Boolean(clientId) && Boolean(deploymentId),
+  });
+}
+
+export function useRegenerateCredentials(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, keys }: { deploymentId: string; keys?: string[] }) =>
+      apiFetch<{ data: DeploymentCredentials }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/regenerate-credentials`,
+        { method: 'POST', body: JSON.stringify({ keys }) }
+      ),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['deployment-credentials', clientId, variables.deploymentId] });
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+    },
+  });
+}

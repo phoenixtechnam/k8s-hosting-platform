@@ -39,6 +39,13 @@ function parseJsonField<T>(value: unknown): T | null {
   return value as T;
 }
 
+export function generateSecurePassword(length: number): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
+}
+
 // ─── Component Resolution ───────────────────────────────────────────────────
 
 function resolveComponents(
@@ -152,6 +159,21 @@ export async function createDeployment(
   const namespace = client.kubernetesNamespace;
   const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string; size_megabytes: number }>;
 
+  // Generate secrets for env_vars.generated entries
+  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
+  const generatedSecrets: Record<string, string> = {};
+  if (envVarsData?.generated) {
+    for (const key of envVarsData.generated) {
+      generatedSecrets[key] = generateSecurePassword(32);
+    }
+  }
+
+  // Merge: user config + generated secrets (generated cannot be overridden by user)
+  const finalConfiguration: Record<string, unknown> = {
+    ...(input.configuration ?? {}),
+    ...generatedSecrets,
+  };
+
   const id = crypto.randomUUID();
 
   await db.insert(deployments).values({
@@ -163,7 +185,7 @@ export async function createDeployment(
     replicaCount: input.replica_count ?? 1,
     cpuRequest: input.cpu_request ?? '0.25',
     memoryRequest: input.memory_request ?? '256Mi',
-    configuration: input.configuration ?? null,
+    configuration: finalConfiguration,
     installedVersion,
     targetVersion: installedVersion,
     status: 'pending',
@@ -180,8 +202,8 @@ export async function createDeployment(
         replicaCount: input.replica_count ?? 1,
         cpuRequest: input.cpu_request ?? '0.25',
         memoryRequest: input.memory_request ?? '256Mi',
-        configuration: input.configuration,
-        envVars: parseJsonField<{ fixed?: Record<string, string> }>(entry.envVars) ?? undefined,
+        configuration: finalConfiguration,
+        envVars: envVarsData ?? undefined,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {
@@ -346,4 +368,144 @@ export async function deleteDeployment(
   }
 
   await db.delete(deployments).where(eq(deployments.id, deploymentId));
+}
+
+// ─── Credentials ─────────────────────────────────────────────────────────────
+
+interface ConnectionInfo {
+  readonly host: string;
+  readonly port: number | null;
+  readonly database: string | null;
+  readonly username: string | null;
+}
+
+function buildConnectionInfo(
+  deployment: typeof deployments.$inferSelect,
+  entry: typeof catalogEntries.$inferSelect,
+  provides: Record<string, unknown> | null,
+): ConnectionInfo {
+  const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+  const components = parseJsonField<Array<{ name: string; ports?: Array<{ port: number }> }>>(entry.components) ?? [];
+
+  // Determine port from provides or first component port
+  let port: number | null = null;
+  if (provides && typeof provides.port === 'number') {
+    port = provides.port;
+  } else if (components.length > 0 && components[0].ports && components[0].ports.length > 0) {
+    port = components[0].ports[0].port;
+  }
+
+  // Build internal K8s DNS hostname
+  const componentName = components.length > 0 ? components[0].name : entry.code;
+  const resourceSuffix = components.length > 1 ? `-${componentName}` : '';
+  const namespace = `client-${deployment.clientId}`;
+  const host = `${deployment.name}${resourceSuffix}.${namespace}.svc.cluster.local`;
+
+  return {
+    host,
+    port,
+    database: config.MARIADB_DATABASE ? String(config.MARIADB_DATABASE)
+      : config.MYSQL_DATABASE ? String(config.MYSQL_DATABASE)
+      : config.POSTGRES_DB ? String(config.POSTGRES_DB)
+      : null,
+    username: config.MARIADB_USER ? String(config.MARIADB_USER)
+      : config.MYSQL_USER ? String(config.MYSQL_USER)
+      : config.POSTGRES_USER ? String(config.POSTGRES_USER)
+      : null,
+  };
+}
+
+export async function getDeploymentCredentials(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+
+  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
+  const generatedKeys = envVarsData?.generated ?? [];
+  const provides = parseJsonField<Record<string, unknown>>(entry.provides);
+
+  const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+
+  // Build credentials from generated keys only
+  const credentials: Record<string, string> = {};
+  for (const key of generatedKeys) {
+    if (config[key] !== undefined && config[key] !== null) {
+      credentials[key] = String(config[key]);
+    }
+  }
+
+  const connectionInfo = buildConnectionInfo(deployment, entry, provides);
+
+  return { credentials, connectionInfo, generatedKeys };
+}
+
+export async function regenerateDeploymentCredentials(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+  keys?: string[],
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
+
+  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
+  const generatedKeys = envVarsData?.generated ?? [];
+
+  if (generatedKeys.length === 0) {
+    throw new ApiError(
+      'NO_GENERATED_CREDENTIALS',
+      'This deployment has no auto-generated credentials to regenerate',
+      400,
+      { deployment_id: deploymentId },
+    );
+  }
+
+  // Determine which keys to regenerate
+  const keysToRegenerate = (keys && keys.length > 0)
+    ? keys.filter(k => generatedKeys.includes(k))
+    : generatedKeys;
+
+  if (keysToRegenerate.length === 0) {
+    throw new ApiError(
+      'INVALID_CREDENTIAL_KEYS',
+      'None of the specified keys are auto-generated credentials',
+      400,
+      { requested_keys: keys, valid_keys: generatedKeys },
+    );
+  }
+
+  const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+
+  // Generate new values
+  const newCredentials: Record<string, string> = {};
+  for (const key of keysToRegenerate) {
+    newCredentials[key] = generateSecurePassword(32);
+  }
+
+  const updatedConfiguration = {
+    ...config,
+    ...newCredentials,
+  };
+
+  await db
+    .update(deployments)
+    .set({ configuration: updatedConfiguration })
+    .where(eq(deployments.id, deploymentId));
+
+  return { credentials: newCredentials, regeneratedKeys: keysToRegenerate };
 }
