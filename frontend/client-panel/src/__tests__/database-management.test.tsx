@@ -312,7 +312,6 @@ describe('DatabaseManagementModal', () => {
     fireEvent.click(screen.getByTestId('show-create-user-form'));
     expect(screen.getByTestId('create-user-form')).toBeInTheDocument();
     expect(screen.getByTestId('create-user-username')).toBeInTheDocument();
-    expect(screen.getByTestId('create-user-password')).toBeInTheDocument();
     expect(screen.getByTestId('create-user-database')).toBeInTheDocument();
     expect(screen.getByTestId('create-user-submit')).toBeInTheDocument();
     expect(screen.getByTestId('create-user-cancel')).toBeInTheDocument();
@@ -334,11 +333,10 @@ describe('DatabaseManagementModal', () => {
 
     fireEvent.click(screen.getByTestId('show-create-user-form'));
     fireEvent.change(screen.getByTestId('create-user-username'), { target: { value: 'new_user' } });
-    fireEvent.change(screen.getByTestId('create-user-password'), { target: { value: 'p@ssw0rd' } });
     fireEvent.click(screen.getByTestId('create-user-submit'));
 
     expect(mutateFn).toHaveBeenCalledWith(
-      expect.objectContaining({ deploymentId: 'dep-1', username: 'new_user', password: 'p@ssw0rd' }),
+      expect.objectContaining({ deploymentId: 'dep-1', username: 'new_user', password: expect.any(String) }),
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
   });

@@ -302,7 +302,31 @@ describe('db-manager', () => {
 
   describe('listUsers', () => {
     it('should list mysql users excluding system users', async () => {
-      setupExecSuccess('root\t%\nmariadb.sys\tlocalhost\napp_user\t%\nreader\t%');
+      // First call: SELECT User, Host FROM mysql.user
+      // Second call (may try mariadb binary first, then mysql): SELECT User, Db FROM mysql.db
+      let callCount = 0;
+      mockExecFn.mockImplementation(
+        (
+          _ns: string,
+          _pod: string,
+          _container: string,
+          command: string[],
+          stdoutStream: NodeJS.WritableStream,
+          stderrStream: NodeJS.WritableStream,
+          _stdin: null,
+          _tty: boolean,
+          callback: (status: Record<string, unknown>) => void,
+        ) => {
+          callCount++;
+          const sql = command.find((c) => c.includes('SELECT'));
+          const stdout = sql?.includes('mysql.db')
+            ? 'app_user\tmy_database\nreader\tother_db'
+            : 'root\t%\nmariadb.sys\tlocalhost\napp_user\t%\nreader\t%';
+          stdoutStream.write(Buffer.from(stdout));
+          setTimeout(() => callback({ status: 'Success' }), 0);
+          return Promise.resolve({} as unknown);
+        },
+      );
 
       const ctx = {
         kubeconfigPath: '/tmp/kc',
@@ -315,13 +339,40 @@ describe('db-manager', () => {
 
       const users = await listUsers(ctx);
       expect(users).toEqual([
-        { username: 'app_user', host: '%' },
-        { username: 'reader', host: '%' },
+        { username: 'app_user', host: '%', databases: ['my_database'] },
+        { username: 'reader', host: '%', databases: ['other_db'] },
       ]);
     });
 
     it('should list postgresql users', async () => {
-      setupExecSuccess('app_user\nreader');
+      let callCount = 0;
+      mockExecFn.mockImplementation(
+        (
+          _ns: string,
+          _pod: string,
+          _container: string,
+          command: string[],
+          stdoutStream: NodeJS.WritableStream,
+          _stderrStream: NodeJS.WritableStream,
+          _stdin: null,
+          _tty: boolean,
+          callback: (status: Record<string, unknown>) => void,
+        ) => {
+          callCount++;
+          const sql = command.find((c) => c.includes('SELECT') || c.includes('select'));
+          let stdout = '';
+          if (sql?.includes('pg_user')) {
+            stdout = 'app_user\nreader';
+          } else if (sql?.includes('pg_database')) {
+            stdout = 'test_db';
+          } else if (sql?.includes('has_database_privilege')) {
+            stdout = 't';
+          }
+          stdoutStream.write(Buffer.from(stdout));
+          setTimeout(() => callback({ status: 'Success' }), 0);
+          return Promise.resolve({} as unknown);
+        },
+      );
 
       const ctx = {
         kubeconfigPath: undefined,
@@ -334,8 +385,8 @@ describe('db-manager', () => {
 
       const users = await listUsers(ctx);
       expect(users).toEqual([
-        { username: 'app_user', host: '*' },
-        { username: 'reader', host: '*' },
+        { username: 'app_user', host: '*', databases: ['test_db'] },
+        { username: 'reader', host: '*', databases: ['test_db'] },
       ]);
     });
   });

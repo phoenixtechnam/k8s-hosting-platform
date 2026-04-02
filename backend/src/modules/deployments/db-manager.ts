@@ -121,6 +121,7 @@ export interface DbDatabase {
 export interface DbUser {
   readonly username: string;
   readonly host: string;
+  readonly databases: readonly string[];
 }
 
 export type Engine = 'mariadb' | 'mysql' | 'postgresql';
@@ -207,13 +208,13 @@ async function mysqlListUsers(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
 ): Promise<readonly DbUser[]> {
   const systemUsers = new Set([
-    'root', 'mariadb.sys', 'mysql.sys', 'mysql.infoschema', 'mysql.session',
+    'root', 'mariadb.sys', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'healthcheck',
   ]);
   const out = await mysqlExec(
     kp, ns, pod, cn, pw,
     'SELECT User, Host FROM mysql.user',
   );
-  return out
+  const users = out
     .split('\n')
     .filter(Boolean)
     .map((line) => {
@@ -221,6 +222,25 @@ async function mysqlListUsers(
       return { username, host: host ?? '%' };
     })
     .filter((u) => !systemUsers.has(u.username));
+
+  // Query per-user database grants from mysql.db
+  const dbGrantsOut = await mysqlExec(
+    kp, ns, pod, cn, pw,
+    'SELECT User, Db FROM mysql.db',
+  );
+  const grantsByUser = new Map<string, string[]>();
+  for (const line of dbGrantsOut.split('\n').filter(Boolean)) {
+    const [user, db] = line.split('\t');
+    if (!user || !db) continue;
+    const existing = grantsByUser.get(user) ?? [];
+    if (!existing.includes(db)) existing.push(db);
+    grantsByUser.set(user, existing);
+  }
+
+  return users.map((u) => ({
+    ...u,
+    databases: grantsByUser.get(u.username) ?? [],
+  }));
 }
 
 async function mysqlCreateUser(
@@ -326,10 +346,42 @@ async function pgListUsers(
     kp, ns, pod, cn,
     "SELECT usename FROM pg_user WHERE usename NOT IN ('postgres')",
   );
-  return out
+  const users = out
     .split('\n')
     .filter(Boolean)
     .map((username) => ({ username, host: '*' }));
+
+  // Query per-user database grants
+  const dbGrantsOut = await pgExec(
+    kp, ns, pod, cn,
+    "SELECT grantee, table_catalog FROM information_schema.role_table_grants WHERE grantee NOT IN ('postgres', 'PUBLIC') GROUP BY grantee, table_catalog",
+  );
+
+  // Also check database-level grants via pg_database + has_database_privilege
+  const dbListOut = await pgExec(kp, ns, pod, cn, "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'");
+  const allDbs = dbListOut.split('\n').filter(Boolean);
+
+  const grantsByUser = new Map<string, string[]>();
+  for (const user of users) {
+    const userDbs: string[] = [];
+    for (const db of allDbs) {
+      const hasAccess = await pgExec(
+        kp, ns, pod, cn,
+        `SELECT has_database_privilege('${user.username}', '${db}', 'CONNECT')`,
+      );
+      if (hasAccess.trim() === 't') {
+        userDbs.push(db);
+      }
+    }
+    if (userDbs.length > 0) {
+      grantsByUser.set(user.username, userDbs);
+    }
+  }
+
+  return users.map((u) => ({
+    ...u,
+    databases: grantsByUser.get(u.username) ?? [],
+  }));
 }
 
 async function pgCreateUser(

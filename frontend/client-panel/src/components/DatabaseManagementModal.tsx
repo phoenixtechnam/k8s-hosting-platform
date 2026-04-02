@@ -288,13 +288,13 @@ function UsersSection({
   readonly databases: readonly { name: string }[];
 }) {
   const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newDatabase, setNewDatabase] = useState('');
+  const [newDatabase, setNewDatabase] = useState('__all__');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [passwordTarget, setPasswordTarget] = useState<string | null>(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [createdPassword, setCreatedPassword] = useState<string | null>(null);
 
   const { data: usersData, isLoading, isError } = useDbUsers(clientId, deploymentId);
   const createUser = useCreateDbUser(clientId);
@@ -304,26 +304,28 @@ function UsersSection({
   const users = usersData?.data ?? [];
 
   const handleCreate = useCallback(() => {
-    if (!deploymentId || !newUsername.trim() || !newPassword.trim()) return;
+    if (!deploymentId || !newUsername.trim()) return;
     setErrorMessage(null);
+    setCreatedPassword(null);
+    const generatedPassword = generateRandomPassword();
     createUser.mutate(
       {
         deploymentId,
         username: newUsername.trim(),
-        password: newPassword.trim(),
-        database: newDatabase || undefined,
+        password: generatedPassword,
+        database: newDatabase === '__all__' ? undefined : newDatabase,
       },
       {
         onSuccess: () => {
+          setCreatedPassword(generatedPassword);
           setNewUsername('');
-          setNewPassword('');
-          setNewDatabase('');
+          setNewDatabase('__all__');
           setShowCreateForm(false);
         },
         onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to create user'),
       },
     );
-  }, [deploymentId, newUsername, newPassword, newDatabase, createUser]);
+  }, [deploymentId, newUsername, newDatabase, createUser]);
 
   const handleDrop = useCallback(
     (username: string) => {
@@ -391,7 +393,9 @@ function UsersSection({
                         {user.username}
                       </span>
                       <span className="text-xs text-gray-400 dark:text-gray-500">
-                        @{user.host}
+                        {user.databases && user.databases.length > 0
+                          ? `— ${user.databases.join(', ')}`
+                          : '— All databases'}
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
@@ -501,45 +505,27 @@ function UsersSection({
                     data-testid="create-user-username"
                   />
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="password"
-                    className="flex-1 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                    data-testid="create-user-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setNewPassword(generateRandomPassword())}
-                    className="rounded p-1.5 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"
-                    title="Generate random password"
-                    data-testid="create-user-generate-password"
-                  >
-                    <Shuffle size={14} />
-                  </button>
-                </div>
-                {databases.length > 0 && (
-                  <select
-                    value={newDatabase}
-                    onChange={(e) => setNewDatabase(e.target.value)}
-                    className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                    data-testid="create-user-database"
-                  >
-                    <option value="">No database (grant access later)</option>
-                    {databases.map((db) => (
-                      <option key={db.name} value={db.name}>
-                        Grant access to: {db.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <select
+                  value={newDatabase}
+                  onChange={(e) => setNewDatabase(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  data-testid="create-user-database"
+                >
+                  <option value="__all__">All databases</option>
+                  {databases.map((db) => (
+                    <option key={db.name} value={db.name}>
+                      {db.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  A secure password will be generated automatically.
+                </p>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={handleCreate}
-                    disabled={createUser.isPending || !newUsername.trim() || !newPassword.trim()}
+                    disabled={createUser.isPending || !newUsername.trim()}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="create-user-submit"
                   >
@@ -555,8 +541,7 @@ function UsersSection({
                     onClick={() => {
                       setShowCreateForm(false);
                       setNewUsername('');
-                      setNewPassword('');
-                      setNewDatabase('');
+                      setNewDatabase('__all__');
                     }}
                     className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                     data-testid="create-user-cancel"
@@ -567,6 +552,37 @@ function UsersSection({
               </div>
             )}
           </div>
+
+          {createdPassword && (
+            <div className="mt-3 rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 p-3" data-testid="created-password-banner">
+              <p className="text-sm font-medium text-green-800 dark:text-green-300 mb-1">
+                User created successfully. Copy the password now — it will not be shown again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded bg-white dark:bg-gray-900 border border-green-200 dark:border-green-700 px-3 py-1.5 font-mono text-sm text-gray-900 dark:text-gray-100 select-all truncate">
+                  {createdPassword}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    copyToClipboard(createdPassword);
+                  }}
+                  className="shrink-0 rounded-lg bg-green-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                  data-testid="copy-created-password"
+                >
+                  <Copy size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreatedPassword(null)}
+                  className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                  data-testid="dismiss-created-password"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
 
           {errorMessage && (
             <p className="mt-2 text-sm text-red-600 dark:text-red-400" data-testid="user-action-error">

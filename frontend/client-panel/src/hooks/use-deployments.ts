@@ -125,6 +125,7 @@ export interface DbDatabase {
 export interface DbUser {
   readonly username: string;
   readonly host: string;
+  readonly databases?: readonly string[];
 }
 
 export function useDbDatabases(clientId: string | undefined, deploymentId: string | undefined) {
@@ -135,6 +136,9 @@ export function useDbDatabases(clientId: string | undefined, deploymentId: strin
         `/api/v1/clients/${clientId}/deployments/${deploymentId}/databases`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
   });
 }
 
@@ -174,6 +178,9 @@ export function useDbUsers(clientId: string | undefined, deploymentId: string | 
         `/api/v1/clients/${clientId}/deployments/${deploymentId}/db-users`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
   });
 }
 
