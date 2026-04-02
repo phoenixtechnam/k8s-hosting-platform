@@ -86,7 +86,7 @@ function resolveComponents(
 function resolveIngressPorts(
   entry: typeof catalogEntries.$inferSelect,
 ): Array<{ port: number; protocol: string; ingress?: boolean }> {
-  const networking = entry.networking as { ingress_ports?: Array<{ port: number; protocol: string }> } | null;
+  const networking = parseJsonField<{ ingress_ports?: Array<{ port: number; protocol: string }> }>(entry.networking);
   if (networking?.ingress_ports && networking.ingress_ports.length > 0) {
     return networking.ingress_ports.map(p => ({ port: p.port, protocol: p.protocol, ingress: true }));
   }
@@ -128,7 +128,7 @@ export async function createDeployment(
         ),
       );
     if (version) {
-      versionComponents = version.components;
+      versionComponents = parseJsonField<readonly { name: string; image: string }[]>(version.components);
       installedVersion = version.version;
     }
   } else if (entry.defaultVersion) {
@@ -143,7 +143,7 @@ export async function createDeployment(
         ),
       );
     if (version) {
-      versionComponents = version.components;
+      versionComponents = parseJsonField<readonly { name: string; image: string }[]>(version.components);
       installedVersion = version.version;
     }
   }
