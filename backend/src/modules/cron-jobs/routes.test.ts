@@ -8,9 +8,18 @@ const mockJob = {
   id: 'j1',
   clientId: 'c1',
   name: 'cleanup',
+  type: 'webcron',
   schedule: '0 * * * *',
-  command: 'echo hello',
+  command: null,
+  url: 'https://example.com/cron',
+  httpMethod: 'GET',
+  deploymentId: null,
   enabled: 1,
+  lastRunAt: null,
+  lastRunStatus: null,
+  lastRunDurationMs: null,
+  lastRunResponseCode: null,
+  lastRunOutput: null,
 };
 
 vi.mock('./service.js', () => ({
@@ -22,6 +31,7 @@ vi.mock('./service.js', () => ({
   }),
   updateCronJob: vi.fn().mockResolvedValue({ ...mockJob, name: 'updated' }),
   deleteCronJob: vi.fn().mockResolvedValue(undefined),
+  runCronJobNow: vi.fn().mockResolvedValue({ ...mockJob, lastRunStatus: 'success' }),
 }));
 
 const { cronJobRoutes } = await import('./routes.js');
@@ -61,24 +71,80 @@ describe('cron-job routes', () => {
     expect(res.statusCode).toBe(200);
   });
 
+  it('POST should reject missing type', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/cron-jobs',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { name: 'test', schedule: '0 * * * *', url: 'https://example.com/cron' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('POST should reject invalid cron expression', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/clients/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { name: 'test', schedule: 'invalid', command: 'echo hi' },
+      payload: { name: 'test', type: 'webcron', schedule: 'invalid', url: 'https://example.com' },
     });
     expect(res.statusCode).toBe(400);
   });
 
-  it('POST should create cron job with valid body', async () => {
+  it('POST should create webcron job with valid body', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/clients/c1/cron-jobs',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { name: 'test', schedule: '0 * * * *', command: 'echo hi' },
+      payload: {
+        name: 'test',
+        type: 'webcron',
+        schedule: '0 * * * *',
+        url: 'https://example.com/cron',
+      },
     });
     expect(res.statusCode).toBe(201);
+  });
+
+  it('POST should create deployment cron job with valid body', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/cron-jobs',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'deploy-cron',
+        type: 'deployment',
+        schedule: '0 * * * *',
+        command: 'echo hi',
+        deployment_id: '550e8400-e29b-41d4-a716-446655440000',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('POST should reject webcron without url', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/cron-jobs',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { name: 'test', type: 'webcron', schedule: '0 * * * *' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST should reject deployment without command', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/cron-jobs',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'test',
+        type: 'deployment',
+        schedule: '0 * * * *',
+        deployment_id: '550e8400-e29b-41d4-a716-446655440000',
+      },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it('GET /:cronJobId should return cron job', async () => {

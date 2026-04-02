@@ -33,39 +33,65 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     clientId = client.id;
   });
 
-  it('POST — creates cron job with 201', async () => {
+  it('POST -- creates webcron job with 201', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'Daily ping',
+        type: 'webcron',
+        schedule: '0 3 * * *',
+        url: 'https://example.com/cron',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.data.name).toBe('Daily ping');
+    expect(body.data.type).toBe('webcron');
+    expect(body.data.url).toBe('https://example.com/cron');
+    expect(body.data.httpMethod).toBe('GET');
+    expect(body.data.enabled).toBe(1);
+  });
+
+  it('POST -- creates deployment cron job with 201', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/clients/${clientId}/cron-jobs`,
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'Daily cleanup',
+        type: 'deployment',
         schedule: '0 3 * * *',
         command: '/usr/bin/php /var/www/cron.php',
+        deployment_id: '550e8400-e29b-41d4-a716-446655440000',
       },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json();
     expect(body.data.name).toBe('Daily cleanup');
-    expect(body.data.schedule).toBe('0 3 * * *');
-    expect(body.data.enabled).toBe(1);
+    expect(body.data.type).toBe('deployment');
+    expect(body.data.command).toBe('/usr/bin/php /var/www/cron.php');
+    expect(body.data.deploymentId).toBe('550e8400-e29b-41d4-a716-446655440000');
   });
 
-  it('GET list — returns paginated cron jobs', async () => {
+  it('GET list -- returns paginated cron jobs', async () => {
     const db = getTestDb();
     await db.insert(cronJobs).values({
       id: crypto.randomUUID(),
       clientId,
       name: 'Job 1',
+      type: 'webcron',
       schedule: '* * * * *',
-      command: 'echo hello',
+      url: 'https://example.com/job1',
     });
     await db.insert(cronJobs).values({
       id: crypto.randomUUID(),
       clientId,
       name: 'Job 2',
+      type: 'webcron',
       schedule: '0 * * * *',
-      command: 'echo world',
+      url: 'https://example.com/job2',
     });
 
     const res = await app.inject({
@@ -77,15 +103,16 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     expect(res.json().data.length).toBe(2);
   });
 
-  it('PATCH — updates cron job', async () => {
+  it('PATCH -- updates cron job', async () => {
     const db = getTestDb();
     const id = crypto.randomUUID();
     await db.insert(cronJobs).values({
       id,
       clientId,
       name: 'Old name',
+      type: 'webcron',
       schedule: '* * * * *',
-      command: 'echo old',
+      url: 'https://example.com/old',
     });
 
     const res = await app.inject({
@@ -99,15 +126,39 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
     expect(res.json().data.enabled).toBe(0);
   });
 
-  it('DELETE — removes cron job', async () => {
+  it('PATCH -- updates url and http_method', async () => {
+    const db = getTestDb();
+    const id = crypto.randomUUID();
+    await db.insert(cronJobs).values({
+      id,
+      clientId,
+      name: 'Webcron job',
+      type: 'webcron',
+      schedule: '* * * * *',
+      url: 'https://example.com/old',
+    });
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/clients/${clientId}/cron-jobs/${id}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { url: 'https://example.com/new', http_method: 'POST' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.url).toBe('https://example.com/new');
+    expect(res.json().data.httpMethod).toBe('POST');
+  });
+
+  it('DELETE -- removes cron job', async () => {
     const db = getTestDb();
     const id = crypto.randomUUID();
     await db.insert(cronJobs).values({
       id,
       clientId,
       name: 'To delete',
+      type: 'webcron',
       schedule: '* * * * *',
-      command: 'echo bye',
+      url: 'https://example.com/del',
     });
 
     const res = await app.inject({
@@ -139,8 +190,37 @@ describe.skipIf(!dbAvailable)('Cron Jobs CRUD (integration)', () => {
       headers: { authorization: `Bearer ${adminToken}` },
       payload: {
         name: 'Bad schedule',
+        type: 'webcron',
         schedule: 'not-valid',
-        command: 'echo fail',
+        url: 'https://example.com/cron',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects webcron without url', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'No URL',
+        type: 'webcron',
+        schedule: '0 * * * *',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects deployment without command and deployment_id', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/clients/${clientId}/cron-jobs`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'No command',
+        type: 'deployment',
+        schedule: '0 * * * *',
       },
     });
     expect(res.statusCode).toBe(400);

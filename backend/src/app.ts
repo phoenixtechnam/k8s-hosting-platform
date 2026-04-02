@@ -47,6 +47,7 @@ import { sslCertRoutes } from './modules/ssl-certs/routes.js';
 import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
 import { tlsSettingsRoutes } from './modules/tls-settings/routes.js';
 import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
+import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -196,6 +197,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(eolScannerRoutes, { prefix: '/api/v1' });
   await app.register(tlsSettingsRoutes, { prefix: '/api/v1' });
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
+
+  // Start webcron background scheduler (skip in test environment)
+  if (deps.config.NODE_ENV !== 'test') {
+    app.addHook('onReady', () => {
+      const timer = startWebcronScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(timer));
+    });
+  }
 
   return app;
 }

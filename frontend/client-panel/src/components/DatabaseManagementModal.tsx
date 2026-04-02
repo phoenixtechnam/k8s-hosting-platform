@@ -1,9 +1,20 @@
 import { useState, useCallback } from 'react';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
-  Loader2, Server, Key, Link,
+  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle,
 } from 'lucide-react';
-import { useDeploymentCredentials, useRegenerateCredentials, useRestartDeployment } from '@/hooks/use-deployments';
+import {
+  useDeploymentCredentials,
+  useRegenerateCredentials,
+  useRestartDeployment,
+  useDbDatabases,
+  useCreateDbDatabase,
+  useDropDbDatabase,
+  useDbUsers,
+  useCreateDbUser,
+  useDropDbUser,
+  useSetDbUserPassword,
+} from '@/hooks/use-deployments';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
 interface DatabaseManagementModalProps {
@@ -52,6 +63,13 @@ function buildConnectionUrl(connectionInfo: {
   const userPart = connectionInfo.username ? `${connectionInfo.username}:***@` : '';
   const dbPart = connectionInfo.database ? `/${connectionInfo.database}` : '';
   return `${protocol}://${userPart}${connectionInfo.host}:${connectionInfo.port}${dbPart}`;
+}
+
+function generateRandomPassword(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
 }
 
 function CopyButton({
@@ -107,6 +125,462 @@ function ConnectionRow({
   );
 }
 
+// ─── Databases Section ────────────────────────────────────────────────────────
+
+function DatabasesSection({
+  clientId,
+  deploymentId,
+}: {
+  readonly clientId: string | undefined;
+  readonly deploymentId: string | undefined;
+}) {
+  const [newDbName, setNewDbName] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const { data: dbData, isLoading, isError } = useDbDatabases(clientId, deploymentId);
+  const createDb = useCreateDbDatabase(clientId);
+  const dropDb = useDropDbDatabase(clientId);
+
+  const databases = dbData?.data ?? [];
+
+  const handleCreate = useCallback(() => {
+    if (!deploymentId || !newDbName.trim()) return;
+    setErrorMessage(null);
+    createDb.mutate(
+      { deploymentId, name: newDbName.trim() },
+      {
+        onSuccess: () => setNewDbName(''),
+        onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to create database'),
+      },
+    );
+  }, [deploymentId, newDbName, createDb]);
+
+  const handleDrop = useCallback(
+    (name: string) => {
+      if (!deploymentId) return;
+      setErrorMessage(null);
+      dropDb.mutate(
+        { deploymentId, name },
+        {
+          onSuccess: () => setDeleteConfirm(null),
+          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to delete database'),
+        },
+      );
+    },
+    [deploymentId, dropDb],
+  );
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4" data-testid="databases-card">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">
+        <Database size={16} className="text-blue-600 dark:text-blue-400" />
+        Databases
+      </h3>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-4">
+          <Loader2 size={18} className="animate-spin text-gray-400" />
+        </div>
+      )}
+
+      {isError && (
+        <p className="text-sm text-red-600 dark:text-red-400 py-2" data-testid="databases-error">
+          Failed to load databases. The deployment may not be running.
+        </p>
+      )}
+
+      {!isLoading && !isError && (
+        <>
+          {databases.length === 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No databases found.</p>
+          ) : (
+            <div className="space-y-2 mb-4">
+              {databases.map((db) => (
+                <div
+                  key={db.name}
+                  className="flex items-center justify-between rounded-md bg-gray-50 dark:bg-gray-900/50 px-3 py-2"
+                  data-testid={`db-row-${db.name}`}
+                >
+                  <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{db.name}</span>
+                  {deleteConfirm === db.name ? (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleDrop(db.name)}
+                        disabled={dropDb.isPending}
+                        className="rounded px-2 py-1 text-xs font-medium text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-300 dark:bg-red-900/30 dark:hover:bg-red-900/50 disabled:opacity-50"
+                        data-testid={`db-delete-confirm-${db.name}`}
+                      >
+                        {dropDb.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirm(null)}
+                        className="rounded px-2 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 dark:text-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600"
+                        data-testid={`db-delete-cancel-${db.name}`}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteConfirm(db.name)}
+                      className="rounded p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                      data-testid={`db-delete-${db.name}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Create Database Form */}
+          <div className="flex items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-700" data-testid="create-db-form">
+            <input
+              type="text"
+              value={newDbName}
+              onChange={(e) => setNewDbName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
+              placeholder="new_database_name"
+              className="flex-1 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              data-testid="create-db-input"
+            />
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={createDb.isPending || !newDbName.trim()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="create-db-button"
+            >
+              {createDb.isPending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Plus size={14} />
+              )}
+              Create
+            </button>
+          </div>
+
+          {errorMessage && (
+            <p className="mt-2 text-sm text-red-600 dark:text-red-400" data-testid="db-action-error">
+              {errorMessage}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Users Section ────────────────────────────────────────────────────────────
+
+function UsersSection({
+  clientId,
+  deploymentId,
+  databases,
+}: {
+  readonly clientId: string | undefined;
+  readonly deploymentId: string | undefined;
+  readonly databases: readonly { name: string }[];
+}) {
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newDatabase, setNewDatabase] = useState('');
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [passwordTarget, setPasswordTarget] = useState<string | null>(null);
+  const [passwordValue, setPasswordValue] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const { data: usersData, isLoading, isError } = useDbUsers(clientId, deploymentId);
+  const createUser = useCreateDbUser(clientId);
+  const dropUser = useDropDbUser(clientId);
+  const setPassword = useSetDbUserPassword(clientId);
+
+  const users = usersData?.data ?? [];
+
+  const handleCreate = useCallback(() => {
+    if (!deploymentId || !newUsername.trim() || !newPassword.trim()) return;
+    setErrorMessage(null);
+    createUser.mutate(
+      {
+        deploymentId,
+        username: newUsername.trim(),
+        password: newPassword.trim(),
+        database: newDatabase || undefined,
+      },
+      {
+        onSuccess: () => {
+          setNewUsername('');
+          setNewPassword('');
+          setNewDatabase('');
+          setShowCreateForm(false);
+        },
+        onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to create user'),
+      },
+    );
+  }, [deploymentId, newUsername, newPassword, newDatabase, createUser]);
+
+  const handleDrop = useCallback(
+    (username: string) => {
+      if (!deploymentId) return;
+      setErrorMessage(null);
+      dropUser.mutate(
+        { deploymentId, username },
+        {
+          onSuccess: () => setDeleteConfirm(null),
+          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to delete user'),
+        },
+      );
+    },
+    [deploymentId, dropUser],
+  );
+
+  const handleSetPassword = useCallback(
+    (username: string) => {
+      if (!deploymentId || !passwordValue.trim()) return;
+      setErrorMessage(null);
+      setPassword.mutate(
+        { deploymentId, username, password: passwordValue.trim() },
+        {
+          onSuccess: () => {
+            setPasswordTarget(null);
+            setPasswordValue('');
+          },
+          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to set password'),
+        },
+      );
+    },
+    [deploymentId, passwordValue, setPassword],
+  );
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4" data-testid="db-users-card">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">
+        <Users size={16} className="text-blue-600 dark:text-blue-400" />
+        Database Users
+      </h3>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-4">
+          <Loader2 size={18} className="animate-spin text-gray-400" />
+        </div>
+      )}
+
+      {isError && (
+        <p className="text-sm text-red-600 dark:text-red-400 py-2" data-testid="db-users-error">
+          Failed to load users. The deployment may not be running.
+        </p>
+      )}
+
+      {!isLoading && !isError && (
+        <>
+          {users.length === 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No users found.</p>
+          ) : (
+            <div className="space-y-2 mb-4">
+              {users.map((user) => (
+                <div key={user.username} data-testid={`user-row-${user.username}`}>
+                  <div className="flex items-center justify-between rounded-md bg-gray-50 dark:bg-gray-900/50 px-3 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono text-sm text-gray-900 dark:text-gray-100">
+                        {user.username}
+                      </span>
+                      <span className="text-xs text-gray-400 dark:text-gray-500">
+                        @{user.host}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPasswordTarget(passwordTarget === user.username ? null : user.username);
+                          setPasswordValue('');
+                        }}
+                        className="rounded p-1 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+                        title="Set password"
+                        data-testid={`user-set-password-${user.username}`}
+                      >
+                        <Lock size={14} />
+                      </button>
+                      {deleteConfirm === user.username ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleDrop(user.username)}
+                            disabled={dropUser.isPending}
+                            className="rounded px-2 py-1 text-xs font-medium text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-300 dark:bg-red-900/30 dark:hover:bg-red-900/50 disabled:opacity-50"
+                            data-testid={`user-delete-confirm-${user.username}`}
+                          >
+                            {dropUser.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Delete'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirm(null)}
+                            className="rounded px-2 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 dark:text-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600"
+                            data-testid={`user-delete-cancel-${user.username}`}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirm(user.username)}
+                          className="rounded p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                          data-testid={`user-delete-${user.username}`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Inline Password Form */}
+                  {passwordTarget === user.username && (
+                    <div className="mt-1 flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-900/30 rounded-md" data-testid={`password-form-${user.username}`}>
+                      <input
+                        type="text"
+                        value={passwordValue}
+                        onChange={(e) => setPasswordValue(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleSetPassword(user.username); }}
+                        placeholder="New password"
+                        className="flex-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        data-testid={`password-input-${user.username}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPasswordValue(generateRandomPassword())}
+                        className="rounded p-1 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"
+                        title="Generate random password"
+                        data-testid={`password-generate-${user.username}`}
+                      >
+                        <Shuffle size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetPassword(user.username)}
+                        disabled={setPassword.isPending || !passwordValue.trim()}
+                        className="rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        data-testid={`password-save-${user.username}`}
+                      >
+                        {setPassword.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Save'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Create User Form */}
+          <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
+            {!showCreateForm ? (
+              <button
+                type="button"
+                onClick={() => setShowCreateForm(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                data-testid="show-create-user-form"
+              >
+                <Plus size={14} />
+                Add User
+              </button>
+            ) : (
+              <div className="space-y-3" data-testid="create-user-form">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="username"
+                    className="flex-1 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    data-testid="create-user-username"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="password"
+                    className="flex-1 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    data-testid="create-user-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setNewPassword(generateRandomPassword())}
+                    className="rounded p-1.5 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"
+                    title="Generate random password"
+                    data-testid="create-user-generate-password"
+                  >
+                    <Shuffle size={14} />
+                  </button>
+                </div>
+                {databases.length > 0 && (
+                  <select
+                    value={newDatabase}
+                    onChange={(e) => setNewDatabase(e.target.value)}
+                    className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    data-testid="create-user-database"
+                  >
+                    <option value="">No database (grant access later)</option>
+                    {databases.map((db) => (
+                      <option key={db.name} value={db.name}>
+                        Grant access to: {db.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCreate}
+                    disabled={createUser.isPending || !newUsername.trim() || !newPassword.trim()}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid="create-user-submit"
+                  >
+                    {createUser.isPending ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Plus size={14} />
+                    )}
+                    Create User
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateForm(false);
+                      setNewUsername('');
+                      setNewPassword('');
+                      setNewDatabase('');
+                    }}
+                    className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    data-testid="create-user-cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {errorMessage && (
+            <p className="mt-2 text-sm text-red-600 dark:text-red-400" data-testid="user-action-error">
+              {errorMessage}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Modal ───────────────────────────────────────────────────────────────
+
 export default function DatabaseManagementModal({
   open,
   deployment,
@@ -120,12 +594,21 @@ export default function DatabaseManagementModal({
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
   const deploymentId = deployment?.id;
+  const isDatabase = catalogEntry?.type === 'database';
+
   const { data: credentialsData, isLoading: credentialsLoading } = useDeploymentCredentials(
     clientId,
     open ? deploymentId : undefined,
   );
   const regenerateCredentials = useRegenerateCredentials(clientId);
   const restartMutation = useRestartDeployment(clientId);
+
+  // Only fetch databases list when modal is open and deployment is a database type
+  const { data: dbData } = useDbDatabases(
+    clientId,
+    open && isDatabase ? deploymentId : undefined,
+  );
+  const databases = dbData?.data ?? [];
 
   const credentialsResult = credentialsData?.data ?? null;
 
@@ -378,6 +861,23 @@ export default function DatabaseManagementModal({
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Databases Section — only for database-type deployments */}
+            {isDatabase && (
+              <DatabasesSection
+                clientId={clientId}
+                deploymentId={deploymentId}
+              />
+            )}
+
+            {/* Users Section — only for database-type deployments */}
+            {isDatabase && (
+              <UsersSection
+                clientId={clientId}
+                deploymentId={deploymentId}
+                databases={databases}
+              />
             )}
 
             {/* Actions Card */}

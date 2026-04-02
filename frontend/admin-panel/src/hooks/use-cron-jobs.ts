@@ -29,9 +29,13 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
 
 interface CreateCronJobInput {
   readonly name: string;
+  readonly type: 'webcron' | 'deployment';
   readonly schedule: string;
-  readonly command: string;
-  readonly enabled: boolean;
+  readonly url?: string;
+  readonly http_method?: 'GET' | 'POST' | 'PUT';
+  readonly command?: string;
+  readonly deployment_id?: string;
+  readonly enabled?: boolean;
 }
 
 export function useCreateCronJob(clientId: string | undefined) {

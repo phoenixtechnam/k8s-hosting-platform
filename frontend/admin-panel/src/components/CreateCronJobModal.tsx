@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Globe, Terminal } from 'lucide-react';
+import clsx from 'clsx';
 import { useCreateCronJob } from '@/hooks/use-cron-jobs';
+import { useDeployments } from '@/hooks/use-deployments';
 
 interface CreateCronJobModalProps {
   readonly open: boolean;
@@ -8,18 +10,30 @@ interface CreateCronJobModalProps {
   readonly clientId: string;
 }
 
+const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
 export default function CreateCronJobModal({ open, onClose, clientId }: CreateCronJobModalProps) {
   const [name, setName] = useState('');
+  const [type, setType] = useState<'webcron' | 'deployment'>('webcron');
   const [schedule, setSchedule] = useState('');
+  const [url, setUrl] = useState('');
+  const [httpMethod, setHttpMethod] = useState<'GET' | 'POST' | 'PUT'>('GET');
   const [command, setCommand] = useState('');
+  const [deploymentId, setDeploymentId] = useState('');
   const [enabled, setEnabled] = useState(true);
 
   const createCronJob = useCreateCronJob(clientId);
+  const { data: deploymentsResponse } = useDeployments(clientId);
+  const deployments = (deploymentsResponse?.data ?? []).filter((d) => d.status === 'running');
 
   const resetForm = () => {
     setName('');
+    setType('webcron');
     setSchedule('');
+    setUrl('');
+    setHttpMethod('GET');
     setCommand('');
+    setDeploymentId('');
     setEnabled(true);
     createCronJob.reset();
   };
@@ -32,7 +46,15 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createCronJob.mutateAsync({ name, schedule, command, enabled });
+      await createCronJob.mutateAsync({
+        name,
+        type,
+        schedule,
+        ...(type === 'webcron'
+          ? { url, http_method: httpMethod }
+          : { command, deployment_id: deploymentId }),
+        enabled,
+      });
       handleClose();
     } catch {
       // error displayed in modal
@@ -63,6 +85,115 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-cron-job-form">
+          {/* Type selector */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Type</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setType('webcron')}
+                className={clsx(
+                  'flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
+                  type === 'webcron'
+                    ? 'border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-500'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700',
+                )}
+                data-testid="cron-type-webcron"
+              >
+                <Globe size={16} />
+                Webcron
+              </button>
+              <button
+                type="button"
+                onClick={() => setType('deployment')}
+                className={clsx(
+                  'flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
+                  type === 'deployment'
+                    ? 'border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-500'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700',
+                )}
+                data-testid="cron-type-deployment"
+              >
+                <Terminal size={16} />
+                Deployment
+              </button>
+            </div>
+          </div>
+
+          {/* Type-specific fields */}
+          {type === 'webcron' ? (
+            <>
+              <div>
+                <label htmlFor="cron-job-url" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  URL *
+                </label>
+                <input
+                  id="cron-job-url"
+                  type="url"
+                  required
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="https://example.com/cron.php"
+                  data-testid="cron-job-url-input"
+                />
+              </div>
+              <div>
+                <label htmlFor="cron-job-method" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  HTTP Method
+                </label>
+                <select
+                  id="cron-job-method"
+                  value={httpMethod}
+                  onChange={(e) => setHttpMethod(e.target.value as 'GET' | 'POST' | 'PUT')}
+                  className={INPUT_CLASS}
+                  data-testid="cron-job-method-select"
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                </select>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label htmlFor="cron-job-deployment" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Deployment *
+                </label>
+                <select
+                  id="cron-job-deployment"
+                  required
+                  value={deploymentId}
+                  onChange={(e) => setDeploymentId(e.target.value)}
+                  className={INPUT_CLASS}
+                  data-testid="cron-job-deployment-select"
+                >
+                  <option value="">Select a deployment...</option>
+                  {deployments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="cron-job-command" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Command *
+                </label>
+                <input
+                  id="cron-job-command"
+                  type="text"
+                  required
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="php artisan schedule:run"
+                  data-testid="cron-job-command-input"
+                />
+              </div>
+            </>
+          )}
+
+          {/* Common fields */}
           <div>
             <label htmlFor="cron-job-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Name *
@@ -73,7 +204,7 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className={INPUT_CLASS}
               placeholder="My cron job"
               data-testid="cron-job-name-input"
             />
@@ -89,25 +220,9 @@ export default function CreateCronJobModal({ open, onClose, clientId }: CreateCr
               required
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              className={INPUT_CLASS}
               placeholder="*/5 * * * *"
               data-testid="cron-job-schedule-input"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="cron-job-command" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Command *
-            </label>
-            <input
-              id="cron-job-command"
-              type="text"
-              required
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              placeholder="/usr/bin/php /var/www/cron.php"
-              data-testid="cron-job-command-input"
             />
           </div>
 

@@ -115,3 +115,124 @@ export function useRegenerateCredentials(clientId: string | undefined) {
     },
   });
 }
+
+// ─── Database Management Hooks ──────────────────────────────────────────────
+
+export interface DbDatabase {
+  readonly name: string;
+}
+
+export interface DbUser {
+  readonly username: string;
+  readonly host: string;
+}
+
+export function useDbDatabases(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['db-databases', clientId, deploymentId],
+    queryFn: () =>
+      apiFetch<{ data: readonly DbDatabase[] }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/databases`,
+      ),
+    enabled: Boolean(clientId) && Boolean(deploymentId),
+  });
+}
+
+export function useCreateDbDatabase(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, name }: { deploymentId: string; name: string }) =>
+      apiFetch<{ data: { name: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/databases`,
+        { method: 'POST', body: JSON.stringify({ name }) },
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['db-databases', clientId, variables.deploymentId] });
+    },
+  });
+}
+
+export function useDropDbDatabase(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, name }: { deploymentId: string; name: string }) =>
+      apiFetch<void>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/databases/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['db-databases', clientId, variables.deploymentId] });
+    },
+  });
+}
+
+export function useDbUsers(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['db-users', clientId, deploymentId],
+    queryFn: () =>
+      apiFetch<{ data: readonly DbUser[] }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/db-users`,
+      ),
+    enabled: Boolean(clientId) && Boolean(deploymentId),
+  });
+}
+
+export function useCreateDbUser(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      deploymentId,
+      username,
+      password,
+      database,
+    }: {
+      deploymentId: string;
+      username: string;
+      password: string;
+      database?: string;
+    }) =>
+      apiFetch<{ data: { username: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/db-users`,
+        { method: 'POST', body: JSON.stringify({ username, password, database }) },
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['db-users', clientId, variables.deploymentId] });
+    },
+  });
+}
+
+export function useDropDbUser(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, username }: { deploymentId: string; username: string }) =>
+      apiFetch<void>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/db-users/${encodeURIComponent(username)}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['db-users', clientId, variables.deploymentId] });
+    },
+  });
+}
+
+export function useSetDbUserPassword(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      deploymentId,
+      username,
+      password,
+    }: {
+      deploymentId: string;
+      username: string;
+      password: string;
+    }) =>
+      apiFetch<{ data: { message: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/db-users/${encodeURIComponent(username)}/password`,
+        { method: 'POST', body: JSON.stringify({ password }) },
+      ),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['db-users', clientId, variables.deploymentId] });
+    },
+  });
+}

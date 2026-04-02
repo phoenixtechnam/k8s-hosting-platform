@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2 } from 'lucide-react';
+import { Plus, Loader2, Clock, Play, Pause, RotateCw, Trash2, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import CreateCronJobModal from '@/components/CreateCronJobModal';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
@@ -11,6 +11,29 @@ import { useSelection } from '@/hooks/use-selection';
 import { useBulkEnableCronJobs, useBulkDisableCronJobs, useBulkDeleteCronJobs } from '@/hooks/use-bulk-cron-jobs';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+
+function TypeBadge({ type }: { readonly type: 'webcron' | 'deployment' }) {
+  if (type === 'webcron') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:border-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+        <Globe size={10} />
+        Webcron
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-purple-200 bg-purple-50 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:border-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
+      <Terminal size={10} />
+      Deployment
+    </span>
+  );
+}
+
+function formatDuration(ms: number | null | undefined): string | null {
+  if (ms == null) return null;
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
 export default function CronJobs() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -58,6 +81,13 @@ export default function CronJobs() {
   };
 
   const isBulkPending = bulkEnable.isPending || bulkDisable.isPending || bulkDelete.isPending;
+
+  const formatTarget = (job: (typeof cronJobs)[number]) => {
+    if (job.type === 'webcron') {
+      return `${job.httpMethod ?? 'GET'} ${job.url ?? ''}`;
+    }
+    return job.command ?? '';
+  };
 
   return (
     <div className="space-y-6">
@@ -116,8 +146,9 @@ export default function CronJobs() {
                       />
                     </th>
                     <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Command" sortKey="command" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                    <th className="hidden px-5 py-3 md:table-cell">Target</th>
                     <SortableHeader label="Enabled" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Last Run" sortKey="lastRunAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                     <SortableHeader label="Status" sortKey="lastRunStatus" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
@@ -144,12 +175,15 @@ export default function CronJobs() {
                         <span className="font-medium text-gray-900 dark:text-gray-100">{job.name}</span>
                       </td>
                       <td className="px-5 py-3.5">
+                        <TypeBadge type={job.type} />
+                      </td>
+                      <td className="px-5 py-3.5">
                         <code className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs text-gray-700 dark:text-gray-300">
                           {job.schedule}
                         </code>
                       </td>
-                      <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell">
-                        <code className="text-xs">{job.command}</code>
+                      <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 md:table-cell max-w-xs truncate">
+                        <code className="text-xs">{formatTarget(job)}</code>
                       </td>
                       <td className="px-5 py-3.5">
                         <span
@@ -170,18 +204,28 @@ export default function CronJobs() {
                       </td>
                       <td className="hidden px-5 py-3.5 lg:table-cell">
                         {job.lastRunStatus ? (
-                          <span
-                            className={clsx(
-                              'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                              job.lastRunStatus === 'success'
-                                ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                                : job.lastRunStatus === 'running'
-                                  ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
-                                  : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
-                            )}
-                          >
-                            {job.lastRunStatus}
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            <span
+                              className={clsx(
+                                'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium w-fit',
+                                job.lastRunStatus === 'success'
+                                  ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400'
+                                  : job.lastRunStatus === 'running'
+                                    ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
+                                    : 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
+                              )}
+                            >
+                              {job.lastRunStatus}
+                            </span>
+                            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                              {formatDuration(job.lastRunDurationMs) && (
+                                <span>{formatDuration(job.lastRunDurationMs)}</span>
+                              )}
+                              {job.type === 'webcron' && job.lastRunResponseCode != null && (
+                                <span className="font-mono">{job.lastRunResponseCode}</span>
+                              )}
+                            </div>
+                          </div>
                         ) : (
                           <span className="text-sm text-gray-400">{'\u2014'}</span>
                         )}
@@ -222,7 +266,7 @@ export default function CronJobs() {
                   ))}
                   {cronJobs.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {selectedClientId
                           ? 'No cron jobs yet. Click "Add Cron Job" to create one.'
                           : 'No cron jobs found across any client.'}

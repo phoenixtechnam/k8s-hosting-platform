@@ -15,8 +15,12 @@ export async function createCronJob(db: Database, clientId: string, input: Creat
     id,
     clientId,
     name: input.name,
+    type: input.type,
     schedule: input.schedule,
-    command: input.command,
+    command: input.command ?? null,
+    url: input.url ?? null,
+    httpMethod: input.http_method ?? 'GET',
+    deploymentId: input.deployment_id ?? null,
     enabled: input.enabled ? 1 : 0,
   });
 
@@ -140,6 +144,9 @@ export async function updateCronJob(db: Database, clientId: string, cronJobId: s
   if (input.name !== undefined) updateValues.name = input.name;
   if (input.schedule !== undefined) updateValues.schedule = input.schedule;
   if (input.command !== undefined) updateValues.command = input.command;
+  if (input.url !== undefined) updateValues.url = input.url;
+  if (input.http_method !== undefined) updateValues.httpMethod = input.http_method;
+  if (input.deployment_id !== undefined) updateValues.deploymentId = input.deployment_id;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
 
   if (Object.keys(updateValues).length > 0) {
@@ -150,12 +157,39 @@ export async function updateCronJob(db: Database, clientId: string, cronJobId: s
 }
 
 export async function runCronJobNow(db: Database, clientId: string, cronJobId: string) {
-  await getCronJobById(db, clientId, cronJobId);
+  const job = await getCronJobById(db, clientId, cronJobId);
 
-  // Record a "run now" execution — in production this would trigger the actual job via k8s Job API
+  const startTime = Date.now();
+  let status: 'success' | 'failed' = 'success';
+  let responseCode: number | null = null;
+  let output: string | null = null;
+
+  if (job.type === 'webcron' && job.url) {
+    try {
+      const res = await fetch(job.url, {
+        method: (job.httpMethod as string) ?? 'GET',
+        signal: AbortSignal.timeout(30_000),
+      });
+      responseCode = res.status;
+      output = (await res.text()).slice(0, 2000);
+      status = res.ok ? 'success' : 'failed';
+    } catch (err) {
+      status = 'failed';
+      output = err instanceof Error ? err.message : 'Request failed';
+    }
+  } else if (job.type === 'deployment') {
+    // K8s execution -- placeholder for now
+    output = 'Deployment cron execution requires K8s cluster (not yet implemented)';
+  }
+
+  const durationMs = Date.now() - startTime;
+
   await db.update(cronJobs).set({
     lastRunAt: new Date(),
-    lastRunStatus: 'success',
+    lastRunStatus: status,
+    lastRunDurationMs: durationMs,
+    lastRunResponseCode: responseCode,
+    lastRunOutput: output,
   }).where(eq(cronJobs.id, cronJobId));
 
   return getCronJobById(db, clientId, cronJobId);

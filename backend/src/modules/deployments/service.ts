@@ -31,7 +31,7 @@ const catalogEntryNotFound = (id: string) =>
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function parseJsonField<T>(value: unknown): T | null {
+export function parseJsonField<T>(value: unknown): T | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') {
     try { return JSON.parse(value) as T; } catch { return null; }
