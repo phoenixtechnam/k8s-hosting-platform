@@ -13,7 +13,7 @@ test.describe('Client Panel Applications', () => {
   });
 
   test('shows Available and Installed tabs', async ({ page }) => {
-    await expect(page.getByTestId('tab-available')).toBeVisible();
+    await expect(page.getByTestId('tab-catalog')).toBeVisible();
     await expect(page.getByTestId('tab-installed')).toBeVisible();
   });
 
@@ -21,7 +21,7 @@ test.describe('Client Panel Applications', () => {
     await page.getByTestId('tab-installed').click();
     await expect(page.getByTestId('tab-installed')).toBeVisible();
 
-    await page.getByTestId('tab-available').click();
-    await expect(page.getByTestId('tab-available')).toBeVisible();
+    await page.getByTestId('tab-catalog').click();
+    await expect(page.getByTestId('tab-catalog')).toBeVisible();
   });
 });

@@ -80,7 +80,7 @@ test.describe('Admin Panel Smoke Test', () => {
     // Test each nav item
     const navItems = [
       { link: 'Domains', heading: 'Domains' },
-      { link: 'Workloads', heading: 'Workloads' },
+      { link: 'Applications', heading: 'Applications' },
       { link: 'Monitoring', heading: 'Monitoring' },
       { link: 'Settings', heading: /Settings/i },
     ];

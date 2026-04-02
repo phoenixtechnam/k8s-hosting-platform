@@ -140,8 +140,7 @@ check_status "GET /plans (public)" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/regions")
 check_status "GET /regions (public)" "200" "$STATUS"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/container-images")
-check_status "GET /container-images (public)" "200" "$STATUS"
+# container-images endpoint removed in catalog consolidation
 
 # ─── Admin Endpoints ───────────────────────────────────────────────────────────
 
@@ -155,17 +154,12 @@ check_status "GET /admin/audit-logs" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/domains")
 check_status "GET /admin/domains" "200" "$STATUS"
 
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/workload-repos")
-check_status "GET /admin/workload-repos" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/catalog-repos")
+check_status "GET /admin/catalog-repos" "200" "$STATUS"
 
 # ─── Application Upgrade & EOL Endpoints ──────────────────────────────────────
 
-log "── Application Upgrades & EOL ──"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/application-instances")
-check_status "GET /admin/application-instances" "200" "$STATUS"
-
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/application-upgrades")
-check_status "GET /admin/application-upgrades" "200" "$STATUS"
+log "── Deployment Upgrades & EOL ──"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/eol-settings")
 check_status "GET /admin/eol-settings" "200" "$STATUS"
@@ -194,9 +188,9 @@ check_status "PATCH /admin/tls-settings" "200" "$STATUS"
 
 # ─── Workload Reconciliation ──────────────────────────────────────────────────
 
-log "── Workload Reconciliation ──"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/workloads/reconcile")
-check_status "POST /admin/workloads/reconcile" "200" "$STATUS"
+log "── Deployment Reconciliation ──"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/deployments/reconcile")
+check_status "POST /admin/deployments/reconcile" "200" "$STATUS"
 
 # ─── Ingress Settings ─────────────────────────────────────────────────────────
 

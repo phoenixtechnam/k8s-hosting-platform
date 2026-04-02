@@ -98,10 +98,18 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
       }),
     });
     const createData = await createRes.json() as { data: { id: string } };
-    if (!createData.data?.id) {
-      throw new Error(`Failed to create test client: ${JSON.stringify(createData)}`);
+    if (createData.data?.id) {
+      clientId = createData.data.id;
+    } else {
+      // Race condition: another worker created the client — retry search
+      await new Promise(r => setTimeout(r, 1000));
+      const retryRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
+      const retryData = await retryRes.json() as { data: { id: string; companyEmail: string }[] };
+      clientId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@platform.local')?.id;
+      if (!clientId) {
+        throw new Error(`Failed to create or find test client: ${JSON.stringify(createData)}`);
+      }
     }
-    clientId = createData.data.id;
   }
 
   // Impersonate the client to get a client-panel JWT

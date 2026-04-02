@@ -34,6 +34,7 @@ export default defineConfig({
     },
     {
       name: 'client',
+      dependencies: ['admin-setup'],
       use: {
         browserName: 'chromium',
         baseURL: process.env.CLIENT_URL ?? 'http://dind.local:2011',
