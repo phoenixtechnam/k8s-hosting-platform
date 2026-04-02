@@ -73,7 +73,8 @@ describe('Client CronJobs page', () => {
     expect(screen.getByTestId('cron-job-form')).toBeInTheDocument();
     expect(screen.getByTestId('cron-name-input')).toBeInTheDocument();
     expect(screen.getByTestId('cron-schedule-input')).toBeInTheDocument();
-    expect(screen.getByTestId('cron-command-input')).toBeInTheDocument();
+    // Default type is webcron — shows URL field
+    expect(screen.getByTestId('cron-url-input')).toBeInTheDocument();
   });
 
   it('has start/stop toggle per cron job', async () => {

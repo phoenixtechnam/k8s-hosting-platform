@@ -57,7 +57,8 @@ describe('CreateCronJobModal', () => {
     expect(screen.getByRole('heading', { name: 'Add Cron Job' })).toBeInTheDocument();
     expect(screen.getByTestId('cron-job-name-input')).toBeInTheDocument();
     expect(screen.getByTestId('cron-job-schedule-input')).toBeInTheDocument();
-    expect(screen.getByTestId('cron-job-command-input')).toBeInTheDocument();
+    // Default type is webcron — shows URL field, not command
+    expect(screen.getByTestId('cron-job-url-input')).toBeInTheDocument();
     expect(screen.getByTestId('cron-job-enabled-checkbox')).toBeInTheDocument();
   });
 
@@ -85,12 +86,12 @@ describe('CreateCronJobModal', () => {
     expect(screen.getByTestId('cron-job-schedule-input')).toBeRequired();
   });
 
-  it('has required command field', () => {
+  it('has required URL field for webcron type', () => {
     const onClose = vi.fn();
     render(<CreateCronJobModal open={true} onClose={onClose} clientId="client-1" />, {
       wrapper: createWrapper(),
     });
-    expect(screen.getByTestId('cron-job-command-input')).toBeRequired();
+    expect(screen.getByTestId('cron-job-url-input')).toBeRequired();
   });
 
   it('defaults enabled checkbox to checked', () => {
