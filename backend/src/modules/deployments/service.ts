@@ -159,8 +159,10 @@ export async function createDeployment(
   const components = resolveComponents(entry, versionComponents);
   const namespace = client.kubernetesNamespace;
   const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
-  const resources = parseJsonField<{ recommended?: { storage?: string }; minimum?: { storage?: string } }>(entry.resources);
+  const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
+  const catalogCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
+  const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
 
   // Generate secrets for env_vars.generated entries
   const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
@@ -187,8 +189,8 @@ export async function createDeployment(
     name: input.name,
     domainName: input.domain_name ?? null,
     replicaCount: input.replica_count ?? 1,
-    cpuRequest: input.cpu_request ?? '0.1',
-    memoryRequest: input.memory_request ?? '256Mi',
+    cpuRequest: input.cpu_request ?? catalogCpu,
+    memoryRequest: input.memory_request ?? catalogMemory,
     configuration: finalConfiguration,
     resourceSuffix,
     installedVersion,
@@ -206,8 +208,8 @@ export async function createDeployment(
         components,
         volumes,
         replicaCount: input.replica_count ?? 1,
-        cpuRequest: input.cpu_request ?? '0.1',
-        memoryRequest: input.memory_request ?? '256Mi',
+        cpuRequest: input.cpu_request ?? catalogCpu,
+        memoryRequest: input.memory_request ?? catalogMemory,
         storageRequest,
         configuration: finalConfiguration,
         envVars: envVarsData ?? undefined,
