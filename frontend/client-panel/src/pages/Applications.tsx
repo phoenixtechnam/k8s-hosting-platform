@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -337,75 +337,7 @@ function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void
               No entries found matching your filters.
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="catalog-grid">
-              {filteredEntries.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => handleCardClick(entry)}
-                  className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
-                  data-testid={`catalog-card-${entry.code}`}
-                >
-                  <div className="mb-3 flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <AppIcon entryId={entry.id} size={40} />
-                      <div>
-                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                        <div className="mt-0.5 flex items-center gap-2">
-                          <span className="text-xs text-gray-500 dark:text-gray-400">v{entry.version}</span>
-                          {entry.url && (
-                            <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 text-xs font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors">
-                              <ExternalLink size={10} /> Official Website
-                            </a>
-                          )}
-                          {entry.documentation && (
-                            <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors">
-                              <ExternalLink size={10} /> User Manual
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
-                        {entry.type ?? 'unknown'}
-                      </span>
-                      <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
-                        {entry.category ?? 'other'}
-                      </span>
-                      {entry.featured ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                          <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
-                        </span>
-                      ) : null}
-                      {entry.popular ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
-                          <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">
-                      {Array.isArray(entry.components) ? entry.components.length : 0} component{(Array.isArray(entry.components) ? entry.components.length : 0) !== 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  {(Array.isArray(entry.tags) ? entry.tags : []).length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1">
-                      {(Array.isArray(entry.tags) ? entry.tags : []).map((tag) => (
-                        <span
-                          key={tag}
-                          className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
+            <ClientCatalogSections entries={filteredEntries} onCardClick={handleCardClick} />
           )}
           <div className="text-sm text-gray-500 dark:text-gray-400">
             {filteredEntries.length} entr{filteredEntries.length !== 1 ? 'ies' : 'y'}
@@ -417,6 +349,137 @@ function CatalogTab({ onDeploy }: { readonly onDeploy: (imageId: string) => void
         <AppDetailPanel entry={selectedEntry} onClose={handleClose} onDeploy={onDeploy} />
       )}
     </div>
+  );
+}
+
+function CatalogSectionHeading({ icon: Icon, title, count, color }: { readonly icon: React.ElementType; readonly title: string; readonly count: number; readonly color: string }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <Icon size={18} className={color} />
+      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      <span className="text-xs text-gray-400">({count})</span>
+    </div>
+  );
+}
+
+function ClientCatalogSections({
+  entries,
+  onCardClick,
+}: {
+  readonly entries: readonly CatalogEntry[];
+  readonly onCardClick: (entry: CatalogEntry) => void;
+}) {
+  const featuredEntries = useMemo(() => entries.filter((e) => e.featured), [entries]);
+  const popularEntries = useMemo(() => entries.filter((e) => e.popular), [entries]);
+
+  return (
+    <div className="space-y-6" data-testid="catalog-grid">
+      {featuredEntries.length > 0 && (
+        <div data-testid="catalog-section-featured">
+          <CatalogSectionHeading icon={Star} title="Featured" count={featuredEntries.length} color="text-amber-500" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {featuredEntries.map((entry) => (
+              <ClientCatalogCard key={`featured-${entry.id}`} entry={entry} onCardClick={onCardClick} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {popularEntries.length > 0 && (
+        <div data-testid="catalog-section-popular">
+          <CatalogSectionHeading icon={Flame} title="Popular" count={popularEntries.length} color="text-orange-500" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {popularEntries.map((entry) => (
+              <ClientCatalogCard key={`popular-${entry.id}`} entry={entry} onCardClick={onCardClick} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div data-testid="catalog-section-all">
+        <CatalogSectionHeading icon={LayoutGrid} title="All Applications" count={entries.length} color="text-gray-500 dark:text-gray-400" />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {entries.map((entry) => (
+            <ClientCatalogCard key={`all-${entry.id}`} entry={entry} onCardClick={onCardClick} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClientCatalogCard({
+  entry,
+  onCardClick,
+}: {
+  readonly entry: CatalogEntry;
+  readonly onCardClick: (entry: CatalogEntry) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCardClick(entry)}
+      className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
+      data-testid={`catalog-card-${entry.code}`}
+    >
+      <div className="mb-3 flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <AppIcon entryId={entry.id} size={40} />
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
+            <div className="mt-0.5 flex items-center gap-2">
+              <span className="text-xs text-gray-500 dark:text-gray-400">v{entry.version}</span>
+              {entry.url && (
+                <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 text-xs font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors">
+                  <ExternalLink size={10} /> Official Website
+                </a>
+              )}
+              {entry.documentation && (
+                <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors">
+                  <ExternalLink size={10} /> User Manual
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
+            {entry.type ?? 'unknown'}
+          </span>
+          <span className="inline-flex rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
+            {entry.category ?? 'other'}
+          </span>
+          {entry.featured ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+              <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+            </span>
+          ) : null}
+          {entry.popular ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
+              <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+        <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">
+          {Array.isArray(entry.components) ? entry.components.length : 0} component{(Array.isArray(entry.components) ? entry.components.length : 0) !== 1 ? 's' : ''}
+        </span>
+      </div>
+      {(Array.isArray(entry.tags) ? entry.tags : []).length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1">
+          {(Array.isArray(entry.tags) ? entry.tags : []).map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+    </button>
   );
 }
 

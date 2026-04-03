@@ -322,93 +322,7 @@ function CatalogTab() {
               No entries found matching your filters.
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="catalog-grid">
-              {filteredEntries.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => handleCardClick(entry)}
-                  className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
-                  data-testid={`catalog-card-${entry.code}`}
-                >
-                  <div className="mb-3 flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <AppIcon entryId={entry.id} size={40} />
-                      <div>
-                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
-                        <div className="mt-0.5 flex items-center gap-2">
-                          <span className="text-xs text-gray-500 dark:text-gray-400">v{entry.version}</span>
-                          {entry.url && (
-                            <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 text-xs font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors">
-                              <ExternalLink size={10} /> Official Website
-                            </a>
-                          )}
-                          {entry.documentation && (
-                            <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors">
-                              <ExternalLink size={10} /> User Manual
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
-                        {entry.type ?? 'unknown'}
-                      </span>
-                      {entry.featured ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                          <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
-                        </span>
-                      ) : null}
-                      {entry.popular ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
-                          <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
-                        </span>
-                      ) : null}
-                      <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
-                        {entry.category ?? 'other'}
-                      </span>
-                    </div>
-                  </div>
-                  <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">
-                      {Array.isArray(entry.components) ? entry.components.length : 0} component{(Array.isArray(entry.components) ? entry.components.length : 0) !== 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  {(Array.isArray(entry.tags) ? entry.tags : []).length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1">
-                      {(Array.isArray(entry.tags) ? entry.tags as string[] : []).map((tag: string) => (
-                        <span
-                          key={tag}
-                          className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="mt-3 flex items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-3">
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); toggleFeatured(entry); }}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
-                      title={entry.featured ? 'Remove Featured' : 'Mark as Featured'}
-                    >
-                      <Star size={14} className={entry.featured ? 'fill-amber-400 text-amber-400' : 'text-gray-400 dark:text-gray-500'} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); togglePopular(entry); }}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
-                      title={entry.popular ? 'Remove Popular' : 'Mark as Popular'}
-                    >
-                      <Flame size={14} className={entry.popular ? 'fill-orange-400 text-orange-400' : 'text-gray-400 dark:text-gray-500'} />
-                    </button>
-                  </div>
-                </button>
-              ))}
-            </div>
+            <CatalogSections entries={filteredEntries} onCardClick={handleCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
           )}
           <div className="text-sm text-gray-500 dark:text-gray-400">
             {filteredEntries.length} entr{filteredEntries.length !== 1 ? 'ies' : 'y'}
@@ -420,6 +334,163 @@ function CatalogTab() {
         <AppDetailPanel entry={selectedEntry} onClose={handleClose} />
       )}
     </div>
+  );
+}
+
+function CatalogSectionHeading({ icon: Icon, title, count, color }: { readonly icon: React.ElementType; readonly title: string; readonly count: number; readonly color: string }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <Icon size={18} className={color} />
+      <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      <span className="text-xs text-gray-400">({count})</span>
+    </div>
+  );
+}
+
+function CatalogSections({
+  entries,
+  onCardClick,
+  toggleFeatured,
+  togglePopular,
+}: {
+  readonly entries: readonly CatalogEntry[];
+  readonly onCardClick: (entry: CatalogEntry) => void;
+  readonly toggleFeatured: (entry: CatalogEntry) => void;
+  readonly togglePopular: (entry: CatalogEntry) => void;
+}) {
+  const featuredEntries = useMemo(() => entries.filter((e) => e.featured), [entries]);
+  const popularEntries = useMemo(() => entries.filter((e) => e.popular), [entries]);
+
+  return (
+    <div className="space-y-6" data-testid="catalog-grid">
+      {featuredEntries.length > 0 && (
+        <div data-testid="catalog-section-featured">
+          <CatalogSectionHeading icon={Star} title="Featured" count={featuredEntries.length} color="text-amber-500" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {featuredEntries.map((entry) => (
+              <AdminCatalogCard key={`featured-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {popularEntries.length > 0 && (
+        <div data-testid="catalog-section-popular">
+          <CatalogSectionHeading icon={Flame} title="Popular" count={popularEntries.length} color="text-orange-500" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {popularEntries.map((entry) => (
+              <AdminCatalogCard key={`popular-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div data-testid="catalog-section-all">
+        <CatalogSectionHeading icon={LayoutGrid} title="All Applications" count={entries.length} color="text-gray-500 dark:text-gray-400" />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {entries.map((entry) => (
+            <AdminCatalogCard key={`all-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminCatalogCard({
+  entry,
+  onCardClick,
+  toggleFeatured,
+  togglePopular,
+}: {
+  readonly entry: CatalogEntry;
+  readonly onCardClick: (entry: CatalogEntry) => void;
+  readonly toggleFeatured: (entry: CatalogEntry) => void;
+  readonly togglePopular: (entry: CatalogEntry) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCardClick(entry)}
+      className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
+      data-testid={`catalog-card-${entry.code}`}
+    >
+      <div className="mb-3 flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <AppIcon entryId={entry.id} size={40} />
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">{entry.name}</h3>
+            <div className="mt-0.5 flex items-center gap-2">
+              <span className="text-xs text-gray-500 dark:text-gray-400">v{entry.version}</span>
+              {entry.url && (
+                <a href={entry.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 text-xs font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors">
+                  <ExternalLink size={10} /> Official Website
+                </a>
+              )}
+              {entry.documentation && (
+                <a href={entry.documentation} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors">
+                  <ExternalLink size={10} /> User Manual
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300">
+            {entry.type ?? 'unknown'}
+          </span>
+          {entry.featured ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-900/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+              <Star size={12} className="fill-amber-400 text-amber-400" /> Featured
+            </span>
+          ) : null}
+          {entry.popular ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
+              <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+            </span>
+          ) : null}
+          <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
+            {entry.category ?? 'other'}
+          </span>
+        </div>
+      </div>
+      <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+        <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">
+          {Array.isArray(entry.components) ? entry.components.length : 0} component{(Array.isArray(entry.components) ? entry.components.length : 0) !== 1 ? 's' : ''}
+        </span>
+      </div>
+      {(Array.isArray(entry.tags) ? entry.tags : []).length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1">
+          {(Array.isArray(entry.tags) ? entry.tags as string[] : []).map((tag: string) => (
+            <span
+              key={tag}
+              className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-3">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); toggleFeatured(entry); }}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+          title={entry.featured ? 'Remove Featured' : 'Mark as Featured'}
+        >
+          <Star size={14} className={entry.featured ? 'fill-amber-400 text-amber-400' : 'text-gray-400 dark:text-gray-500'} />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); togglePopular(entry); }}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+          title={entry.popular ? 'Remove Popular' : 'Mark as Popular'}
+        >
+          <Flame size={14} className={entry.popular ? 'fill-orange-400 text-orange-400' : 'text-gray-400 dark:text-gray-500'} />
+        </button>
+      </div>
+    </button>
   );
 }
 
