@@ -772,3 +772,38 @@ By end of Week 12:
 - All code on GitHub with CI/CD
 - Documentation complete
 - Ready for Phase 2 (scale + regional replication)
+
+---
+
+## Phase 2+ Roadmap Items
+
+### OpenZiti Zero-Trust Overlay (Dark Services)
+
+**Goal:** Make admin panel, client panel, and opt-in customer apps completely invisible to the public internet using OpenZiti's zero-trust overlay network.
+
+**Architecture:**
+- Ziti Controller + public Edge Router hosted externally (alongside NetBird, ~$5-10/mo)
+- Private Edge Router as a pod in k8s cluster (~128Mi RAM, outbound-only connections)
+- Admin/client panels removed from NGINX Ingress — accessible only via Ziti overlay
+- Per-deployment "Dark Mode" toggle for customer apps
+
+**Access model:**
+- Staff and customers install Ziti Desktop Edge tunneler (Windows/Mac/Linux/iOS/Android)
+- One-time enrollment via token → X.509 identity → mTLS encrypted overlay
+- No BrowZer (Chromium-only, experimental) — Desktop Edge works with all browsers and non-HTTP protocols
+- OIDC integration with existing Dex for identity federation
+
+**Certificate management:**
+- Public apps: Let's Encrypt via cert-manager (unchanged)
+- Dark apps: Ziti's built-in PKI handles all mTLS — no Let's Encrypt needed, no public DNS needed
+
+**Platform changes required:**
+- Backend: `ziti-services` module — CRUD for Ziti service definitions, identity enrollment, policy management via Ziti Controller REST API
+- Admin panel: "Network Access" settings to toggle dark mode for platform panels
+- Client panel: Per-deployment "Dark Mode" toggle + enrollment token download for customer users
+- Identity lifecycle: Create/revoke Ziti identities when users are created/deleted
+- NGINX Ingress: Conditional removal of public routes when dark mode enabled
+
+**Estimated effort:** 7-10 days
+**Dependencies:** External Ziti Controller infrastructure, DNS entry for Controller
+**Phase:** Recommended for Phase 2 after first production clients are live
