@@ -159,24 +159,13 @@ export function useImportSql(clientId: string | null | undefined) {
       readonly file: File;
     }) => {
       if (!clientId) throw new Error('No client selected');
-      const token = localStorage.getItem('auth_token');
-      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
-      const formData = new FormData();
-      formData.append('database', database);
-      formData.append('file', file);
-      const res = await fetch(
-        `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/import`,
-        {
-          method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          body: formData,
-        },
+
+      // Read the .sql file as text, then send as JSON — the backend expects { database, sql }
+      const sql = await file.text();
+      return apiFetch<{ data: { message: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/import`,
+        { method: 'POST', body: JSON.stringify({ database, sql }) },
       );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: { message: 'Import failed' } }));
-        throw new Error(body.error?.message ?? 'Import failed');
-      }
-      return res.json() as Promise<{ data: { message: string } }>;
     },
   });
 }
