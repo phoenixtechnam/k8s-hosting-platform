@@ -37,6 +37,7 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "${PORT_API:-2012}:3000"
+      - "${PORT_ADMINER:-2017}:8081"
     environment:
       NODE_ENV: production
       PORT: "3000"
@@ -55,6 +56,8 @@ services:
       INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
       DISABLE_RATE_LIMIT: "true"
+      ADMINER_PROXY_PORT: "8081"
+      ADMINER_PROXY_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMINER:-2017}"
     depends_on:
       mariadb:
         condition: service_healthy

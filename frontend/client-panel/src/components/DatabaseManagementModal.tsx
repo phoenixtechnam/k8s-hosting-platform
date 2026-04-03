@@ -314,8 +314,15 @@ function UsersSection({
         {
           onSuccess: (result) => {
             const url = result.data.loginUrl;
-            const baseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
-            window.open(`${baseUrl}${url}`, '_blank');
+            // If the loginUrl is already an absolute URL (starts with http),
+            // open it directly. Otherwise, prepend the API base URL for
+            // backwards compatibility with the legacy proxy route.
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              window.open(url, '_blank');
+            } else {
+              const baseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+              window.open(`${baseUrl}${url}`, '_blank');
+            }
           },
           onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to open Adminer'),
         },

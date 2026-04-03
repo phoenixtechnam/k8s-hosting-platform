@@ -29,7 +29,7 @@ COPY backend/src/db/migrations/ dist/db/migrations/
 COPY backend/docker-entrypoint.sh ./
 
 USER node
-EXPOSE 3000
+EXPOSE 3000 8081
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD wget -q --spider http://localhost:3000/api/v1/admin/status || exit 1

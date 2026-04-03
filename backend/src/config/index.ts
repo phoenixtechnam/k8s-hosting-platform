@@ -9,6 +9,8 @@ const configSchema = z.object({
   CORS_ORIGINS: z.string().optional(),
   OIDC_ENCRYPTION_KEY: z.string().min(32).optional(),
   KUBECONFIG_PATH: z.string().optional(),
+  /** External URL of the dedicated Adminer proxy server (e.g., http://dind.local:2017) */
+  ADMINER_PROXY_URL: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

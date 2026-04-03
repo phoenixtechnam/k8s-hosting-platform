@@ -1,4 +1,5 @@
 import * as k8s from '@kubernetes/client-node';
+import { createHmac } from 'node:crypto';
 import { ensureAdminerRunning, getAdminerStatus } from './k8s-lifecycle.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { AdminerStatus } from './k8s-lifecycle.js';
@@ -8,7 +9,11 @@ const ADMINER_PORT = 8080;
 const STARTUP_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;
 
-// ─── In-memory token store (replaces Redis for simplicity) ──────────────────
+// ─── Signed login tokens ───────────────────────────────────────────────────
+// Instead of in-memory storage (which only works within a single process),
+// we use HMAC-signed Base64 tokens. The payload contains the login data
+// and expiry. Both the main backend and the Adminer proxy server can
+// create/verify tokens using the shared JWT_SECRET.
 
 interface LoginToken {
   readonly server: string;
@@ -18,20 +23,30 @@ interface LoginToken {
   readonly expiresAt: number;
 }
 
-const loginTokens = new Map<string, LoginToken>();
+// Used tokens set — prevents replay attacks within the same process.
+// Since the adminer-server is the only consumer, this is effective.
+const usedTokens = new Set<string>();
 
-// Periodic cleanup of expired tokens
+// Cleanup expired token IDs every 60s
 setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of loginTokens) {
-    if (value.expiresAt < now) {
-      loginTokens.delete(key);
-    }
+  // We can't easily check expiry from just the ID, so just clear if the set
+  // grows large. Tokens have a 60s TTL so old IDs become harmless quickly.
+  if (usedTokens.size > 10_000) {
+    usedTokens.clear();
   }
-}, 10_000);
+}, 60_000);
+
+function getSigningSecret(): string {
+  return process.env.JWT_SECRET ?? 'adminer-fallback-secret';
+}
+
+function signPayload(payload: string): string {
+  return createHmac('sha256', getSigningSecret()).update(payload).digest('base64url');
+}
 
 /**
- * Store an auto-login token with 30s TTL. Returns the token string.
+ * Create a signed auto-login token with 60s TTL.
+ * The token is self-contained: payload + HMAC signature.
  */
 export function createLoginToken(
   clientId: string,
@@ -39,26 +54,53 @@ export function createLoginToken(
   username: string,
   password: string,
 ): string {
-  const token = crypto.randomUUID();
-  loginTokens.set(token, {
+  const tokenId = crypto.randomUUID();
+  const payload = JSON.stringify({
+    id: tokenId,
     server,
     username,
     password,
     clientId,
-    expiresAt: Date.now() + 30_000,
+    expiresAt: Date.now() + 60_000,
   });
-  return token;
+  const payloadB64 = Buffer.from(payload).toString('base64url');
+  const signature = signPayload(payloadB64);
+  return `${payloadB64}.${signature}`;
 }
 
 /**
- * Consume a login token (one-time use). Returns null if expired or invalid.
+ * Verify and consume a signed login token. Returns null if invalid, expired, or replayed.
  */
 export function consumeLoginToken(token: string, clientId: string): LoginToken | null {
-  const entry = loginTokens.get(token);
-  if (!entry) return null;
-  loginTokens.delete(token);
+  const dotIndex = token.indexOf('.');
+  if (dotIndex === -1) return null;
+
+  const payloadB64 = token.slice(0, dotIndex);
+  const signature = token.slice(dotIndex + 1);
+
+  // Verify signature
+  const expectedSignature = signPayload(payloadB64);
+  if (signature !== expectedSignature) return null;
+
+  // Decode payload
+  let entry: LoginToken & { id?: string };
+  try {
+    entry = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+  } catch {
+    return null;
+  }
+
+  // Check expiry
   if (entry.expiresAt < Date.now()) return null;
+
+  // Check clientId
   if (entry.clientId !== clientId) return null;
+
+  // Prevent replay (one-time use)
+  const tokenId = entry.id ?? token;
+  if (usedTokens.has(tokenId)) return null;
+  usedTokens.add(tokenId);
+
   return entry;
 }
 
@@ -112,6 +154,7 @@ export async function proxyToAdminer(
     body?: string | Buffer;
     contentType?: string;
     query?: Record<string, string>;
+    cookies?: string;
   } = {},
 ): Promise<ProxyResult> {
   const kc = loadKubeConfig(kubeconfigPath);
@@ -128,6 +171,7 @@ export async function proxyToAdminer(
 
   const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
+  if (options.cookies) headers['Cookie'] = options.cookies;
 
   if (options.body) {
     const bodyLen = Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body);
