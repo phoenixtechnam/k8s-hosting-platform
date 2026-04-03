@@ -59,9 +59,8 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 export async function adminerRoutes(app: FastifyInstance): Promise<void> {
-  app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
-  app.addHook('onRequest', requireClientAccess());
+  // Auth hooks applied per-route (auto-login and proxy routes do NOT require JWT)
+  const authHooks = [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'), requireClientAccess()];
 
   const getK8s = () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -70,6 +69,7 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/clients/:clientId/adminer/status
   app.get('/clients/:clientId/adminer/status', {
+    onRequest: authHooks,
     schema: { tags: ['Adminer'], summary: 'Get Adminer pod status', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
@@ -81,6 +81,7 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/clients/:clientId/adminer/start
   app.post('/clients/:clientId/adminer/start', {
+    onRequest: authHooks,
     schema: { tags: ['Adminer'], summary: 'Start Adminer pod', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
@@ -94,6 +95,7 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/clients/:clientId/adminer/stop
   app.post('/clients/:clientId/adminer/stop', {
+    onRequest: authHooks,
     schema: { tags: ['Adminer'], summary: 'Stop Adminer pod', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
@@ -108,6 +110,7 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
   // Body: { deploymentId, username }
   // Returns: { loginUrl }
   app.post('/clients/:clientId/adminer/login', {
+    onRequest: authHooks,
     schema: { tags: ['Adminer'], summary: 'Generate Adminer auto-login URL', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
@@ -174,8 +177,9 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/clients/:clientId/adminer/auto-login?token=xxx
   // Serves HTML that auto-submits credentials to Adminer proxy
+  // No JWT auth — the one-time token in the URL IS the authentication
   app.get('/clients/:clientId/adminer/auto-login', {
-    schema: { tags: ['Adminer'], summary: 'Auto-login to Adminer (HTML redirect)', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Adminer'], summary: 'Auto-login to Adminer (HTML redirect)' },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
     const query = request.query as { token?: string };
@@ -200,8 +204,9 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ALL /api/v1/clients/:clientId/adminer/proxy/* — proxy all requests to Adminer
+  // No JWT auth — once user has auto-logged in, Adminer requests flow through unauthenticated
   app.all('/clients/:clientId/adminer/proxy/*', {
-    schema: { tags: ['Adminer'], summary: 'Proxy request to Adminer pod', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['Adminer'], summary: 'Proxy request to Adminer pod' },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
     const namespace = await resolveNamespace(app, clientId);

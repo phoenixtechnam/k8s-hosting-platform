@@ -166,6 +166,19 @@ function formatNum(n: number): string {
   return n.toFixed(2);
 }
 
+/** Format a K8s CPU value to human-readable text (e.g. "250m" -> "0.25 CPUs"). */
+function humanizeCpu(value: string): string {
+  const cores = parseCpu(value);
+  return `${cores % 1 === 0 ? cores.toFixed(0) : cores.toFixed(2).replace(/0+$/, '')} CPUs`;
+}
+
+/** Format a K8s memory/storage value to human-readable text (e.g. "256Mi" -> "0.25 GB"). */
+function humanizeBytes(value: string): string {
+  const gib = parseMemory(value);
+  if (gib >= 1) return `${gib % 1 === 0 ? gib.toFixed(0) : gib.toFixed(1)} GB`;
+  return `${(gib * 1024) % 1 === 0 ? (gib * 1024).toFixed(0) : (gib * 1024).toFixed(0)} MB`;
+}
+
 function ResourceTag({
   icon,
   label,
@@ -173,6 +186,7 @@ function ResourceTag({
   limit,
   parser,
   unit,
+  humanizer,
 }: {
   readonly icon: React.ReactNode;
   readonly label: string;
@@ -180,6 +194,7 @@ function ResourceTag({
   readonly limit: string;
   readonly parser: (v: string) => number;
   readonly unit: string;
+  readonly humanizer: (v: string) => string;
 }) {
   const usedNum = parser(used);
   const limitNum = parser(limit);
@@ -191,13 +206,16 @@ function ResourceTag({
   } else if (ratio >= 0.7) {
     colorClasses = 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800';
   } else {
-    colorClasses = 'bg-gray-50 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700';
+    colorClasses = 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700';
   }
+
+  const usedHuman = humanizer(used);
+  const limitHuman = humanizer(limit);
 
   return (
     <span
       className={`hidden lg:inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium border ${colorClasses}`}
-      title={`${label}: ${formatNum(usedNum)} / ${formatNum(limitNum)} ${unit}`}
+      title={`${usedHuman} used of ${limitHuman} available`}
       data-testid={`resource-tag-${label.toLowerCase()}`}
     >
       {icon}
@@ -226,6 +244,7 @@ function ResourceUsageTags() {
         limit={usage.cpu.limit}
         parser={parseCpu}
         unit=""
+        humanizer={humanizeCpu}
       />
       <ResourceTag
         icon={<MemoryStick size={12} />}
@@ -234,6 +253,7 @@ function ResourceUsageTags() {
         limit={usage.memory.limit}
         parser={parseMemory}
         unit="Gi"
+        humanizer={humanizeBytes}
       />
       <ResourceTag
         icon={<HardDrive size={12} />}
@@ -242,6 +262,7 @@ function ResourceUsageTags() {
         limit={usage.storage.limit}
         parser={parseStorage}
         unit="Gi"
+        humanizer={humanizeBytes}
       />
     </div>
   );
