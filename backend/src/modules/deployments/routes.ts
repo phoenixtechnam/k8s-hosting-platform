@@ -423,9 +423,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const FM_IMAGE = 'file-manager-sidecar:latest';
 
-    const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/download', {
-      query: { path: body.file_path },
-    });
+    let fmResult: Awaited<ReturnType<typeof fileManagerRequest>>;
+    try {
+      fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/download', {
+        query: { path: body.file_path },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to read file';
+      throw new ApiError('IMPORT_FILE_READ_ERROR', `Failed to read file: ${message}`, 500);
+    }
 
     if (fmResult.status !== 200) {
       throw new ApiError('FILE_NOT_FOUND', `Could not read file: ${body.file_path}`, 404);

@@ -213,7 +213,7 @@ export interface DbUser {
   readonly databases: readonly string[];
 }
 
-export type Engine = 'mariadb' | 'mysql' | 'postgresql';
+export type Engine = 'mariadb' | 'mysql' | 'postgresql' | 'mongodb';
 
 export interface DbManagerContext {
   readonly kubeconfigPath: string | undefined;
@@ -263,6 +263,7 @@ function detectEngine(catalogEntry: { runtime?: string | null }): Engine {
   if (runtime === 'mariadb') return 'mariadb';
   if (runtime === 'mysql') return 'mysql';
   if (runtime === 'postgresql' || runtime === 'postgres') return 'postgresql';
+  if (runtime === 'mongodb') return 'mongodb';
   throw new ApiError(
     'UNSUPPORTED_ENGINE',
     `Database engine '${catalogEntry.runtime ?? 'unknown'}' is not supported for management`,
@@ -683,6 +684,283 @@ function parseCsvLines(input: string): string[][] {
   return result;
 }
 
+// ─── MongoDB ──────────────────────────────────────────────────────────────────
+
+async function mongoExec(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  podName: string,
+  containerName: string,
+  rootPassword: string,
+  command: string,
+): Promise<string> {
+  const authArgs = rootPassword
+    ? ['-u', 'root', '-p', rootPassword, '--authenticationDatabase', 'admin']
+    : [];
+  const { stdout, stderr } = await execInPod(
+    kubeconfigPath, namespace, podName, containerName,
+    ['mongosh', '--quiet', ...authArgs, '--eval', command],
+  );
+  if (stderr && stderr.includes('MongoServerError')) {
+    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+  }
+  return stdout;
+}
+
+async function mongoListDatabases(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+): Promise<readonly DbDatabase[]> {
+  const out = await mongoExec(kp, ns, pod, cn, pw,
+    'db.adminCommand({listDatabases:1}).databases.filter(d=>!["admin","config","local"].includes(d.name)).map(d=>d.name).join("\\n")',
+  );
+  return out.split('\n').filter(Boolean).map((name) => ({ name }));
+}
+
+async function mongoCreateDatabase(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
+): Promise<void> {
+  await mongoExec(kp, ns, pod, cn, pw,
+    `db = db.getSiblingDB("${dbName}"); db.createCollection("_init")`,
+  );
+}
+
+async function mongoDropDatabase(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
+): Promise<void> {
+  await mongoExec(kp, ns, pod, cn, pw,
+    `db.getSiblingDB("${dbName}").dropDatabase()`,
+  );
+}
+
+async function mongoListCollections(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, database: string,
+): Promise<readonly string[]> {
+  const out = await mongoExec(kp, ns, pod, cn, pw,
+    `db.getSiblingDB("${database}").getCollectionNames().filter(c=>c!=='_init').join("\\n")`,
+  );
+  return out.split('\n').filter(Boolean);
+}
+
+async function mongoListUsers(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+): Promise<readonly DbUser[]> {
+  const out = await mongoExec(kp, ns, pod, cn, pw,
+    'db.getSiblingDB("admin").system.users.find({},{user:1,roles:1}).map(u => u.user + "\\t" + u.roles.map(r=>r.db||"admin").join(",")).join("\\n")',
+  );
+  return out.split('\n').filter(Boolean).map((line) => {
+    const [username, dbs] = line.split('\t');
+    return { username, host: '*', databases: dbs ? dbs.split(',') : [] };
+  });
+}
+
+async function mongoCreateUser(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+  username: string, password: string, database?: string,
+): Promise<void> {
+  const db = database ?? 'admin';
+  await mongoExec(kp, ns, pod, cn, pw,
+    `db.getSiblingDB("${db}").createUser({user:"${username}",pwd:"${password}",roles:[{role:"readWrite",db:"${db}"}]})`,
+  );
+}
+
+async function mongoDropUser(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, username: string,
+): Promise<void> {
+  await mongoExec(kp, ns, pod, cn, pw,
+    `db.getSiblingDB("admin").dropUser("${username}")`,
+  );
+}
+
+async function mongoSetPassword(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+  username: string, newPassword: string,
+): Promise<void> {
+  await mongoExec(kp, ns, pod, cn, pw,
+    `db.getSiblingDB("admin").changeUserPassword("${username}","${newPassword}")`,
+  );
+}
+
+async function mongoExecuteQuery(
+  ctx: DbManagerContext,
+  database: string,
+  query: string,
+  startTime: number,
+): Promise<QueryResult> {
+  const out = await mongoExec(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword,
+    `db = db.getSiblingDB("${database}"); EJSON.stringify(${query})`,
+  );
+  const elapsed = Date.now() - startTime;
+
+  try {
+    const parsed = JSON.parse(out);
+    if (Array.isArray(parsed)) {
+      const columns = parsed.length > 0 ? Object.keys(parsed[0]) : [];
+      const rows = parsed.map((doc: Record<string, unknown>) =>
+        columns.map((c) => String(doc[c] ?? '')),
+      );
+      return { columns, rows, rowCount: rows.length, executionTimeMs: elapsed };
+    }
+  } catch {
+    // Not JSON, return as raw text
+  }
+  return { columns: ['result'], rows: [[out]], rowCount: 1, executionTimeMs: elapsed };
+}
+
+/**
+ * Describe a MongoDB collection by sampling a document to infer field names.
+ * MongoDB is schema-less, so we return fields from the first document found.
+ */
+async function mongoDescribeCollection(
+  ctx: DbManagerContext,
+  database: string,
+  collection: string,
+): Promise<readonly ColumnInfo[]> {
+  const out = await mongoExec(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword,
+    `EJSON.stringify(Object.keys(db.getSiblingDB("${database}").getCollection("${collection}").findOne() || {}))`,
+  );
+
+  try {
+    const fields = JSON.parse(out);
+    if (Array.isArray(fields)) {
+      return fields.map((name: string) => ({
+        name,
+        type: 'mixed',
+        nullable: true,
+        defaultValue: null,
+        key: name === '_id' ? 'PRI' : '',
+      }));
+    }
+  } catch {
+    // No documents or parse error
+  }
+  return [];
+}
+
+/**
+ * Browse a MongoDB collection with pagination.
+ */
+async function mongoBrowseCollection(
+  ctx: DbManagerContext,
+  database: string,
+  collection: string,
+  options: BrowseOptions,
+): Promise<QueryResult> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const orderDir = options.orderDir === 'desc' ? -1 : 1;
+
+  let sortExpr = '{}';
+  if (options.orderBy) {
+    validateTableName(options.orderBy);
+    sortExpr = `{"${options.orderBy}":${orderDir}}`;
+  }
+
+  const out = await mongoExec(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword,
+    `EJSON.stringify(db.getSiblingDB("${database}").getCollection("${collection}").find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
+  );
+  const start = Date.now();
+
+  try {
+    const parsed = JSON.parse(out);
+    if (Array.isArray(parsed)) {
+      const columns = parsed.length > 0 ? Object.keys(parsed[0]) : [];
+      const rows = parsed.map((doc: Record<string, unknown>) =>
+        columns.map((c) => {
+          const val = doc[c];
+          return typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val ?? '');
+        }),
+      );
+      return { columns, rows, rowCount: rows.length, executionTimeMs: Date.now() - start };
+    }
+  } catch {
+    // parse error
+  }
+  return { columns: ['result'], rows: [[out]], rowCount: 1, executionTimeMs: Date.now() - start };
+}
+
+/**
+ * Count documents in a MongoDB collection.
+ */
+async function mongoCountDocuments(
+  ctx: DbManagerContext,
+  database: string,
+  collection: string,
+): Promise<number> {
+  const out = await mongoExec(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword,
+    `db.getSiblingDB("${database}").getCollection("${collection}").countDocuments()`,
+  );
+  return parseInt(out.trim(), 10) || 0;
+}
+
+/**
+ * Export a MongoDB database using mongodump --archive (outputs to stdout).
+ */
+async function mongoExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
+  const authArgs = ctx.rootPassword
+    ? ['-u', 'root', '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
+    : [];
+  try {
+    const { stdout, stderr } = await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mongodump', '--db', database, ...authArgs, '--archive=/dev/stdout', '--gzip'],
+    );
+    if (stderr && stderr.includes('error')) {
+      throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+    }
+    return stdout;
+  } catch (err) {
+    if (isBinaryNotFoundError(err)) {
+      throw new ApiError(
+        'EXPORT_NOT_AVAILABLE',
+        'mongodump is not available in this MongoDB container. Use mongosh to export individual collections.',
+        400,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Import into a MongoDB database using mongorestore from stdin.
+ */
+async function mongoImportDatabase(
+  ctx: DbManagerContext,
+  database: string,
+  data: string,
+): Promise<ImportResult> {
+  const authArgs = ctx.rootPassword
+    ? ['-u', 'root', '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
+    : [];
+  try {
+    const { stderr } = await execInPodWithStdin(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mongorestore', '--db', database, ...authArgs, '--archive=/dev/stdin', '--gzip'],
+      data,
+    );
+    if (stderr && stderr.includes('error')) {
+      return { success: false, error: stderr };
+    }
+    return { success: true };
+  } catch (err) {
+    if (isBinaryNotFoundError(err)) {
+      return {
+        success: false,
+        error: 'mongorestore is not available in this MongoDB container.',
+      };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function buildDbContext(
@@ -703,6 +981,7 @@ export async function buildDbContext(
   let rootPassword = '';
   if (engine === 'mariadb') rootPassword = String(configuration.MARIADB_ROOT_PASSWORD ?? '');
   else if (engine === 'mysql') rootPassword = String(configuration.MYSQL_ROOT_PASSWORD ?? '');
+  else if (engine === 'mongodb') rootPassword = String(configuration.MONGO_INITDB_ROOT_PASSWORD ?? '');
   // PostgreSQL uses peer/trust auth inside container — no password needed
 
   return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword };
@@ -717,6 +996,11 @@ export async function listDatabases(ctx: DbManagerContext): Promise<readonly DbD
   if (ctx.engine === 'postgresql') {
     return pgListDatabases(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName);
   }
+  if (ctx.engine === 'mongodb') {
+    return mongoListDatabases(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword,
+    );
+  }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database listing not supported`, 400);
 }
 
@@ -729,6 +1013,11 @@ export async function createDatabase(ctx: DbManagerContext, name: string): Promi
   }
   if (ctx.engine === 'postgresql') {
     return pgCreateDatabase(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, name);
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoCreateDatabase(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
+    );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database creation not supported`, 400);
 }
@@ -743,6 +1032,11 @@ export async function dropDatabase(ctx: DbManagerContext, name: string): Promise
   if (ctx.engine === 'postgresql') {
     return pgDropDatabase(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, name);
   }
+  if (ctx.engine === 'mongodb') {
+    return mongoDropDatabase(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
+    );
+  }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database deletion not supported`, 400);
 }
 
@@ -754,6 +1048,11 @@ export async function listUsers(ctx: DbManagerContext): Promise<readonly DbUser[
   }
   if (ctx.engine === 'postgresql') {
     return pgListUsers(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName);
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoListUsers(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword,
+    );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user listing not supported`, 400);
 }
@@ -778,6 +1077,12 @@ export async function createUser(
       username, password, database,
     );
   }
+  if (ctx.engine === 'mongodb') {
+    return mongoCreateUser(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, username, password, database,
+    );
+  }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user creation not supported`, 400);
 }
 
@@ -790,6 +1095,11 @@ export async function dropUser(ctx: DbManagerContext, username: string): Promise
   }
   if (ctx.engine === 'postgresql') {
     return pgDropUser(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username);
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoDropUser(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username,
+    );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user deletion not supported`, 400);
 }
@@ -809,6 +1119,12 @@ export async function setUserPassword(
   if (ctx.engine === 'postgresql') {
     return pgSetPassword(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, username, password,
+    );
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoSetPassword(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, username, password,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} password change not supported`, 400);
@@ -870,6 +1186,9 @@ export async function executeQuery(
     }
     if (ctx.engine === 'postgresql') {
       return await pgExecuteQuery(ctx, database, query, start);
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoExecuteQuery(ctx, database, query, start);
     }
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} query execution not supported`, 400);
   } catch (err) {
@@ -957,6 +1276,13 @@ export async function listTables(
     return rows.map((r) => r[0]).filter(Boolean);
   }
 
+  if (ctx.engine === 'mongodb') {
+    return mongoListCollections(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, database,
+    );
+  }
+
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table listing not supported`, 400);
 }
 
@@ -978,6 +1304,9 @@ export async function describeTable(
   }
   if (ctx.engine === 'postgresql') {
     return pgDescribeTable(ctx, database, table);
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoDescribeCollection(ctx, database, table);
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table description not supported`, 400);
 }
@@ -1088,6 +1417,10 @@ export async function browseTable(
     return executeQuery(ctx, database, `SELECT * FROM "${table}"${orderClause} LIMIT ${limit} OFFSET ${offset}`);
   }
 
+  if (ctx.engine === 'mongodb') {
+    return mongoBrowseCollection(ctx, database, table, { limit, offset, orderBy: options.orderBy, orderDir: options.orderDir });
+  }
+
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table browsing not supported`, 400);
 }
 
@@ -1121,6 +1454,10 @@ export async function countRows(
     return parseInt(rows[0]?.[0] ?? '0', 10) || 0;
   }
 
+  if (ctx.engine === 'mongodb') {
+    return mongoCountDocuments(ctx, database, table);
+  }
+
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} row counting not supported`, 400);
 }
 
@@ -1140,6 +1477,9 @@ export async function exportDatabase(
   }
   if (ctx.engine === 'postgresql') {
     return pgExportDatabase(ctx, database);
+  }
+  if (ctx.engine === 'mongodb') {
+    return mongoExportDatabase(ctx, database);
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database export not supported`, 400);
 }
@@ -1203,6 +1543,9 @@ export async function importSql(
     }
     if (ctx.engine === 'postgresql') {
       return await pgImportSql(ctx, database, sql);
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoImportDatabase(ctx, database, sql);
     }
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
   } catch (err) {
@@ -1306,6 +1649,9 @@ export async function importSqlFromPvcFile(
     }
     if (ctx.engine === 'postgresql') {
       return await pgImportSql(ctx, database, sqlContent);
+    }
+    if (ctx.engine === 'mongodb') {
+      return await mongoImportDatabase(ctx, database, sqlContent);
     }
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
   } catch (err) {

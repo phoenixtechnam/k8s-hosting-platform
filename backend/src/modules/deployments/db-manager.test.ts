@@ -1140,7 +1140,7 @@ describe('db-manager', () => {
         rootPassword: 'pw',
       };
 
-      const largeSql = 'INSERT INTO test VALUES ' + '(1),'.repeat(2_000_000);
+      const largeSql = 'INSERT INTO test VALUES ' + '(1),'.repeat(14_000_000);
 
       await expect(importSql(ctx, 'mydb', largeSql)).rejects.toThrow('exceeds maximum size');
     });

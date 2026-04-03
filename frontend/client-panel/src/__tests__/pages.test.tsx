@@ -73,7 +73,7 @@ describe('Layout', () => {
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('Applications')).toBeInTheDocument();
-    expect(screen.getByText('Files')).toBeInTheDocument();
+    expect(screen.getByText('File Manager')).toBeInTheDocument();
     expect(screen.getByText('Email')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
     expect(screen.getByText('Settings')).toBeInTheDocument();
