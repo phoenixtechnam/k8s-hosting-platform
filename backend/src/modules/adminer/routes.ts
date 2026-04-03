@@ -59,6 +59,11 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 export async function adminerRoutes(app: FastifyInstance): Promise<void> {
+  // Accept form-urlencoded and any content type for Adminer proxy (Adminer sends forms, CSS, JS, etc.)
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  app.addContentTypeParser('multipart/form-data', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+
   // Auth hooks applied per-route (auto-login and proxy routes do NOT require JWT)
   const authHooks = [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'), requireClientAccess()];
 
