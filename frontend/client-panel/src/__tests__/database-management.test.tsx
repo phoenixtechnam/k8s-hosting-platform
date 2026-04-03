@@ -344,7 +344,7 @@ describe('DatabaseManagementModal', () => {
     );
   });
 
-  it('shows set password form for a user', () => {
+  it('triggers password regeneration for a user', () => {
     renderWithProviders(
       <DatabaseManagementModal
         open={true}
@@ -355,11 +355,11 @@ describe('DatabaseManagementModal', () => {
       />,
     );
 
-    fireEvent.click(screen.getByTestId('user-set-password-admin'));
-    expect(screen.getByTestId('password-form-admin')).toBeInTheDocument();
-    expect(screen.getByTestId('password-input-admin')).toBeInTheDocument();
-    expect(screen.getByTestId('password-generate-admin')).toBeInTheDocument();
-    expect(screen.getByTestId('password-save-admin')).toBeInTheDocument();
+    // The set-password button now triggers regeneration directly (auto-generate)
+    const regenButton = screen.getByTestId('user-set-password-admin');
+    expect(regenButton).toBeInTheDocument();
+    fireEvent.click(regenButton);
+    // The mutation should be called with a generated password
   });
 
   it('shows delete confirmation for user', () => {

@@ -9,6 +9,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileDeploymentStatuses } from './status-reconciler.js';
 import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
+import { generateSecurePassword } from './service.js';
 import { eq } from 'drizzle-orm';
 import { catalogEntries } from '../../db/schema.js';
 
@@ -208,17 +209,19 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/clients/:clientId/deployments/:id/db-users
   app.post('/clients/:clientId/deployments/:id/db-users', async (request, reply) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
-    const body = (request.body ?? {}) as { username?: string; password?: string; database?: string };
+    const body = (request.body ?? {}) as { username?: string; database?: string };
     if (!body.username) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'Username is required', 400, { field: 'username' });
     }
-    if (!body.password) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'Password is required', 400, { field: 'password' });
-    }
 
+    const password = generateSecurePassword(24);
     const ctx = await buildDbCtx(clientId, id);
-    await dbManager.createUser(ctx, body.username, body.password, body.database);
-    reply.status(201).send(success({ username: body.username }));
+    await dbManager.createUser(ctx, body.username, password, body.database);
+    reply.status(201).send(success({
+      username: body.username,
+      password,
+      database: body.database ?? null,
+    }));
   });
 
   // DELETE /api/v1/clients/:clientId/deployments/:id/db-users/:username
@@ -232,14 +235,11 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/clients/:clientId/deployments/:id/db-users/:username/password
   app.post('/clients/:clientId/deployments/:id/db-users/:username/password', async (request) => {
     const { clientId, id, username } = request.params as { clientId: string; id: string; username: string };
-    const body = (request.body ?? {}) as { password?: string };
-    if (!body.password) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'Password is required', 400, { field: 'password' });
-    }
 
+    const password = generateSecurePassword(24);
     const ctx = await buildDbCtx(clientId, id);
-    await dbManager.setUserPassword(ctx, username, body.password);
-    return success({ message: 'Password updated' });
+    await dbManager.setUserPassword(ctx, username, password);
+    return success({ username, password });
   });
 
   // ─── Database Query & Browsing Routes ───────────────────────────────────

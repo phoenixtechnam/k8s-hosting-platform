@@ -4,8 +4,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Database, Table2, Play, Trash2, Download, Upload, Search,
   ChevronRight, ArrowLeft, Loader2, AlertCircle, Columns3,
-  ChevronLeft, ChevronDown, Terminal, FileText, Plus, Key, Users,
-  Eye, EyeOff, X, Edit3, PlusCircle, Minus,
+  ChevronLeft, ChevronDown, Terminal, FileText, Plus, Users,
+  X, Edit3, PlusCircle, Minus, Copy, Check, RefreshCw,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
@@ -62,6 +62,28 @@ interface NewColumnDef {
 
 function createEmptyColumn(): NewColumnDef {
   return { name: '', type: 'TEXT', primaryKey: false, nullable: true };
+}
+
+function generateRandomPassword(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
+}
+
+function copyToClipboard(text: string): void {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text);
+  } else {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }
 }
 
 type SidebarView = 'tables' | 'structure';
@@ -288,12 +310,11 @@ export default function DatabaseManager() {
   const [usersExpanded, setUsersExpanded] = useState(false);
   const [createUserOpen, setCreateUserOpen] = useState(false);
   const [newUsername, setNewUsername] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserDatabase, setNewUserDatabase] = useState('');
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<string | null>(null);
-  const [setPasswordFor, setSetPasswordFor] = useState<string | null>(null);
-  const [newPasswordValue, setNewPasswordValue] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+  const [createdUserPassword, setCreatedUserPassword] = useState<string | null>(null);
+  const [regeneratedPassword, setRegeneratedPassword] = useState<{ username: string; password: string } | null>(null);
+  const [copiedPassword, setCopiedPassword] = useState(false);
 
   // ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -329,24 +350,27 @@ export default function DatabaseManager() {
   );
 
   const handleCreateUser = useCallback(() => {
-    if (!newUsername.trim() || !newUserPassword.trim() || !selectedDeploymentId) return;
+    if (!newUsername.trim() || !selectedDeploymentId) return;
+    const generatedPassword = generateRandomPassword();
+    setCreatedUserPassword(null);
     createDbUser.mutate(
       {
         deploymentId: selectedDeploymentId,
         username: newUsername.trim(),
-        password: newUserPassword.trim(),
+        password: generatedPassword,
         database: newUserDatabase.trim() || undefined,
       },
       {
         onSuccess: () => {
+          setCreatedUserPassword(generatedPassword);
+          setCopiedPassword(false);
           setNewUsername('');
-          setNewUserPassword('');
           setNewUserDatabase('');
           setCreateUserOpen(false);
         },
       },
     );
-  }, [newUsername, newUserPassword, newUserDatabase, selectedDeploymentId, createDbUser]);
+  }, [newUsername, newUserDatabase, selectedDeploymentId, createDbUser]);
 
   const handleDropUser = useCallback(
     (username: string) => {
@@ -359,22 +383,24 @@ export default function DatabaseManager() {
     [selectedDeploymentId, dropDbUser],
   );
 
-  const handleSetPassword = useCallback(() => {
-    if (!setPasswordFor || !newPasswordValue.trim() || !selectedDeploymentId) return;
+  const handleRegeneratePassword = useCallback((username: string) => {
+    if (!selectedDeploymentId) return;
+    const generatedPassword = generateRandomPassword();
+    setRegeneratedPassword(null);
     setDbUserPassword.mutate(
       {
         deploymentId: selectedDeploymentId,
-        username: setPasswordFor,
-        password: newPasswordValue.trim(),
+        username,
+        password: generatedPassword,
       },
       {
         onSuccess: () => {
-          setSetPasswordFor(null);
-          setNewPasswordValue('');
+          setRegeneratedPassword({ username, password: generatedPassword });
+          setCopiedPassword(false);
         },
       },
     );
-  }, [setPasswordFor, newPasswordValue, selectedDeploymentId, setDbUserPassword]);
+  }, [selectedDeploymentId, setDbUserPassword]);
 
   const handleDeploymentChange = useCallback(
     (id: string) => {
@@ -421,13 +447,6 @@ export default function DatabaseManager() {
     setQueryError(null);
   }, []);
 
-  const handleTableClick = useCallback((tableName: string) => {
-    const defaultQuery =
-      `SELECT * FROM ${tableName} LIMIT ${PAGE_SIZE};`;
-    setSqlValue(defaultQuery);
-    setResultsView('query');
-  }, []);
-
   const handleBrowseTable = useCallback((tableName: string) => {
     setBrowseTable(tableName);
     setBrowsePage(1);
@@ -449,27 +468,49 @@ export default function DatabaseManager() {
     }
   }, [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteExportDb, deployExportDb]);
 
+  const invalidateTableQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['sql-tables'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-tables'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-table-data'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-table-data'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-structure'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-structure'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-row-count'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-row-count'] });
+  }, [queryClient]);
+
   const handleImport = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
 
+      // Only accept .sql files
+      if (!file.name.toLowerCase().endsWith('.sql')) {
+        // Reset input so user can try again
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+
       const clearInput = () => { if (fileInputRef.current) fileInputRef.current.value = ''; };
+      const onImportSuccess = () => {
+        clearInput();
+        invalidateTableQueries();
+      };
 
       if (isSqlite && sqliteFile) {
         sqliteImportSqlMutation.mutate(
           { filePath: sqliteFile, file },
-          { onSuccess: clearInput, onError: clearInput },
+          { onSuccess: onImportSuccess, onError: clearInput },
         );
       } else {
         if (!selectedDeploymentId || !selectedDatabase) return;
         deployImportSql.mutate(
           { deploymentId: selectedDeploymentId, database: selectedDatabase, file },
-          { onSuccess: clearInput, onError: clearInput },
+          { onSuccess: onImportSuccess, onError: clearInput },
         );
       }
     },
-    [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteImportSqlMutation, deployImportSql],
+    [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteImportSqlMutation, deployImportSql, invalidateTableQueries],
   );
 
   const handleBrowseSort = useCallback(
@@ -507,17 +548,6 @@ export default function DatabaseManager() {
     },
     [isSqlite, sqliteFile, selectedDatabase, sqliteExecuteQuery, deployExecuteQuery],
   );
-
-  const invalidateTableQueries = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['sql-tables'] });
-    queryClient.invalidateQueries({ queryKey: ['sqlite-tables'] });
-    queryClient.invalidateQueries({ queryKey: ['sql-table-data'] });
-    queryClient.invalidateQueries({ queryKey: ['sqlite-table-data'] });
-    queryClient.invalidateQueries({ queryKey: ['sql-structure'] });
-    queryClient.invalidateQueries({ queryKey: ['sqlite-structure'] });
-    queryClient.invalidateQueries({ queryKey: ['sql-row-count'] });
-    queryClient.invalidateQueries({ queryKey: ['sqlite-row-count'] });
-  }, [queryClient]);
 
   // ─── Create Table ──────────────────────────────────────────────────────────
 
@@ -901,7 +931,7 @@ export default function DatabaseManager() {
       {/* Main content */}
       <div className="flex gap-4 min-h-[600px]">
         {/* Sidebar */}
-        <div className="w-60 shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
+        <div className="w-72 shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
           {/* Database selector (deployment mode) or file info (SQLite mode) */}
           <div className="p-3 border-b border-gray-200 dark:border-gray-700">
             {isSqlite ? (
@@ -1042,7 +1072,6 @@ export default function DatabaseManager() {
                   name={table}
                   engine={engine}
                   isActive={browseTable === table || structureTable === table}
-                  onClick={() => handleTableClick(table)}
                   onBrowse={() => handleBrowseTable(table)}
                   onStructure={() => handleViewStructure(table)}
                   onDrop={() => setConfirmDropTable(table)}
@@ -1226,16 +1255,21 @@ export default function DatabaseManager() {
                       className="flex items-center justify-between text-xs rounded-md px-1.5 py-1 hover:bg-gray-50 dark:hover:bg-gray-700/50 group"
                       data-testid={`user-row-${u.username}`}
                     >
-                      <span className="font-mono text-gray-700 dark:text-gray-300 truncate">{u.username}</span>
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="min-w-0">
+                        <span className="font-mono text-gray-700 dark:text-gray-300 truncate block">{u.username}</span>
+                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                          {u.databases?.length ? u.databases.map((d) => `@${d}`).join(', ') : '@ALL'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                         <button
                           type="button"
-                          onClick={() => { setSetPasswordFor(u.username); setNewPasswordValue(''); setShowPassword(false); }}
-                          title="Set password"
+                          onClick={() => handleRegeneratePassword(u.username)}
+                          title="Regenerate password"
                           className="rounded p-0.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
                           data-testid={`set-password-${u.username}`}
                         >
-                          <Key size={12} />
+                          <RefreshCw size={12} />
                         </button>
                         <button
                           type="button"
@@ -1278,47 +1312,59 @@ export default function DatabaseManager() {
                     </div>
                   )}
 
-                  {/* Set password form */}
-                  {setPasswordFor && (
-                    <div className="rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-2" data-testid="set-password-form">
-                      <p className="text-xs text-blue-700 dark:text-blue-300 mb-1.5">
-                        Set password for <span className="font-mono font-semibold">{setPasswordFor}</span>
+                  {/* Regenerated password display */}
+                  {regeneratedPassword && (
+                    <div className="rounded-md border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 p-2" data-testid="regenerated-password-banner">
+                      <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-1">
+                        New password for <span className="font-mono font-semibold">{regeneratedPassword.username}</span>:
                       </p>
-                      <div className="flex gap-1">
-                        <div className="relative flex-1">
-                          <input
-                            type={showPassword ? 'text' : 'password'}
-                            value={newPasswordValue}
-                            onChange={(e) => setNewPasswordValue(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleSetPassword(); }}
-                            placeholder="New password"
-                            className="w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 pr-6 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                            data-testid="new-password-input"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword((prev) => !prev)}
-                            className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                          >
-                            {showPassword ? <EyeOff size={10} /> : <Eye size={10} />}
-                          </button>
-                        </div>
+                      <div className="flex items-center gap-1">
+                        <code className="flex-1 rounded bg-white dark:bg-gray-900 border border-green-200 dark:border-green-700 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 select-all truncate">
+                          {regeneratedPassword.password}
+                        </code>
                         <button
                           type="button"
-                          onClick={handleSetPassword}
-                          disabled={setDbUserPassword.isPending || !newPasswordValue.trim()}
-                          className="shrink-0 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                          data-testid="confirm-set-password"
+                          onClick={() => { copyToClipboard(regeneratedPassword.password); setCopiedPassword(true); }}
+                          className="shrink-0 rounded p-1 text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+                          data-testid="copy-regenerated-password"
                         >
-                          {setDbUserPassword.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Set'}
+                          {copiedPassword ? <Check size={12} /> : <Copy size={12} />}
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setSetPasswordFor(null); setNewPasswordValue(''); }}
-                          className="shrink-0 rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
-                          data-testid="cancel-set-password"
+                          onClick={() => setRegeneratedPassword(null)}
+                          className="shrink-0 rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                         >
-                          Cancel
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Created user password display */}
+                  {createdUserPassword && (
+                    <div className="rounded-md border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 p-2" data-testid="created-user-password-banner">
+                      <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-1">
+                        User created. Copy the password now:
+                      </p>
+                      <div className="flex items-center gap-1">
+                        <code className="flex-1 rounded bg-white dark:bg-gray-900 border border-green-200 dark:border-green-700 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 select-all truncate">
+                          {createdUserPassword}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => { copyToClipboard(createdUserPassword); setCopiedPassword(true); }}
+                          className="shrink-0 rounded p-1 text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300"
+                          data-testid="copy-created-user-password"
+                        >
+                          {copiedPassword ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCreatedUserPassword(null)}
+                          className="shrink-0 rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        >
+                          <X size={12} />
                         </button>
                       </div>
                     </div>
@@ -1334,23 +1380,6 @@ export default function DatabaseManager() {
                         className="w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                         data-testid="new-username-input"
                       />
-                      <div className="relative">
-                        <input
-                          type={showPassword ? 'text' : 'password'}
-                          value={newUserPassword}
-                          onChange={(e) => setNewUserPassword(e.target.value)}
-                          placeholder="Password"
-                          className="w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 pr-6 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          data-testid="new-user-password-input"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword((prev) => !prev)}
-                          className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        >
-                          {showPassword ? <EyeOff size={10} /> : <Eye size={10} />}
-                        </button>
-                      </div>
                       <select
                         value={newUserDatabase}
                         onChange={(e) => setNewUserDatabase(e.target.value)}
@@ -1362,11 +1391,14 @@ export default function DatabaseManager() {
                           <option key={db.name} value={db.name}>{db.name}</option>
                         ))}
                       </select>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        A secure password will be generated automatically.
+                      </p>
                       <div className="flex gap-1">
                         <button
                           type="button"
                           onClick={handleCreateUser}
-                          disabled={createDbUser.isPending || !newUsername.trim() || !newUserPassword.trim()}
+                          disabled={createDbUser.isPending || !newUsername.trim()}
                           className="rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                           data-testid="confirm-create-user"
                         >
@@ -1374,7 +1406,7 @@ export default function DatabaseManager() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setCreateUserOpen(false); setNewUsername(''); setNewUserPassword(''); setNewUserDatabase(''); }}
+                          onClick={() => { setCreateUserOpen(false); setNewUsername(''); setNewUserDatabase(''); }}
                           className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
                           data-testid="cancel-create-user"
                         >
@@ -1385,7 +1417,7 @@ export default function DatabaseManager() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => { setCreateUserOpen(true); setShowPassword(false); }}
+                      onClick={() => { setCreateUserOpen(true); setCreatedUserPassword(null); }}
                       className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 mt-1"
                       data-testid="add-user-button"
                     >
@@ -1503,13 +1535,22 @@ export default function DatabaseManager() {
 
           {/* Import result */}
           {importIsSuccess && (
-            <div className="rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-4 py-2 text-sm text-green-800 dark:text-green-300" data-testid="import-success">
-              SQL file imported successfully.
+            <div className="rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-300 flex items-center gap-2" data-testid="import-success">
+              <Check size={16} className="text-green-600 dark:text-green-400 shrink-0" />
+              SQL file imported successfully. Tables have been refreshed.
             </div>
           )}
           {importIsError && (
-            <div className="rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-2 text-sm text-red-700 dark:text-red-300" data-testid="import-error">
-              {importError instanceof Error ? importError.message : 'Import failed'}
+            <div className="rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="import-error">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium">Import failed</p>
+                  <p className="mt-1 font-mono text-xs whitespace-pre-wrap">
+                    {importError instanceof Error ? importError.message : 'An unknown error occurred during import.'}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1617,7 +1658,6 @@ function TableRow({
   name,
   engine,
   isActive,
-  onClick,
   onBrowse,
   onStructure,
   onDrop,
@@ -1625,12 +1665,25 @@ function TableRow({
   readonly name: string;
   readonly engine: DbEngine;
   readonly isActive: boolean;
-  readonly onClick: () => void;
   readonly onBrowse: () => void;
   readonly onStructure: () => void;
   readonly onDrop: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClick = () => setContextMenu(null);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    document.addEventListener('click', handleClick);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('click', handleClick);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenu]);
 
   return (
     <div
@@ -1641,74 +1694,59 @@ function TableRow({
           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50',
       )}
       data-testid={`table-row-${name}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY });
+      }}
     >
       <Table2 size={14} className={clsx('shrink-0', isActive ? 'text-blue-500' : 'text-gray-400')} />
       <button
         type="button"
         className="flex-1 text-left truncate text-sm font-mono"
-        onClick={onClick}
-        title={name}
+        onDoubleClick={onBrowse}
+        title={`Double-click to browse ${name}`}
       >
         {name}
       </button>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onDrop(); }}
-        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-opacity"
-        title="Drop table"
-        data-testid={`table-drop-${name}`}
-      >
-        <Trash2 size={12} />
-      </button>
-      <div className="relative">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setMenuOpen(!menuOpen);
-          }}
-          className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
-          data-testid={`table-menu-${name}`}
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 text-sm"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          data-testid={`table-context-menu-${name}`}
         >
-          <ChevronDown size={14} />
-        </button>
-        {menuOpen && (
-          <>
-            <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
-            <div className="absolute right-0 top-6 z-40 w-36 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1" data-testid={`table-context-menu-${name}`}>
-              <button
-                type="button"
-                onClick={() => { onBrowse(); setMenuOpen(false); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-                data-testid={`table-browse-${name}`}
-              >
-                <Search size={14} />
-                Browse
-              </button>
-              {engine === 'sql' && (
-                <button
-                  type="button"
-                  onClick={() => { onStructure(); setMenuOpen(false); }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-                  data-testid={`table-structure-${name}`}
-                >
-                  <Columns3 size={14} />
-                  Structure
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => { onDrop(); setMenuOpen(false); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
-                data-testid={`table-drop-menu-${name}`}
-              >
-                <Trash2 size={14} />
-                Drop Table
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+          <button
+            type="button"
+            onClick={() => { onBrowse(); setContextMenu(null); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+            data-testid={`table-browse-${name}`}
+          >
+            <Search size={14} />
+            Browse
+          </button>
+          {engine === 'sql' && (
+            <button
+              type="button"
+              onClick={() => { onStructure(); setContextMenu(null); }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+              data-testid={`table-structure-${name}`}
+            >
+              <Columns3 size={14} />
+              Structure
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => { onDrop(); setContextMenu(null); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+            data-testid={`table-drop-menu-${name}`}
+          >
+            <Trash2 size={14} />
+            Drop Table
+          </button>
+        </div>
+      )}
     </div>
   );
 }

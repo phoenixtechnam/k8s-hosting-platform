@@ -524,6 +524,130 @@ describe('db-manager', () => {
 
       await expect(listDatabases(ctx)).rejects.toThrow();
     });
+
+    it('should fall back to mysql binary when mariadb binary is not found', async () => {
+      let callCount = 0;
+      mockExecFn.mockImplementation(
+        (
+          _ns: string,
+          _pod: string,
+          _container: string,
+          command: string[],
+          stdoutStream: NodeJS.WritableStream,
+          _stderrStream: NodeJS.WritableStream,
+          _stdin: unknown,
+          _tty: boolean,
+          callback: (status: Record<string, unknown>) => void,
+        ) => {
+          callCount++;
+          if (command[0] === 'mariadb') {
+            // Simulate binary not found
+            setTimeout(() => callback({
+              status: 'Failure',
+              message: 'OCI runtime exec failed: exec failed: unable to start container process: exec: "mariadb": executable file not found in $PATH',
+            }), 0);
+            return Promise.resolve({} as unknown);
+          }
+          // mysql binary succeeds
+          stdoutStream.write(Buffer.from('myapp_db'));
+          setTimeout(() => callback({ status: 'Success' }), 0);
+          return Promise.resolve({} as unknown);
+        },
+      );
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mysql',
+        engine: 'mysql' as const,
+        rootPassword: 'pw',
+      };
+
+      const dbs = await listDatabases(ctx);
+      expect(dbs).toEqual([{ name: 'myapp_db' }]);
+      expect(callCount).toBe(2);
+    });
+
+    it('should NOT fall back when mariadb binary exists but SQL fails', async () => {
+      mockExecFn.mockImplementation(
+        (
+          _ns: string,
+          _pod: string,
+          _container: string,
+          _command: string[],
+          _stdoutStream: NodeJS.WritableStream,
+          _stderrStream: NodeJS.WritableStream,
+          _stdin: unknown,
+          _tty: boolean,
+          callback: (status: Record<string, unknown>) => void,
+        ) => {
+          // Simulate an actual SQL error (not binary-not-found)
+          setTimeout(() => callback({
+            status: 'Failure',
+            message: 'ERROR 1045 (28000): Access denied for user',
+          }), 0);
+          return Promise.resolve({} as unknown);
+        },
+      );
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'wrong',
+      };
+
+      // Should throw the original error, not silently retry with mysql
+      await expect(listDatabases(ctx)).rejects.toThrow('Access denied');
+      // Only one call — no fallback
+      expect(mockExecFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fall back to mysqldump when mariadb-dump is not found for export', async () => {
+      let callCount = 0;
+      mockExecFn.mockImplementation(
+        (
+          _ns: string,
+          _pod: string,
+          _container: string,
+          command: string[],
+          stdoutStream: NodeJS.WritableStream,
+          _stderrStream: NodeJS.WritableStream,
+          _stdin: unknown,
+          _tty: boolean,
+          callback: (status: Record<string, unknown>) => void,
+        ) => {
+          callCount++;
+          if (command[0] === 'mariadb-dump') {
+            setTimeout(() => callback({
+              status: 'Failure',
+              message: 'executable file not found in $PATH',
+            }), 0);
+            return Promise.resolve({} as unknown);
+          }
+          // mysqldump succeeds
+          stdoutStream.write(Buffer.from('-- MySQL dump\nCREATE TABLE t (id INT);'));
+          setTimeout(() => callback({ status: 'Success' }), 0);
+          return Promise.resolve({} as unknown);
+        },
+      );
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mysql',
+        engine: 'mysql' as const,
+        rootPassword: 'pw',
+      };
+
+      const dump = await exportDatabase(ctx, 'mydb');
+      expect(dump).toContain('CREATE TABLE');
+      expect(callCount).toBe(2);
+    });
   });
 
   // ─── Query Execution Tests ──────────────────────────────────────────────

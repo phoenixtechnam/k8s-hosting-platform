@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
-  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle, ExternalLink, Terminal,
+  Loader2, Server, Key, Link, Plus, Trash2, Users, ExternalLink, Terminal,
 } from 'lucide-react';
 import {
   useDeploymentCredentials,
@@ -293,10 +293,9 @@ function UsersSection({
   const [newDatabase, setNewDatabase] = useState('__all__');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [passwordTarget, setPasswordTarget] = useState<string | null>(null);
-  const [passwordValue, setPasswordValue] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [createdPassword, setCreatedPassword] = useState<string | null>(null);
+  const [regeneratedPassword, setRegeneratedPassword] = useState<{ username: string; password: string } | null>(null);
 
   const { data: usersData, isLoading, isError } = useDbUsers(clientId, deploymentId);
   const createUser = useCreateDbUser(clientId);
@@ -365,22 +364,23 @@ function UsersSection({
     [deploymentId, dropUser],
   );
 
-  const handleSetPassword = useCallback(
+  const handleRegeneratePassword = useCallback(
     (username: string) => {
-      if (!deploymentId || !passwordValue.trim()) return;
+      if (!deploymentId) return;
       setErrorMessage(null);
+      setRegeneratedPassword(null);
+      const generatedPassword = generateRandomPassword();
       setPassword.mutate(
-        { deploymentId, username, password: passwordValue.trim() },
+        { deploymentId, username, password: generatedPassword },
         {
           onSuccess: () => {
-            setPasswordTarget(null);
-            setPasswordValue('');
+            setRegeneratedPassword({ username, password: generatedPassword });
           },
-          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to set password'),
+          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to regenerate password'),
         },
       );
     },
-    [deploymentId, passwordValue, setPassword],
+    [deploymentId, setPassword],
   );
 
   return (
@@ -444,14 +444,16 @@ function UsersSection({
               {users.map((user) => (
                 <div key={user.username} data-testid={`user-row-${user.username}`}>
                   <div className="flex items-center justify-between rounded-md bg-gray-50 dark:bg-gray-900/50 px-3 py-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-mono text-sm text-gray-900 dark:text-gray-100">
-                        {user.username}
-                      </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm text-gray-900 dark:text-gray-100">
+                          {user.username}
+                        </span>
+                      </div>
                       <span className="text-xs text-gray-400 dark:text-gray-500">
                         {user.databases && user.databases.length > 0
-                          ? `— ${user.databases.join(', ')}`
-                          : '— All databases'}
+                          ? user.databases.map((d) => `@${d}`).join(', ')
+                          : '@ALL'}
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
@@ -471,15 +473,17 @@ function UsersSection({
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setPasswordTarget(passwordTarget === user.username ? null : user.username);
-                          setPasswordValue('');
-                        }}
+                        onClick={() => handleRegeneratePassword(user.username)}
+                        disabled={setPassword.isPending}
                         className="rounded p-1 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
-                        title="Set password"
+                        title="Regenerate password"
                         data-testid={`user-set-password-${user.username}`}
                       >
-                        <Lock size={14} />
+                        {setPassword.isPending ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={14} />
+                        )}
                       </button>
                       {deleteConfirm === user.username ? (
                         <div className="flex items-center gap-1">
@@ -513,41 +517,38 @@ function UsersSection({
                       )}
                     </div>
                   </div>
-
-                  {/* Inline Password Form */}
-                  {passwordTarget === user.username && (
-                    <div className="mt-1 flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-900/30 rounded-md" data-testid={`password-form-${user.username}`}>
-                      <input
-                        type="text"
-                        value={passwordValue}
-                        onChange={(e) => setPasswordValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleSetPassword(user.username); }}
-                        placeholder="New password"
-                        className="flex-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                        data-testid={`password-input-${user.username}`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPasswordValue(generateRandomPassword())}
-                        className="rounded p-1 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"
-                        title="Generate random password"
-                        data-testid={`password-generate-${user.username}`}
-                      >
-                        <Shuffle size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSetPassword(user.username)}
-                        disabled={setPassword.isPending || !passwordValue.trim()}
-                        className="rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                        data-testid={`password-save-${user.username}`}
-                      >
-                        {setPassword.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Save'}
-                      </button>
-                    </div>
-                  )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Regenerated password banner */}
+          {regeneratedPassword && (
+            <div className="mb-4 rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 p-3" data-testid="regenerated-password-banner">
+              <p className="text-sm font-medium text-green-800 dark:text-green-300 mb-1">
+                New password for <span className="font-mono font-semibold">{regeneratedPassword.username}</span>. Copy it now — it will not be shown again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded bg-white dark:bg-gray-900 border border-green-200 dark:border-green-700 px-3 py-1.5 font-mono text-sm text-gray-900 dark:text-gray-100 select-all truncate">
+                  {regeneratedPassword.password}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(regeneratedPassword.password)}
+                  className="shrink-0 rounded-lg bg-green-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                  data-testid="copy-regenerated-password"
+                >
+                  <Copy size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRegeneratedPassword(null)}
+                  className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                  data-testid="dismiss-regenerated-password"
+                >
+                  <X size={14} />
+                </button>
+              </div>
             </div>
           )}
 

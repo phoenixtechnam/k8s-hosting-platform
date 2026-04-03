@@ -214,7 +214,7 @@ function ResourceTag({
 
   return (
     <span
-      className={`hidden lg:inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium border ${colorClasses}`}
+      className={`hidden lg:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium border ${colorClasses}`}
       title={`${usedHuman} used of ${limitHuman} available`}
       data-testid={`resource-tag-${label.toLowerCase()}`}
     >
@@ -238,7 +238,7 @@ function ResourceUsageTags() {
   return (
     <div className="flex items-center gap-1.5" data-testid="resource-usage-tags">
       <ResourceTag
-        icon={<Cpu size={12} />}
+        icon={<Cpu size={14} />}
         label="CPU"
         used={usage.cpu.used}
         limit={usage.cpu.limit}
@@ -247,7 +247,7 @@ function ResourceUsageTags() {
         humanizer={humanizeCpu}
       />
       <ResourceTag
-        icon={<MemoryStick size={12} />}
+        icon={<MemoryStick size={14} />}
         label="Memory"
         used={usage.memory.used}
         limit={usage.memory.limit}
@@ -256,7 +256,7 @@ function ResourceUsageTags() {
         humanizer={humanizeBytes}
       />
       <ResourceTag
-        icon={<HardDrive size={12} />}
+        icon={<HardDrive size={14} />}
         label="Storage"
         used={usage.storage.used}
         limit={usage.storage.limit}

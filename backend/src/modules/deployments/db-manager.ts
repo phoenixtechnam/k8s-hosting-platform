@@ -13,6 +13,25 @@ import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
+// ─── Binary Not Found Detection ────────────────────────────────────────────
+
+/**
+ * Check whether an exec error indicates that the binary was not found in the
+ * container.  K8s exec returns various messages depending on the runtime
+ * (containerd, CRI-O, Docker) so we match broadly.
+ */
+function isBinaryNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('executable not found') ||
+    lower.includes('not found') ||
+    lower.includes('no such file') ||
+    lower.includes('command not found') ||
+    lower.includes('oci runtime exec failed')
+  );
+}
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
@@ -263,14 +282,15 @@ async function mysqlExec(
   sql: string,
 ): Promise<string> {
   // MariaDB 11+ uses 'mariadb' binary; older MariaDB and MySQL use 'mysql'
-  // Try 'mariadb' first, fall back to 'mysql'
+  // Try 'mariadb' first, fall back to 'mysql' only when the binary is missing.
   let result: { stdout: string; stderr: string };
   try {
     result = await execInPod(
       kubeconfigPath, namespace, podName, containerName,
       ['mariadb', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch', '--skip-column-names'],
     );
-  } catch {
+  } catch (err) {
+    if (!isBinaryNotFoundError(err)) throw err;
     result = await execInPod(
       kubeconfigPath, namespace, podName, containerName,
       ['mysql', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch', '--skip-column-names'],
@@ -410,7 +430,8 @@ async function mysqlExecWithHeaders(
       kubeconfigPath, namespace, podName, containerName,
       ['mariadb', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
     );
-  } catch {
+  } catch (err) {
+    if (!isBinaryNotFoundError(err)) throw err;
     result = await execInPod(
       kubeconfigPath, namespace, podName, containerName,
       ['mysql', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
@@ -1124,17 +1145,18 @@ export async function exportDatabase(
 }
 
 async function mysqlExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
-  // Try mariadb-dump first, fall back to mysqldump
+  // Try mariadb-dump first (MariaDB 11+), fall back to mysqldump only when binary is missing
   let result: { stdout: string; stderr: string };
   try {
     result = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mariadb-dump', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      ['mariadb-dump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', database],
     );
-  } catch {
+  } catch (err) {
+    if (!isBinaryNotFoundError(err)) throw err;
     result = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mysqldump', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      ['mysqldump', '-u', 'root', `-p${ctx.rootPassword}`, '--routines', '--triggers', database],
     );
   }
   if (result.stderr && result.stderr.includes('ERROR')) {
@@ -1202,7 +1224,11 @@ async function mysqlImportSql(
       ['mariadb', '-u', 'root', `-p${ctx.rootPassword}`, database],
       sql,
     );
-  } catch {
+  } catch (err) {
+    if (!isBinaryNotFoundError(err)) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
     result = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       ['mysql', '-u', 'root', `-p${ctx.rootPassword}`, database],
