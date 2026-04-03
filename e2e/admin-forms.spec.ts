@@ -134,7 +134,7 @@ test.describe('Admin Form Interactions', () => {
       const emptyState = page.getByTestId('domains-error')
         .or(page.getByText('No domains'));
       const content = domainsTable.or(emptyState);
-      await expect(content).toBeVisible({ timeout: 3000 });
+      await expect(content.first()).toBeVisible({ timeout: 3000 });
     });
   });
 
