@@ -128,6 +128,28 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     reply.status(404).send();
   });
 
+  // ─── Admin: Badge management ─────────────────────────────────────────────
+
+  // PATCH /api/v1/admin/catalog/:id/badges
+  app.patch('/admin/catalog/:id/badges', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Catalog'],
+      summary: 'Update featured/popular badges for a catalog entry',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = request.body as { featured?: boolean; popular?: boolean };
+    const updated = await service.updateBadges(app.db, id, body);
+    return success(updated);
+  });
+
   // ─── Admin: Repository management ────────────────────────────────────────
 
   // GET /api/v1/admin/catalog-repos

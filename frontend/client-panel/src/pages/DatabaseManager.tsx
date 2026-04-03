@@ -853,21 +853,37 @@ export default function DatabaseManager() {
             </p>
           ) : (
             <div className="space-y-2 w-full max-w-sm">
-              {databaseDeployments.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => handleDeploymentChange(d.id)}
-                  className="w-full flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3 text-left hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors"
-                  data-testid={`deployment-option-${d.id}`}
-                >
-                  <Database size={18} className="text-blue-500 dark:text-blue-400 shrink-0" />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{d.name}</div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">{d.status}</div>
-                  </div>
-                </button>
-              ))}
+              {databaseDeployments.map((d) => {
+                const isRunning = d.status === 'running';
+                const dotColor = isRunning
+                  ? 'bg-green-500'
+                  : d.status === 'failed' || d.status === 'stopped'
+                    ? 'bg-red-500'
+                    : 'bg-amber-500';
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => isRunning ? handleDeploymentChange(d.id) : undefined}
+                    disabled={!isRunning}
+                    className={clsx(
+                      'w-full flex items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors',
+                      isRunning
+                        ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 cursor-pointer'
+                        : 'border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900/30 opacity-60 cursor-not-allowed',
+                    )}
+                    title={!isRunning ? 'This database is not running' : undefined}
+                    data-testid={`deployment-option-${d.id}`}
+                  >
+                    <Database size={18} className={isRunning ? 'text-blue-500 dark:text-blue-400 shrink-0' : 'text-gray-400 dark:text-gray-500 shrink-0'} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{d.name}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">{d.status}</div>
+                    </div>
+                    <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${dotColor}`} />
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -932,11 +948,15 @@ export default function DatabaseManager() {
               data-testid="deployment-selector"
             >
               <option value="">Select deployment...</option>
-              {databaseDeployments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
+              {databaseDeployments.map((d) => {
+                const statusDot = d.status === 'running' ? '\u{1F7E2}' : d.status === 'failed' || d.status === 'stopped' ? '\u{1F534}' : '\u{1F7E1}';
+                const isDisabled = d.status !== 'running';
+                return (
+                  <option key={d.id} value={d.id} disabled={isDisabled} title={isDisabled ? 'This database is not running' : undefined}>
+                    {statusDot} {d.name}{isDisabled ? ` (${d.status})` : ''}
+                  </option>
+                );
+              })}
             </select>
           </div>
         )}

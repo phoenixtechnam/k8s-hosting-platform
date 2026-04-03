@@ -635,6 +635,24 @@ export async function getCatalogEntryByCode(db: Database, code: string) {
   return normalizeEntryRow(row);
 }
 
+export async function updateBadges(db: Database, id: string, badges: { featured?: boolean; popular?: boolean }) {
+  const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, id));
+  if (!entry) {
+    throw new ApiError('CATALOG_ENTRY_NOT_FOUND', `Catalog entry '${id}' not found`, 404);
+  }
+
+  const updateValues: Record<string, unknown> = {};
+  if (badges.featured !== undefined) updateValues.featured = badges.featured ? 1 : 0;
+  if (badges.popular !== undefined) updateValues.popular = badges.popular ? 1 : 0;
+
+  if (Object.keys(updateValues).length > 0) {
+    await db.update(catalogEntries).set(updateValues).where(eq(catalogEntries.id, id));
+  }
+
+  const [updated] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, id));
+  return updated;
+}
+
 export async function listVersionsForEntry(db: Database, catalogEntryId: string) {
   const versions = await db
     .select()

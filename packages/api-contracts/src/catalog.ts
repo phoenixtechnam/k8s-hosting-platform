@@ -138,6 +138,12 @@ export const catalogEntryVersionResponseSchema = z.object({
 
 // ─── Deployments ─────────────────────────────────────────────────────────────
 
+export const volumePathSchema = z.object({
+  localPath: z.string(),
+  containerPath: z.string(),
+  k8sPath: z.string(),
+});
+
 export const deploymentResponseSchema = z.object({
   id: uuidField,
   clientId: z.string(),
@@ -156,6 +162,7 @@ export const deploymentResponseSchema = z.object({
   lastError: z.string().nullable(),
   deletedAt: z.string().nullable(),
   status: z.string(),
+  volumePaths: z.array(volumePathSchema).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -180,6 +187,13 @@ export const updateDeploymentSchema = z.object({
   memory_request: z.string().max(20).optional(),
   status: z.enum(['running', 'stopped']).optional(),
   configuration: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const updateDeploymentResourcesSchema = z.object({
+  cpu_request: z.string().max(20).optional(),
+  memory_request: z.string().max(20).optional(),
+}).refine(data => data.cpu_request !== undefined || data.memory_request !== undefined, {
+  message: 'At least one of cpu_request or memory_request must be provided',
 });
 
 // ─── Deployment Upgrades ─────────────────────────────────────────────────────
@@ -222,10 +236,12 @@ export type DeploymentResponse = z.infer<typeof deploymentResponseSchema>;
 export type DeploymentListResponse = z.infer<typeof deploymentListResponseSchema>;
 export type CreateDeploymentInput = z.infer<typeof createDeploymentSchema>;
 export type UpdateDeploymentInput = z.infer<typeof updateDeploymentSchema>;
+export type UpdateDeploymentResourcesInput = z.infer<typeof updateDeploymentResourcesSchema>;
 export type DeploymentUpgradeResponse = z.infer<typeof deploymentUpgradeResponseSchema>;
 export type TriggerUpgradeInput = z.infer<typeof triggerUpgradeSchema>;
 export type BatchUpgradeInput = z.infer<typeof batchUpgradeSchema>;
 export type EnvChange = z.infer<typeof envChangeSchema>;
 export type Component = z.infer<typeof componentSchema>;
 export type Volume = z.infer<typeof volumeSchema>;
+export type VolumePath = z.infer<typeof volumePathSchema>;
 export type Parameter = z.infer<typeof parameterSchema>;

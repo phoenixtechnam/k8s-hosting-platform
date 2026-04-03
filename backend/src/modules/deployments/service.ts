@@ -468,6 +468,115 @@ export async function hardDeleteDeployment(
   await db.delete(deployments).where(eq(deployments.id, deploymentId));
 }
 
+// ─── Resource Adjustment + Restart (Issue 7) ────────────────────────────────
+
+export async function updateDeploymentResources(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+  input: { cpu_request?: string; memory_request?: string },
+  k8s?: K8sClients,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  const updateValues: Record<string, unknown> = {};
+  if (input.cpu_request) updateValues.cpuRequest = input.cpu_request;
+  if (input.memory_request) updateValues.memoryRequest = input.memory_request;
+
+  if (Object.keys(updateValues).length === 0) {
+    return deployment;
+  }
+
+  await db.update(deployments).set(updateValues).where(eq(deployments.id, deploymentId));
+
+  // Redeploy to K8s with updated resources
+  if (k8s) {
+    const namespace = await getClientNamespace(db, clientId);
+    const [entry] = await db
+      .select()
+      .from(catalogEntries)
+      .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+    if (entry && namespace) {
+      const components = resolveComponents(entry, null);
+      const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+      const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
+      const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
+      const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
+      const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+
+      try {
+        await deployCatalogEntry(k8s, {
+          deploymentName: deployment.name,
+          resourceSuffix: deployment.resourceSuffix,
+          namespace,
+          components,
+          volumes,
+          replicaCount: deployment.replicaCount ?? 1,
+          cpuRequest: input.cpu_request ?? deployment.cpuRequest,
+          memoryRequest: input.memory_request ?? deployment.memoryRequest,
+          storageRequest,
+          configuration: config,
+          envVars: envVarsData ?? undefined,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[deployments] K8s resource update failed for ${deployment.name}:`, message);
+        await db.update(deployments).set({ lastError: message }).where(eq(deployments.id, deploymentId));
+      }
+    }
+  }
+
+  return getDeploymentById(db, clientId, deploymentId);
+}
+
+// ─── Volume Path Computation (Issue 9) ──────────────────────────────────────
+
+export interface VolumePath {
+  readonly localPath: string;
+  readonly containerPath: string;
+  readonly k8sPath: string;
+}
+
+export function computeVolumePaths(
+  deployment: { name: string; resourceSuffix: string },
+  entry: { volumes: unknown; components: unknown },
+): VolumePath[] {
+  const volumes = parseJsonField<Array<{ local_path: string; container_path: string }>>(entry.volumes) ?? [];
+  const components = parseJsonField<Array<{ name: string }>>(entry.components) ?? [];
+  const componentCount = components.length;
+  const k8sName = componentCount <= 1
+    ? `${deployment.name}-${deployment.resourceSuffix}`
+    : `${deployment.name}-${deployment.resourceSuffix}-${components[0]?.name}`;
+
+  return volumes.map(v => {
+    const parentDir = v.local_path.split('/').slice(0, -1).join('/');
+    const k8sPath = parentDir ? `${parentDir}/${k8sName}` : k8sName;
+    return {
+      localPath: v.local_path,
+      containerPath: v.container_path,
+      k8sPath,
+    };
+  });
+}
+
+export async function getDeploymentWithVolumePaths(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+  const volumePaths = entry ? computeVolumePaths(deployment, entry) : [];
+
+  return { ...deployment, volumePaths };
+}
+
 // ─── Shared Helpers (used by routes for restart, etc.) ───────────────────────
 
 export async function resolveDeploymentComponents(

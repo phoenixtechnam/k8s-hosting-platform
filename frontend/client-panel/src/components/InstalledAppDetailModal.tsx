@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag } from 'lucide-react';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag, Save, AlertCircle } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
+import { useUpdateDeploymentResources } from '@/hooks/use-deployments';
 import DatabaseManagementModal from './DatabaseManagementModal';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
@@ -108,6 +109,12 @@ export default function InstalledAppDetailModal({
 }: InstalledAppDetailModalProps) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
   const [dbModalOpen, setDbModalOpen] = useState(false);
+
+  // ─── Resource editing (Issue 7) ─────────────────────────────────────────────
+  const [editingResources, setEditingResources] = useState(false);
+  const [editCpu, setEditCpu] = useState('');
+  const [editMemory, setEditMemory] = useState('');
+  const updateResources = useUpdateDeploymentResources(clientId);
 
   if (!open || !deployment) return null;
 
@@ -289,7 +296,7 @@ export default function InstalledAppDetailModal({
           </div>
         )}
 
-        {/* Volumes Section */}
+        {/* Volumes Section (Issue 9: real K8s path) */}
         {volumes.length > 0 && (
           <div className="mb-6" data-testid="volumes-section">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
@@ -300,17 +307,37 @@ export default function InstalledAppDetailModal({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">Local Path</th>
+                    <th className="px-3 py-2">K8s Path</th>
                     <th className="px-3 py-2">Container Path</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {volumes.map((vol) => (
-                    <tr key={vol.container_path ?? vol.local_path}>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vol.local_path ?? '-'}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    // Use volumePaths from the deployment response if available (computed by backend)
+                    const deploymentVolumePaths = deployment.volumePaths;
+                    if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
+                      return deploymentVolumePaths.map((vp) => (
+                        <tr key={vp.containerPath ?? vp.k8sPath}>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vp.k8sPath}</td>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vp.containerPath ?? '-'}</td>
+                        </tr>
+                      ));
+                    }
+                    // Fallback: compute K8s path from catalog volumes + resource suffix
+                    const k8sName = deployment.resourceSuffix
+                      ? `${deployment.name}-${deployment.resourceSuffix}`
+                      : deployment.name;
+                    return volumes.map((vol) => {
+                      const parentDir = vol.local_path?.split('/').slice(0, -1).join('/') ?? '';
+                      const k8sPath = parentDir ? `${parentDir}/${k8sName}` : (vol.local_path ?? k8sName);
+                      return (
+                        <tr key={vol.container_path ?? vol.local_path}>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{k8sPath}</td>
+                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
+                        </tr>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -368,24 +395,100 @@ export default function InstalledAppDetailModal({
           )}
         </div>
 
-        {/* Resources Section */}
+        {/* Resources Section (Issue 7: editable) */}
         <div className="mb-6">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-            <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
-            Resources
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-              <Cpu size={16} className="mx-auto mb-1 text-gray-400" />
-              <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
-              <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.cpuRequest}</p>
-            </div>
-            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-              <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
-              <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
-              <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.memoryRequest}</p>
-            </div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
+              Resources
+            </h3>
+            {!editingResources && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditCpu(deployment.cpuRequest);
+                  setEditMemory(deployment.memoryRequest);
+                  setEditingResources(true);
+                }}
+                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                data-testid="edit-resources-button"
+              >
+                Edit
+              </button>
+            )}
           </div>
+          {editingResources ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">CPU Request</label>
+                  <input
+                    type="text"
+                    value={editCpu}
+                    onChange={(e) => setEditCpu(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    data-testid="edit-cpu-input"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Memory Request</label>
+                  <input
+                    type="text"
+                    value={editMemory}
+                    onChange={(e) => setEditMemory(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    data-testid="edit-memory-input"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                <AlertCircle size={12} className="shrink-0" />
+                <span>Applying changes will restart the deployment</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateResources.mutate(
+                      { deploymentId: deployment.id, cpu_request: editCpu, memory_request: editMemory },
+                      { onSuccess: () => setEditingResources(false) },
+                    );
+                  }}
+                  disabled={updateResources.isPending || (editCpu === deployment.cpuRequest && editMemory === deployment.memoryRequest)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="apply-resources-button"
+                >
+                  {updateResources.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  Apply Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingResources(false)}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                >
+                  Cancel
+                </button>
+              </div>
+              {updateResources.isError && (
+                <p className="text-xs text-red-600 dark:text-red-400">
+                  {updateResources.error instanceof Error ? updateResources.error.message : 'Failed to update resources'}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+                <Cpu size={16} className="mx-auto mb-1 text-gray-400" />
+                <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
+                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.cpuRequest}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+                <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
+                <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
+                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.memoryRequest}</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

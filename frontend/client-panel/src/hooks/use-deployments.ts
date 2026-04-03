@@ -16,11 +16,12 @@ interface UpdateDeploymentInput {
   readonly status?: 'running' | 'stopped';
 }
 
-export function useDeployments(clientId: string | undefined) {
+export function useDeployments(clientId: string | undefined, options?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: ['deployments', clientId],
     queryFn: () => apiFetch<PaginatedResponse<Deployment>>(`/api/v1/clients/${clientId}/deployments?include_deleted=true`),
     enabled: Boolean(clientId),
+    refetchInterval: options?.refetchInterval,
   });
 }
 
@@ -47,6 +48,20 @@ export function useUpdateDeployment(clientId: string | undefined) {
       apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+    },
+  });
+}
+
+export function useUpdateDeploymentResources(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, cpu_request, memory_request }: { readonly deploymentId: string; readonly cpu_request?: string; readonly memory_request?: string }) =>
+      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/resources`, {
+        method: 'PATCH',
+        body: JSON.stringify({ cpu_request, memory_request }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });

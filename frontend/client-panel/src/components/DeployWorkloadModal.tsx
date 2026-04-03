@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
-import { X, Loader2, Search, Rocket, Globe, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Loader2, Search, Rocket, Globe, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import { useCreateDeployment } from '@/hooks/use-deployments';
@@ -51,6 +51,33 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const minCpu = selectedResources?.minimum?.cpu;
   const minMemory = selectedResources?.minimum?.memory;
   const minStorage = selectedResources?.minimum?.storage;
+
+  // ─── Min resource validation against user input ───────────────────────────
+  const resourceError = useMemo(() => {
+    if (!selectedImageId) return null;
+    const effectiveMinCpu = minCpu ?? '0.05';
+    const effectiveMinMemory = minMemory ?? '64Mi';
+
+    const parseCpuValue = (v: string): number => {
+      const trimmed = v.trim();
+      if (trimmed.endsWith('m')) return Number(trimmed.slice(0, -1)) / 1000;
+      return Number(trimmed) || 0;
+    };
+    const parseMemoryMi = (v: string): number => {
+      const trimmed = v.trim();
+      if (trimmed.endsWith('Gi')) return Number(trimmed.slice(0, -2)) * 1024;
+      if (trimmed.endsWith('Mi')) return Number(trimmed.slice(0, -2));
+      if (trimmed.endsWith('Ki')) return Number(trimmed.slice(0, -2)) / 1024;
+      return Number(trimmed) || 0;
+    };
+
+    const cpuTooLow = parseCpuValue(cpuRequest) < parseCpuValue(effectiveMinCpu);
+    const memoryTooLow = parseMemoryMi(memoryRequest) < parseMemoryMi(effectiveMinMemory);
+
+    if (cpuTooLow) return `Minimum CPU: ${effectiveMinCpu}`;
+    if (memoryTooLow) return `Minimum memory: ${effectiveMinMemory}`;
+    return null;
+  }, [selectedImageId, minCpu, minMemory, cpuRequest, memoryRequest]);
 
   // Reset resourcesFit when selected image changes
   useEffect(() => {
@@ -422,6 +449,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                     onChange={(e) => setCpuRequest(e.target.value)}
                     className={INPUT_CLASS}
                     placeholder="100m"
+                    data-testid="deploy-cpu-input"
                   />
                 </div>
                 <div>
@@ -432,9 +460,16 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                     onChange={(e) => setMemoryRequest(e.target.value)}
                     className={INPUT_CLASS}
                     placeholder="128Mi"
+                    data-testid="deploy-memory-input"
                   />
                 </div>
               </div>
+              {resourceError && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400" data-testid="resource-min-warning">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>{resourceError}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -498,7 +533,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
             <button
               type="submit"
-              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending || hasRequiredMissing || !resourcesFit}
+              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >

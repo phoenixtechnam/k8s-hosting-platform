@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
-import { createDeploymentSchema, updateDeploymentSchema } from './schema.js';
+import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
@@ -60,7 +60,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/clients/:clientId/deployments/:id
   app.get('/clients/:clientId/deployments/:id', async (request) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
-    const deployment = await service.getDeploymentById(app.db, clientId, id);
+    const deployment = await service.getDeploymentWithVolumePaths(app.db, clientId, id);
     return success(deployment);
   });
 
@@ -79,6 +79,24 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = await service.updateDeployment(app.db, clientId, id, parsed.data, getK8s());
+    return success(updated);
+  });
+
+  // PATCH /api/v1/clients/:clientId/deployments/:id/resources
+  app.patch('/clients/:clientId/deployments/:id/resources', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const parsed = updateDeploymentResourcesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+
+    const updated = await service.updateDeploymentResources(app.db, clientId, id, parsed.data, getK8s());
     return success(updated);
   });
 

@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History, LayoutGrid } from 'lucide-react';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
 import { useCatalog, useUpdateCatalogBadges } from '@/hooks/use-catalog';

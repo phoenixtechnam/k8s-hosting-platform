@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw } from 'lucide-react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -815,7 +815,6 @@ function formatTimeAgo(dateStr: string): string {
 
 function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
-  const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(clientId ?? undefined);
   const { data: catalogData } = useCatalog();
   const updateDeployment = useUpdateDeployment(clientId ?? undefined);
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
@@ -825,10 +824,50 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const [permanentDeleteConfirmId, setPermanentDeleteConfirmId] = useState<string | null>(null);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
 
-  const deployments = deploymentsData?.data ?? [];
+  // ─── Notification state (Issue 6) ──────────────────────────────────────────
+  interface Notification {
+    readonly id: string;
+    readonly type: 'success' | 'error' | 'info';
+    readonly message: string;
+  }
+  const [notifications, setNotifications] = useState<readonly Notification[]>([]);
+  const notifIdRef = useRef(0);
 
-  const activeDeployments = useMemo(() => deployments.filter(d => d.status !== 'deleted'), [deployments]);
-  const deletedDeployments = useMemo(() => deployments.filter(d => d.status === 'deleted'), [deployments]);
+  const addNotification = useCallback((type: 'success' | 'error' | 'info', message: string) => {
+    const id = String(++notifIdRef.current);
+    setNotifications((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+    }, 5000);
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  // ─── Deployments with auto-refresh (Issue 5) ──────────────────────────────
+  // Track whether any deployment is transitioning so we can poll
+  const [pollEnabled, setPollEnabled] = useState(false);
+
+  const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(
+    clientId ?? undefined,
+    { refetchInterval: pollEnabled ? 3000 : false },
+  );
+
+  const allDeployments = deploymentsData?.data ?? [];
+
+  // Update polling state based on current deployment statuses
+  const hasTransitioning = useMemo(
+    () => allDeployments.some((d) => ['deploying', 'pending', 'upgrading', 'deleting'].includes(d.status)),
+    [allDeployments],
+  );
+
+  useEffect(() => {
+    setPollEnabled(hasTransitioning);
+  }, [hasTransitioning]);
+
+  const activeDeployments = useMemo(() => allDeployments.filter(d => d.status !== 'deleted'), [allDeployments]);
+  const deletedDeployments = useMemo(() => allDeployments.filter(d => d.status === 'deleted'), [allDeployments]);
 
   const catalogMap = useMemo(() => {
     const map = new Map<string, CatalogEntry>();
@@ -844,15 +883,33 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
     return entry?.name ?? 'Unknown';
   };
 
-  const selectedDeployment = deployments.find(d => d.id === selectedDeploymentId) ?? null;
+  const selectedDeployment = allDeployments.find(d => d.id === selectedDeploymentId) ?? null;
   const selectedCatalogEntry = selectedDeployment
     ? catalogMap.get(selectedDeployment.catalogEntryId) ?? null
     : null;
 
-  const handleToggleStatus = (deploymentId: string, currentStatus: string) => {
+  const handleToggleStatus = useCallback((deploymentId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'running' ? 'stopped' : 'running';
-    updateDeployment.mutate({ deploymentId, status: newStatus as 'running' | 'stopped' });
-  };
+    const action = newStatus === 'running' ? 'Starting' : 'Stopping';
+    addNotification('info', `${action} deployment...`);
+    updateDeployment.mutate(
+      { deploymentId, status: newStatus as 'running' | 'stopped' },
+      {
+        onSuccess: () => addNotification('success', `Deployment ${newStatus === 'running' ? 'started' : 'stopped'} successfully`),
+        onError: () => addNotification('error', `Failed to ${newStatus === 'running' ? 'start' : 'stop'} deployment`),
+      },
+    );
+  }, [updateDeployment, addNotification]);
+
+  const handleDelete = useCallback(async (deploymentId: string) => {
+    try {
+      await deleteDeployment.mutateAsync(deploymentId);
+      setDeleteConfirmId(null);
+      addNotification('success', 'Deployment deleted successfully');
+    } catch {
+      addNotification('error', 'Failed to delete deployment');
+    }
+  }, [deleteDeployment, addNotification]);
 
   const isLoading = deploymentsLoading;
 
@@ -876,107 +933,162 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
 
   return (
     <div className="space-y-8" data-testid="installed-tab">
+      {/* ── Notifications (Issue 6) ── */}
+      {notifications.length > 0 && (
+        <div className="space-y-2" data-testid="deployment-notifications">
+          {notifications.map((n) => (
+            <div
+              key={n.id}
+              className={clsx(
+                'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm',
+                n.type === 'success' && 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400',
+                n.type === 'error' && 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400',
+                n.type === 'info' && 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-400',
+              )}
+            >
+              {n.type === 'success' && <Check size={14} className="text-green-500 dark:text-green-400 shrink-0" />}
+              {n.type === 'error' && <AlertTriangle size={14} className="text-red-500 dark:text-red-400 shrink-0" />}
+              {n.type === 'info' && <Loader2 size={14} className="animate-spin text-blue-500 dark:text-blue-400 shrink-0" />}
+              <span className="flex-1">{n.message}</span>
+              <button
+                type="button"
+                onClick={() => dismissNotification(n.id)}
+                className="ml-auto shrink-0 rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── Active Deployments ── */}
       {activeDeployments.length > 0 && (
         <div className="space-y-4">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Deployments</h3>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {activeDeployments.map((deployment) => (
-              <div
-                key={deployment.id}
-                className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md"
-                onClick={() => setSelectedDeploymentId(deployment.id)}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
-                      <AppWindow size={20} />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                        {deployment.name}
-                      </h3>
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                          {getCatalogEntryName(deployment.catalogEntryId)}
-                        </p>
-                        <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
-                          {deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown'}
-                        </span>
+            {activeDeployments.map((deployment) => {
+              const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
+
+              return (
+                <div
+                  key={deployment.id}
+                  className={clsx(
+                    'cursor-pointer rounded-xl border bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md',
+                    isTransitioning
+                      ? 'animate-pulse border-blue-200 dark:border-blue-800'
+                      : 'border-gray-200 dark:border-gray-700',
+                  )}
+                  onClick={() => setSelectedDeploymentId(deployment.id)}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
+                        <AppWindow size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                          {deployment.name}
+                        </h3>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            {getCatalogEntryName(deployment.catalogEntryId)}
+                          </p>
+                          <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
+                            {deployment.catalogEntryId ? (catalogMap.get(deployment.catalogEntryId)?.type ?? 'unknown') : 'unknown'}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <span
-                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}
-                  >
-                    {deployment.status}
-                  </span>
-                </div>
-
-                {deployment.lastError && (
-                  <div
-                    className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400"
-                    data-testid={`last-error-${deployment.id}`}
-                  >
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    <span className="line-clamp-2">{deployment.lastError}</span>
-                  </div>
-                )}
-
-                <div className="mt-4 grid grid-cols-2 gap-2 text-center">
-                  <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
-                    <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {deployment.cpuRequest}
-                    </p>
-                  </div>
-                  <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {deployment.memoryRequest}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleToggleStatus(deployment.id, deployment.status); }}
-                    disabled={updateDeployment.isPending || deployment.status === 'pending'}
-                    className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                      deployment.status === 'running'
-                        ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
-                        : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40'
-                    }`}
-                    data-testid={`toggle-app-${deployment.id}`}
-                  >
-                    {updateDeployment.isPending ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : deployment.status === 'running' ? (
-                      <Square size={16} />
+                    {/* Issue 3: Spinner for transitioning, badge otherwise */}
+                    {isTransitioning ? (
+                      <div className="flex items-center gap-1.5">
+                        <Loader2 size={14} className="animate-spin text-blue-500" />
+                        <span className="text-xs text-blue-600 dark:text-blue-400">{deployment.status}...</span>
+                      </div>
                     ) : (
-                      <Play size={16} />
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}
+                      >
+                        {deployment.status}
+                      </span>
                     )}
-                    {deployment.status === 'running' ? 'Stop' : 'Start'}
-                  </button>
-                  {deleteConfirmId === deployment.id ? (
-                    <div className="flex gap-1">
-                      <button type="button" onClick={async (e) => { e.stopPropagation(); try { await deleteDeployment.mutateAsync(deployment.id); setDeleteConfirmId(null); } catch { /* error via hook */ } }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
-                      <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                  </div>
+
+                  {/* Issue 4: Error messages on failed cards */}
+                  {deployment.lastError && deployment.status === 'failed' && (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-2 line-clamp-2" data-testid={`last-error-${deployment.id}`}>
+                      {deployment.lastError}
+                    </p>
+                  )}
+
+                  {/* Show lastError banner for non-failed statuses too (existing behavior) */}
+                  {deployment.lastError && deployment.status !== 'failed' && (
+                    <div
+                      className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+                      data-testid={`last-error-${deployment.id}`}
+                    >
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <span className="line-clamp-2">{deployment.lastError}</span>
                     </div>
-                  ) : (
+                  )}
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-center">
+                    <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        {deployment.cpuRequest}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        {deployment.memoryRequest}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(deployment.id); }}
-                      className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-                      data-testid={`delete-app-${deployment.id}`}
+                      onClick={(e) => { e.stopPropagation(); handleToggleStatus(deployment.id, deployment.status); }}
+                      disabled={updateDeployment.isPending || isTransitioning}
+                      className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                        deployment.status === 'running'
+                          ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
+                          : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40'
+                      }`}
+                      data-testid={`toggle-app-${deployment.id}`}
                     >
-                      <Trash2 size={14} />
+                      {updateDeployment.isPending ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : deployment.status === 'running' ? (
+                        <Square size={16} />
+                      ) : (
+                        <Play size={16} />
+                      )}
+                      {deployment.status === 'running' ? 'Stop' : 'Start'}
                     </button>
-                  )}
+                    {deleteConfirmId === deployment.id ? (
+                      <div className="flex gap-1">
+                        <button type="button" onClick={async (e) => { e.stopPropagation(); await handleDelete(deployment.id); }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(deployment.id); }}
+                        disabled={isTransitioning}
+                        className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                        data-testid={`delete-app-${deployment.id}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

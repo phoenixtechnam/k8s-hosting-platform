@@ -588,18 +588,35 @@ async function getK8sDeploymentStatus(
 
   // Check for pod failures — use baseName for app label selector
   const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
-  const podList = (pods as { items?: Array<{ status?: { containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string } } }> } }> }).items ?? [];
+  const podList = (pods as { items?: Array<{ status?: { containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string }; terminated?: { reason?: string; message?: string; exitCode?: number } } }> } }> }).items ?? [];
 
   for (const pod of podList) {
     for (const cs of (pod.status?.containerStatuses ?? [])) {
+      // Check waiting state (CrashLoopBackOff, ImagePullBackOff, etc.)
       const waitReason = cs.state?.waiting?.reason;
-      if (waitReason === 'CrashLoopBackOff' || waitReason === 'ImagePullBackOff' || waitReason === 'ErrImagePull' || waitReason === 'OOMKilled') {
+      if (waitReason === 'CrashLoopBackOff' || waitReason === 'ImagePullBackOff' || waitReason === 'ErrImagePull') {
         return {
           name: componentName,
           type: 'deployment',
           phase: 'failed',
           ready: false,
           message: `${waitReason}: ${cs.state?.waiting?.message ?? ''}`.trim(),
+        };
+      }
+
+      // Check terminated state (OOMKilled, Error, etc.)
+      const terminatedReason = cs.state?.terminated?.reason;
+      if (terminatedReason === 'OOMKilled' || terminatedReason === 'Error') {
+        const exitCode = cs.state?.terminated?.exitCode;
+        const terminatedMsg = cs.state?.terminated?.message ?? '';
+        const detail = exitCode !== undefined ? `exit code ${exitCode}` : '';
+        const parts = [terminatedReason, terminatedMsg, detail].filter(Boolean);
+        return {
+          name: componentName,
+          type: 'deployment',
+          phase: 'failed',
+          ready: false,
+          message: parts.join(': ').trim(),
         };
       }
     }

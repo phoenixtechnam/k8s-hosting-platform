@@ -2,7 +2,9 @@
 export {
   createDeploymentSchema,
   updateDeploymentSchema,
+  updateDeploymentResourcesSchema,
   type CreateDeploymentInput,
   type UpdateDeploymentInput,
+  type UpdateDeploymentResourcesInput,
   type DeploymentResponse,
 } from '@k8s-hosting/api-contracts';
