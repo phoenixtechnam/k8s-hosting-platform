@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { parseResourceValue } from '../../shared/resource-parser.js';
 
 const GHCR_API = 'https://ghcr.io/v2/phoenixtechnam/hosting-platform/backend/tags/list';
 const CURRENT_VERSION = process.env.PLATFORM_VERSION ?? '0.1.0';
@@ -76,22 +77,6 @@ export async function updateSettings(db: Database, autoUpdate: boolean) {
 
 // ─── Capacity Check ─────────────────────────────────────────────────────────
 
-function parseResourceValue(value: string, unit: 'cpu' | 'memory' | 'storage'): number {
-  if (unit === 'cpu') {
-    // CPU: plain number (cores) or with 'm' suffix (millicores)
-    if (value.endsWith('m')) {
-      return Number(value.slice(0, -1)) / 1000;
-    }
-    return Number(value);
-  }
-
-  // Memory/Storage: parse Gi/Mi/Ki suffixes
-  const trimmed = value.trim();
-  if (trimmed.endsWith('Gi')) return Number(trimmed.slice(0, -2));
-  if (trimmed.endsWith('Mi')) return Number(trimmed.slice(0, -2)) / 1024;
-  if (trimmed.endsWith('Ki')) return Number(trimmed.slice(0, -2)) / (1024 * 1024);
-  return Number(trimmed);
-}
 
 interface CapacityCheckResult {
   readonly totalCpu: number;

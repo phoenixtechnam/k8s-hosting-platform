@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw } from 'lucide-react';
+import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog } from '@/hooks/use-catalog';
@@ -554,6 +555,13 @@ function AppDetailPanel({
               </div>
             </div>
           )}
+
+          {/* Resource Availability Check */}
+          <ResourceRequirementCheck
+            minimumCpu={resources.minimum?.cpu}
+            minimumMemory={resources.minimum?.memory}
+            minimumStorage={resources.minimum?.storage}
+          />
 
           <CollapsibleSection title="App Details">
           {/* Components */}

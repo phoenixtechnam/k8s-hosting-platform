@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 
@@ -11,6 +11,15 @@ export async function resourceQuotaRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const quota = await service.getResourceQuota(app.db, clientId);
     return success(quota);
+  });
+
+  // GET /api/v1/clients/:clientId/resource-availability — authenticated + client access
+  app.get('/clients/:clientId/resource-availability', {
+    onRequest: [authenticate, requireClientAccess()],
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const availability = await service.getClientResourceAvailability(app.db, clientId);
+    return success(availability);
   });
 
   // PATCH /api/v1/clients/:clientId/resource-quota — admin only

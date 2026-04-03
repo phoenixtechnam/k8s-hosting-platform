@@ -6,6 +6,7 @@ import { useCreateDeployment } from '@/hooks/use-deployments';
 import { useDomains } from '@/hooks/use-domains';
 import type { CatalogEntry } from '@/types/api';
 import ParameterForm from './ParameterForm';
+import ResourceRequirementCheck from './ResourceRequirementCheck';
 
 interface DeployWorkloadModalProps {
   readonly open: boolean;
@@ -40,11 +41,22 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [selectedVersion, setSelectedVersion] = useState<string>('');
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
   const [deployState, setDeployState] = useState<'form' | 'deploying' | 'success' | 'error'>('form');
+  const [resourcesFit, setResourcesFit] = useState(true);
 
   const images = catalogData?.data ?? [];
   const domains = domainsData?.data ?? [];
 
   const selectedImage = useMemo(() => images.find(i => i.id === selectedImageId), [images, selectedImageId]);
+
+  const selectedResources = selectedImage?.resources as { minimum?: { cpu?: string; memory?: string; storage?: string } } | null;
+  const minCpu = selectedResources?.minimum?.cpu;
+  const minMemory = selectedResources?.minimum?.memory;
+  const minStorage = selectedResources?.minimum?.storage;
+
+  // Reset resourcesFit when selected image changes
+  useEffect(() => {
+    setResourcesFit(true);
+  }, [selectedImageId]);
 
   // Fetch versions when an image is selected
   const { data: versionsData } = useCatalogEntryVersions(selectedImageId || undefined);
@@ -376,6 +388,16 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </div>
           )}
 
+          {/* Resource availability check */}
+          {selectedImageId && (
+            <ResourceRequirementCheck
+              minimumCpu={minCpu}
+              minimumMemory={minMemory}
+              minimumStorage={minStorage}
+              onFitsChange={setResourcesFit}
+            />
+          )}
+
           {/* Step 2: Configure */}
           {selectedImageId && (
             <div>
@@ -491,7 +513,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
             <button
               type="submit"
-              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending || hasRequiredMissing}
+              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending || hasRequiredMissing || !resourcesFit}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >
