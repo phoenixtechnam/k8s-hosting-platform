@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -912,6 +912,16 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     {deployment.status}
                   </span>
                 </div>
+
+                {deployment.lastError && (
+                  <div
+                    className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400"
+                    data-testid={`last-error-${deployment.id}`}
+                  >
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span className="line-clamp-2">{deployment.lastError}</span>
+                  </div>
+                )}
 
                 <div className="mt-4 grid grid-cols-2 gap-2 text-center">
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">

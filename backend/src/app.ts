@@ -71,6 +71,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       level: deps.config.LOG_LEVEL,
     },
     genReqId: () => crypto.randomUUID(),
+    bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports
   });
 
   // Plugins

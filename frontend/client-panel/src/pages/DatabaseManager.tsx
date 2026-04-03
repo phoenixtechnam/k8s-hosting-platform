@@ -90,6 +90,20 @@ type SidebarView = 'tables' | 'structure';
 type ResultsView = 'query' | 'browse' | 'structure';
 type SortDir = 'ASC' | 'DESC';
 
+function getQueryErrorHint(error: string): string | null {
+  const lower = error.toLowerCase();
+  if (lower.includes('already exists')) return 'The table or object already exists. Use IF NOT EXISTS or drop it first.';
+  if (lower.includes('unknown column')) return 'Check column names for typos and verify the table schema.';
+  if (lower.includes('no such table') || lower.includes('doesn\'t exist') || lower.includes('table') && lower.includes('not found')) return 'The table does not exist. Verify the name and selected database.';
+  if (lower.includes('access denied')) return 'The database user does not have permission for this operation.';
+  if (lower.includes('syntax error') || lower.includes('you have an error in your sql syntax')) return 'Check your SQL syntax. Common issues: missing quotes, commas, or semicolons.';
+  if (lower.includes('duplicate entry') || lower.includes('unique constraint')) return 'A row with this key already exists. Use INSERT IGNORE or ON DUPLICATE KEY UPDATE.';
+  if (lower.includes('foreign key constraint')) return 'This operation violates a foreign key constraint. Check related tables.';
+  if (lower.includes('lock wait timeout') || lower.includes('deadlock')) return 'The operation timed out due to a lock. Try again or check for long-running queries.';
+  if (lower.includes('too large') || lower.includes('max_allowed_packet')) return 'The query or data is too large. Try splitting into smaller operations.';
+  return null;
+}
+
 // ─── Helper: detect engine from catalog entry ────────────────────────────────
 
 type DbEngine = 'sql' | 'redis' | 'mongodb';
@@ -998,24 +1012,31 @@ export default function DatabaseManager() {
 
             {/* Create database inline form */}
             {createDbOpen && (
-              <div className="mt-2 flex gap-1" data-testid="create-database-form">
-                <input
-                  value={newDbName}
-                  onChange={(e) => setNewDbName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreateDb(); }}
-                  placeholder="Database name"
-                  className="flex-1 min-w-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                  data-testid="new-database-name-input"
-                />
-                <button
-                  type="button"
-                  onClick={handleCreateDb}
-                  disabled={createDbDatabase.isPending || !newDbName.trim()}
-                  className="shrink-0 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="confirm-create-database"
-                >
-                  {createDbDatabase.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Create'}
-                </button>
+              <div className="mt-2" data-testid="create-database-form">
+                <div className="flex gap-1">
+                  <input
+                    value={newDbName}
+                    onChange={(e) => setNewDbName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleCreateDb(); }}
+                    placeholder="Database name"
+                    className="flex-1 min-w-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    data-testid="new-database-name-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleCreateDb}
+                    disabled={createDbDatabase.isPending || !newDbName.trim()}
+                    className="shrink-0 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid="confirm-create-database"
+                  >
+                    {createDbDatabase.isPending ? <Loader2 size={12} className="animate-spin" /> : 'Create'}
+                  </button>
+                </div>
+                {createDbDatabase.isError && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="create-database-error">
+                    {createDbDatabase.error instanceof Error ? createDbDatabase.error.message : 'Failed to create database'}
+                  </p>
+                )}
               </div>
             )}
 
@@ -1413,6 +1434,11 @@ export default function DatabaseManager() {
                           Cancel
                         </button>
                       </div>
+                      {createDbUser.isError && (
+                        <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="create-user-error">
+                          {createDbUser.error instanceof Error ? createDbUser.error.message : 'Failed to create user'}
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <button
@@ -1549,6 +1575,11 @@ export default function DatabaseManager() {
                   <p className="mt-1 font-mono text-xs whitespace-pre-wrap">
                     {importError instanceof Error ? importError.message : 'An unknown error occurred during import.'}
                   </p>
+                  {importError instanceof Error && importError.message.includes('syntax') && (
+                    <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                      Hint: Check for SQL syntax errors in the import file. Ensure it is compatible with {isSqlite ? 'SQLite' : 'MySQL/MariaDB'}.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1794,11 +1825,19 @@ function QueryResultsPanel({
   }
 
   if (error) {
+    const hint = getQueryErrorHint(error);
     return (
       <div className="p-4" data-testid="query-error">
         <div className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3">
           <AlertCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
-          <pre className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{error}</pre>
+          <div>
+            <pre className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{error}</pre>
+            {hint && (
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                Hint: {hint}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1809,6 +1848,26 @@ function QueryResultsPanel({
       <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
         <Terminal size={32} className="mb-2" />
         <p className="text-sm">Run a query to see results</p>
+      </div>
+    );
+  }
+
+  // Query returned a result with an error field (e.g. SQL syntax error from the DB engine)
+  if (result.error) {
+    const hint = getQueryErrorHint(result.error);
+    return (
+      <div className="p-4" data-testid="query-result-error">
+        <div className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3">
+          <AlertCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <pre className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">{result.error}</pre>
+            {hint && (
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                Hint: {hint}
+              </p>
+            )}
+          </div>
+        </div>
       </div>
     );
   }

@@ -162,10 +162,21 @@ export function useImportSql(clientId: string | null | undefined) {
 
       // Read the .sql file as text, then send as JSON — the backend expects { database, sql }
       const sql = await file.text();
-      return apiFetch<{ data: { message: string } }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/import`,
-        { method: 'POST', body: JSON.stringify({ database, sql }) },
-      );
+      try {
+        return await apiFetch<{ data: { message: string } }>(
+          `/api/v1/clients/${clientId}/deployments/${deploymentId}/import`,
+          { method: 'POST', body: JSON.stringify({ database, sql }) },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Import failed';
+        if (message.includes('too large') || message.includes('413') || message.includes('Payload Too Large')) {
+          throw new Error('File is too large. Maximum upload size is 50MB.');
+        }
+        if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('Load failed')) {
+          throw new Error('Upload failed — the file may be too large or the server is unreachable.');
+        }
+        throw err;
+      }
     },
   });
 }
@@ -300,10 +311,21 @@ export function useSqliteImport(clientId: string | null | undefined) {
     }) => {
       if (!clientId) throw new Error('No client selected');
       const sql = await file.text();
-      return apiFetch<{ data: { success: boolean; error?: string } }>(
-        `/api/v1/clients/${clientId}/sqlite/import`,
-        { method: 'POST', body: JSON.stringify({ file_path: filePath, sql }) },
-      );
+      try {
+        return await apiFetch<{ data: { success: boolean; error?: string } }>(
+          `/api/v1/clients/${clientId}/sqlite/import`,
+          { method: 'POST', body: JSON.stringify({ file_path: filePath, sql }) },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Import failed';
+        if (message.includes('too large') || message.includes('413') || message.includes('Payload Too Large')) {
+          throw new Error('File is too large. Maximum upload size is 50MB.');
+        }
+        if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('Load failed')) {
+          throw new Error('Upload failed — the file may be too large or the server is unreachable.');
+        }
+        throw err;
+      }
     },
   });
 }
