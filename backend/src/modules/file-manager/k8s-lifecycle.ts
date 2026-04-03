@@ -46,8 +46,8 @@ export async function ensureFileManagerRunning(
                 imagePullPolicy: 'IfNotPresent',
                 ports: [{ containerPort: FM_PORT }],
                 resources: {
-                  requests: { cpu: '50m', memory: '64Mi' },
-                  limits: { cpu: '200m', memory: '256Mi' },
+                  requests: { cpu: '25m', memory: '32Mi' },
+                  limits: { cpu: '100m', memory: '128Mi' },
                 },
                 volumeMounts: [{
                   name: 'client-storage',
