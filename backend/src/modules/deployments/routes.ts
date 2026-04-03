@@ -12,6 +12,7 @@ import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
 import { eq } from 'drizzle-orm';
 import { catalogEntries } from '../../db/schema.js';
+import { fileManagerRequest } from '../file-manager/service.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -389,6 +390,49 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     const ctx = await buildDbCtx(clientId, id);
     const result = await dbManager.importSql(ctx, body.database, body.sql);
+    return success(result);
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/import-from-file
+  // Import SQL from a file already on the shared PVC (uploaded via file manager)
+  app.post('/clients/:clientId/deployments/:id/import-from-file', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const body = (request.body ?? {}) as { database?: string; file_path?: string };
+
+    if (!body.database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'database' });
+    }
+    if (!body.file_path) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'File path is required', 400, { field: 'file_path' });
+    }
+
+    // Validate path: no traversal
+    if (body.file_path.includes('..')) {
+      throw new ApiError('INVALID_PATH', 'File path cannot contain ".." traversal', 400);
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+
+    // Read the SQL file from the file-manager pod via the file-manager proxy service
+    const k8s = getK8s();
+    if (!k8s) {
+      throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    }
+
+    const namespace = await service.getClientNamespace(app.db, clientId);
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const FM_IMAGE = 'file-manager-sidecar:latest';
+
+    const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/download', {
+      query: { path: body.file_path },
+    });
+
+    if (fmResult.status !== 200) {
+      throw new ApiError('FILE_NOT_FOUND', `Could not read file: ${body.file_path}`, 404);
+    }
+
+    const sqlContent = fmResult.body;
+    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, sqlContent, body.file_path);
     return success(result);
   });
 

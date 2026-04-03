@@ -5,7 +5,8 @@ import {
   Database, Table2, Play, Trash2, Download, Upload, Search,
   ChevronRight, ArrowLeft, Loader2, AlertCircle, Columns3,
   ChevronLeft, ChevronDown, Terminal, FileText, Plus, Users,
-  X, Edit3, PlusCircle, Minus, Copy, Check, RefreshCw,
+  X, Edit3, PlusCircle, Minus, Copy, Check, RefreshCw, FolderOpen,
+  File,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
@@ -30,6 +31,8 @@ import {
   useRowCount,
   useExportDatabase,
   useImportSql,
+  useImportSqlFromFile,
+  useListPvcFiles,
   useSqliteQuery,
   useSqliteTables,
   useSqliteTableStructure,
@@ -38,7 +41,7 @@ import {
   useSqliteExport,
   useSqliteImport,
 } from '@/hooks/use-sql-manager';
-import type { QueryResult, ColumnInfo } from '@/hooks/use-sql-manager';
+import type { QueryResult, ColumnInfo, PvcFileEntry } from '@/hooks/use-sql-manager';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -152,6 +155,11 @@ export default function DatabaseManager() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
 
+  // Import from PVC file picker
+  const [pvcPickerOpen, setPvcPickerOpen] = useState(false);
+  const [pvcBrowsePath, setPvcBrowsePath] = useState('/');
+  const [selectedPvcFile, setSelectedPvcFile] = useState<string | null>(null);
+
   // Table management state
   const [createTableOpen, setCreateTableOpen] = useState(false);
   const [newTableName, setNewTableName] = useState('');
@@ -250,6 +258,7 @@ export default function DatabaseManager() {
 
   const deployExportDb = useExportDatabase(isSqlite ? undefined : clientId);
   const deployImportSql = useImportSql(isSqlite ? undefined : clientId);
+  const deployImportFromFile = useImportSqlFromFile(isSqlite ? undefined : clientId);
 
   // ─── SQLite-mode hooks ────────────────────────────────────────────────────
 
@@ -281,6 +290,14 @@ export default function DatabaseManager() {
 
   const sqliteExportDb = useSqliteExport(isSqlite ? clientId : undefined);
   const sqliteImportSqlMutation = useSqliteImport(isSqlite ? clientId : undefined);
+
+  // PVC file listing for "Import from File" picker
+  const { data: pvcFilesData, isLoading: pvcFilesLoading } = useListPvcFiles(
+    clientId,
+    pvcBrowsePath,
+    pvcPickerOpen && !isSqlite,
+  );
+  const pvcEntries: readonly PvcFileEntry[] = pvcFilesData?.data?.entries ?? [];
 
   // ─── Unified data accessors ───────────────────────────────────────────────
 
@@ -526,6 +543,26 @@ export default function DatabaseManager() {
     },
     [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteImportSqlMutation, deployImportSql, invalidateTableQueries],
   );
+
+  const handleOpenPvcPicker = useCallback(() => {
+    setPvcBrowsePath('/');
+    setSelectedPvcFile(null);
+    setPvcPickerOpen(true);
+  }, []);
+
+  const handlePvcFileImport = useCallback(() => {
+    if (!selectedPvcFile || !selectedDeploymentId || !selectedDatabase) return;
+    deployImportFromFile.mutate(
+      { deploymentId: selectedDeploymentId, database: selectedDatabase, filePath: selectedPvcFile },
+      {
+        onSuccess: () => {
+          setPvcPickerOpen(false);
+          setSelectedPvcFile(null);
+          invalidateTableQueries();
+        },
+      },
+    );
+  }, [selectedPvcFile, selectedDeploymentId, selectedDatabase, deployImportFromFile, invalidateTableQueries]);
 
   const handleBrowseSort = useCallback(
     (col: string) => {
@@ -808,10 +845,10 @@ export default function DatabaseManager() {
   // ─── Computed state for render ──────────────────────────────────────────────
 
   const queryIsPending = isSqlite ? sqliteExecuteQuery.isPending : deployExecuteQuery.isPending;
-  const importIsPending = isSqlite ? sqliteImportSqlMutation.isPending : deployImportSql.isPending;
-  const importIsSuccess = isSqlite ? sqliteImportSqlMutation.isSuccess : deployImportSql.isSuccess;
-  const importIsError = isSqlite ? sqliteImportSqlMutation.isError : deployImportSql.isError;
-  const importError = isSqlite ? sqliteImportSqlMutation.error : deployImportSql.error;
+  const importIsPending = isSqlite ? sqliteImportSqlMutation.isPending : (deployImportSql.isPending || deployImportFromFile.isPending);
+  const importIsSuccess = isSqlite ? sqliteImportSqlMutation.isSuccess : (deployImportSql.isSuccess || deployImportFromFile.isSuccess);
+  const importIsError = isSqlite ? sqliteImportSqlMutation.isError : (deployImportSql.isError || deployImportFromFile.isError);
+  const importError = isSqlite ? sqliteImportSqlMutation.error : (deployImportSql.error || deployImportFromFile.error);
   const exportIsPending = isSqlite ? sqliteExportDb.isPending : deployExportDb.isPending;
 
   // In SQLite mode, the "database" is the file itself — no database selector needed
@@ -1561,6 +1598,19 @@ export default function DatabaseManager() {
                 {importIsPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 Import
               </button>
+              {!isSqlite && (
+                <button
+                  type="button"
+                  onClick={handleOpenPvcPicker}
+                  disabled={importIsPending || !canImport}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+                  data-testid="import-from-file-button"
+                  title="Import a .sql file already uploaded to the shared volume"
+                >
+                  {deployImportFromFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                  Import from File
+                </button>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1598,6 +1648,11 @@ export default function DatabaseManager() {
                   {importError instanceof Error && importError.message.includes('syntax') && (
                     <p className="mt-1 text-xs text-red-600 dark:text-red-400">
                       Hint: Check for SQL syntax errors in the import file. Ensure it is compatible with {isSqlite ? 'SQLite' : 'MySQL/MariaDB'}.
+                    </p>
+                  )}
+                  {!isSqlite && importError instanceof Error && (importError.message.includes('too large') || importError.message.includes('50MB') || importError.message.includes('Payload Too Large')) && (
+                    <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                      Hint: Upload the file via File Manager first, then use &quot;Import from File&quot; to bypass the upload size limit.
                     </p>
                   )}
                 </div>
@@ -1699,6 +1754,154 @@ export default function DatabaseManager() {
           </div>
         </div>
       </div>
+
+      {/* PVC File Picker Modal */}
+      {pvcPickerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="pvc-file-picker-overlay">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-full max-w-lg mx-4 flex flex-col max-h-[70vh]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Import SQL from File Manager</h3>
+              <button
+                type="button"
+                onClick={() => setPvcPickerOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                data-testid="pvc-picker-close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Breadcrumb */}
+            <div className="px-5 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => { setPvcBrowsePath('/'); setSelectedPvcFile(null); }}
+                className="hover:text-blue-600 dark:hover:text-blue-400 font-medium shrink-0"
+              >
+                /
+              </button>
+              {pvcBrowsePath !== '/' && pvcBrowsePath.split('/').filter(Boolean).map((segment, idx, arr) => {
+                const segPath = '/' + arr.slice(0, idx + 1).join('/');
+                return (
+                  <span key={segPath} className="flex items-center gap-1 shrink-0">
+                    <ChevronRight size={12} />
+                    <button
+                      type="button"
+                      onClick={() => { setPvcBrowsePath(segPath); setSelectedPvcFile(null); }}
+                      className="hover:text-blue-600 dark:hover:text-blue-400"
+                    >
+                      {segment}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+
+            {/* File list */}
+            <div className="flex-1 overflow-y-auto px-2 py-2 min-h-[200px]">
+              {pvcFilesLoading ? (
+                <div className="flex items-center justify-center h-32 text-gray-400">
+                  <Loader2 size={24} className="animate-spin" />
+                </div>
+              ) : pvcEntries.length === 0 ? (
+                <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">
+                  No files in this directory
+                </div>
+              ) : (
+                <div className="space-y-0.5">
+                  {[...pvcEntries]
+                    .sort((a, b) => {
+                      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map((entry) => {
+                      const entryPath = pvcBrowsePath === '/'
+                        ? `/${entry.name}`
+                        : `${pvcBrowsePath}/${entry.name}`;
+                      const isSqlFile = entry.type === 'file' && entry.name.toLowerCase().endsWith('.sql');
+                      const isDir = entry.type === 'directory';
+                      const isSelected = selectedPvcFile === entryPath;
+
+                      return (
+                        <button
+                          key={entry.name}
+                          type="button"
+                          onClick={() => {
+                            if (isDir) {
+                              setPvcBrowsePath(entryPath);
+                              setSelectedPvcFile(null);
+                            } else if (isSqlFile) {
+                              setSelectedPvcFile(isSelected ? null : entryPath);
+                            }
+                          }}
+                          disabled={!isDir && !isSqlFile}
+                          className={clsx(
+                            'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-colors',
+                            isSelected
+                              ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-blue-200 dark:ring-blue-700'
+                              : isDir
+                                ? 'hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300'
+                                : isSqlFile
+                                  ? 'hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300'
+                                  : 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50',
+                          )}
+                          data-testid={`pvc-entry-${entry.name}`}
+                        >
+                          {isDir ? (
+                            <FolderOpen size={16} className="text-yellow-500 shrink-0" />
+                          ) : (
+                            <File size={16} className={clsx('shrink-0', isSqlFile ? 'text-blue-500' : 'text-gray-400')} />
+                          )}
+                          <span className="truncate flex-1 font-mono">{entry.name}</span>
+                          {entry.type === 'file' && (
+                            <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+                              {entry.size < 1024
+                                ? `${entry.size} B`
+                                : entry.size < 1_048_576
+                                  ? `${(entry.size / 1024).toFixed(1)} KB`
+                                  : `${(entry.size / 1_048_576).toFixed(1)} MB`}
+                            </span>
+                          )}
+                          {isDir && <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-400 dark:text-gray-500 truncate flex-1">
+                {selectedPvcFile ? (
+                  <span className="font-mono">{selectedPvcFile}</span>
+                ) : (
+                  'Select a .sql file to import'
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setPvcPickerOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePvcFileImport}
+                  disabled={!selectedPvcFile || deployImportFromFile.isPending}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                  data-testid="pvc-picker-import"
+                >
+                  {deployImportFromFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                  Import
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

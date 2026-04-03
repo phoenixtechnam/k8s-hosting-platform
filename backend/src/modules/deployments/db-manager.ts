@@ -250,8 +250,8 @@ export interface ImportResult {
 /** Max query length in bytes (1 MB). */
 const MAX_QUERY_LENGTH = 1_048_576;
 
-/** Max SQL import payload in bytes (5 MB for inline; larger imports should use file upload). */
-const MAX_IMPORT_LENGTH = 5_242_880;
+/** Max SQL import payload in bytes (50 MB — matches Fastify body limit). */
+const MAX_IMPORT_LENGTH = 52_428_800;
 
 /** Query execution timeout in seconds. */
 const QUERY_TIMEOUT_SECONDS = 30;
@@ -1191,7 +1191,7 @@ export async function importSql(
   if (Buffer.byteLength(sql, 'utf-8') > MAX_IMPORT_LENGTH) {
     throw new ApiError(
       'IMPORT_TOO_LARGE',
-      `SQL import exceeds maximum size of ${MAX_IMPORT_LENGTH} bytes. Use file upload for larger imports.`,
+      `SQL import exceeds maximum size of ${Math.round(MAX_IMPORT_LENGTH / 1_048_576)}MB. Upload the file via File Manager and use "Import from File" instead.`,
       400,
       { maxBytes: MAX_IMPORT_LENGTH },
     );
@@ -1255,4 +1255,62 @@ async function pgImportSql(
     return { success: false, error: stderr };
   }
   return { success: true };
+}
+
+// ─── Import SQL from PVC File ───────────────────────────────────────────────
+
+/**
+ * Validate a PVC-relative file path: no traversal, must be a .sql file, no absolute paths.
+ */
+function validatePvcFilePath(filePath: string): void {
+  if (!filePath || filePath.includes('..')) {
+    throw new ApiError(
+      'INVALID_PATH',
+      'File path cannot be empty or contain ".." traversal',
+      400,
+      { filePath },
+    );
+  }
+  const lower = filePath.toLowerCase();
+  if (!lower.endsWith('.sql') && !lower.endsWith('.sql.gz')) {
+    throw new ApiError(
+      'INVALID_FILE_TYPE',
+      'Only .sql files are supported for import',
+      400,
+      { filePath },
+    );
+  }
+}
+
+/**
+ * Import SQL from a file already on the shared PVC (uploaded via the file manager).
+ * The route handler reads the file content from the file-manager pod and passes it here.
+ * This bypasses the MAX_IMPORT_LENGTH check since the data is read server-side.
+ */
+export async function importSqlFromPvcFile(
+  ctx: DbManagerContext,
+  database: string,
+  sqlContent: string,
+  filePath: string,
+): Promise<ImportResult> {
+  validateDatabaseName(database);
+  validatePvcFilePath(filePath);
+
+  if (!sqlContent || sqlContent.length === 0) {
+    return { success: false, error: 'File is empty' };
+  }
+
+  try {
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlImportSql(ctx, database, sqlContent);
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgImportSql(ctx, database, sqlContent);
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
 }

@@ -32,7 +32,7 @@ export default function Applications() {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <AppWindow size={28} className="text-brand-500" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Applications</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="applications-heading">Applications</h1>
       </div>
 
       <div className="border-b border-gray-200 dark:border-gray-700">

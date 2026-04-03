@@ -25,7 +25,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
 
     // 4. Navigate to Applications
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
 
     // 5. Navigate to Backups
     await page.getByRole('link', { name: 'Backups' }).click();
@@ -102,7 +102,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('Backups page loads correctly', async ({ page }) => {
@@ -154,7 +154,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByTestId('domains-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
 
     await page.getByRole('link', { name: 'Settings' }).click();
     await expect(page.getByRole('heading', { name: /Settings/i })).toBeVisible({ timeout: 2000 });

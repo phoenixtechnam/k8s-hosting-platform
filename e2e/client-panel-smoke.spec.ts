@@ -51,7 +51,7 @@ test.describe('Client Panel Smoke Tests', () => {
     await loginAsAdminClient(page);
 
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Settings page', async ({ page }) => {

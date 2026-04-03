@@ -181,6 +181,50 @@ export function useImportSql(clientId: string | null | undefined) {
   });
 }
 
+export interface PvcFileEntry {
+  readonly name: string;
+  readonly type: 'file' | 'directory';
+  readonly size: number;
+  readonly modifiedAt: string | null;
+  readonly permissions: string;
+}
+
+export function useListPvcFiles(
+  clientId: string | null | undefined,
+  path: string,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['pvc-files', clientId, path],
+    queryFn: () =>
+      apiFetch<{ data: { path: string; entries: readonly PvcFileEntry[] } }>(
+        `/api/v1/clients/${clientId}/files?path=${encodeURIComponent(path)}`,
+      ),
+    enabled: enabled && Boolean(clientId),
+    staleTime: 0,
+  });
+}
+
+export function useImportSqlFromFile(clientId: string | null | undefined) {
+  return useMutation({
+    mutationFn: async ({
+      deploymentId,
+      database,
+      filePath,
+    }: {
+      readonly deploymentId: string;
+      readonly database: string;
+      readonly filePath: string;
+    }) => {
+      if (!clientId) throw new Error('No client selected');
+      return apiFetch<{ data: { success: boolean; error?: string } }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/import-from-file`,
+        { method: 'POST', body: JSON.stringify({ database, file_path: filePath }) },
+      );
+    },
+  });
+}
+
 // ─── SQLite Hooks ────────────────────────────────────────────────────────────
 // SQLite files are queried directly via the file-manager pod.
 // No deployment selector or database selector needed — the file path IS the database.

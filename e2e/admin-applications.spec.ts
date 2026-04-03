@@ -5,11 +5,11 @@ test.describe('Admin Applications Page', () => {
   test.beforeEach(async ({ page }) => {
     await injectAdminAuth(page);
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
   });
 
   test('should display the Applications page with tabs', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible();
+    await expect(page.getByTestId('applications-heading')).toBeVisible();
 
     // All 3 tabs should be visible
     await expect(page.getByTestId('tab-catalog')).toBeVisible();
