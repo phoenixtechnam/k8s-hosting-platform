@@ -19,7 +19,7 @@ interface UpdateDeploymentInput {
 export function useDeployments(clientId: string | undefined) {
   return useQuery({
     queryKey: ['deployments', clientId],
-    queryFn: () => apiFetch<PaginatedResponse<Deployment>>(`/api/v1/clients/${clientId}/deployments`),
+    queryFn: () => apiFetch<PaginatedResponse<Deployment>>(`/api/v1/clients/${clientId}/deployments?include_deleted=true`),
     enabled: Boolean(clientId),
   });
 }

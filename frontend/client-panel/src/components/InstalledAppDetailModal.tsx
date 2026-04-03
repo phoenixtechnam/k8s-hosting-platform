@@ -374,12 +374,7 @@ export default function InstalledAppDetailModal({
             <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
             Resources
           </h3>
-          <div className="grid grid-cols-3 gap-4">
-            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-              <Server size={16} className="mx-auto mb-1 text-gray-400" />
-              <p className="text-xs text-gray-500 dark:text-gray-400">Replicas</p>
-              <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.replicaCount}</p>
-            </div>
+          <div className="grid grid-cols-2 gap-4">
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
               <Cpu size={16} className="mx-auto mb-1 text-gray-400" />
               <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>

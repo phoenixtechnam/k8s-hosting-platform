@@ -72,10 +72,15 @@ async function execInPod(
         null,
         false,
         (status) => {
-          if ((status as Record<string, unknown>)?.status === 'Success') {
+          const s = status as Record<string, unknown>;
+          // K8s exec returns status.status === 'Success' on success
+          // Some versions return empty/null status on success too
+          if (!s || s.status === 'Success' || s.status === undefined) {
             resolve();
           } else {
-            reject(new Error(stderr || 'Command execution failed in pod'));
+            const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
+            console.error(`[db-manager] Exec failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
+            reject(new Error(msg));
           }
         },
       )

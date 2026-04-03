@@ -913,13 +913,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                   </span>
                 </div>
 
-                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                  <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Replicas</p>
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {deployment.replicaCount}
-                    </p>
-                  </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 text-center">
                   <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
                     <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
                     <p className="text-sm font-medium text-gray-900 dark:text-gray-100">

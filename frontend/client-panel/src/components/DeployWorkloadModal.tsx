@@ -34,7 +34,6 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   }, [preSelectedImageId]);
 
   const [name, setName] = useState('');
-  const [replicas, setReplicas] = useState(1);
   const [cpuRequest, setCpuRequest] = useState('100m');
   const [memoryRequest, setMemoryRequest] = useState('128Mi');
   const [selectedDomainId, setSelectedDomainId] = useState<string>('');
@@ -122,7 +121,6 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     setImageSearch('');
     setSelectedImageId(preSelectedImageId ?? '');
     setName('');
-    setReplicas(1);
     setCpuRequest('100m');
     setMemoryRequest('128Mi');
     setSelectedDomainId('');
@@ -146,7 +144,6 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
       await createDeployment.mutateAsync({
         catalog_entry_id: selectedImageId,
         name: name.trim(),
-        replica_count: replicas,
         cpu_request: cpuRequest,
         memory_request: memoryRequest,
         configuration: Object.keys(paramValues).length > 0 ? paramValues : undefined,
@@ -415,18 +412,6 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                     className={INPUT_CLASS}
                     placeholder="my-workload"
                     data-testid="deploy-name-input"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Replicas</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={replicas}
-                    onChange={(e) => setReplicas(Number(e.target.value))}
-                    className={INPUT_CLASS}
-                    data-testid="deploy-replicas-input"
                   />
                 </div>
                 <div>

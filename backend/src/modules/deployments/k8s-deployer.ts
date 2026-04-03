@@ -158,22 +158,33 @@ async function deployK8sDeployment(
   const selectorLabels = { app: labels.app, component: labels.component };
 
   // Mount shared client PVC with subPath per volume
-  const volumeMounts = volumes.map(v => ({
-    name: 'client-storage',
-    mountPath: v.container_path,
-    subPath: v.local_path,
-  }));
+  // Use K8s resource name in path for instance isolation so multiple
+  // deployments of the same catalog entry don't collide on disk.
+  const volumeMounts = volumes.map(v => {
+    const parentDir = v.local_path.split('/').slice(0, -1).join('/');
+    const instancePath = parentDir ? `${parentDir}/${name}` : name;
+    return {
+      name: 'client-storage',
+      mountPath: v.container_path,
+      subPath: instancePath,
+    };
+  });
 
   const containerWithMounts = volumes.length > 0
     ? { ...container, volumeMounts }
     : container;
 
-  // Init container: ensures local_path directories exist on the shared PVC
+  // Init container: ensures directories exist on the shared PVC and are
+  // world-writable so database processes running as non-root can write.
   const initContainers = volumes.length > 0
     ? [{
         name: 'init-dirs',
         image: 'busybox:1.36',
-        command: ['sh', '-c', volumes.map(v => `mkdir -p /data/${v.local_path}`).join(' && ')],
+        command: ['sh', '-c', volumes.map(v => {
+          const parentDir = v.local_path.split('/').slice(0, -1).join('/');
+          const instancePath = parentDir ? `${parentDir}/${name}` : name;
+          return `mkdir -p /data/${instancePath} && chmod 777 /data/${instancePath}`;
+        }).join(' && ')],
         volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
         resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
       }]
