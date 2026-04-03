@@ -1,9 +1,18 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
 
-const FM_NAME = 'file-manager';
-const FM_PORT = 8111;
-const FM_LABELS = { app: FM_NAME, 'platform.io/component': FM_NAME, 'platform.io/system': 'true' };
+export type AdminerStatus = {
+  readonly ready: boolean;
+  readonly phase: 'not_deployed' | 'starting' | 'ready' | 'failed';
+  readonly message?: string;
+};
+
+const ADMINER_NAME = 'adminer';
+const ADMINER_PORT = 8080;
+const ADMINER_LABELS = {
+  app: ADMINER_NAME,
+  'platform.io/component': ADMINER_NAME,
+  'platform.io/system': 'true',
+};
 
 function isK8s404(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
@@ -12,18 +21,18 @@ function isK8s404(err: unknown): boolean {
 }
 
 /**
- * Ensure the file-manager Deployment + Service exist in the namespace.
+ * Ensure the Adminer Deployment + Service exist in the namespace.
  * If already running, does nothing.
  */
-export async function ensureFileManagerRunning(
+export async function ensureAdminerRunning(
   k8s: K8sClients,
   namespace: string,
-  image: string,
+  image = 'adminer:4',
 ): Promise<void> {
   // Check if deployment exists
   let deployExists = false;
   try {
-    await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace });
+    await k8s.apps.readNamespacedDeployment({ name: ADMINER_NAME, namespace });
     deployExists = true;
   } catch (err: unknown) {
     if (!isK8s404(err)) throw err;
@@ -33,40 +42,43 @@ export async function ensureFileManagerRunning(
     await k8s.apps.createNamespacedDeployment({
       namespace,
       body: {
-        metadata: { name: FM_NAME, namespace, labels: FM_LABELS },
+        metadata: {
+          name: ADMINER_NAME,
+          namespace,
+          labels: ADMINER_LABELS,
+          annotations: {
+            'platform.io/idle-timeout': '180',
+          },
+        },
         spec: {
           replicas: 1,
-          selector: { matchLabels: FM_LABELS },
+          selector: { matchLabels: { app: ADMINER_NAME } },
           template: {
-            metadata: { labels: FM_LABELS },
+            metadata: { labels: ADMINER_LABELS },
             spec: {
               containers: [{
-                name: FM_NAME,
+                name: ADMINER_NAME,
                 image,
                 imagePullPolicy: 'IfNotPresent',
-                ports: [{ containerPort: FM_PORT }],
+                ports: [{ containerPort: ADMINER_PORT }],
                 resources: {
                   requests: { cpu: '25m', memory: '32Mi' },
                   limits: { cpu: '100m', memory: '128Mi' },
                 },
-                volumeMounts: [{
-                  name: 'client-storage',
-                  mountPath: '/data',
-                }],
+                env: [
+                  { name: 'ADMINER_DEFAULT_SERVER', value: '' },
+                  { name: 'ADMINER_DESIGN', value: 'nette' },
+                ],
                 livenessProbe: {
-                  httpGet: { path: '/health', port: FM_PORT },
-                  initialDelaySeconds: 2,
-                  periodSeconds: 10,
+                  httpGet: { path: '/', port: ADMINER_PORT },
+                  initialDelaySeconds: 3,
+                  periodSeconds: 15,
                 },
                 readinessProbe: {
-                  httpGet: { path: '/health', port: FM_PORT },
-                  initialDelaySeconds: 1,
-                  periodSeconds: 3,
+                  httpGet: { path: '/', port: ADMINER_PORT },
+                  initialDelaySeconds: 2,
+                  periodSeconds: 5,
                 },
-              }],
-              volumes: [{
-                name: 'client-storage',
-                persistentVolumeClaim: { claimName: `${namespace}-storage` },
               }],
             },
           },
@@ -78,7 +90,7 @@ export async function ensureFileManagerRunning(
   // Check if service exists
   let svcExists = false;
   try {
-    await k8s.core.readNamespacedService({ name: FM_NAME, namespace });
+    await k8s.core.readNamespacedService({ name: ADMINER_NAME, namespace });
     svcExists = true;
   } catch (err: unknown) {
     if (!isK8s404(err)) throw err;
@@ -88,10 +100,10 @@ export async function ensureFileManagerRunning(
     await k8s.core.createNamespacedService({
       namespace,
       body: {
-        metadata: { name: FM_NAME, namespace, labels: FM_LABELS },
+        metadata: { name: ADMINER_NAME, namespace, labels: ADMINER_LABELS },
         spec: {
-          selector: FM_LABELS,
-          ports: [{ port: FM_PORT, targetPort: FM_PORT }],
+          selector: { app: ADMINER_NAME },
+          ports: [{ port: ADMINER_PORT, targetPort: ADMINER_PORT }],
         },
       },
     });
@@ -99,34 +111,34 @@ export async function ensureFileManagerRunning(
 }
 
 /**
- * Delete the file-manager Deployment + Service.
+ * Delete the Adminer Deployment + Service.
  */
-export async function stopFileManager(
+export async function stopAdminer(
   k8s: K8sClients,
   namespace: string,
 ): Promise<void> {
   try {
-    await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
+    await k8s.apps.deleteNamespacedDeployment({ name: ADMINER_NAME, namespace });
   } catch (err: unknown) {
     if (!isK8s404(err)) throw err;
   }
   try {
-    await k8s.core.deleteNamespacedService({ name: FM_NAME, namespace });
+    await k8s.core.deleteNamespacedService({ name: ADMINER_NAME, namespace });
   } catch (err: unknown) {
     if (!isK8s404(err)) throw err;
   }
 }
 
 /**
- * Check if the file-manager pod is ready.
+ * Check if the Adminer pod is ready.
  */
-export async function getFileManagerStatus(
+export async function getAdminerStatus(
   k8s: K8sClients,
   namespace: string,
-): Promise<FileManagerStatus> {
+): Promise<AdminerStatus> {
   // Check deployment exists
   try {
-    await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace });
+    await k8s.apps.readNamespacedDeployment({ name: ADMINER_NAME, namespace });
   } catch (err: unknown) {
     if (isK8s404(err)) return { ready: false, phase: 'not_deployed' };
     throw err;
@@ -135,7 +147,7 @@ export async function getFileManagerStatus(
   // Check pod status
   const pods = await k8s.core.listNamespacedPod({
     namespace,
-    labelSelector: `app=${FM_NAME}`,
+    labelSelector: `app=${ADMINER_NAME}`,
   });
 
   const podList = (pods as { items?: Array<{ status?: { phase?: string; conditions?: Array<{ type?: string; status?: string }> } }> }).items ?? [];
@@ -147,7 +159,7 @@ export async function getFileManagerStatus(
   const pod = podList[0];
   const phase = pod.status?.phase;
   const readyCondition = pod.status?.conditions?.find(
-    (c: { type?: string; status?: string }) => c.type === 'Ready' && c.status === 'True'
+    (c: { type?: string; status?: string }) => c.type === 'Ready' && c.status === 'True',
   );
 
   if (readyCondition) {

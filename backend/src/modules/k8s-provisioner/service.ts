@@ -58,6 +58,12 @@ export function updateStepStatus(
   });
 }
 
+// ─── System Service Reserves ────────────────────────────────────────────────
+// Extra CPU/memory headroom added to ResourceQuota to accommodate system pods
+// (file-manager, adminer) so they don't count against the client's plan limits.
+export const SYSTEM_CPU_RESERVE = 0.5;    // 500m for file-manager + adminer
+export const SYSTEM_MEMORY_RESERVE = 0.5; // 512Mi
+
 // ─── K8s Resource Creators ───────────────────────────────────────────────────
 
 export async function applyNamespace(
@@ -93,6 +99,10 @@ export async function applyResourceQuota(
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
 ): Promise<void> {
+  // Add system service headroom so file-manager/adminer don't eat into the client's quota
+  const totalCpu = (parseFloat(limits.cpu) + SYSTEM_CPU_RESERVE).toFixed(2);
+  const totalMemoryGi = (parseFloat(limits.memory) + SYSTEM_MEMORY_RESERVE).toFixed(2);
+
   await k8s.core.createNamespacedResourceQuota({
     namespace,
     body: {
@@ -102,8 +112,8 @@ export async function applyResourceQuota(
       },
       spec: {
         hard: {
-          'limits.cpu': limits.cpu,
-          'limits.memory': `${limits.memory}Gi`,
+          'limits.cpu': totalCpu,
+          'limits.memory': `${totalMemoryGi}Gi`,
           'requests.storage': `${limits.storage}Gi`,
         },
       },

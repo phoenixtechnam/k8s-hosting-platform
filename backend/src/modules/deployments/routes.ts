@@ -257,6 +257,53 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     reply.status(204).send();
   });
 
+  // GET /api/v1/clients/:clientId/resource-usage — namespace resource usage from K8s quota
+  app.get('/clients/:clientId/resource-usage', {
+    schema: {
+      tags: ['Deployments'],
+      summary: 'Get resource usage from K8s ResourceQuota',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const k8s = getK8s();
+    if (!k8s) {
+      throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    }
+
+    const namespace = await service.getClientNamespace(app.db, clientId);
+    const quotaName = `${namespace}-quota`;
+
+    try {
+      const quota = await k8s.core.readNamespacedResourceQuota({ name: quotaName, namespace });
+      const quotaObj = quota as {
+        status?: {
+          used?: Record<string, string>;
+          hard?: Record<string, string>;
+        };
+      };
+
+      const used = quotaObj.status?.used ?? {};
+      const hard = quotaObj.status?.hard ?? {};
+
+      return success({
+        cpu: { used: used['limits.cpu'] ?? '0', limit: hard['limits.cpu'] ?? '0' },
+        memory: { used: used['limits.memory'] ?? '0', limit: hard['limits.memory'] ?? '0' },
+        storage: { used: used['requests.storage'] ?? '0', limit: hard['requests.storage'] ?? '0' },
+      });
+    } catch (err: unknown) {
+      // If quota doesn't exist yet, return zeroes
+      if (err instanceof Error && err.message.includes('HTTP-Code: 404')) {
+        return success({
+          cpu: { used: '0', limit: '0' },
+          memory: { used: '0', limit: '0' },
+          storage: { used: '0', limit: '0' },
+        });
+      }
+      throw err;
+    }
+  });
+
   // POST /api/v1/admin/deployments/reconcile — admin-only, reconcile all deployment statuses
   app.post('/admin/deployments/reconcile', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],

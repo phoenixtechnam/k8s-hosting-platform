@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
-  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle,
+  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle, ExternalLink,
 } from 'lucide-react';
 import {
   useDeploymentCredentials,
@@ -14,6 +14,7 @@ import {
   useCreateDbUser,
   useDropDbUser,
   useSetDbUserPassword,
+  useAdminerLogin,
 } from '@/hooks/use-deployments';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
@@ -300,8 +301,28 @@ function UsersSection({
   const createUser = useCreateDbUser(clientId);
   const dropUser = useDropDbUser(clientId);
   const setPassword = useSetDbUserPassword(clientId);
+  const adminerLogin = useAdminerLogin(clientId);
 
   const users = usersData?.data ?? [];
+
+  const handleAdminerLogin = useCallback(
+    (username: string) => {
+      if (!deploymentId) return;
+      setErrorMessage(null);
+      adminerLogin.mutate(
+        { deploymentId, username },
+        {
+          onSuccess: (result) => {
+            const url = result.data.loginUrl;
+            const baseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+            window.open(`${baseUrl}${url}`, '_blank');
+          },
+          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to open Adminer'),
+        },
+      );
+    },
+    [deploymentId, adminerLogin],
+  );
 
   const handleCreate = useCallback(() => {
     if (!deploymentId || !newUsername.trim()) return;
@@ -381,8 +402,41 @@ function UsersSection({
 
       {!isLoading && !isError && (
         <>
+          {/* Root user row — always shown */}
+          <div className="space-y-2 mb-4">
+            <div data-testid="user-row-root">
+              <div className="flex items-center justify-between rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-mono text-sm font-semibold text-amber-800 dark:text-amber-300">
+                    root
+                  </span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400">
+                    — Superuser
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleAdminerLogin('root')}
+                    disabled={adminerLogin.isPending}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 dark:text-amber-300 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-50"
+                    title="Open in Adminer as root"
+                    data-testid="user-adminer-root"
+                  >
+                    {adminerLogin.isPending ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <ExternalLink size={12} />
+                    )}
+                    Adminer
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {users.length === 0 ? (
-            <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No users found.</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No additional users found.</p>
           ) : (
             <div className="space-y-2 mb-4">
               {users.map((user) => (
@@ -399,6 +453,20 @@ function UsersSection({
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleAdminerLogin(user.username)}
+                        disabled={adminerLogin.isPending}
+                        className="rounded p-1 text-gray-400 hover:text-green-500 dark:hover:text-green-400 transition-colors"
+                        title="Open in Adminer"
+                        data-testid={`user-adminer-${user.username}`}
+                      >
+                        {adminerLogin.isPending ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <ExternalLink size={14} />
+                        )}
+                      </button>
                       <button
                         type="button"
                         onClick={() => {

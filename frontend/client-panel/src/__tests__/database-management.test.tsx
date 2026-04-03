@@ -16,6 +16,7 @@ const mockUseDbUsers = vi.fn();
 const mockUseCreateDbUser = vi.fn();
 const mockUseDropDbUser = vi.fn();
 const mockUseSetDbUserPassword = vi.fn();
+const mockUseAdminerLogin = vi.fn();
 
 vi.mock('../hooks/use-deployments', () => ({
   useDeploymentCredentials: (...args: unknown[]) => mockUseDeploymentCredentials(...args),
@@ -28,6 +29,7 @@ vi.mock('../hooks/use-deployments', () => ({
   useCreateDbUser: (...args: unknown[]) => mockUseCreateDbUser(...args),
   useDropDbUser: (...args: unknown[]) => mockUseDropDbUser(...args),
   useSetDbUserPassword: (...args: unknown[]) => mockUseSetDbUserPassword(...args),
+  useAdminerLogin: (...args: unknown[]) => mockUseAdminerLogin(...args),
 }));
 
 function createTestQueryClient() {
@@ -107,6 +109,7 @@ function setupDefaultMocks() {
   mockUseCreateDbUser.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseDropDbUser.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseSetDbUserPassword.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockUseAdminerLogin.mockReturnValue({ mutate: vi.fn(), isPending: false });
 }
 
 describe('DatabaseManagementModal', () => {

@@ -244,6 +244,38 @@ export function useDropDbUser(clientId: string | undefined) {
   });
 }
 
+// ─── Adminer Hooks ──────────────────────────────────────────────────────────
+
+export function useAdminerLogin(clientId: string | undefined) {
+  return useMutation({
+    mutationFn: ({ deploymentId, username }: { deploymentId: string; username: string }) =>
+      apiFetch<{ data: { loginUrl: string } }>(
+        `/api/v1/clients/${clientId}/adminer/login`,
+        { method: 'POST', body: JSON.stringify({ deploymentId, username }) },
+      ),
+  });
+}
+
+// ─── Resource Usage ─────────────────────────────────────────────────────────
+
+export interface ResourceUsage {
+  readonly cpu: { readonly used: string; readonly limit: string };
+  readonly memory: { readonly used: string; readonly limit: string };
+  readonly storage: { readonly used: string; readonly limit: string };
+}
+
+export function useResourceUsage(clientId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['resource-usage', clientId],
+    queryFn: () =>
+      apiFetch<{ data: ResourceUsage }>(
+        `/api/v1/clients/${clientId}/resource-usage`,
+      ),
+    enabled: Boolean(clientId),
+    refetchInterval: 15_000,
+  });
+}
+
 export function useSetDbUserPassword(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

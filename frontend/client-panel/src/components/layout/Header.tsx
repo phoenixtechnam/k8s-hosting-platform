@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Search, UserCircle, KeyRound, LogOut, Settings } from 'lucide-react';
+import { Menu, Search, UserCircle, KeyRound, LogOut, Settings, Cpu, HardDrive, MemoryStick } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
+import { useClientContext } from '@/hooks/use-client-context';
+import { useResourceUsage } from '@/hooks/use-deployments';
 import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
@@ -66,6 +68,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        <ResourceUsageTags />
         <DarkModeToggle />
         <NotificationDropdown />
 
@@ -130,6 +133,117 @@ export default function Header({ onMenuClick }: HeaderProps) {
         </div>
       </div>
     </header>
+  );
+}
+
+// ─── K8s Resource Usage Helpers ───────────────────────────────────────────────
+
+/** Parse K8s CPU string (e.g. "500m", "1.5", "2") to numeric cores. */
+function parseCpu(value: string): number {
+  if (value.endsWith('m')) return parseInt(value, 10) / 1000;
+  return parseFloat(value) || 0;
+}
+
+/** Parse K8s memory string (e.g. "512Mi", "2Gi", "1073741824") to GiB. */
+function parseMemory(value: string): number {
+  if (value.endsWith('Gi')) return parseFloat(value);
+  if (value.endsWith('Mi')) return parseFloat(value) / 1024;
+  if (value.endsWith('Ki')) return parseFloat(value) / (1024 * 1024);
+  // Plain number = bytes
+  const bytes = parseFloat(value);
+  if (isNaN(bytes)) return 0;
+  return bytes / (1024 * 1024 * 1024);
+}
+
+/** Parse K8s storage string to GiB */
+function parseStorage(value: string): number {
+  return parseMemory(value);
+}
+
+function formatNum(n: number): string {
+  if (n >= 10) return n.toFixed(0);
+  if (n >= 1) return n.toFixed(1);
+  return n.toFixed(2);
+}
+
+function ResourceTag({
+  icon,
+  label,
+  used,
+  limit,
+  parser,
+  unit,
+}: {
+  readonly icon: React.ReactNode;
+  readonly label: string;
+  readonly used: string;
+  readonly limit: string;
+  readonly parser: (v: string) => number;
+  readonly unit: string;
+}) {
+  const usedNum = parser(used);
+  const limitNum = parser(limit);
+  const ratio = limitNum > 0 ? usedNum / limitNum : 0;
+
+  let colorClasses: string;
+  if (ratio >= 0.9) {
+    colorClasses = 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800';
+  } else if (ratio >= 0.7) {
+    colorClasses = 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800';
+  } else {
+    colorClasses = 'bg-gray-50 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700';
+  }
+
+  return (
+    <span
+      className={`hidden lg:inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium border ${colorClasses}`}
+      title={`${label}: ${formatNum(usedNum)} / ${formatNum(limitNum)} ${unit}`}
+      data-testid={`resource-tag-${label.toLowerCase()}`}
+    >
+      {icon}
+      {formatNum(usedNum)}/{formatNum(limitNum)}{unit}
+    </span>
+  );
+}
+
+function ResourceUsageTags() {
+  const { clientId } = useClientContext();
+  const { data } = useResourceUsage(clientId);
+
+  const usage = data?.data;
+  if (!usage) return null;
+
+  // Skip if limits are all zero (not provisioned)
+  const cpuLimit = parseCpu(usage.cpu.limit);
+  if (cpuLimit <= 0) return null;
+
+  return (
+    <div className="flex items-center gap-1.5" data-testid="resource-usage-tags">
+      <ResourceTag
+        icon={<Cpu size={12} />}
+        label="CPU"
+        used={usage.cpu.used}
+        limit={usage.cpu.limit}
+        parser={parseCpu}
+        unit=""
+      />
+      <ResourceTag
+        icon={<MemoryStick size={12} />}
+        label="Memory"
+        used={usage.memory.used}
+        limit={usage.memory.limit}
+        parser={parseMemory}
+        unit="Gi"
+      />
+      <ResourceTag
+        icon={<HardDrive size={12} />}
+        label="Storage"
+        used={usage.storage.used}
+        limit={usage.storage.limit}
+        parser={parseStorage}
+        unit="Gi"
+      />
+    </div>
   );
 }
 

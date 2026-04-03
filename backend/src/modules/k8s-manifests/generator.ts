@@ -5,6 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
+import { SYSTEM_CPU_RESERVE, SYSTEM_MEMORY_RESERVE } from '../k8s-provisioner/service.js';
 import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
 
 export interface ManifestFile {
@@ -78,7 +79,10 @@ export async function generateClientManifests(
     },
   }));
 
-  // 2. ResourceQuota
+  // 2. ResourceQuota (includes system service headroom for file-manager/adminer)
+  const totalCpu = (parseFloat(cpuLimit) + SYSTEM_CPU_RESERVE).toFixed(2);
+  const totalMemoryGi = (parseFloat(memoryLimit) + SYSTEM_MEMORY_RESERVE).toFixed(2);
+
   manifests.push(buildManifest('resource-quota.yaml', {
     apiVersion: 'v1',
     kind: 'ResourceQuota',
@@ -88,8 +92,8 @@ export async function generateClientManifests(
     },
     spec: {
       hard: {
-        'limits.cpu': cpuLimit,
-        'limits.memory': `${memoryLimit}Gi`,
+        'limits.cpu': totalCpu,
+        'limits.memory': `${totalMemoryGi}Gi`,
         'requests.storage': `${storageLimit}Gi`,
       },
     },
