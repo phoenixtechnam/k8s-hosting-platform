@@ -242,6 +242,138 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success({ message: 'Password updated' });
   });
 
+  // ─── Database Query & Browsing Routes ───────────────────────────────────
+
+  // POST /api/v1/clients/:clientId/deployments/:id/query
+  app.post('/clients/:clientId/deployments/:id/query', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const body = (request.body ?? {}) as { database?: string; query?: string };
+
+    if (!body.database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'database' });
+    }
+    if (!body.query) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'Query is required', 400, { field: 'query' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const result = await dbManager.executeQuery(ctx, body.database, body.query);
+    return success(result);
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/tables?database=mydb
+  app.get('/clients/:clientId/deployments/:id/tables', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const database = query.database as string | undefined;
+
+    if (!database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const tables = await dbManager.listTables(ctx, database);
+    return success(tables);
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/table-structure?database=mydb&table=users
+  app.get('/clients/:clientId/deployments/:id/table-structure', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const database = query.database as string | undefined;
+    const table = query.table as string | undefined;
+
+    if (!database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
+    }
+    if (!table) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const columns = await dbManager.describeTable(ctx, database, table);
+    return success(columns);
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/table-data?database=mydb&table=users&limit=50&offset=0&orderBy=id&orderDir=desc
+  app.get('/clients/:clientId/deployments/:id/table-data', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const database = query.database as string | undefined;
+    const table = query.table as string | undefined;
+
+    if (!database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
+    }
+    if (!table) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
+    }
+
+    const limit = query.limit ? parseInt(String(query.limit), 10) : undefined;
+    const offset = query.offset ? parseInt(String(query.offset), 10) : undefined;
+    const orderBy = query.orderBy as string | undefined;
+    const orderDir = (query.orderDir as string | undefined) === 'desc' ? 'desc' as const : 'asc' as const;
+
+    const ctx = await buildDbCtx(clientId, id);
+    const result = await dbManager.browseTable(ctx, database, table, { limit, offset, orderBy, orderDir });
+    return success(result);
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/row-count?database=mydb&table=users
+  app.get('/clients/:clientId/deployments/:id/row-count', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const database = query.database as string | undefined;
+    const table = query.table as string | undefined;
+
+    if (!database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
+    }
+    if (!table) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'table query parameter is required', 400, { field: 'table' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const count = await dbManager.countRows(ctx, database, table);
+    return success({ count });
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/export?database=mydb
+  app.post('/clients/:clientId/deployments/:id/export', async (request, reply) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const database = query.database as string | undefined;
+
+    if (!database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const dump = await dbManager.exportDatabase(ctx, database);
+
+    reply
+      .header('Content-Type', 'text/plain; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${database}-export.sql"`)
+      .send(dump);
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/import
+  app.post('/clients/:clientId/deployments/:id/import', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const body = (request.body ?? {}) as { database?: string; sql?: string };
+
+    if (!body.database) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'database' });
+    }
+    if (!body.sql) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'SQL content is required', 400, { field: 'sql' });
+    }
+
+    const ctx = await buildDbCtx(clientId, id);
+    const result = await dbManager.importSql(ctx, body.database, body.sql);
+    return success(result);
+  });
+
   // DELETE /api/v1/clients/:clientId/deployments/:id
   // ?force=true for permanent deletion (skips soft-delete)
   app.delete('/clients/:clientId/deployments/:id', async (request, reply) => {

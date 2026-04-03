@@ -20,7 +20,7 @@ import { createK8sClients } from './modules/k8s-provisioner/k8s-client.js';
 import {
   consumeLoginToken,
   buildAutoLoginHtml,
-  proxyToAdminer,
+  proxyToAdminerDirect,
   ensureAdminerRunning,
 } from './modules/adminer/service.js';
 
@@ -115,17 +115,13 @@ app.get('/auto-login', async (request, reply) => {
     expiresAt: Date.now() + 3 * 60 * 60 * 1000, // 3 hours
   });
 
-  // The auto-login form POSTs to "/" — which is the root of this server.
-  // After Adminer processes the login, it redirects to its main page,
-  // which also resolves to "/" on this server. Everything works.
+  // Serve auto-login HTML form that POSTs directly to /adminer/
+  // The form action is "/" which nginx sub_filter rewrites to "/adminer/"
   const html = buildAutoLoginHtml('/', loginData.server, loginData.username, loginData.password);
 
-  // Inject the session cookie into the HTML response and add a hidden field
-  // so we can track which session this belongs to on subsequent requests.
-  // We set the cookie and also include it as part of the response.
   reply.header('Content-Type', 'text/html; charset=utf-8');
   reply.header('Cache-Control', 'no-store');
-  reply.header('Set-Cookie', `adminer_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=10800`);
+  reply.header('Set-Cookie', `adminer_session=${sessionId}; Path=/adminer/; HttpOnly; SameSite=Lax; Max-Age=10800`);
   return reply.send(html);
 });
 
@@ -182,7 +178,7 @@ async function proxyHandler(request: FastifyRequest, reply: FastifyReply): Promi
     .map(([name, value]) => `${name}=${value}`)
     .join('; ');
 
-  const result = await proxyToAdminer(config.KUBECONFIG_PATH, namespace, pathOnly, {
+  const result = await proxyToAdminerDirect(config.KUBECONFIG_PATH, namespace, pathOnly, {
     method: request.method,
     body: bodyContent,
     contentType: contentType || undefined,
@@ -195,11 +191,21 @@ async function proxyHandler(request: FastifyRequest, reply: FastifyReply): Promi
     reply.header('Content-Type', result.headers['content-type']);
   }
   if (result.headers['location']) {
-    // Adminer redirects are relative to root — they just work on this server
-    reply.header('Location', result.headers['location']);
+    // Adminer redirects are root-relative (e.g., "/" or "/?server=...").
+    // Since this server is accessed via the client panel's nginx proxy at
+    // /adminer/, we must prefix Location headers so the browser follows
+    // the redirect through the proxy path.
+    const loc = result.headers['location'];
+    const prefixedLoc = loc.startsWith('/') ? `/adminer${loc}` : loc;
+    reply.header('Location', prefixedLoc);
   }
   if (result.headers['set-cookie']) {
-    reply.header('Set-Cookie', result.headers['set-cookie']);
+    // Rewrite cookie paths from / to /adminer/ so Adminer's PHP session
+    // cookies are scoped to the proxy path and don't leak to the SPA.
+    const cookies = result.headers['set-cookie'].split('\n').map(
+      c => c.replace(/Path=\//gi, 'Path=/adminer/'),
+    );
+    reply.raw.setHeader('Set-Cookie', cookies);
   }
   if (result.headers['content-disposition']) {
     reply.header('Content-Disposition', result.headers['content-disposition']);

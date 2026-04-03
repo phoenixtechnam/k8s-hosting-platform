@@ -14,6 +14,7 @@ import Settings from '@/pages/Settings';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
 import SubUsers from '@/pages/SubUsers';
+import DatabaseManager from '@/pages/DatabaseManager';
 import Placeholder from '@/pages/Placeholder';
 
 const queryClient = new QueryClient({
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="users" element={<SubUsers />} />
             <Route path="settings" element={<Settings />} />
             <Route path="user-settings" element={<UserSettings />} />
+            <Route path="database-manager" element={<DatabaseManager />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>

@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
-  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle, ExternalLink,
+  Loader2, Server, Key, Link, Plus, Trash2, Users, Lock, Shuffle, ExternalLink, Terminal,
 } from 'lucide-react';
 import {
   useDeploymentCredentials,
@@ -313,16 +314,10 @@ function UsersSection({
         { deploymentId, username },
         {
           onSuccess: (result) => {
-            const url = result.data.loginUrl;
-            // If the loginUrl is already an absolute URL (starts with http),
-            // open it directly. Otherwise, prepend the API base URL for
-            // backwards compatibility with the legacy proxy route.
-            if (url.startsWith('http://') || url.startsWith('https://')) {
-              window.open(url, '_blank');
-            } else {
-              const baseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
-              window.open(`${baseUrl}${url}`, '_blank');
-            }
+            // The loginUrl is a relative path (/adminer/auto-login?...)
+            // served by the client panel's nginx proxy on the same origin.
+            // No need to prepend any external URL.
+            window.open(result.data.loginUrl, '_blank');
           },
           onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to open Adminer'),
         },
@@ -679,6 +674,7 @@ export default function DatabaseManagementModal({
   clientId,
   onClose,
 }: DatabaseManagementModalProps) {
+  const navigate = useNavigate();
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [revealedCredentials, setRevealedCredentials] = useState<Set<string>>(new Set());
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
@@ -1029,7 +1025,21 @@ export default function DatabaseManagementModal({
         )}
 
         {/* Footer */}
-        <div className="flex items-center justify-end border-t border-gray-200 dark:border-gray-700 pt-4 mt-6">
+        <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 pt-4 mt-6">
+          {isDatabase && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                navigate(`/database-manager?deploymentId=${deployment.id}`);
+              }}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              data-testid="open-sql-manager-button"
+            >
+              <Terminal size={14} />
+              Open SQL Manager
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}

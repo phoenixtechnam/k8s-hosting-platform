@@ -3,10 +3,13 @@
  *
  * Executes SQL commands inside running database pods (MariaDB, MySQL, PostgreSQL)
  * to manage databases and users on deployed instances.
+ *
+ * Also provides generic query execution, table browsing, structure inspection,
+ * and import/export for database manager UI.
  */
 
 import { Exec, KubeConfig } from '@kubernetes/client-node';
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -90,6 +93,68 @@ async function execInPod(
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
+async function execInPodWithStdin(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  podName: string,
+  containerName: string,
+  command: string[],
+  stdinData: string,
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  const kc = loadKubeConfig(kubeconfigPath);
+  const exec = new Exec(kc);
+
+  let stdout = '';
+  let stderr = '';
+
+  const stdoutStream = new Writable({
+    write(chunk: Buffer, _enc: string, cb: () => void) {
+      stdout += chunk.toString();
+      cb();
+    },
+  });
+  const stderrStream = new Writable({
+    write(chunk: Buffer, _enc: string, cb: () => void) {
+      stderr += chunk.toString();
+      cb();
+    },
+  });
+
+  const stdinStream = new Readable({
+    read() {
+      this.push(Buffer.from(stdinData));
+      this.push(null);
+    },
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    exec
+      .exec(
+        namespace,
+        podName,
+        containerName,
+        command,
+        stdoutStream,
+        stderrStream,
+        stdinStream,
+        false,
+        (status) => {
+          const s = status as Record<string, unknown>;
+          if (!s || s.status === 'Success' || s.status === undefined) {
+            resolve();
+          } else {
+            const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
+            console.error(`[db-manager] Exec with stdin failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
+            reject(new Error(msg));
+          }
+        },
+      )
+      .catch(reject);
+  });
+
+  return { stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
 // ─── Find Pod ─────────────────────────────────────────────────────────────────
 
 async function findPodName(
@@ -139,6 +204,38 @@ export interface DbManagerContext {
   readonly engine: Engine;
   readonly rootPassword: string;
 }
+
+// ─── Query Execution Types ──────────────────────────────────────────────────
+
+export interface QueryResult {
+  readonly columns: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+  readonly rowCount: number;
+  readonly executionTimeMs: number;
+  readonly error?: string;
+}
+
+export interface ColumnInfo {
+  readonly name: string;
+  readonly type: string;
+  readonly nullable: boolean;
+  readonly defaultValue: string | null;
+  readonly key: string; // PRI, UNI, MUL, or empty
+}
+
+export interface ImportResult {
+  readonly success: boolean;
+  readonly error?: string;
+}
+
+/** Max query length in bytes (1 MB). */
+const MAX_QUERY_LENGTH = 1_048_576;
+
+/** Max SQL import payload in bytes (5 MB for inline; larger imports should use file upload). */
+const MAX_IMPORT_LENGTH = 5_242_880;
+
+/** Query execution timeout in seconds. */
+const QUERY_TIMEOUT_SECONDS = 30;
 
 // ─── Engine Detection ─────────────────────────────────────────────────────────
 
@@ -293,6 +390,51 @@ async function mysqlSetPassword(
   await mysqlExec(kp, ns, pod, cn, pw, 'FLUSH PRIVILEGES');
 }
 
+// ─── MariaDB/MySQL Query Execution ──────────────────────────────────────────
+
+/**
+ * Execute a query with --batch (tab-separated, with header row) for result parsing.
+ * Unlike mysqlExec which uses --skip-column-names, this preserves column headers.
+ */
+async function mysqlExecWithHeaders(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  podName: string,
+  containerName: string,
+  rootPassword: string,
+  sql: string,
+): Promise<string> {
+  let result: { stdout: string; stderr: string };
+  try {
+    result = await execInPod(
+      kubeconfigPath, namespace, podName, containerName,
+      ['mariadb', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
+    );
+  } catch {
+    result = await execInPod(
+      kubeconfigPath, namespace, podName, containerName,
+      ['mysql', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
+    );
+  }
+  const { stdout, stderr } = result;
+  if (stderr && stderr.includes('ERROR')) {
+    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+  }
+  return stdout;
+}
+
+/**
+ * Parse MySQL --batch output (tab-separated with header row) into columns and rows.
+ */
+function parseMysqlBatchOutput(output: string): { columns: string[]; rows: string[][] } {
+  const lines = output.split('\n').filter(Boolean);
+  if (lines.length === 0) return { columns: [], rows: [] };
+
+  const columns = lines[0].split('\t');
+  const rows = lines.slice(1).map((line) => line.split('\t'));
+  return { columns, rows };
+}
+
 // ─── PostgreSQL ───────────────────────────────────────────────────────────────
 
 async function pgExec(
@@ -430,6 +572,96 @@ async function pgSetPassword(
   await pgExec(kp, ns, pod, cn, `ALTER USER "${username}" WITH PASSWORD '${newPassword}'`);
 }
 
+// ─── PostgreSQL Query Execution ─────────────────────────────────────────────
+
+/**
+ * Execute a PostgreSQL query with --csv output for result parsing.
+ */
+async function pgExecCsv(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  podName: string,
+  containerName: string,
+  database: string,
+  sql: string,
+): Promise<string> {
+  const { stdout, stderr } = await execInPod(
+    kubeconfigPath,
+    namespace,
+    podName,
+    containerName,
+    ['psql', '-U', 'postgres', '-d', database, '-c', sql, '--csv'],
+  );
+  if (stderr && stderr.includes('ERROR')) {
+    throw new ApiError('DB_EXEC_ERROR', stderr, 500);
+  }
+  return stdout;
+}
+
+/**
+ * Parse PostgreSQL --csv output (CSV with header row) into columns and rows.
+ * Handles quoted fields containing commas and newlines.
+ */
+function parsePgCsvOutput(output: string): { columns: string[]; rows: string[][] } {
+  const rows = parseCsvLines(output);
+  if (rows.length === 0) return { columns: [], rows: [] };
+  return { columns: rows[0], rows: rows.slice(1) };
+}
+
+/**
+ * Minimal CSV parser that handles quoted fields.
+ */
+function parseCsvLines(input: string): string[][] {
+  const result: string[][] = [];
+  let current: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        // Check for escaped quote ""
+        if (i + 1 < input.length && input[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      current.push(field);
+      field = '';
+    } else if (ch === '\n') {
+      current.push(field);
+      field = '';
+      if (current.some((f) => f !== '')) {
+        result.push(current);
+      }
+      current = [];
+    } else if (ch === '\r') {
+      // skip carriage return
+    } else {
+      field += ch;
+    }
+  }
+
+  // Handle last field/line
+  if (field || current.length > 0) {
+    current.push(field);
+    if (current.some((f) => f !== '')) {
+      result.push(current);
+    }
+  }
+
+  return result;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function buildDbContext(
@@ -559,4 +791,442 @@ export async function setUserPassword(
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} password change not supported`, 400);
+}
+
+// ─── Query Execution ────────────────────────────────────────────────────────
+
+function validateQueryLength(query: string): void {
+  if (Buffer.byteLength(query, 'utf-8') > MAX_QUERY_LENGTH) {
+    throw new ApiError(
+      'QUERY_TOO_LARGE',
+      `Query exceeds maximum length of ${MAX_QUERY_LENGTH} bytes`,
+      400,
+      { maxBytes: MAX_QUERY_LENGTH },
+    );
+  }
+}
+
+function validateDatabaseName(database: string): void {
+  // Relaxed validation: allow hyphens in database names since some tools create them.
+  // This is less strict than validateIdentifier which is for CREATE operations.
+  if (!/^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/.test(database)) {
+    throw new ApiError(
+      'INVALID_DATABASE_NAME',
+      'Invalid database name',
+      400,
+      { database },
+    );
+  }
+}
+
+function validateTableName(table: string): void {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(table)) {
+    throw new ApiError(
+      'INVALID_TABLE_NAME',
+      'Invalid table name: must start with a letter or underscore, contain only alphanumerics/underscores, and be 1-64 characters',
+      400,
+      { table },
+    );
+  }
+}
+
+/**
+ * Execute an arbitrary SQL query against a database and return structured results.
+ */
+export async function executeQuery(
+  ctx: DbManagerContext,
+  database: string,
+  query: string,
+): Promise<QueryResult> {
+  validateDatabaseName(database);
+  validateQueryLength(query);
+
+  const start = Date.now();
+
+  try {
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlExecuteQuery(ctx, database, query, start);
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgExecuteQuery(ctx, database, query, start);
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} query execution not supported`, 400);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    const elapsed = Date.now() - start;
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      columns: [],
+      rows: [],
+      rowCount: 0,
+      executionTimeMs: elapsed,
+      error: message,
+    };
+  }
+}
+
+async function mysqlExecuteQuery(
+  ctx: DbManagerContext,
+  database: string,
+  query: string,
+  startTime: number,
+): Promise<QueryResult> {
+  const sql = `USE \`${database}\`; ${query}`;
+  const output = await mysqlExecWithHeaders(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword, sql,
+  );
+  const elapsed = Date.now() - startTime;
+  const { columns, rows } = parseMysqlBatchOutput(output);
+
+  return {
+    columns,
+    rows,
+    rowCount: rows.length,
+    executionTimeMs: elapsed,
+  };
+}
+
+async function pgExecuteQuery(
+  ctx: DbManagerContext,
+  database: string,
+  query: string,
+  startTime: number,
+): Promise<QueryResult> {
+  const output = await pgExecCsv(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    database, query,
+  );
+  const elapsed = Date.now() - startTime;
+  const { columns, rows } = parsePgCsvOutput(output);
+
+  return {
+    columns,
+    rows,
+    rowCount: rows.length,
+    executionTimeMs: elapsed,
+  };
+}
+
+// ─── Table Listing ──────────────────────────────────────────────────────────
+
+/**
+ * List all tables (or collections) in a given database.
+ */
+export async function listTables(
+  ctx: DbManagerContext,
+  database: string,
+): Promise<readonly string[]> {
+  validateDatabaseName(database);
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    const out = await mysqlExec(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, `SHOW TABLES FROM \`${database}\``,
+    );
+    return out.split('\n').filter(Boolean);
+  }
+
+  if (ctx.engine === 'postgresql') {
+    const csvOut = await pgExecCsv(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      database, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+    );
+    const { rows } = parsePgCsvOutput(csvOut);
+    return rows.map((r) => r[0]).filter(Boolean);
+  }
+
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table listing not supported`, 400);
+}
+
+// ─── Table Structure ────────────────────────────────────────────────────────
+
+/**
+ * Describe the structure (columns) of a table.
+ */
+export async function describeTable(
+  ctx: DbManagerContext,
+  database: string,
+  table: string,
+): Promise<readonly ColumnInfo[]> {
+  validateDatabaseName(database);
+  validateTableName(table);
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    return mysqlDescribeTable(ctx, database, table);
+  }
+  if (ctx.engine === 'postgresql') {
+    return pgDescribeTable(ctx, database, table);
+  }
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table description not supported`, 400);
+}
+
+async function mysqlDescribeTable(
+  ctx: DbManagerContext,
+  database: string,
+  table: string,
+): Promise<readonly ColumnInfo[]> {
+  const output = await mysqlExecWithHeaders(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ctx.rootPassword, `DESCRIBE \`${database}\`.\`${table}\``,
+  );
+  const { rows } = parseMysqlBatchOutput(output);
+
+  // DESCRIBE output columns: Field, Type, Null, Key, Default, Extra
+  return rows.map((row) => ({
+    name: row[0] ?? '',
+    type: row[1] ?? '',
+    nullable: (row[2] ?? 'NO') === 'YES',
+    defaultValue: row[4] === 'NULL' || row[4] === undefined ? null : row[4],
+    key: row[3] ?? '',
+  }));
+}
+
+async function pgDescribeTable(
+  ctx: DbManagerContext,
+  database: string,
+  table: string,
+): Promise<readonly ColumnInfo[]> {
+  const sql = `SELECT
+    c.column_name,
+    c.data_type,
+    c.is_nullable,
+    c.column_default,
+    COALESCE(tc.constraint_type, '') AS key_type
+  FROM information_schema.columns c
+  LEFT JOIN information_schema.key_column_usage kcu
+    ON c.table_name = kcu.table_name AND c.column_name = kcu.column_name AND c.table_schema = kcu.table_schema
+  LEFT JOIN information_schema.table_constraints tc
+    ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+  WHERE c.table_name = '${table}' AND c.table_schema = 'public'
+  ORDER BY c.ordinal_position`;
+
+  const output = await pgExecCsv(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    database, sql,
+  );
+  const { rows } = parsePgCsvOutput(output);
+
+  // Map PostgreSQL constraint types to MySQL-style key indicators
+  const keyMap: Record<string, string> = {
+    'PRIMARY KEY': 'PRI',
+    'UNIQUE': 'UNI',
+    'FOREIGN KEY': 'MUL',
+  };
+
+  return rows.map((row) => ({
+    name: row[0] ?? '',
+    type: row[1] ?? '',
+    nullable: (row[2] ?? 'NO') === 'YES',
+    defaultValue: row[3] || null,
+    key: keyMap[row[4] ?? ''] ?? '',
+  }));
+}
+
+// ─── Table Data Browsing ────────────────────────────────────────────────────
+
+export interface BrowseOptions {
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly orderBy?: string;
+  readonly orderDir?: 'asc' | 'desc';
+}
+
+/**
+ * Browse table data with pagination and ordering.
+ */
+export async function browseTable(
+  ctx: DbManagerContext,
+  database: string,
+  table: string,
+  options: BrowseOptions = {},
+): Promise<QueryResult> {
+  validateDatabaseName(database);
+  validateTableName(table);
+
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const orderDir = options.orderDir === 'desc' ? 'DESC' : 'ASC';
+
+  // Build ORDER BY clause if specified
+  let orderClause = '';
+  if (options.orderBy) {
+    validateTableName(options.orderBy); // reuse for column name validation
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      orderClause = ` ORDER BY \`${options.orderBy}\` ${orderDir}`;
+    } else {
+      orderClause = ` ORDER BY "${options.orderBy}" ${orderDir}`;
+    }
+  }
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    return executeQuery(ctx, database, `SELECT * FROM \`${table}\`${orderClause} LIMIT ${limit} OFFSET ${offset}`);
+  }
+
+  if (ctx.engine === 'postgresql') {
+    return executeQuery(ctx, database, `SELECT * FROM "${table}"${orderClause} LIMIT ${limit} OFFSET ${offset}`);
+  }
+
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table browsing not supported`, 400);
+}
+
+// ─── Row Count ──────────────────────────────────────────────────────────────
+
+/**
+ * Get the row count of a table.
+ */
+export async function countRows(
+  ctx: DbManagerContext,
+  database: string,
+  table: string,
+): Promise<number> {
+  validateDatabaseName(database);
+  validateTableName(table);
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    const out = await mysqlExec(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, `SELECT COUNT(*) FROM \`${database}\`.\`${table}\``,
+    );
+    return parseInt(out.trim(), 10) || 0;
+  }
+
+  if (ctx.engine === 'postgresql') {
+    const out = await pgExecCsv(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      database, `SELECT COUNT(*) FROM "${table}"`,
+    );
+    const { rows } = parsePgCsvOutput(out);
+    return parseInt(rows[0]?.[0] ?? '0', 10) || 0;
+  }
+
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} row counting not supported`, 400);
+}
+
+// ─── Export Database ────────────────────────────────────────────────────────
+
+/**
+ * Export a database as a SQL dump string.
+ */
+export async function exportDatabase(
+  ctx: DbManagerContext,
+  database: string,
+): Promise<string> {
+  validateDatabaseName(database);
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    return mysqlExportDatabase(ctx, database);
+  }
+  if (ctx.engine === 'postgresql') {
+    return pgExportDatabase(ctx, database);
+  }
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database export not supported`, 400);
+}
+
+async function mysqlExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
+  // Try mariadb-dump first, fall back to mysqldump
+  let result: { stdout: string; stderr: string };
+  try {
+    result = await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mariadb-dump', '-u', 'root', `-p${ctx.rootPassword}`, database],
+    );
+  } catch {
+    result = await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mysqldump', '-u', 'root', `-p${ctx.rootPassword}`, database],
+    );
+  }
+  if (result.stderr && result.stderr.includes('ERROR')) {
+    throw new ApiError('DB_EXPORT_ERROR', result.stderr, 500);
+  }
+  return result.stdout;
+}
+
+async function pgExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
+  const { stdout, stderr } = await execInPod(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ['pg_dump', '-U', 'postgres', database],
+  );
+  if (stderr && stderr.includes('ERROR')) {
+    throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+  }
+  return stdout;
+}
+
+// ─── Import SQL ─────────────────────────────────────────────────────────────
+
+/**
+ * Import SQL into a database by piping it through stdin to the CLI tool.
+ */
+export async function importSql(
+  ctx: DbManagerContext,
+  database: string,
+  sql: string,
+): Promise<ImportResult> {
+  validateDatabaseName(database);
+
+  if (Buffer.byteLength(sql, 'utf-8') > MAX_IMPORT_LENGTH) {
+    throw new ApiError(
+      'IMPORT_TOO_LARGE',
+      `SQL import exceeds maximum size of ${MAX_IMPORT_LENGTH} bytes. Use file upload for larger imports.`,
+      400,
+      { maxBytes: MAX_IMPORT_LENGTH },
+    );
+  }
+
+  try {
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+      return await mysqlImportSql(ctx, database, sql);
+    }
+    if (ctx.engine === 'postgresql') {
+      return await pgImportSql(ctx, database, sql);
+    }
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+async function mysqlImportSql(
+  ctx: DbManagerContext,
+  database: string,
+  sql: string,
+): Promise<ImportResult> {
+  let result: { stdout: string; stderr: string };
+  try {
+    result = await execInPodWithStdin(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mariadb', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      sql,
+    );
+  } catch {
+    result = await execInPodWithStdin(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['mysql', '-u', 'root', `-p${ctx.rootPassword}`, database],
+      sql,
+    );
+  }
+  if (result.stderr && result.stderr.includes('ERROR')) {
+    return { success: false, error: result.stderr };
+  }
+  return { success: true };
+}
+
+async function pgImportSql(
+  ctx: DbManagerContext,
+  database: string,
+  sql: string,
+): Promise<ImportResult> {
+  const { stderr } = await execInPodWithStdin(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ['psql', '-U', 'postgres', '-d', database],
+    sql,
+  );
+  if (stderr && stderr.includes('ERROR')) {
+    return { success: false, error: stderr };
+  }
+  return { success: true };
 }

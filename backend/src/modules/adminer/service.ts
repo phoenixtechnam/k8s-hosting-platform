@@ -142,8 +142,141 @@ interface ProxyResult {
   readonly headers: Record<string, string>;
 }
 
+// ─── Port-forward based proxy (maintains persistent connections) ───────────
+
+import * as net from 'node:net';
+import * as http from 'node:http';
+import { PortForward } from '@kubernetes/client-node';
+
+const portForwardCache = new Map<string, { localPort: number; server: net.Server; expiresAt: number }>();
+
+/**
+ * Get or create a port-forward to the Adminer pod's port 8080.
+ * Returns a localhost port that tunnels to the pod.
+ */
+export async function getPortForwardPort(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+): Promise<number> {
+  const cacheKey = namespace;
+  const cached = portForwardCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.localPort;
+  }
+
+  // Clean up old forward
+  if (cached) {
+    cached.server.close();
+    portForwardCache.delete(cacheKey);
+  }
+
+  const kc = loadKubeConfig(kubeconfigPath);
+  const forward = new PortForward(kc);
+
+  // Find the Adminer pod name
+  const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+  const pods = await k8sApi.listNamespacedPod({ namespace, labelSelector: 'app=adminer' });
+  const podList = (pods as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> }).items ?? [];
+  const runningPod = podList.find(p => p.status?.phase === 'Running');
+  if (!runningPod?.metadata?.name) {
+    throw new Error('No running Adminer pod found');
+  }
+  const podName = runningPod.metadata.name;
+
+  // Create a local TCP server that forwards to the pod
+  return new Promise((resolve, reject) => {
+    const server = net.createServer((socket) => {
+      forward.portForward(namespace, podName, [ADMINER_PORT], socket, null, socket, 3)
+        .catch(() => socket.destroy());
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as net.AddressInfo;
+      const localPort = addr.port;
+      portForwardCache.set(cacheKey, {
+        localPort,
+        server,
+        expiresAt: Date.now() + 30 * 60 * 1000, // 30 min
+      });
+      resolve(localPort);
+    });
+
+    server.on('error', reject);
+  });
+}
+
+/**
+ * Proxy a request directly to the Adminer pod via port-forward.
+ * This maintains PHP session state because it's a persistent TCP connection.
+ */
+export async function proxyToAdminerDirect(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  adminerPath: string,
+  options: {
+    method?: string;
+    body?: string | Buffer;
+    contentType?: string;
+    query?: Record<string, string>;
+    cookies?: string;
+  } = {},
+): Promise<ProxyResult> {
+  const localPort = await getPortForwardPort(kubeconfigPath, namespace);
+
+  const queryStr = options.query
+    ? '?' + new URLSearchParams(options.query).toString()
+    : '';
+  const fullPath = `${adminerPath}${queryStr}`;
+
+  const headers: Record<string, string> = {};
+  if (options.contentType) headers['Content-Type'] = options.contentType;
+  if (options.cookies) headers['Cookie'] = options.cookies;
+  if (options.body) {
+    headers['Content-Length'] = String(Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body));
+  }
+
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: localPort,
+      path: fullPath,
+      method: options.method ?? 'GET',
+      headers,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const bodyBuffer = Buffer.concat(chunks);
+        const responseHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (typeof v === 'string') {
+            responseHeaders[k] = v;
+          } else if (Array.isArray(v)) {
+            responseHeaders[k] = v.join('\n');
+          }
+        }
+        resolve({
+          status: res.statusCode ?? 500,
+          body: bodyBuffer.toString('utf-8'),
+          bodyBuffer,
+          headers: responseHeaders,
+        });
+      });
+    });
+
+    req.on('error', reject);
+
+    if (options.body) {
+      req.write(Buffer.isBuffer(options.body) ? options.body : Buffer.from(options.body));
+    }
+    req.end();
+  });
+}
+
 /**
  * Proxy a request to the Adminer pod via K8s API server service proxy.
+ * NOTE: This does NOT maintain PHP sessions. Use proxyToAdminerDirect instead.
+ * @deprecated Use proxyToAdminerDirect
  */
 export async function proxyToAdminer(
   kubeconfigPath: string | undefined,
@@ -202,7 +335,13 @@ export async function proxyToAdminer(
         const bodyBuffer = Buffer.concat(chunks);
         const responseHeaders: Record<string, string> = {};
         for (const [k, v] of Object.entries(res.headers)) {
-          if (typeof v === 'string') responseHeaders[k] = v;
+          if (typeof v === 'string') {
+            responseHeaders[k] = v;
+          } else if (Array.isArray(v)) {
+            // set-cookie: join with \n so the caller can split them
+            // (HTTP Set-Cookie headers must be separate, not comma-joined)
+            responseHeaders[k] = v.join('\n');
+          }
         }
         resolve({
           status: res.statusCode ?? 500,

@@ -23,6 +23,13 @@ import {
   createUser,
   dropUser,
   setUserPassword,
+  executeQuery,
+  listTables,
+  describeTable,
+  browseTable,
+  countRows,
+  exportDatabase,
+  importSql,
 } from './db-manager.js';
 
 function createMockK8s(pods: Array<{ name: string; phase: string }>): K8sClients {
@@ -516,6 +523,515 @@ describe('db-manager', () => {
       };
 
       await expect(listDatabases(ctx)).rejects.toThrow();
+    });
+  });
+
+  // ─── Query Execution Tests ──────────────────────────────────────────────
+
+  describe('executeQuery', () => {
+    const mariaCtx = {
+      kubeconfigPath: '/tmp/kc',
+      namespace: 'ns',
+      podName: 'pod',
+      containerName: 'mariadb',
+      engine: 'mariadb' as const,
+      rootPassword: 'pw',
+    };
+
+    const pgCtx = {
+      kubeconfigPath: undefined,
+      namespace: 'ns',
+      podName: 'pod',
+      containerName: 'postgresql',
+      engine: 'postgresql' as const,
+      rootPassword: '',
+    };
+
+    it('should parse mysql --batch output into columns and rows', async () => {
+      // --batch output: header row + tab-separated data (with column names)
+      setupExecSuccess('id\tname\temail\n1\tAlice\talice@example.com\n2\tBob\tbob@example.com');
+
+      const result = await executeQuery(mariaCtx, 'mydb', 'SELECT * FROM users');
+
+      expect(result.columns).toEqual(['id', 'name', 'email']);
+      expect(result.rows).toEqual([
+        ['1', 'Alice', 'alice@example.com'],
+        ['2', 'Bob', 'bob@example.com'],
+      ]);
+      expect(result.rowCount).toBe(2);
+      expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should parse postgresql --csv output into columns and rows', async () => {
+      setupExecSuccess('id,name,email\n1,Alice,alice@example.com\n2,Bob,bob@example.com');
+
+      const result = await executeQuery(pgCtx, 'mydb', 'SELECT * FROM users');
+
+      expect(result.columns).toEqual(['id', 'name', 'email']);
+      expect(result.rows).toEqual([
+        ['1', 'Alice', 'alice@example.com'],
+        ['2', 'Bob', 'bob@example.com'],
+      ]);
+      expect(result.rowCount).toBe(2);
+    });
+
+    it('should handle csv output with quoted fields containing commas', async () => {
+      setupExecSuccess('id,name,bio\n1,"Smith, John","A man, a plan"');
+
+      const result = await executeQuery(pgCtx, 'mydb', 'SELECT * FROM users');
+
+      expect(result.columns).toEqual(['id', 'name', 'bio']);
+      expect(result.rows).toEqual([
+        ['1', 'Smith, John', 'A man, a plan'],
+      ]);
+    });
+
+    it('should handle csv output with escaped quotes', async () => {
+      setupExecSuccess('id,value\n1,"He said ""hello"""');
+
+      const result = await executeQuery(pgCtx, 'mydb', 'SELECT * FROM data');
+
+      expect(result.columns).toEqual(['id', 'value']);
+      expect(result.rows).toEqual([
+        ['1', 'He said "hello"'],
+      ]);
+    });
+
+    it('should return empty result for empty output', async () => {
+      setupExecSuccess('');
+
+      const result = await executeQuery(mariaCtx, 'mydb', 'DELETE FROM users WHERE 1=0');
+
+      expect(result.columns).toEqual([]);
+      expect(result.rows).toEqual([]);
+      expect(result.rowCount).toBe(0);
+    });
+
+    it('should return error result when exec fails non-fatally', async () => {
+      // Simulate a failure that returns an error in the result
+      setupExecFailure('ERROR 1146 (42S02): Table does not exist');
+
+      const result = await executeQuery(mariaCtx, 'mydb', 'SELECT * FROM nonexistent');
+
+      // The error is captured in the result
+      expect(result.error).toBeDefined();
+      expect(result.rowCount).toBe(0);
+    });
+
+    it('should reject queries exceeding max length', async () => {
+      const longQuery = 'SELECT ' + 'x'.repeat(1_048_576);
+
+      await expect(
+        executeQuery(mariaCtx, 'mydb', longQuery),
+      ).rejects.toThrow('exceeds maximum length');
+    });
+
+    it('should reject invalid database names', async () => {
+      await expect(
+        executeQuery(mariaCtx, '../../etc', 'SELECT 1'),
+      ).rejects.toThrow('Invalid database name');
+    });
+  });
+
+  // ─── Table Listing Tests ────────────────────────────────────────────────
+
+  describe('listTables', () => {
+    it('should list mysql tables from a database', async () => {
+      setupExecSuccess('users\nposts\ncomments');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const tables = await listTables(ctx, 'mydb');
+      expect(tables).toEqual(['users', 'posts', 'comments']);
+    });
+
+    it('should list postgresql tables from a database', async () => {
+      setupExecSuccess('tablename\nusers\nposts\ncomments');
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const tables = await listTables(ctx, 'mydb');
+      expect(tables).toEqual(['users', 'posts', 'comments']);
+    });
+
+    it('should return empty array when no tables exist', async () => {
+      setupExecSuccess('');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const tables = await listTables(ctx, 'empty_db');
+      expect(tables).toEqual([]);
+    });
+
+    it('should reject invalid database names', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(listTables(ctx, '../etc')).rejects.toThrow('Invalid database name');
+    });
+  });
+
+  // ─── Table Structure Tests ──────────────────────────────────────────────
+
+  describe('describeTable', () => {
+    it('should describe mysql table structure', async () => {
+      // DESCRIBE output: Field, Type, Null, Key, Default, Extra
+      setupExecSuccess(
+        'Field\tType\tNull\tKey\tDefault\tExtra\n' +
+        'id\tint(11)\tNO\tPRI\tNULL\tauto_increment\n' +
+        'name\tvarchar(255)\tYES\t\tNULL\t\n' +
+        'email\tvarchar(255)\tNO\tUNI\tNULL\t',
+      );
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const columns = await describeTable(ctx, 'mydb', 'users');
+
+      expect(columns).toEqual([
+        { name: 'id', type: 'int(11)', nullable: false, defaultValue: null, key: 'PRI' },
+        { name: 'name', type: 'varchar(255)', nullable: true, defaultValue: null, key: '' },
+        { name: 'email', type: 'varchar(255)', nullable: false, defaultValue: null, key: 'UNI' },
+      ]);
+    });
+
+    it('should describe postgresql table structure', async () => {
+      setupExecSuccess(
+        'column_name,data_type,is_nullable,column_default,key_type\n' +
+        'id,integer,NO,,PRIMARY KEY\n' +
+        'name,character varying,YES,,\n' +
+        'email,character varying,NO,,UNIQUE',
+      );
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const columns = await describeTable(ctx, 'mydb', 'users');
+
+      expect(columns).toEqual([
+        { name: 'id', type: 'integer', nullable: false, defaultValue: null, key: 'PRI' },
+        { name: 'name', type: 'character varying', nullable: true, defaultValue: null, key: '' },
+        { name: 'email', type: 'character varying', nullable: false, defaultValue: null, key: 'UNI' },
+      ]);
+    });
+
+    it('should reject invalid table names', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(describeTable(ctx, 'mydb', 'bad-table')).rejects.toThrow('Invalid table name');
+      await expect(describeTable(ctx, 'mydb', '123table')).rejects.toThrow('Invalid table name');
+    });
+  });
+
+  // ─── Table Data Browsing Tests ──────────────────────────────────────────
+
+  describe('browseTable', () => {
+    it('should browse mysql table with default options', async () => {
+      setupExecSuccess('id\tname\n1\tAlice\n2\tBob');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const result = await browseTable(ctx, 'mydb', 'users');
+
+      expect(result.columns).toEqual(['id', 'name']);
+      expect(result.rows).toEqual([['1', 'Alice'], ['2', 'Bob']]);
+      expect(result.rowCount).toBe(2);
+    });
+
+    it('should browse postgresql table with ordering', async () => {
+      setupExecSuccess('id,name\n2,Bob\n1,Alice');
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const result = await browseTable(ctx, 'mydb', 'users', {
+        orderBy: 'id',
+        orderDir: 'desc',
+        limit: 10,
+        offset: 0,
+      });
+
+      expect(result.columns).toEqual(['id', 'name']);
+      expect(result.rowCount).toBe(2);
+    });
+
+    it('should clamp limit to max 1000', async () => {
+      setupExecSuccess('id\n1');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await browseTable(ctx, 'mydb', 'users', { limit: 9999 });
+
+      // The SQL in the exec call should use 1000 as the limit
+      const execCall = mockExecFn.mock.calls[0];
+      const sqlArg = execCall[3].find((arg: string) => arg.includes('LIMIT'));
+      expect(sqlArg).toContain('LIMIT 1000');
+    });
+  });
+
+  // ─── Row Count Tests ────────────────────────────────────────────────────
+
+  describe('countRows', () => {
+    it('should count rows in a mysql table', async () => {
+      setupExecSuccess('42');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const count = await countRows(ctx, 'mydb', 'users');
+      expect(count).toBe(42);
+    });
+
+    it('should count rows in a postgresql table', async () => {
+      setupExecSuccess('count\n99');
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const count = await countRows(ctx, 'mydb', 'users');
+      expect(count).toBe(99);
+    });
+
+    it('should return 0 for empty table', async () => {
+      setupExecSuccess('0');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const count = await countRows(ctx, 'mydb', 'empty_table');
+      expect(count).toBe(0);
+    });
+
+    it('should reject invalid table names', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(countRows(ctx, 'mydb', 'bad-table')).rejects.toThrow('Invalid table name');
+    });
+  });
+
+  // ─── Export Database Tests ──────────────────────────────────────────────
+
+  describe('exportDatabase', () => {
+    it('should export a mysql database dump', async () => {
+      const dumpContent = '-- MariaDB dump\nCREATE TABLE users (id INT);\nINSERT INTO users VALUES (1);';
+      setupExecSuccess(dumpContent);
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const dump = await exportDatabase(ctx, 'mydb');
+      expect(dump).toContain('CREATE TABLE');
+      expect(dump).toContain('INSERT INTO');
+    });
+
+    it('should export a postgresql database dump', async () => {
+      const dumpContent = '-- PostgreSQL database dump\nCREATE TABLE users (id integer);';
+      setupExecSuccess(dumpContent);
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const dump = await exportDatabase(ctx, 'mydb');
+      expect(dump).toContain('CREATE TABLE');
+    });
+
+    it('should reject invalid database names for export', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(exportDatabase(ctx, '../etc')).rejects.toThrow('Invalid database name');
+    });
+  });
+
+  // ─── Import SQL Tests ──────────────────────────────────────────────────
+
+  describe('importSql', () => {
+    it('should import sql into a mysql database', async () => {
+      setupExecSuccess('');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const result = await importSql(ctx, 'mydb', 'CREATE TABLE test (id INT);');
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should import sql into a postgresql database', async () => {
+      setupExecSuccess('');
+
+      const ctx = {
+        kubeconfigPath: undefined,
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'postgresql',
+        engine: 'postgresql' as const,
+        rootPassword: '',
+      };
+
+      const result = await importSql(ctx, 'mydb', 'CREATE TABLE test (id integer);');
+      expect(result.success).toBe(true);
+    });
+
+    it('should return error when import has SQL errors for mysql', async () => {
+      setupExecSuccess('', 'ERROR 1064 (42000): You have an error in your SQL syntax');
+
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const result = await importSql(ctx, 'mydb', 'INVALID SQL');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ERROR');
+    });
+
+    it('should reject imports exceeding max size', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      const largeSql = 'INSERT INTO test VALUES ' + '(1),'.repeat(2_000_000);
+
+      await expect(importSql(ctx, 'mydb', largeSql)).rejects.toThrow('exceeds maximum size');
+    });
+
+    it('should reject invalid database names for import', async () => {
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(importSql(ctx, '../etc', 'SELECT 1')).rejects.toThrow('Invalid database name');
     });
   });
 });

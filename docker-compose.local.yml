@@ -37,7 +37,6 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "${PORT_API:-2012}:3000"
-      - "${PORT_ADMINER:-2017}:8081"
     environment:
       NODE_ENV: production
       PORT: "3000"
@@ -57,7 +56,6 @@ services:
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
       DISABLE_RATE_LIMIT: "true"
       ADMINER_PROXY_PORT: "8081"
-      ADMINER_PROXY_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMINER:-2017}"
     depends_on:
       mariadb:
         condition: service_healthy
@@ -97,6 +95,9 @@ services:
         VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     ports:
       - "${PORT_CLIENT:-2011}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
       interval: 15s

@@ -176,14 +176,12 @@ export async function adminerRoutes(app: FastifyInstance): Promise<void> {
 
     const token = createLoginToken(clientId, server, body.username, password);
 
-    // The auto-login URL points to the dedicated Adminer proxy server,
-    // not the main backend API. The Adminer proxy runs on a separate port
-    // (ADMINER_PROXY_PORT, default 8081) so that Adminer's root-relative
-    // URLs work correctly without path-prefix rewriting.
-    const adminerProxyUrl = app.config.ADMINER_PROXY_URL;
-    const loginUrl = adminerProxyUrl
-      ? `${adminerProxyUrl}/auto-login?token=${token}&clientId=${clientId}`
-      : `/api/v1/clients/${clientId}/adminer/auto-login?token=${token}`;
+    // The auto-login URL is a relative path under /adminer/ on the client
+    // panel. The client panel's nginx proxies /adminer/* to the dedicated
+    // Adminer proxy server (port 8081) running inside the backend container.
+    // This means Adminer is accessed on the same origin as the client panel
+    // — no extra ports or CORS issues.
+    const loginUrl = `/adminer/auto-login?token=${token}&clientId=${clientId}`;
 
     return success({ loginUrl });
   });
