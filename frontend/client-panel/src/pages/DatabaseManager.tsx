@@ -29,6 +29,13 @@ import {
   useRowCount,
   useExportDatabase,
   useImportSql,
+  useSqliteQuery,
+  useSqliteTables,
+  useSqliteTableStructure,
+  useSqliteTableData,
+  useSqliteRowCount,
+  useSqliteExport,
+  useSqliteImport,
 } from '@/hooks/use-sql-manager';
 import type { QueryResult, ColumnInfo } from '@/hooks/use-sql-manager';
 
@@ -58,6 +65,10 @@ export default function DatabaseManager() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { clientId } = useClientContext();
+
+  // SQLite mode: detected from ?file= URL param
+  const sqliteFile = searchParams.get('file') ?? undefined;
+  const isSqlite = Boolean(sqliteFile);
 
   // State from URL
   const urlDeploymentId = searchParams.get('deploymentId') ?? '';
@@ -105,65 +116,112 @@ export default function DatabaseManager() {
 
   const selectedDeployment = databaseDeployments.find((d) => d.id === selectedDeploymentId);
   const selectedCatalogEntry = catalogEntries.find((e) => e.id === selectedDeployment?.catalogEntryId);
-  const engine = detectEngine(selectedCatalogEntry?.name);
+  const engine: DbEngine = isSqlite ? 'sql' : detectEngine(selectedCatalogEntry?.name);
 
-  // Databases for selected deployment
+  // Databases for selected deployment (deployment mode only)
   const { data: dbData, isLoading: dbLoading } = useDbDatabases(
-    clientId ?? undefined,
-    selectedDeploymentId || undefined,
+    isSqlite ? undefined : (clientId ?? undefined),
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
   );
   const databases = dbData?.data ?? [];
 
-  // Auto-select first database
+  // Auto-select first database (deployment mode only)
   useEffect(() => {
-    if (databases.length > 0 && !selectedDatabase) {
+    if (!isSqlite && databases.length > 0 && !selectedDatabase) {
       setSelectedDatabase(databases[0].name);
     }
-  }, [databases, selectedDatabase]);
+  }, [isSqlite, databases, selectedDatabase]);
 
-  // Tables
-  const { data: tablesData, isLoading: tablesLoading } = useListTables(
-    clientId,
-    selectedDeploymentId || undefined,
-    selectedDatabase || undefined,
+  // ─── Deployment-mode hooks ────────────────────────────────────────────────
+
+  const { data: deployTablesData, isLoading: deployTablesLoading } = useListTables(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+    isSqlite ? undefined : (selectedDatabase || undefined),
   );
-  const tables = tablesData?.data ?? [];
 
-  // Execute query mutation
-  const executeQuery = useExecuteQuery(clientId, selectedDeploymentId || undefined);
-
-  // Table structure
-  const { data: structureData, isLoading: structureLoading } = useTableStructure(
-    clientId,
-    selectedDeploymentId || undefined,
-    selectedDatabase || undefined,
-    structureTable || undefined,
+  const deployExecuteQuery = useExecuteQuery(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
   );
-  const columns: readonly ColumnInfo[] = structureData?.data ?? [];
 
-  // Table data for browse
-  const { data: browseData, isLoading: browseLoading } = useTableData(
-    clientId,
-    selectedDeploymentId || undefined,
-    selectedDatabase || undefined,
-    browseTable || undefined,
+  const { data: deployStructureData, isLoading: deployStructureLoading } = useTableStructure(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+    isSqlite ? undefined : (selectedDatabase || undefined),
+    isSqlite ? undefined : (structureTable || undefined),
+  );
+
+  const { data: deployBrowseData, isLoading: deployBrowseLoading } = useTableData(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+    isSqlite ? undefined : (selectedDatabase || undefined),
+    isSqlite ? undefined : (browseTable || undefined),
     { page: browsePage, pageSize: PAGE_SIZE, orderBy: browseSortCol, orderDir: browseSortDir },
   );
-  const browseResult = browseData?.data ?? null;
 
-  // Row count for browse
-  const { data: rowCountData } = useRowCount(
-    clientId,
-    selectedDeploymentId || undefined,
-    selectedDatabase || undefined,
-    browseTable || undefined,
+  const { data: deployRowCountData } = useRowCount(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+    isSqlite ? undefined : (selectedDatabase || undefined),
+    isSqlite ? undefined : (browseTable || undefined),
   );
-  const totalRows = rowCountData?.data?.count ?? 0;
+
+  const deployExportDb = useExportDatabase(isSqlite ? undefined : clientId);
+  const deployImportSql = useImportSql(isSqlite ? undefined : clientId);
+
+  // ─── SQLite-mode hooks ────────────────────────────────────────────────────
+
+  const { data: sqliteTablesData, isLoading: sqliteTablesLoading } = useSqliteTables(
+    isSqlite ? clientId : undefined,
+    sqliteFile,
+  );
+
+  const sqliteExecuteQuery = useSqliteQuery(isSqlite ? clientId : undefined);
+
+  const { data: sqliteStructureData, isLoading: sqliteStructureLoading } = useSqliteTableStructure(
+    isSqlite ? clientId : undefined,
+    sqliteFile,
+    isSqlite ? (structureTable || undefined) : undefined,
+  );
+
+  const { data: sqliteBrowseData, isLoading: sqliteBrowseLoading } = useSqliteTableData(
+    isSqlite ? clientId : undefined,
+    sqliteFile,
+    isSqlite ? (browseTable || undefined) : undefined,
+    { page: browsePage, pageSize: PAGE_SIZE, orderBy: browseSortCol, orderDir: browseSortDir },
+  );
+
+  const { data: sqliteRowCountData } = useSqliteRowCount(
+    isSqlite ? clientId : undefined,
+    sqliteFile,
+    isSqlite ? (browseTable || undefined) : undefined,
+  );
+
+  const sqliteExportDb = useSqliteExport(isSqlite ? clientId : undefined);
+  const sqliteImportSqlMutation = useSqliteImport(isSqlite ? clientId : undefined);
+
+  // ─── Unified data accessors ───────────────────────────────────────────────
+
+  const tables = isSqlite ? (sqliteTablesData?.data ?? []) : (deployTablesData?.data ?? []);
+  const tablesLoading = isSqlite ? sqliteTablesLoading : deployTablesLoading;
+
+  const columns: readonly ColumnInfo[] = isSqlite
+    ? (sqliteStructureData?.data ?? [])
+    : (deployStructureData?.data ?? []);
+  const structureLoading = isSqlite ? sqliteStructureLoading : deployStructureLoading;
+
+  const browseResult = isSqlite
+    ? (sqliteBrowseData?.data ?? null)
+    : (deployBrowseData?.data ?? null);
+  const browseLoading = isSqlite ? sqliteBrowseLoading : deployBrowseLoading;
+
+  const totalRows = isSqlite
+    ? (sqliteRowCountData?.data?.count ?? 0)
+    : (deployRowCountData?.data?.count ?? 0);
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
 
-  // Export / Import
-  const exportDb = useExportDatabase(clientId);
-  const importSql = useImportSql(clientId);
+  // Note: exportDb and importSqlMutation are not unified — handlers call the specific mutations directly.
 
   // Database management
   const createDbDatabase = useCreateDbDatabase(clientId ?? undefined);
@@ -287,18 +345,30 @@ export default function DatabaseManager() {
   );
 
   const handleRunQuery = useCallback(() => {
-    if (!sqlValue.trim() || !selectedDatabase) return;
+    if (!sqlValue.trim()) return;
+    if (!isSqlite && !selectedDatabase) return;
     setQueryError(null);
     setQueryResult(null);
     setResultsView('query');
-    executeQuery.mutate(
-      { database: selectedDatabase, query: sqlValue.trim() },
-      {
-        onSuccess: (res) => setQueryResult(res.data),
-        onError: (err) => setQueryError(err instanceof Error ? err.message : 'Query failed'),
-      },
-    );
-  }, [sqlValue, selectedDatabase, executeQuery]);
+
+    if (isSqlite && sqliteFile) {
+      sqliteExecuteQuery.mutate(
+        { filePath: sqliteFile, query: sqlValue.trim() },
+        {
+          onSuccess: (res) => setQueryResult(res.data),
+          onError: (err) => setQueryError(err instanceof Error ? err.message : 'Query failed'),
+        },
+      );
+    } else {
+      deployExecuteQuery.mutate(
+        { database: selectedDatabase, query: sqlValue.trim() },
+        {
+          onSuccess: (res) => setQueryResult(res.data),
+          onError: (err) => setQueryError(err instanceof Error ? err.message : 'Query failed'),
+        },
+      );
+    }
+  }, [sqlValue, selectedDatabase, isSqlite, sqliteFile, sqliteExecuteQuery, deployExecuteQuery]);
 
   const handleClear = useCallback(() => {
     setSqlValue('');
@@ -326,27 +396,35 @@ export default function DatabaseManager() {
   }, []);
 
   const handleExport = useCallback(() => {
-    if (!selectedDeploymentId || !selectedDatabase) return;
-    exportDb.mutate({ deploymentId: selectedDeploymentId, database: selectedDatabase });
-  }, [selectedDeploymentId, selectedDatabase, exportDb]);
+    if (isSqlite && sqliteFile) {
+      sqliteExportDb.mutate({ filePath: sqliteFile });
+    } else {
+      if (!selectedDeploymentId || !selectedDatabase) return;
+      deployExportDb.mutate({ deploymentId: selectedDeploymentId, database: selectedDatabase });
+    }
+  }, [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteExportDb, deployExportDb]);
 
   const handleImport = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file || !selectedDeploymentId || !selectedDatabase) return;
-      importSql.mutate(
-        { deploymentId: selectedDeploymentId, database: selectedDatabase, file },
-        {
-          onSuccess: () => {
-            if (fileInputRef.current) fileInputRef.current.value = '';
-          },
-          onError: () => {
-            if (fileInputRef.current) fileInputRef.current.value = '';
-          },
-        },
-      );
+      if (!file) return;
+
+      const clearInput = () => { if (fileInputRef.current) fileInputRef.current.value = ''; };
+
+      if (isSqlite && sqliteFile) {
+        sqliteImportSqlMutation.mutate(
+          { filePath: sqliteFile, file },
+          { onSuccess: clearInput, onError: clearInput },
+        );
+      } else {
+        if (!selectedDeploymentId || !selectedDatabase) return;
+        deployImportSql.mutate(
+          { deploymentId: selectedDeploymentId, database: selectedDatabase, file },
+          { onSuccess: clearInput, onError: clearInput },
+        );
+      }
     },
-    [selectedDeploymentId, selectedDatabase, importSql],
+    [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteImportSqlMutation, deployImportSql],
   );
 
   const handleBrowseSort = useCallback(
@@ -373,9 +451,26 @@ export default function DatabaseManager() {
     [handleRunQuery],
   );
 
-  // ─── No deployment selected prompt ─────────────────────────────────────────
+  // ─── Computed state for render ──────────────────────────────────────────────
 
-  if (!selectedDeploymentId && !deploymentsLoading) {
+  const queryIsPending = isSqlite ? sqliteExecuteQuery.isPending : deployExecuteQuery.isPending;
+  const importIsPending = isSqlite ? sqliteImportSqlMutation.isPending : deployImportSql.isPending;
+  const importIsSuccess = isSqlite ? sqliteImportSqlMutation.isSuccess : deployImportSql.isSuccess;
+  const importIsError = isSqlite ? sqliteImportSqlMutation.isError : deployImportSql.isError;
+  const importError = isSqlite ? sqliteImportSqlMutation.error : deployImportSql.error;
+  const exportIsPending = isSqlite ? sqliteExportDb.isPending : deployExportDb.isPending;
+
+  // In SQLite mode, the "database" is the file itself — no database selector needed
+  const canRunQuery = isSqlite ? Boolean(sqliteFile) : Boolean(selectedDatabase);
+  const canExport = isSqlite ? Boolean(sqliteFile) : Boolean(selectedDatabase);
+  const canImport = isSqlite ? Boolean(sqliteFile) : Boolean(selectedDatabase);
+
+  // SQLite file display name
+  const sqliteFileName = sqliteFile?.split('/').pop() ?? '';
+
+  // ─── No deployment selected prompt (deployment mode only) ──────────────────
+
+  if (!isSqlite && !selectedDeploymentId && !deploymentsLoading) {
     return (
       <div className="space-y-6">
         <div className="flex items-center gap-3">
@@ -445,51 +540,72 @@ export default function DatabaseManager() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => navigate('/applications')}
+            onClick={() => navigate(isSqlite ? '/files' : '/applications')}
             className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
             data-testid="back-to-applications"
           >
             <ArrowLeft size={16} />
-            Back to Applications
+            {isSqlite ? 'Back to Files' : 'Back to Applications'}
           </button>
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-900/30">
               <Terminal size={16} className="text-blue-600 dark:text-blue-400" />
             </div>
             <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="sql-manager-heading">
-              {engine === 'redis' ? 'Redis Manager' : engine === 'mongodb' ? 'MongoDB Manager' : 'SQL Manager'}
+              {isSqlite ? 'SQLite Manager' : engine === 'redis' ? 'Redis Manager' : engine === 'mongodb' ? 'MongoDB Manager' : 'SQL Manager'}
             </h1>
           </div>
         </div>
 
-        {/* Deployment selector */}
-        <div className="flex items-center gap-2">
-          <label htmlFor="deployment-select" className="text-xs text-gray-500 dark:text-gray-400">
-            Deployment:
-          </label>
-          <select
-            id="deployment-select"
-            value={selectedDeploymentId}
-            onChange={(e) => handleDeploymentChange(e.target.value)}
-            className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-            data-testid="deployment-selector"
-          >
-            <option value="">Select deployment...</option>
-            {databaseDeployments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Deployment selector (deployment mode) or file path (SQLite mode) */}
+        {isSqlite ? (
+          <div className="flex items-center gap-2">
+            <Database size={14} className="text-amber-500 dark:text-amber-400" />
+            <span className="text-sm font-mono text-gray-700 dark:text-gray-300" data-testid="sqlite-file-path">
+              {sqliteFile}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <label htmlFor="deployment-select" className="text-xs text-gray-500 dark:text-gray-400">
+              Deployment:
+            </label>
+            <select
+              id="deployment-select"
+              value={selectedDeploymentId}
+              onChange={(e) => handleDeploymentChange(e.target.value)}
+              className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              data-testid="deployment-selector"
+            >
+              <option value="">Select deployment...</option>
+              {databaseDeployments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Main content */}
       <div className="flex gap-4 min-h-[600px]">
         {/* Sidebar */}
         <div className="w-60 shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
-          {/* Database selector with create / delete */}
+          {/* Database selector (deployment mode) or file info (SQLite mode) */}
           <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+            {isSqlite ? (
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">SQLite File</span>
+                <div className="flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5">
+                  <Database size={14} className="text-amber-500 shrink-0" />
+                  <span className="text-sm font-mono text-gray-900 dark:text-gray-100 truncate" title={sqliteFile}>
+                    {sqliteFileName}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <>
             <label htmlFor="database-select" className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
               Database
             </label>
@@ -590,6 +706,8 @@ export default function DatabaseManager() {
                 </div>
               </div>
             )}
+              </>
+            )}
           </div>
 
           {/* Table list */}
@@ -622,8 +740,8 @@ export default function DatabaseManager() {
             </div>
           </div>
 
-          {/* Users section */}
-          {selectedDeploymentId && (
+          {/* Users section (deployment mode only -- SQLite has no users) */}
+          {!isSqlite && selectedDeploymentId && (
             <div className="border-t border-gray-200 dark:border-gray-700 p-3" data-testid="users-section">
               <button
                 type="button"
@@ -877,11 +995,11 @@ export default function DatabaseManager() {
               <button
                 type="button"
                 onClick={handleRunQuery}
-                disabled={executeQuery.isPending || !sqlValue.trim() || !selectedDatabase}
+                disabled={queryIsPending || !sqlValue.trim() || !canRunQuery}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 data-testid="run-query-button"
               >
-                {executeQuery.isPending ? (
+                {queryIsPending ? (
                   <Loader2 size={14} className="animate-spin" />
                 ) : (
                   <Play size={14} />
@@ -900,21 +1018,21 @@ export default function DatabaseManager() {
               <button
                 type="button"
                 onClick={handleExport}
-                disabled={exportDb.isPending || !selectedDatabase}
+                disabled={exportIsPending || !canExport}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                 data-testid="export-button"
               >
-                {exportDb.isPending ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                {exportIsPending ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
                 Export
               </button>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={importSql.isPending || !selectedDatabase}
+                disabled={importIsPending || !canImport}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                 data-testid="import-button"
               >
-                {importSql.isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                {importIsPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 Import
               </button>
               <input
@@ -936,14 +1054,14 @@ export default function DatabaseManager() {
           </div>
 
           {/* Import result */}
-          {importSql.isSuccess && (
+          {importIsSuccess && (
             <div className="rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-4 py-2 text-sm text-green-800 dark:text-green-300" data-testid="import-success">
               SQL file imported successfully.
             </div>
           )}
-          {importSql.isError && (
+          {importIsError && (
             <div className="rounded-lg border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-2 text-sm text-red-700 dark:text-red-300" data-testid="import-error">
-              {importSql.error instanceof Error ? importSql.error.message : 'Import failed'}
+              {importError instanceof Error ? importError.message : 'Import failed'}
             </div>
           )}
 
@@ -977,7 +1095,7 @@ export default function DatabaseManager() {
               <QueryResultsPanel
                 result={queryResult}
                 error={queryError}
-                isLoading={executeQuery.isPending}
+                isLoading={queryIsPending}
               />
             )}
 

@@ -7,11 +7,12 @@ interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   FolderOpen, File, FilePlus, ChevronRight, ArrowLeft, Trash2, Edit3,
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
-  FileArchive, PackageOpen, Check, MoreVertical,
+  FileArchive, PackageOpen, Check, MoreVertical, Database,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import {
@@ -40,6 +41,7 @@ const LANG_MAP: Record<string, string> = {
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico', '.avif']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz']);
+const SQLITE_EXTENSIONS = new Set(['.sqlite', '.db', '.sqlite3']);
 
 function getExtension(filename: string): string {
   const lower = filename.toLowerCase();
@@ -50,6 +52,7 @@ function getExtension(filename: string): string {
 
 function isImageFile(filename: string): boolean { return IMAGE_EXTENSIONS.has(getExtension(filename)); }
 function isArchiveFile(filename: string): boolean { return ARCHIVE_EXTENSIONS.has(getExtension(filename)); }
+function isSqliteFile(filename: string): boolean { return SQLITE_EXTENSIONS.has(getExtension(filename)); }
 
 function getLanguage(filename: string): string {
   const lower = filename.toLowerCase();
@@ -72,6 +75,7 @@ function joinPath(base: string, name: string): string {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function Files() {
+  const navigate = useNavigate();
   const [currentPath, setCurrentPath] = useState('/');
   const [editingFile, setEditingFile] = useState<string | null>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
@@ -453,6 +457,12 @@ export default function Files() {
           onMove={(path) => { setMoveTarget({ paths: [path], mode: 'move' }); setContextMenu(null); }}
           onExtract={(path) => { setExtractTarget(path); setContextMenu(null); }}
           onNavigate={(path) => { setCurrentPath(path); setContextMenu(null); }}
+          onOpenSqlite={(path) => {
+            // Strip leading / to get relative path for SQLite manager
+            const relPath = path.startsWith('/') ? path.slice(1) : path;
+            navigate(`/database-manager?file=${encodeURIComponent(relPath)}`);
+            setContextMenu(null);
+          }}
         />
       )}
 
@@ -576,6 +586,7 @@ function FileRow({
   const isDir = entry.type === 'directory';
   const isImage = !isDir && isImageFile(entry.name);
   const isArchive = !isDir && isArchiveFile(entry.name);
+  const isSqlite = !isDir && isSqliteFile(entry.name);
 
   return (
     <tr
@@ -593,6 +604,7 @@ function FileRow({
           {isDir ? <FolderOpen size={20} className="text-amber-500 dark:text-amber-400 shrink-0" />
             : isImage ? <ImageIcon size={20} className="text-purple-500 dark:text-purple-400 shrink-0" />
             : isArchive ? <FileArchive size={20} className="text-orange-500 dark:text-orange-400 shrink-0" />
+            : isSqlite ? <Database size={20} className="text-blue-500 dark:text-blue-400 shrink-0" />
             : <File size={20} className="text-gray-400 dark:text-gray-500 shrink-0" />}
           <span className={isDir ? 'font-medium text-gray-900 dark:text-gray-100 text-[15px]' : 'text-gray-700 dark:text-gray-300 text-[15px]'}>{entry.name}</span>
         </div>
@@ -609,7 +621,7 @@ function FileRow({
 }
 
 function ContextMenu({
-  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate,
+  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite,
 }: {
   readonly entry: FileEntry;
   readonly position?: { x: number; y: number };
@@ -624,6 +636,7 @@ function ContextMenu({
   readonly onMove: (path: string) => void;
   readonly onExtract: (path: string) => void;
   readonly onNavigate: (path: string) => void;
+  readonly onOpenSqlite: (path: string) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const fullPath = joinPath(currentPath, entry.name);
@@ -631,6 +644,7 @@ function ContextMenu({
   const isEditable = !isDir && !isImageFile(entry.name) && entry.size < 10 * 1024 * 1024;
   const isImage = !isDir && isImageFile(entry.name);
   const isArchive = !isDir && isArchiveFile(entry.name);
+  const isSqlite = !isDir && isSqliteFile(entry.name);
 
   // Position the menu (if from right-click, use mouse pos; if from button, show as dropdown)
   const style: React.CSSProperties = position
@@ -648,6 +662,7 @@ function ContextMenu({
         {isEditable && <button className={itemClass} onClick={() => onEdit(fullPath)}><Edit3 size={14} /> Edit</button>}
         {!isDir && <button className={itemClass} onClick={() => onDownload(fullPath)}><Download size={14} /> Download</button>}
         {isArchive && <button className={itemClass} onClick={() => onExtract(fullPath)}><PackageOpen size={14} /> Extract</button>}
+        {isSqlite && <button className={itemClass} onClick={() => onOpenSqlite(fullPath)}><Database size={14} /> Open in SQL Manager</button>}
         <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
         <button className={itemClass} onClick={() => onCopy(fullPath)}><Copy size={14} /> Copy to...</button>
         <button className={itemClass} onClick={() => onMove(fullPath)}><Move size={14} /> Move to...</button>

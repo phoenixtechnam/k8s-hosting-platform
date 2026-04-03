@@ -169,3 +169,141 @@ export function useImportSql(clientId: string | null | undefined) {
     },
   });
 }
+
+// ─── SQLite Hooks ────────────────────────────────────────────────────────────
+// SQLite files are queried directly via the file-manager pod.
+// No deployment selector or database selector needed — the file path IS the database.
+
+export function useSqliteQuery(clientId: string | null | undefined) {
+  return useMutation({
+    mutationFn: ({ filePath, query }: { readonly filePath: string; readonly query: string }) => {
+      if (!clientId) throw new Error('No client selected');
+      return apiFetch<{ data: QueryResult }>(
+        `/api/v1/clients/${clientId}/sqlite/query`,
+        { method: 'POST', body: JSON.stringify({ file_path: filePath, query }) },
+      );
+    },
+  });
+}
+
+export function useSqliteTables(
+  clientId: string | null | undefined,
+  filePath: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['sqlite-tables', clientId, filePath],
+    queryFn: () =>
+      apiFetch<{ data: readonly string[] }>(
+        `/api/v1/clients/${clientId}/sqlite/tables?file_path=${encodeURIComponent(filePath!)}`,
+      ),
+    enabled: Boolean(clientId) && Boolean(filePath),
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always' as const,
+  });
+}
+
+export function useSqliteTableStructure(
+  clientId: string | null | undefined,
+  filePath: string | undefined,
+  table: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['sqlite-structure', clientId, filePath, table],
+    queryFn: () =>
+      apiFetch<{ data: readonly ColumnInfo[] }>(
+        `/api/v1/clients/${clientId}/sqlite/table-structure?file_path=${encodeURIComponent(filePath!)}&table=${encodeURIComponent(table!)}`,
+      ),
+    enabled: Boolean(clientId) && Boolean(filePath) && Boolean(table),
+  });
+}
+
+export function useSqliteTableData(
+  clientId: string | null | undefined,
+  filePath: string | undefined,
+  table: string | undefined,
+  options: TableDataOptions = {},
+) {
+  const { page = 1, pageSize = 50, orderBy, orderDir } = options;
+  const offset = (page - 1) * pageSize;
+
+  return useQuery({
+    queryKey: ['sqlite-table-data', clientId, filePath, table, page, pageSize, orderBy, orderDir],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        file_path: filePath!,
+        table: table!,
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      if (orderBy) params.set('orderBy', orderBy);
+      if (orderDir) params.set('orderDir', orderDir);
+
+      return apiFetch<{ data: QueryResult }>(
+        `/api/v1/clients/${clientId}/sqlite/table-data?${params}`,
+      );
+    },
+    enabled: Boolean(clientId) && Boolean(filePath) && Boolean(table),
+  });
+}
+
+export function useSqliteRowCount(
+  clientId: string | null | undefined,
+  filePath: string | undefined,
+  table: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['sqlite-row-count', clientId, filePath, table],
+    queryFn: () =>
+      apiFetch<{ data: { count: number } }>(
+        `/api/v1/clients/${clientId}/sqlite/row-count?file_path=${encodeURIComponent(filePath!)}&table=${encodeURIComponent(table!)}`,
+      ),
+    enabled: Boolean(clientId) && Boolean(filePath) && Boolean(table),
+  });
+}
+
+export function useSqliteExport(clientId: string | null | undefined) {
+  return useMutation({
+    mutationFn: async ({ filePath }: { readonly filePath: string }) => {
+      if (!clientId) throw new Error('No client selected');
+      const token = localStorage.getItem('auth_token');
+      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+      const res = await fetch(
+        `${API_BASE}/api/v1/clients/${clientId}/sqlite/export?file_path=${encodeURIComponent(filePath)}`,
+        { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: { message: 'Export failed' } }));
+        throw new Error(body.error?.message ?? 'Export failed');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${filePath.split('/').pop() ?? 'database'}-export.sql`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+
+export function useSqliteImport(clientId: string | null | undefined) {
+  return useMutation({
+    mutationFn: async ({
+      filePath,
+      file,
+    }: {
+      readonly filePath: string;
+      readonly file: File;
+    }) => {
+      if (!clientId) throw new Error('No client selected');
+      const sql = await file.text();
+      return apiFetch<{ data: { success: boolean; error?: string } }>(
+        `/api/v1/clients/${clientId}/sqlite/import`,
+        { method: 'POST', body: JSON.stringify({ file_path: filePath, sql }) },
+      );
+    },
+  });
+}
