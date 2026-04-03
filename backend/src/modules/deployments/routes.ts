@@ -257,13 +257,6 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     reply.status(204).send();
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/restore
-  app.post('/clients/:clientId/deployments/:id/restore', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const restored = await service.restoreDeployment(app.db, clientId, id, getK8s());
-    return success(restored);
-  });
-
   // POST /api/v1/admin/deployments/reconcile — admin-only, reconcile all deployment statuses
   app.post('/admin/deployments/reconcile', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
