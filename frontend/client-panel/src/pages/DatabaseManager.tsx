@@ -1,10 +1,11 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Database, Table2, Play, Trash2, Download, Upload, Search,
   ChevronRight, ArrowLeft, Loader2, AlertCircle, Columns3,
   ChevronLeft, ChevronDown, Terminal, FileText, Plus, Key, Users,
-  Eye, EyeOff,
+  Eye, EyeOff, X, Edit3, PlusCircle, Minus,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
@@ -42,6 +43,26 @@ import type { QueryResult, ColumnInfo } from '@/hooks/use-sql-manager';
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 50;
+
+const SQL_COLUMN_TYPES = [
+  'INTEGER', 'INT', 'BIGINT', 'SMALLINT', 'TINYINT',
+  'TEXT', 'VARCHAR(255)', 'CHAR(50)',
+  'REAL', 'FLOAT', 'DOUBLE', 'DECIMAL(10,2)',
+  'BLOB',
+  'BOOLEAN',
+  'DATE', 'DATETIME', 'TIMESTAMP',
+] as const;
+
+interface NewColumnDef {
+  readonly name: string;
+  readonly type: string;
+  readonly primaryKey: boolean;
+  readonly nullable: boolean;
+}
+
+function createEmptyColumn(): NewColumnDef {
+  return { name: '', type: 'TEXT', primaryKey: false, nullable: true };
+}
 
 type SidebarView = 'tables' | 'structure';
 type ResultsView = 'query' | 'browse' | 'structure';
@@ -93,6 +114,30 @@ export default function DatabaseManager() {
 
   // Import
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  // Table management state
+  const [createTableOpen, setCreateTableOpen] = useState(false);
+  const [newTableName, setNewTableName] = useState('');
+  const [newTableColumns, setNewTableColumns] = useState<NewColumnDef[]>([createEmptyColumn()]);
+  const [confirmDropTable, setConfirmDropTable] = useState<string | null>(null);
+  const [tableActionPending, setTableActionPending] = useState(false);
+  const [tableActionError, setTableActionError] = useState<string | null>(null);
+
+  // Add column state (for structure view)
+  const [addColumnOpen, setAddColumnOpen] = useState(false);
+  const [addColumnName, setAddColumnName] = useState('');
+  const [addColumnType, setAddColumnType] = useState('TEXT');
+  const [confirmDropColumn, setConfirmDropColumn] = useState<string | null>(null);
+
+  // Row management state
+  const [editRowData, setEditRowData] = useState<Record<string, string> | null>(null);
+  const [editRowOriginal, setEditRowOriginal] = useState<Record<string, string> | null>(null);
+  const [insertRowOpen, setInsertRowOpen] = useState(false);
+  const [insertRowData, setInsertRowData] = useState<Record<string, string>>({});
+  const [confirmDeleteRow, setConfirmDeleteRow] = useState<Record<string, string> | null>(null);
+  const [rowActionPending, setRowActionPending] = useState(false);
+  const [rowActionError, setRowActionError] = useState<string | null>(null);
 
   // ─── Data queries ───────────────────────────────────────────────────────────
 
@@ -440,6 +485,271 @@ export default function DatabaseManager() {
     [browseSortCol],
   );
 
+  // ─── Unified DDL/DML executor ────────────────────────────────────────────
+
+  const executeDdl = useCallback(
+    async (sql: string): Promise<void> => {
+      if (isSqlite && sqliteFile) {
+        await new Promise<void>((resolve, reject) => {
+          sqliteExecuteQuery.mutate(
+            { filePath: sqliteFile, query: sql },
+            { onSuccess: () => resolve(), onError: (err) => reject(err) },
+          );
+        });
+      } else if (selectedDatabase) {
+        await new Promise<void>((resolve, reject) => {
+          deployExecuteQuery.mutate(
+            { database: selectedDatabase, query: sql },
+            { onSuccess: () => resolve(), onError: (err) => reject(err) },
+          );
+        });
+      }
+    },
+    [isSqlite, sqliteFile, selectedDatabase, sqliteExecuteQuery, deployExecuteQuery],
+  );
+
+  const invalidateTableQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['sql-tables'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-tables'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-table-data'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-table-data'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-structure'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-structure'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-row-count'] });
+    queryClient.invalidateQueries({ queryKey: ['sqlite-row-count'] });
+  }, [queryClient]);
+
+  // ─── Create Table ──────────────────────────────────────────────────────────
+
+  const handleCreateTable = useCallback(async () => {
+    const name = newTableName.trim();
+    if (!name || newTableColumns.length === 0) return;
+
+    const validCols = newTableColumns.filter((c) => c.name.trim());
+    if (validCols.length === 0) return;
+
+    const colDefs = validCols.map((c) => {
+      const parts = [`"${c.name.trim()}" ${c.type}`];
+      if (c.primaryKey) parts.push('PRIMARY KEY');
+      if (!c.nullable && !c.primaryKey) parts.push('NOT NULL');
+      return parts.join(' ');
+    });
+
+    const sql = `CREATE TABLE "${name}" (${colDefs.join(', ')})`;
+    setTableActionPending(true);
+    setTableActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setNewTableName('');
+      setNewTableColumns([createEmptyColumn()]);
+      setCreateTableOpen(false);
+      invalidateTableQueries();
+    } catch (err) {
+      setTableActionError(err instanceof Error ? err.message : 'Failed to create table');
+    } finally {
+      setTableActionPending(false);
+    }
+  }, [newTableName, newTableColumns, executeDdl, invalidateTableQueries]);
+
+  // ─── Drop Table ────────────────────────────────────────────────────────────
+
+  const handleDropTable = useCallback(async (tableName: string) => {
+    setTableActionPending(true);
+    setTableActionError(null);
+
+    try {
+      await executeDdl(`DROP TABLE "${tableName}"`);
+      setConfirmDropTable(null);
+      if (browseTable === tableName) setBrowseTable('');
+      if (structureTable === tableName) setStructureTable('');
+      invalidateTableQueries();
+    } catch (err) {
+      setTableActionError(err instanceof Error ? err.message : 'Failed to drop table');
+    } finally {
+      setTableActionPending(false);
+    }
+  }, [executeDdl, invalidateTableQueries, browseTable, structureTable]);
+
+  // ─── Add Column ────────────────────────────────────────────────────────────
+
+  const handleAddColumn = useCallback(async () => {
+    const colName = addColumnName.trim();
+    if (!colName || !structureTable) return;
+
+    const sql = `ALTER TABLE "${structureTable}" ADD COLUMN "${colName}" ${addColumnType}`;
+    setTableActionPending(true);
+    setTableActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setAddColumnName('');
+      setAddColumnType('TEXT');
+      setAddColumnOpen(false);
+      invalidateTableQueries();
+    } catch (err) {
+      setTableActionError(err instanceof Error ? err.message : 'Failed to add column');
+    } finally {
+      setTableActionPending(false);
+    }
+  }, [addColumnName, addColumnType, structureTable, executeDdl, invalidateTableQueries]);
+
+  // ─── Drop Column ───────────────────────────────────────────────────────────
+
+  const handleDropColumn = useCallback(async (colName: string) => {
+    if (!structureTable) return;
+
+    const sql = `ALTER TABLE "${structureTable}" DROP COLUMN "${colName}"`;
+    setTableActionPending(true);
+    setTableActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setConfirmDropColumn(null);
+      invalidateTableQueries();
+    } catch (err) {
+      setTableActionError(err instanceof Error ? err.message : 'Failed to drop column');
+    } finally {
+      setTableActionPending(false);
+    }
+  }, [structureTable, executeDdl, invalidateTableQueries]);
+
+  // ─── Row Management: Find PK column ────────────────────────────────────────
+
+  const browsePkColumn = useMemo(() => {
+    // Try to find primary key from structure data
+    const structData = isSqlite
+      ? (sqliteStructureData?.data ?? [])
+      : (deployStructureData?.data ?? []);
+    const pk = structData.find((c) => c.key === 'PRI');
+    return pk?.name ?? null;
+  }, [isSqlite, sqliteStructureData, deployStructureData]);
+
+  // Auto-fetch structure for browse table to identify PK — both hooks always called, conditionally enabled
+  const { data: browseStructureSqlite } = useSqliteTableStructure(
+    isSqlite ? clientId : undefined,
+    sqliteFile,
+    isSqlite ? (browseTable || undefined) : undefined,
+  );
+  const { data: browseStructureDeploy } = useTableStructure(
+    isSqlite ? undefined : clientId,
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+    isSqlite ? undefined : (selectedDatabase || undefined),
+    isSqlite ? undefined : (browseTable || undefined),
+  );
+
+  const browseStructureData = isSqlite ? browseStructureSqlite : browseStructureDeploy;
+
+  const browseTablePkColumn = useMemo(() => {
+    const cols = browseStructureData?.data ?? [];
+    const pk = cols.find((c) => c.key === 'PRI');
+    return pk?.name ?? null;
+  }, [browseStructureData]);
+
+  const browseTableColumns = useMemo(() => {
+    return browseStructureData?.data ?? [];
+  }, [browseStructureData]);
+
+  // ─── Delete Row ────────────────────────────────────────────────────────────
+
+  const handleDeleteRow = useCallback(async (rowData: Record<string, string>) => {
+    if (!browseTable || !browseTablePkColumn) return;
+    const pkValue = rowData[browseTablePkColumn];
+    if (pkValue === undefined) return;
+
+    const sql = `DELETE FROM "${browseTable}" WHERE "${browseTablePkColumn}" = '${pkValue.replace(/'/g, "''")}'`;
+    setRowActionPending(true);
+    setRowActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setConfirmDeleteRow(null);
+      invalidateTableQueries();
+    } catch (err) {
+      setRowActionError(err instanceof Error ? err.message : 'Failed to delete row');
+    } finally {
+      setRowActionPending(false);
+    }
+  }, [browseTable, browseTablePkColumn, executeDdl, invalidateTableQueries]);
+
+  // ─── Edit Row (save) ──────────────────────────────────────────────────────
+
+  const handleSaveRow = useCallback(async () => {
+    if (!browseTable || !browseTablePkColumn || !editRowData || !editRowOriginal) return;
+    const pkValue = editRowOriginal[browseTablePkColumn];
+    if (pkValue === undefined) return;
+
+    const setClauses = Object.entries(editRowData)
+      .filter(([key, val]) => val !== editRowOriginal[key])
+      .map(([key, val]) => {
+        if (val === '' || val === 'NULL') return `"${key}" = NULL`;
+        return `"${key}" = '${val.replace(/'/g, "''")}'`;
+      });
+
+    if (setClauses.length === 0) {
+      setEditRowData(null);
+      setEditRowOriginal(null);
+      return;
+    }
+
+    const sql = `UPDATE "${browseTable}" SET ${setClauses.join(', ')} WHERE "${browseTablePkColumn}" = '${pkValue.replace(/'/g, "''")}'`;
+    setRowActionPending(true);
+    setRowActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setEditRowData(null);
+      setEditRowOriginal(null);
+      invalidateTableQueries();
+    } catch (err) {
+      setRowActionError(err instanceof Error ? err.message : 'Failed to update row');
+    } finally {
+      setRowActionPending(false);
+    }
+  }, [browseTable, browseTablePkColumn, editRowData, editRowOriginal, executeDdl, invalidateTableQueries]);
+
+  // ─── Insert Row ────────────────────────────────────────────────────────────
+
+  const handleInsertRow = useCallback(async () => {
+    if (!browseTable) return;
+    const entries = Object.entries(insertRowData).filter(([, val]) => val.trim() !== '');
+    if (entries.length === 0) return;
+
+    const colNames = entries.map(([key]) => `"${key}"`).join(', ');
+    const values = entries.map(([, val]) => `'${val.replace(/'/g, "''")}'`).join(', ');
+    const sql = `INSERT INTO "${browseTable}" (${colNames}) VALUES (${values})`;
+
+    setRowActionPending(true);
+    setRowActionError(null);
+
+    try {
+      await executeDdl(sql);
+      setInsertRowOpen(false);
+      setInsertRowData({});
+      invalidateTableQueries();
+    } catch (err) {
+      setRowActionError(err instanceof Error ? err.message : 'Failed to insert row');
+    } finally {
+      setRowActionPending(false);
+    }
+  }, [browseTable, insertRowData, executeDdl, invalidateTableQueries]);
+
+  // ─── Column helpers for create table form ──────────────────────────────────
+
+  const handleNewColumnChange = useCallback((index: number, field: keyof NewColumnDef, value: string | boolean) => {
+    setNewTableColumns((prev) => prev.map((col, i) =>
+      i === index ? { ...col, [field]: value } : col,
+    ));
+  }, []);
+
+  const handleAddNewColumn = useCallback(() => {
+    setNewTableColumns((prev) => [...prev, createEmptyColumn()]);
+  }, []);
+
+  const handleRemoveNewColumn = useCallback((index: number) => {
+    setNewTableColumns((prev) => prev.length > 1 ? prev.filter((_, i) => i !== index) : prev);
+  }, []);
+
   // Keyboard shortcut: Ctrl+Enter to run
   const handleEditorKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -735,9 +1045,147 @@ export default function DatabaseManager() {
                   onClick={() => handleTableClick(table)}
                   onBrowse={() => handleBrowseTable(table)}
                   onStructure={() => handleViewStructure(table)}
+                  onDrop={() => setConfirmDropTable(table)}
                 />
               ))}
             </div>
+
+            {/* Confirm drop table */}
+            {confirmDropTable && (
+              <div className="mt-2 rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-2" data-testid="confirm-drop-table">
+                <p className="text-xs text-red-700 dark:text-red-300 mb-1.5">
+                  Drop table <span className="font-mono font-semibold">{confirmDropTable}</span>? This cannot be undone.
+                </p>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleDropTable(confirmDropTable)}
+                    disabled={tableActionPending}
+                    className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                    data-testid="confirm-drop-table-button"
+                  >
+                    {tableActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Drop'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDropTable(null)}
+                    className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+                    data-testid="cancel-drop-table-button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Error display */}
+            {tableActionError && (
+              <div className="mt-2 rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-2">
+                <div className="flex items-start gap-1.5">
+                  <AlertCircle size={12} className="text-red-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-700 dark:text-red-300">{tableActionError}</p>
+                  <button type="button" onClick={() => setTableActionError(null)} className="ml-auto shrink-0">
+                    <X size={12} className="text-red-400 hover:text-red-600" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Create table form */}
+            {engine === 'sql' && (
+              <>
+                {createTableOpen ? (
+                  <div className="mt-3 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-2 space-y-2" data-testid="create-table-form">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">New Table</span>
+                      <button type="button" onClick={() => { setCreateTableOpen(false); setTableActionError(null); }}>
+                        <X size={14} className="text-gray-400 hover:text-gray-600" />
+                      </button>
+                    </div>
+                    <input
+                      value={newTableName}
+                      onChange={(e) => setNewTableName(e.target.value)}
+                      placeholder="Table name"
+                      className="w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      data-testid="new-table-name-input"
+                    />
+                    <div className="space-y-1">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">Columns</span>
+                      {newTableColumns.map((col, i) => (
+                        <div key={i} className="flex gap-1 items-center">
+                          <input
+                            value={col.name}
+                            onChange={(e) => handleNewColumnChange(i, 'name', e.target.value)}
+                            placeholder="Name"
+                            className="flex-1 min-w-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-1.5 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                            data-testid={`col-name-${i}`}
+                          />
+                          <select
+                            value={col.type}
+                            onChange={(e) => handleNewColumnChange(i, 'type', e.target.value)}
+                            className="w-24 shrink-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-1 py-1 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                            data-testid={`col-type-${i}`}
+                          >
+                            {SQL_COLUMN_TYPES.map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                          <label className="flex items-center gap-0.5 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Primary Key">
+                            <input
+                              type="checkbox"
+                              checked={col.primaryKey}
+                              onChange={(e) => handleNewColumnChange(i, 'primaryKey', e.target.checked)}
+                              className="rounded"
+                              data-testid={`col-pk-${i}`}
+                            />
+                            PK
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveNewColumn(i)}
+                            className="shrink-0 text-gray-400 hover:text-red-500"
+                            title="Remove column"
+                            data-testid={`col-remove-${i}`}
+                          >
+                            <Minus size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={handleAddNewColumn}
+                        className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700"
+                        data-testid="add-column-to-new-table"
+                      >
+                        <Plus size={12} />
+                        Add Column
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCreateTable}
+                        disabled={tableActionPending || !newTableName.trim() || newTableColumns.every((c) => !c.name.trim())}
+                        className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        data-testid="confirm-create-table"
+                      >
+                        {tableActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Create Table'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setCreateTableOpen(true); setTableActionError(null); }}
+                    className="mt-3 flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 w-full justify-center rounded-md border border-dashed border-gray-300 dark:border-gray-600 py-1.5 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                    data-testid="new-table-button"
+                  >
+                    <Plus size={12} />
+                    New Table
+                  </button>
+                )}
+              </>
+            )}
           </div>
 
           {/* Users section (deployment mode only -- SQLite has no users) */}
@@ -1111,6 +1559,26 @@ export default function DatabaseManager() {
                 sortDir={browseSortDir}
                 onSort={handleBrowseSort}
                 onPageChange={setBrowsePage}
+                pkColumn={browseTablePkColumn}
+                tableColumns={browseTableColumns}
+                editRowData={editRowData}
+                insertRowOpen={insertRowOpen}
+                insertRowData={insertRowData}
+                confirmDeleteRow={confirmDeleteRow}
+                rowActionPending={rowActionPending}
+                rowActionError={rowActionError}
+                onEditRow={(rowData, original) => { setEditRowData(rowData); setEditRowOriginal(original); setRowActionError(null); }}
+                onCancelEditRow={() => { setEditRowData(null); setEditRowOriginal(null); }}
+                onSaveRow={handleSaveRow}
+                onEditFieldChange={(field, val) => setEditRowData((prev) => prev ? { ...prev, [field]: val } : prev)}
+                onDeleteRow={setConfirmDeleteRow}
+                onConfirmDeleteRow={handleDeleteRow}
+                onCancelDeleteRow={() => setConfirmDeleteRow(null)}
+                onOpenInsertRow={() => { setInsertRowOpen(true); setInsertRowData({}); setRowActionError(null); }}
+                onCloseInsertRow={() => { setInsertRowOpen(false); setInsertRowData({}); }}
+                onInsertFieldChange={(field, val) => setInsertRowData((prev) => ({ ...prev, [field]: val }))}
+                onInsertRow={handleInsertRow}
+                onDismissRowError={() => setRowActionError(null)}
               />
             )}
 
@@ -1120,6 +1588,20 @@ export default function DatabaseManager() {
                 columns={columns}
                 isLoading={structureLoading}
                 tableName={structureTable}
+                addColumnOpen={addColumnOpen}
+                addColumnName={addColumnName}
+                addColumnType={addColumnType}
+                confirmDropColumn={confirmDropColumn}
+                actionPending={tableActionPending}
+                actionError={tableActionError}
+                onToggleAddColumn={() => { setAddColumnOpen((prev) => !prev); setTableActionError(null); }}
+                onAddColumnNameChange={setAddColumnName}
+                onAddColumnTypeChange={setAddColumnType}
+                onAddColumn={handleAddColumn}
+                onConfirmDropColumn={setConfirmDropColumn}
+                onDropColumn={handleDropColumn}
+                onCancelDropColumn={() => setConfirmDropColumn(null)}
+                onDismissError={() => setTableActionError(null)}
               />
             )}
           </div>
@@ -1138,6 +1620,7 @@ function TableRow({
   onClick,
   onBrowse,
   onStructure,
+  onDrop,
 }: {
   readonly name: string;
   readonly engine: DbEngine;
@@ -1145,6 +1628,7 @@ function TableRow({
   readonly onClick: () => void;
   readonly onBrowse: () => void;
   readonly onStructure: () => void;
+  readonly onDrop: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -1166,6 +1650,15 @@ function TableRow({
         title={name}
       >
         {name}
+      </button>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDrop(); }}
+        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-opacity"
+        title="Drop table"
+        data-testid={`table-drop-${name}`}
+      >
+        <Trash2 size={12} />
       </button>
       <div className="relative">
         <button
@@ -1203,6 +1696,15 @@ function TableRow({
                   Structure
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => { onDrop(); setMenuOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                data-testid={`table-drop-menu-${name}`}
+              >
+                <Trash2 size={14} />
+                Drop Table
+              </button>
             </div>
           </>
         )}
@@ -1299,6 +1801,26 @@ function BrowsePanel({
   sortDir,
   onSort,
   onPageChange,
+  pkColumn,
+  tableColumns,
+  editRowData,
+  insertRowOpen,
+  insertRowData,
+  confirmDeleteRow,
+  rowActionPending,
+  rowActionError,
+  onEditRow,
+  onCancelEditRow,
+  onSaveRow,
+  onEditFieldChange,
+  onDeleteRow,
+  onConfirmDeleteRow,
+  onCancelDeleteRow,
+  onOpenInsertRow,
+  onCloseInsertRow,
+  onInsertFieldChange,
+  onInsertRow,
+  onDismissRowError,
 }: {
   readonly result: QueryResult | null;
   readonly isLoading: boolean;
@@ -1309,6 +1831,26 @@ function BrowsePanel({
   readonly sortDir: SortDir;
   readonly onSort: (col: string) => void;
   readonly onPageChange: (page: number) => void;
+  readonly pkColumn: string | null;
+  readonly tableColumns: readonly ColumnInfo[];
+  readonly editRowData: Record<string, string> | null;
+  readonly insertRowOpen: boolean;
+  readonly insertRowData: Record<string, string>;
+  readonly confirmDeleteRow: Record<string, string> | null;
+  readonly rowActionPending: boolean;
+  readonly rowActionError: string | null;
+  readonly onEditRow: (data: Record<string, string>, original: Record<string, string>) => void;
+  readonly onCancelEditRow: () => void;
+  readonly onSaveRow: () => void;
+  readonly onEditFieldChange: (field: string, value: string) => void;
+  readonly onDeleteRow: (rowData: Record<string, string>) => void;
+  readonly onConfirmDeleteRow: (rowData: Record<string, string>) => void;
+  readonly onCancelDeleteRow: () => void;
+  readonly onOpenInsertRow: () => void;
+  readonly onCloseInsertRow: () => void;
+  readonly onInsertFieldChange: (field: string, value: string) => void;
+  readonly onInsertRow: () => void;
+  readonly onDismissRowError: () => void;
 }) {
   if (isLoading) {
     return (
@@ -1326,9 +1868,249 @@ function BrowsePanel({
     );
   }
 
+  const buildRowMap = (row: string[]): Record<string, string> => {
+    const map: Record<string, string> = {};
+    result.columns.forEach((col, i) => { map[col] = row[i] ?? ''; });
+    return map;
+  };
+
   return (
     <div className="flex flex-col flex-1">
-      <DataGrid columns={result.columns} rows={result.rows} sortCol={sortCol} sortDir={sortDir} onSort={onSort} />
+      {/* Row action bar */}
+      {pkColumn && (
+        <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-4 py-2">
+          <button
+            type="button"
+            onClick={onOpenInsertRow}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            data-testid="insert-row-button"
+          >
+            <PlusCircle size={12} />
+            Insert Row
+          </button>
+          {rowActionError && (
+            <div className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+              <AlertCircle size={12} />
+              <span>{rowActionError}</span>
+              <button type="button" onClick={onDismissRowError}><X size={12} /></button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Insert row form */}
+      {insertRowOpen && (
+        <div className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-blue-50/50 dark:bg-blue-900/10 space-y-2" data-testid="insert-row-form">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Insert New Row</span>
+            <button type="button" onClick={onCloseInsertRow}>
+              <X size={14} className="text-gray-400 hover:text-gray-600" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {(tableColumns.length > 0 ? tableColumns : result.columns.map((c) => ({ name: c, type: '', key: '', nullable: true, defaultValue: null }))).map((col) => (
+              <div key={col.name} className="flex items-center gap-1.5">
+                <label className="text-xs font-mono text-gray-500 dark:text-gray-400 w-28 shrink-0 truncate" title={col.name}>
+                  {col.name}
+                  {col.key === 'PRI' && <span className="text-amber-500 ml-0.5">*</span>}
+                </label>
+                <input
+                  value={insertRowData[col.name] ?? ''}
+                  onChange={(e) => onInsertFieldChange(col.name, e.target.value)}
+                  placeholder={col.key === 'PRI' ? 'auto' : 'NULL'}
+                  className="flex-1 min-w-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                  data-testid={`insert-field-${col.name}`}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={onInsertRow}
+              disabled={rowActionPending}
+              className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="confirm-insert-row"
+            >
+              {rowActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Insert'}
+            </button>
+            <button
+              type="button"
+              onClick={onCloseInsertRow}
+              className="rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm delete row */}
+      {confirmDeleteRow && pkColumn && (
+        <div className="flex items-center gap-2 border-b border-red-200 dark:border-red-700 px-4 py-2 bg-red-50 dark:bg-red-900/20" data-testid="confirm-delete-row">
+          <span className="text-xs text-red-700 dark:text-red-300">
+            Delete row where <span className="font-mono font-semibold">{pkColumn} = {confirmDeleteRow[pkColumn]}</span>?
+          </span>
+          <button
+            type="button"
+            onClick={() => onConfirmDeleteRow(confirmDeleteRow)}
+            disabled={rowActionPending}
+            className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            data-testid="confirm-delete-row-button"
+          >
+            {rowActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Delete'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancelDeleteRow}
+            className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Edit row form */}
+      {editRowData && (
+        <div className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 bg-yellow-50/50 dark:bg-yellow-900/10 space-y-2" data-testid="edit-row-form">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Edit Row</span>
+            <button type="button" onClick={onCancelEditRow}>
+              <X size={14} className="text-gray-400 hover:text-gray-600" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {result.columns.map((col) => (
+              <div key={col} className="flex items-center gap-1.5">
+                <label className="text-xs font-mono text-gray-500 dark:text-gray-400 w-28 shrink-0 truncate" title={col}>
+                  {col}
+                  {col === pkColumn && <span className="text-amber-500 ml-0.5">*</span>}
+                </label>
+                <input
+                  value={editRowData[col] ?? ''}
+                  onChange={(e) => onEditFieldChange(col, e.target.value)}
+                  disabled={col === pkColumn}
+                  className={clsx(
+                    'flex-1 min-w-0 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50',
+                    col === pkColumn && 'opacity-60 cursor-not-allowed',
+                  )}
+                  data-testid={`edit-field-${col}`}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={onSaveRow}
+              disabled={rowActionPending}
+              className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="save-edit-row"
+            >
+              {rowActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={onCancelEditRow}
+              className="rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Data grid */}
+      <div className="flex-1 overflow-auto" data-testid="results-grid">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 dark:bg-gray-900/50 sticky top-0 z-10">
+              {pkColumn && <th className="w-20 px-2 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Actions</th>}
+              {result.columns.map((col) => (
+                <th
+                  key={col}
+                  className={clsx(
+                    'text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase whitespace-nowrap',
+                    'cursor-pointer hover:text-gray-700 dark:hover:text-gray-200 select-none',
+                  )}
+                  onClick={() => onSort(col)}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    {col}
+                    {sortCol === col && (
+                      <ChevronDown
+                        size={12}
+                        className={clsx('transition-transform', sortDir === 'DESC' && 'rotate-180')}
+                      />
+                    )}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.length === 0 ? (
+              <tr>
+                <td colSpan={result.columns.length + (pkColumn ? 1 : 0)} className="px-4 py-8 text-center text-gray-400 dark:text-gray-500">
+                  No rows returned
+                </td>
+              </tr>
+            ) : (
+              result.rows.map((row, rowIdx) => {
+                const rowMap = buildRowMap(row);
+                return (
+                  <tr
+                    key={rowIdx}
+                    className={clsx(
+                      'border-t border-gray-100 dark:border-gray-700/50 group',
+                      rowIdx % 2 === 1 && 'bg-gray-50/50 dark:bg-gray-900/25',
+                    )}
+                  >
+                    {pkColumn && (
+                      <td className="px-2 py-1.5">
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={() => onEditRow({ ...rowMap }, { ...rowMap })}
+                            className="rounded p-0.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+                            title="Edit row"
+                            data-testid={`edit-row-${rowIdx}`}
+                          >
+                            <Edit3 size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteRow(rowMap)}
+                            className="rounded p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                            title="Delete row"
+                            data-testid={`delete-row-${rowIdx}`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                    {row.map((cell, cellIdx) => (
+                      <td
+                        key={cellIdx}
+                        className="px-4 py-1.5 text-gray-900 dark:text-gray-100 font-mono text-xs whitespace-nowrap max-w-xs truncate"
+                        title={cell}
+                      >
+                        {cell === null || cell === 'NULL' ? (
+                          <span className="text-gray-400 italic">NULL</span>
+                        ) : (
+                          cell
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
       {/* Pagination */}
       <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 px-4 py-2">
         <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="browse-row-count">
@@ -1368,10 +2150,38 @@ function StructurePanel({
   columns,
   isLoading,
   tableName,
+  addColumnOpen,
+  addColumnName,
+  addColumnType,
+  confirmDropColumn,
+  actionPending,
+  actionError,
+  onToggleAddColumn,
+  onAddColumnNameChange,
+  onAddColumnTypeChange,
+  onAddColumn,
+  onConfirmDropColumn,
+  onDropColumn,
+  onCancelDropColumn,
+  onDismissError,
 }: {
   readonly columns: readonly ColumnInfo[];
   readonly isLoading: boolean;
   readonly tableName: string;
+  readonly addColumnOpen: boolean;
+  readonly addColumnName: string;
+  readonly addColumnType: string;
+  readonly confirmDropColumn: string | null;
+  readonly actionPending: boolean;
+  readonly actionError: string | null;
+  readonly onToggleAddColumn: () => void;
+  readonly onAddColumnNameChange: (v: string) => void;
+  readonly onAddColumnTypeChange: (v: string) => void;
+  readonly onAddColumn: () => void;
+  readonly onConfirmDropColumn: (name: string | null) => void;
+  readonly onDropColumn: (name: string) => void;
+  readonly onCancelDropColumn: () => void;
+  readonly onDismissError: () => void;
 }) {
   if (isLoading) {
     return (
@@ -1390,51 +2200,151 @@ function StructurePanel({
   }
 
   return (
-    <div className="flex-1 overflow-auto" data-testid="structure-grid">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-gray-50 dark:bg-gray-900/50 sticky top-0 z-10">
-            <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Column</th>
-            <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Type</th>
-            <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Nullable</th>
-            <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Default</th>
-            <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Key</th>
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((col, i) => (
-            <tr
-              key={col.name}
-              className={clsx(
-                'border-t border-gray-100 dark:border-gray-700/50',
-                i % 2 === 1 && 'bg-gray-50/50 dark:bg-gray-900/25',
-              )}
-              data-testid={`structure-row-${col.name}`}
-            >
-              <td className="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{col.name}</td>
-              <td className="px-4 py-2 font-mono text-blue-600 dark:text-blue-400">{col.type}</td>
-              <td className="px-4 py-2">
-                <span className={clsx('text-xs font-medium', col.nullable ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-400')}>
-                  {col.nullable ? 'YES' : 'NO'}
-                </span>
-              </td>
-              <td className="px-4 py-2 font-mono text-gray-600 dark:text-gray-400">{col.defaultValue ?? 'NULL'}</td>
-              <td className="px-4 py-2">
-                {col.key && (
-                  <span className={clsx(
-                    'inline-block rounded px-1.5 py-0.5 text-xs font-medium',
-                    col.key === 'PRI' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
-                    col.key === 'UNI' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' :
-                    'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
-                  )}>
-                    {col.key}
-                  </span>
-                )}
-              </td>
+    <div className="flex flex-col flex-1">
+      {/* Action bar */}
+      <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-4 py-2">
+        <button
+          type="button"
+          onClick={onToggleAddColumn}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          data-testid="toggle-add-column"
+        >
+          <PlusCircle size={12} />
+          Add Column
+        </button>
+        {actionError && (
+          <div className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+            <AlertCircle size={12} />
+            <span>{actionError}</span>
+            <button type="button" onClick={onDismissError}><X size={12} /></button>
+          </div>
+        )}
+      </div>
+
+      {/* Add column form */}
+      {addColumnOpen && (
+        <div className="flex items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-4 py-2 bg-gray-50 dark:bg-gray-900/50" data-testid="add-column-form">
+          <input
+            value={addColumnName}
+            onChange={(e) => onAddColumnNameChange(e.target.value)}
+            placeholder="Column name"
+            className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs font-mono text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            data-testid="add-column-name-input"
+          />
+          <select
+            value={addColumnType}
+            onChange={(e) => onAddColumnTypeChange(e.target.value)}
+            className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            data-testid="add-column-type-select"
+          >
+            {SQL_COLUMN_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={onAddColumn}
+            disabled={actionPending || !addColumnName.trim()}
+            className="rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid="confirm-add-column"
+          >
+            {actionPending ? <Loader2 size={12} className="animate-spin" /> : 'Add'}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleAddColumn}
+            className="rounded-md border border-gray-200 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Confirm drop column */}
+      {confirmDropColumn && (
+        <div className="flex items-center gap-2 border-b border-red-200 dark:border-red-700 px-4 py-2 bg-red-50 dark:bg-red-900/20" data-testid="confirm-drop-column">
+          <span className="text-xs text-red-700 dark:text-red-300">
+            Drop column <span className="font-mono font-semibold">{confirmDropColumn}</span>?
+          </span>
+          <button
+            type="button"
+            onClick={() => onDropColumn(confirmDropColumn)}
+            disabled={actionPending}
+            className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            data-testid="confirm-drop-column-button"
+          >
+            {actionPending ? <Loader2 size={12} className="animate-spin" /> : 'Drop'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancelDropColumn}
+            className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto" data-testid="structure-grid">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 dark:bg-gray-900/50 sticky top-0 z-10">
+              <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Column</th>
+              <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Type</th>
+              <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Nullable</th>
+              <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Default</th>
+              <th className="text-left px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Key</th>
+              <th className="w-10 px-2 py-2"></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {columns.map((col, i) => (
+              <tr
+                key={col.name}
+                className={clsx(
+                  'border-t border-gray-100 dark:border-gray-700/50 group',
+                  i % 2 === 1 && 'bg-gray-50/50 dark:bg-gray-900/25',
+                )}
+                data-testid={`structure-row-${col.name}`}
+              >
+                <td className="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{col.name}</td>
+                <td className="px-4 py-2 font-mono text-blue-600 dark:text-blue-400">{col.type}</td>
+                <td className="px-4 py-2">
+                  <span className={clsx('text-xs font-medium', col.nullable ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-400')}>
+                    {col.nullable ? 'YES' : 'NO'}
+                  </span>
+                </td>
+                <td className="px-4 py-2 font-mono text-gray-600 dark:text-gray-400">{col.defaultValue ?? 'NULL'}</td>
+                <td className="px-4 py-2">
+                  {col.key && (
+                    <span className={clsx(
+                      'inline-block rounded px-1.5 py-0.5 text-xs font-medium',
+                      col.key === 'PRI' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
+                      col.key === 'UNI' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' :
+                      'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+                    )}>
+                      {col.key}
+                    </span>
+                  )}
+                </td>
+                <td className="px-2 py-2">
+                  {col.key !== 'PRI' && (
+                    <button
+                      type="button"
+                      onClick={() => onConfirmDropColumn(col.name)}
+                      className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-opacity"
+                      title="Drop column"
+                      data-testid={`drop-column-${col.name}`}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

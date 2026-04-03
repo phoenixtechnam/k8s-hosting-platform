@@ -225,6 +225,8 @@ export default function Files() {
     const fullPath = joinPath(currentPath, entry.name);
     if (entry.type === 'directory') {
       setCurrentPath(fullPath);
+    } else if (isSqliteFile(entry.name)) {
+      navigate(`/database-manager?file=${encodeURIComponent(fullPath.replace(/^\//, ''))}`);
     } else if (isImageFile(entry.name)) {
       setViewingImage(fullPath);
     } else if (isArchiveFile(entry.name)) {
@@ -232,7 +234,7 @@ export default function Files() {
     } else if (entry.size < 10 * 1024 * 1024) {
       setEditingFile(fullPath);
     }
-  }, [currentPath]);
+  }, [currentPath, navigate]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();

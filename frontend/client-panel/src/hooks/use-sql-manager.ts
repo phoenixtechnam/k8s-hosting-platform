@@ -33,7 +33,7 @@ export function useExecuteQuery(clientId: string | null | undefined, deploymentI
     mutationFn: ({ database, query }: { readonly database: string; readonly query: string }) => {
       if (!clientId || !deploymentId) throw new Error('Missing client or deployment');
       return apiFetch<{ data: QueryResult }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/execute`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/query`,
         { method: 'POST', body: JSON.stringify({ database, query }) },
       );
     },
@@ -49,7 +49,7 @@ export function useListTables(
     queryKey: ['sql-tables', clientId, deploymentId, database],
     queryFn: () =>
       apiFetch<{ data: readonly string[] }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/tables?database=${encodeURIComponent(database!)}`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/tables?database=${encodeURIComponent(database!)}`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId) && Boolean(database),
     staleTime: 0,
@@ -68,7 +68,7 @@ export function useTableStructure(
     queryKey: ['sql-structure', clientId, deploymentId, database, table],
     queryFn: () =>
       apiFetch<{ data: readonly ColumnInfo[] }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/structure?database=${encodeURIComponent(database!)}&table=${encodeURIComponent(table!)}`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/table-structure?database=${encodeURIComponent(database!)}&table=${encodeURIComponent(table!)}`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId) && Boolean(database) && Boolean(table),
   });
@@ -97,7 +97,7 @@ export function useTableData(
       if (orderDir) params.set('orderDir', orderDir);
 
       return apiFetch<{ data: QueryResult }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/table-data?${params}`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/table-data?${params}`,
       );
     },
     enabled: Boolean(clientId) && Boolean(deploymentId) && Boolean(database) && Boolean(table),
@@ -114,7 +114,7 @@ export function useRowCount(
     queryKey: ['sql-row-count', clientId, deploymentId, database, table],
     queryFn: () =>
       apiFetch<{ data: { count: number } }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/row-count?database=${encodeURIComponent(database!)}&table=${encodeURIComponent(table!)}`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/row-count?database=${encodeURIComponent(database!)}&table=${encodeURIComponent(table!)}`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId) && Boolean(database) && Boolean(table),
   });
@@ -127,8 +127,8 @@ export function useExportDatabase(clientId: string | null | undefined) {
       const token = localStorage.getItem('auth_token');
       const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
       const res = await fetch(
-        `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/export?database=${encodeURIComponent(database)}`,
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/export?database=${encodeURIComponent(database)}`,
+        { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: { message: 'Export failed' } }));
@@ -163,7 +163,7 @@ export function useImportSql(clientId: string | null | undefined) {
       // Read the .sql file as text, then send as JSON — the backend expects { database, sql }
       const sql = await file.text();
       return apiFetch<{ data: { message: string } }>(
-        `/api/v1/clients/${clientId}/deployments/${deploymentId}/sql/import`,
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/import`,
         { method: 'POST', body: JSON.stringify({ database, sql }) },
       );
     },
