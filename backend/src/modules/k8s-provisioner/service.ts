@@ -246,7 +246,7 @@ export async function runProvisionNamespace(
     await applyNetworkPolicy(k8s, namespace);
     await updateProgress('Create NetworkPolicy', 'completed');
 
-    // Step 4: Create shared PVC (10Gi for deployment subPaths, rest available for StatefulSet PVCs)
+    // Step 4: Create shared PVC (all components use Deployment + subPath on this PVC)
     await updateProgress('Create PVC', 'running');
     const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);

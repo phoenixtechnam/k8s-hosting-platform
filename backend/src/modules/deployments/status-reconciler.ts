@@ -1,7 +1,7 @@
 /**
  * Deployment status reconciler.
  *
- * Checks actual K8s Deployment/StatefulSet/CronJob status and updates DB accordingly.
+ * Checks actual K8s Deployment/CronJob status and updates DB accordingly.
  * Detects CrashLoopBackOff, OOMKilled, ImagePullBackOff.
  */
 

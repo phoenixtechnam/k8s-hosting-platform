@@ -1,9 +1,10 @@
 /**
  * Multi-component K8s deployer.
  *
- * Creates/manages Deployments, StatefulSets, CronJobs, and Services
+ * Creates/manages Deployments, CronJobs, and Services
  * for catalog entries in client namespaces.
- * Replaces the single-component workloads/k8s-deployer.ts.
+ * All component types (including those marked 'statefulset' in catalog manifests)
+ * are deployed as K8s Deployments using the shared client PVC with subPath.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -101,7 +102,7 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, resourceSuffix, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, storageRequest, configuration, envVars } = input;
+  const { deploymentName, resourceSuffix, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
   const baseName = `${deploymentName}-${resourceSuffix}`;
@@ -124,11 +125,8 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
+      case 'statefulset':  // Uses Deployment + shared PVC (type is semantic hint only)
         await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, volumes);
-        break;
-
-      case 'statefulset':
-        await deployK8sStatefulSet(k8s, namespace, name, labels, container, replicaCount, volumes, storageRequest);
         break;
 
       case 'cronjob':
@@ -206,77 +204,6 @@ async function deployK8sDeployment(
   } catch (err: unknown) {
     if (isK8s409(err)) {
       await k8s.apps.replaceNamespacedDeployment({ name, namespace, body } as Parameters<typeof k8s.apps.replaceNamespacedDeployment>[0]);
-    } else {
-      throw err;
-    }
-  }
-}
-
-async function deployK8sStatefulSet(
-  k8s: K8sClients,
-  namespace: string,
-  name: string,
-  labels: Record<string, string>,
-  container: Record<string, unknown>,
-  replicaCount: number,
-  volumes: Array<{ local_path: string; container_path: string }>,
-  storageRequest?: string,
-): Promise<void> {
-  // Add volume mounts to container
-  const volumeMounts = volumes.map((v, i) => ({
-    name: `vol-${i}`,
-    mountPath: v.container_path,
-  }));
-
-  const containerWithMounts = {
-    ...container,
-    volumeMounts,
-  };
-
-  const volumeClaimTemplates = volumes.map((_v, i) => ({
-    metadata: { name: `vol-${i}` },
-    spec: {
-      accessModes: ['ReadWriteOnce'],
-      resources: {
-        requests: { storage: storageRequest ?? '1Gi' },
-      },
-    },
-  }));
-
-  // Init container ensures mount point directories exist inside PVCs
-  const initContainers = volumes.length > 0
-    ? [{
-        name: 'init-dirs',
-        image: 'busybox:1.36',
-        command: ['sh', '-c', volumeMounts.map(vm => `mkdir -p ${vm.mountPath}`).join(' && ')],
-        volumeMounts,
-        resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
-      }]
-    : undefined;
-
-  const selectorLabels = { app: labels.app, component: labels.component };
-  const body = {
-    metadata: { name, namespace, labels },
-    spec: {
-      replicas: replicaCount,
-      serviceName: name,
-      selector: { matchLabels: selectorLabels },
-      template: {
-        metadata: { labels },
-        spec: {
-          ...(initContainers ? { initContainers } : {}),
-          containers: [containerWithMounts],
-        },
-      },
-      volumeClaimTemplates,
-    },
-  } as Record<string, unknown>;
-
-  try {
-    await k8s.apps.createNamespacedStatefulSet({ namespace, body } as Parameters<typeof k8s.apps.createNamespacedStatefulSet>[0]);
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      await k8s.apps.replaceNamespacedStatefulSet({ name, namespace, body } as Parameters<typeof k8s.apps.replaceNamespacedStatefulSet>[0]);
     } else {
       throw err;
     }
@@ -403,20 +330,13 @@ export async function stopDeployment(
     const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
-      if (component.type === 'deployment') {
+      if (component.type === 'deployment' || component.type === 'statefulset') {
         await k8s.apps.patchNamespacedDeployment({
           name,
           namespace,
           body: { spec: { replicas: 0 } },
           contentType: 'application/strategic-merge-patch+json',
         } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
-      } else if (component.type === 'statefulset') {
-        await k8s.apps.patchNamespacedStatefulSet({
-          name,
-          namespace,
-          body: { spec: { replicas: 0 } },
-          contentType: 'application/strategic-merge-patch+json',
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0]);
       } else if (component.type === 'cronjob') {
         await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.patchNamespacedCronJob({
           name,
@@ -447,20 +367,13 @@ export async function startDeployment(
     const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
-      if (component.type === 'deployment') {
+      if (component.type === 'deployment' || component.type === 'statefulset') {
         await k8s.apps.patchNamespacedDeployment({
           name,
           namespace,
           body: { spec: { replicas } },
           contentType: 'application/strategic-merge-patch+json',
         } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
-      } else if (component.type === 'statefulset') {
-        await k8s.apps.patchNamespacedStatefulSet({
-          name,
-          namespace,
-          body: { spec: { replicas } },
-          contentType: 'application/strategic-merge-patch+json',
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0]);
       } else if (component.type === 'cronjob') {
         await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.patchNamespacedCronJob({
           name,
@@ -484,7 +397,7 @@ export async function restartDeployment(
   resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
-  // Restart by deleting pods — the Deployment/StatefulSet controller will recreate them
+  // Restart by deleting pods — the Deployment controller will recreate them
   const componentCount = components.length;
   const baseName = `${deploymentName}-${resourceSuffix}`;
 
@@ -547,16 +460,13 @@ export async function deleteDeploymentResources(
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   const componentCount = components.length;
-  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
     const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
-      if (component.type === 'deployment') {
+      if (component.type === 'deployment' || component.type === 'statefulset') {
         await k8s.apps.deleteNamespacedDeployment({ name, namespace });
-      } else if (component.type === 'statefulset') {
-        await k8s.apps.deleteNamespacedStatefulSet({ name, namespace });
       } else if (component.type === 'cronjob') {
         await (k8s as unknown as { batch: { deleteNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.deleteNamespacedCronJob({ name, namespace });
       } else if (component.type === 'job') {
@@ -574,26 +484,6 @@ export async function deleteDeploymentResources(
         if (!isK8s404(err)) throw err;
       }
     }
-  }
-
-  // Delete PVCs associated with StatefulSet components
-  try {
-    const allPvcs = await k8s.core.listNamespacedPersistentVolumeClaim({ namespace });
-    const pvcItems = (allPvcs as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [];
-    const matchingPvcs = pvcItems.filter(pvc => pvc.metadata?.name?.includes(baseName));
-
-    for (const pvc of matchingPvcs) {
-      const pvcName = pvc.metadata?.name;
-      if (pvcName) {
-        try {
-          await k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
-        } catch (err: unknown) {
-          if (!isK8s404(err)) throw err;
-        }
-      }
-    }
-  } catch (err: unknown) {
-    if (!isK8s404(err)) throw err;
   }
 }
 
@@ -613,11 +503,8 @@ export async function getDeploymentStatus(
   for (const component of components) {
     const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
-    if (component.type === 'deployment') {
+    if (component.type === 'deployment' || component.type === 'statefulset') {
       const status = await getK8sDeploymentStatus(k8s, namespace, name, baseName, component.name);
-      componentStatuses.push(status);
-    } else if (component.type === 'statefulset') {
-      const status = await getK8sStatefulSetStatus(k8s, namespace, name, component.name);
       componentStatuses.push(status);
     } else if (component.type === 'cronjob') {
       // CronJobs are either suspended or active
@@ -720,38 +607,3 @@ async function getK8sDeploymentStatus(
   };
 }
 
-async function getK8sStatefulSetStatus(
-  k8s: K8sClients,
-  namespace: string,
-  name: string,
-  componentName: string,
-): Promise<ComponentPodStatus> {
-  let sts: Record<string, unknown> | null = null;
-  try {
-    sts = await k8s.apps.readNamespacedStatefulSet({ name, namespace }) as Record<string, unknown>;
-  } catch (err: unknown) {
-    if (isK8s404(err)) return { name: componentName, type: 'statefulset', phase: 'not_deployed', ready: false };
-    throw err;
-  }
-
-  const spec = (sts as { spec?: { replicas?: number } }).spec;
-  const status = (sts as { status?: { replicas?: number; readyReplicas?: number } }).status;
-  const desiredReplicas = spec?.replicas ?? 1;
-  const readyReplicas = status?.readyReplicas ?? 0;
-
-  if (desiredReplicas === 0) {
-    return { name: componentName, type: 'statefulset', phase: 'stopped', ready: false };
-  }
-
-  if (readyReplicas >= desiredReplicas) {
-    return { name: componentName, type: 'statefulset', phase: 'running', ready: true };
-  }
-
-  return {
-    name: componentName,
-    type: 'statefulset',
-    phase: 'starting',
-    ready: false,
-    message: `${readyReplicas}/${desiredReplicas} replicas ready`,
-  };
-}
