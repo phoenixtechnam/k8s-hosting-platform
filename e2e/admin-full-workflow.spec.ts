@@ -180,7 +180,7 @@ test.describe('Admin Full Workflow — End-to-End', () => {
     await expect(page.getByRole('heading', { name: 'Monitoring', exact: true })).toBeVisible({ timeout: 2000 });
 
     await page.getByRole('link', { name: 'Applications' }).click();
-    await expect(page.getByRole('heading', { name: 'Applications' })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('applications-heading')).toBeVisible({ timeout: 2000 });
 
     // Back to dashboard — should still be logged in
     await page.getByRole('link', { name: 'Dashboard' }).click();
