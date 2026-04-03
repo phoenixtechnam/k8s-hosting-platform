@@ -84,7 +84,6 @@ interface ParameterEntry {
 interface VolumeEntry {
   readonly local_path?: string;
   readonly container_path?: string;
-  readonly size_megabytes?: number;
   readonly description?: string;
   readonly optional?: boolean;
 }
@@ -118,7 +117,7 @@ interface ResourceTier {
 }
 
 interface ResourcesData {
-  readonly default?: ResourceTier;
+  readonly recommended?: ResourceTier;
   readonly minimum?: ResourceTier;
 }
 
@@ -464,7 +463,7 @@ function AppDetailPanel({
   readonly onClose: () => void;
 }) {
   const resources = asResources(entry.resources);
-  const minRes = resources.minimum ?? resources.default;
+  const minRes = resources.minimum ?? resources.recommended;
   const minCpu = minRes?.cpu ?? '0.25';
   const minMemory = minRes?.memory ?? '256Mi';
   const minStorage = minRes?.storage ?? '5Gi';
@@ -549,17 +548,17 @@ function AppDetailPanel({
           </div>
 
           {/* Resource Requirements */}
-          {(resources.default ?? resources.minimum) && (
+          {(resources.recommended ?? resources.minimum) && (
             <div>
               <SectionHeading icon={Cpu} title="Resource Requirements" />
               <div className="grid grid-cols-2 gap-4">
-                {resources.default && (
+                {resources.recommended && (
                   <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Default</p>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Recommended</p>
                     <div className="space-y-1 text-sm">
-                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.cpu}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.memory}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.storage}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.storage}</span></div>
                     </div>
                   </div>
                 )}
@@ -744,7 +743,6 @@ function AppDetailPanel({
                     <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                       <th className="px-3 py-2">Local Path</th>
                       <th className="px-3 py-2">Container Path</th>
-                      <th className="px-3 py-2">Size</th>
                       <th className="px-3 py-2">Description</th>
                       <th className="px-3 py-2"></th>
                     </tr>
@@ -754,7 +752,6 @@ function AppDetailPanel({
                       <tr key={vol.local_path ?? i}>
                         <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{vol.local_path}</td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path}</td>
-                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.size_megabytes != null ? `${vol.size_megabytes} MB` : '-'}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.description ?? '-'}</td>
                         <td className="px-3 py-2">
                           {vol.optional && (

@@ -116,6 +116,28 @@ export function useRegenerateCredentials(clientId: string | undefined) {
   });
 }
 
+export function useRestoreDeployment(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<{ data: Deployment }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/restore`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+    },
+  });
+}
+
+export function usePermanentDeleteDeployment(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<void>(`/api/v1/clients/${clientId}/deployments/${deploymentId}?force=true`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
+    },
+  });
+}
+
 // ─── Database Management Hooks ──────────────────────────────────────────────
 
 export interface DbDatabase {

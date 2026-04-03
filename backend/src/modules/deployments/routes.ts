@@ -50,8 +50,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
+    const includeDeleted = query.include_deleted === 'true' || query.include_deleted === '1';
 
-    const result = await service.listDeployments(app.db, clientId, paginationParams);
+    const result = await service.listDeployments(app.db, clientId, { ...paginationParams, includeDeleted });
     return paginated(result.data, result.pagination);
   });
 
@@ -114,9 +115,16 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const components = await service.resolveDeploymentComponents(app.db, deployment);
     const namespace = await service.getClientNamespace(app.db, clientId);
 
-    await restartDeployment(k8s, namespace, deployment.name, components);
+    await restartDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
 
     return success({ message: 'Rolling restart initiated' });
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/restore
+  app.post('/clients/:clientId/deployments/:id/restore', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const restored = await service.restoreDeployment(app.db, clientId, id, getK8s());
+    return success(restored);
   });
 
   // ─── Database Management Routes ──────────────────────────────────────────
@@ -154,8 +162,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await service.getClientNamespace(app.db, clientId);
     const config = service.parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
 
-    const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, deployment.name, entry, config);
+    const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, baseName, entry, config);
     return ctx;
   }
 
@@ -234,10 +243,25 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // DELETE /api/v1/clients/:clientId/deployments/:id
+  // ?force=true for permanent deletion (skips soft-delete)
   app.delete('/clients/:clientId/deployments/:id', async (request, reply) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
-    await service.deleteDeployment(app.db, clientId, id, getK8s());
+    const query = request.query as Record<string, unknown>;
+    const force = query.force === 'true' || query.force === '1';
+
+    if (force) {
+      await service.hardDeleteDeployment(app.db, clientId, id, getK8s());
+    } else {
+      await service.deleteDeployment(app.db, clientId, id, getK8s());
+    }
     reply.status(204).send();
+  });
+
+  // POST /api/v1/clients/:clientId/deployments/:id/restore
+  app.post('/clients/:clientId/deployments/:id/restore', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const restored = await service.restoreDeployment(app.db, clientId, id, getK8s());
+    return success(restored);
   });
 
   // POST /api/v1/admin/deployments/reconcile — admin-only, reconcile all deployment statuses

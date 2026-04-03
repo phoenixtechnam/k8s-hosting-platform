@@ -30,6 +30,8 @@ vi.mock('../hooks/use-deployments', () => ({
   useCreateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useUpdateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useRestoreDeployment: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePermanentDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 vi.mock('../hooks/use-catalog', () => ({

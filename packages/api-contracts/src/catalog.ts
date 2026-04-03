@@ -50,7 +50,6 @@ export const componentSchema = z.object({
 export const volumeSchema = z.object({
   local_path: z.string(),
   container_path: z.string(),
-  size_megabytes: z.number().int(),
   description: z.string().optional(),
   optional: z.boolean().optional(),
 });
@@ -82,7 +81,7 @@ export const catalogEntryResponseSchema = z.object({
   networking: z.record(z.string(), z.unknown()).nullable(),
   volumes: z.array(volumeSchema).nullable(),
   resources: z.object({
-    default: z.object({ cpu: z.string(), memory: z.string(), storage: z.string().optional() }),
+    recommended: z.object({ cpu: z.string(), memory: z.string(), storage: z.string().optional() }),
     minimum: z.object({ cpu: z.string(), memory: z.string(), storage: z.string().optional() }),
   }).nullable(),
   healthCheck: z.record(z.string(), z.unknown()).nullable(),
@@ -149,10 +148,13 @@ export const deploymentResponseSchema = z.object({
   cpuRequest: z.string(),
   memoryRequest: z.string(),
   configuration: z.record(z.string(), z.unknown()).nullable(),
+  resourceSuffix: z.string(),
   helmReleaseName: z.string().nullable(),
   installedVersion: z.string().nullable(),
   targetVersion: z.string().nullable(),
   lastUpgradedAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+  deletedAt: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

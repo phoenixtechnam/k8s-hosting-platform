@@ -21,12 +21,14 @@ export interface DeployComponentInput {
 
 export interface DeployCatalogEntryInput {
   readonly deploymentName: string;
+  readonly resourceSuffix: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }>;
+  readonly volumes: Array<{ local_path: string; container_path: string }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
+  readonly storageRequest?: string;
   readonly configuration?: Record<string, unknown>;
   readonly envVars?: { fixed?: Record<string, string> };
 }
@@ -59,18 +61,18 @@ function isK8s409(err: unknown): boolean {
   return false;
 }
 
-function deploymentLabels(deploymentName: string, componentName: string): Record<string, string> {
+function deploymentLabels(baseName: string, componentName: string): Record<string, string> {
   return {
-    app: deploymentName,
+    app: baseName,
     component: componentName,
     'platform.io/managed': 'true',
   };
 }
 
-function resourceName(deploymentName: string, componentName: string, componentCount: number): string {
-  // Single-component entries use just the deployment name
-  if (componentCount === 1) return deploymentName;
-  return `${deploymentName}-${componentName}`;
+function k8sResourceName(deploymentName: string, resourceSuffix: string, componentName: string, componentCount: number): string {
+  const base = `${deploymentName}-${resourceSuffix}`;
+  if (componentCount <= 1) return base;
+  return `${base}-${componentName}`;
 }
 
 function buildEnvVars(fixed?: Record<string, string>, configuration?: Record<string, unknown>): Array<{ name: string; value: string }> {
@@ -99,13 +101,14 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
+  const { deploymentName, resourceSuffix, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, storageRequest, configuration, envVars } = input;
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
+  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
-    const name = resourceName(deploymentName, component.name, componentCount);
-    const labels = deploymentLabels(deploymentName, component.name);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const labels = deploymentLabels(baseName, component.name);
 
     const container = {
       name: component.name,
@@ -125,7 +128,7 @@ export async function deployCatalogEntry(
         break;
 
       case 'statefulset':
-        await deployK8sStatefulSet(k8s, namespace, name, labels, container, replicaCount, volumes);
+        await deployK8sStatefulSet(k8s, namespace, name, labels, container, replicaCount, volumes, storageRequest);
         break;
 
       case 'cronjob':
@@ -152,7 +155,7 @@ async function deployK8sDeployment(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   replicaCount: number,
-  volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }> = [],
+  volumes: Array<{ local_path: string; container_path: string }> = [],
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
 
@@ -216,7 +219,8 @@ async function deployK8sStatefulSet(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   replicaCount: number,
-  volumes: Array<{ local_path: string; container_path: string; size_megabytes: number }>,
+  volumes: Array<{ local_path: string; container_path: string }>,
+  storageRequest?: string,
 ): Promise<void> {
   // Add volume mounts to container
   const volumeMounts = volumes.map((v, i) => ({
@@ -229,12 +233,12 @@ async function deployK8sStatefulSet(
     volumeMounts,
   };
 
-  const volumeClaimTemplates = volumes.map((v, i) => ({
+  const volumeClaimTemplates = volumes.map((_v, i) => ({
     metadata: { name: `vol-${i}` },
     spec: {
       accessModes: ['ReadWriteOnce'],
       resources: {
-        requests: { storage: `${v.size_megabytes}Mi` },
+        requests: { storage: storageRequest ?? '1Gi' },
       },
     },
   }));
@@ -390,12 +394,13 @@ export async function stopDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   const componentCount = components.length;
 
   for (const component of components) {
-    const name = resourceName(deploymentName, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
       if (component.type === 'deployment') {
@@ -432,13 +437,14 @@ export async function startDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  resourceSuffix: string,
   components: readonly DeployComponentInput[],
   replicas: number,
 ): Promise<void> {
   const componentCount = components.length;
 
   for (const component of components) {
-    const name = resourceName(deploymentName, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
       if (component.type === 'deployment') {
@@ -475,21 +481,23 @@ export async function restartDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   // Restart by deleting pods — the Deployment/StatefulSet controller will recreate them
   const componentCount = components.length;
+  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
     if (component.type === 'cronjob' || component.type === 'job') continue;
 
-    const name = resourceName(deploymentName, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
       // Find all pods owned by this component
       const pods = await k8s.core.listNamespacedPod({
         namespace,
-        labelSelector: `app=${deploymentName},component=${component.name}`,
+        labelSelector: `app=${baseName},component=${component.name}`,
       });
 
       const podList = (pods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [];
@@ -535,12 +543,14 @@ export async function deleteDeploymentResources(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   const componentCount = components.length;
+  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
-    const name = resourceName(deploymentName, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     try {
       if (component.type === 'deployment') {
@@ -565,6 +575,26 @@ export async function deleteDeploymentResources(
       }
     }
   }
+
+  // Delete PVCs associated with StatefulSet components
+  try {
+    const allPvcs = await k8s.core.listNamespacedPersistentVolumeClaim({ namespace });
+    const pvcItems = (allPvcs as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [];
+    const matchingPvcs = pvcItems.filter(pvc => pvc.metadata?.name?.includes(baseName));
+
+    for (const pvc of matchingPvcs) {
+      const pvcName = pvc.metadata?.name;
+      if (pvcName) {
+        try {
+          await k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+        } catch (err: unknown) {
+          if (!isK8s404(err)) throw err;
+        }
+      }
+    }
+  } catch (err: unknown) {
+    if (!isK8s404(err)) throw err;
+  }
 }
 
 // ─── Status ─────────────────────────────────────────────────────────────────
@@ -573,16 +603,18 @@ export async function getDeploymentStatus(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<AggregateDeploymentStatus> {
   const componentCount = components.length;
   const componentStatuses: ComponentPodStatus[] = [];
+  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
-    const name = resourceName(deploymentName, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
 
     if (component.type === 'deployment') {
-      const status = await getK8sDeploymentStatus(k8s, namespace, name, component.name);
+      const status = await getK8sDeploymentStatus(k8s, namespace, name, baseName, component.name);
       componentStatuses.push(status);
     } else if (component.type === 'statefulset') {
       const status = await getK8sStatefulSetStatus(k8s, namespace, name, component.name);
@@ -636,6 +668,7 @@ async function getK8sDeploymentStatus(
   k8s: K8sClients,
   namespace: string,
   name: string,
+  baseName: string,
   componentName: string,
 ): Promise<ComponentPodStatus> {
   let deployment: Record<string, unknown> | null = null;
@@ -655,8 +688,8 @@ async function getK8sDeploymentStatus(
     return { name: componentName, type: 'deployment', phase: 'stopped', ready: false };
   }
 
-  // Check for pod failures
-  const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
+  // Check for pod failures — use baseName for app label selector
+  const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
   const podList = (pods as { items?: Array<{ status?: { containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string } } }> } }> }).items ?? [];
 
   for (const pod of podList) {

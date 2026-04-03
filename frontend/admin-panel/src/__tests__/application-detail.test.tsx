@@ -26,10 +26,10 @@ const MOCK_CATALOG_ENTRIES = [
       websocket: false,
     },
     volumes: [
-      { local_path: 'applications/wordpress/content', container_path: '/var/www/html/wp-content', size_megabytes: 10240, description: 'Themes, plugins' },
+      { local_path: 'applications/wordpress/content', container_path: '/var/www/html/wp-content', description: 'Themes, plugins' },
     ],
     resources: {
-      default: { cpu: '0.50', memory: '512Mi', storage: '15Gi' },
+      recommended: { cpu: '0.50', memory: '512Mi', storage: '15Gi' },
       minimum: { cpu: '0.25', memory: '256Mi', storage: '5Gi' },
     },
     healthCheck: {
@@ -149,7 +149,7 @@ describe('Application Detail Panel', () => {
     expect(screen.getAllByText('Managed WordPress CMS with MariaDB').length).toBeGreaterThanOrEqual(1);
 
     // Resource Requirements section (visible at top, outside collapsible)
-    expect(screen.getAllByText('Default').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Recommended').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Minimum').length).toBeGreaterThanOrEqual(1);
 
     // Expand "App Details" collapsible

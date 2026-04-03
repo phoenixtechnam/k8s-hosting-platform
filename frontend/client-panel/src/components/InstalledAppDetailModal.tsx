@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database } from 'lucide-react';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import DatabaseManagementModal from './DatabaseManagementModal';
 import type { Deployment, CatalogEntry } from '@/types/api';
@@ -16,6 +16,13 @@ interface ParameterEntry {
   readonly type?: string;
   readonly default?: unknown;
   readonly required?: boolean;
+}
+
+interface VolumeEntry {
+  readonly local_path?: string;
+  readonly container_path?: string;
+  readonly description?: string;
+  readonly optional?: boolean;
 }
 
 function parseJsonField<T>(value: unknown): T | null {
@@ -110,6 +117,20 @@ export default function InstalledAppDetailModal({
 
   const parameters = parseJsonField<readonly ParameterEntry[]>(catalogEntry?.parameters) ?? (Array.isArray(catalogEntry?.parameters) ? catalogEntry.parameters as readonly ParameterEntry[] : []);
 
+  const volumes: readonly VolumeEntry[] = (() => {
+    const raw = catalogEntry?.volumes;
+    if (raw == null) return [];
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(raw) ? raw : [];
+  })();
+
   const configuration: Record<string, unknown> = (() => {
     const raw = deployment.configuration;
     if (raw == null) return {};
@@ -187,6 +208,17 @@ export default function InstalledAppDetailModal({
           </div>
         </div>
 
+        {/* Last Error Banner */}
+        {deployment.lastError && (
+          <div
+            className="mb-6 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400"
+            data-testid="last-error-banner"
+          >
+            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+            <span>Last error: {deployment.lastError}</span>
+          </div>
+        )}
+
         {/* Status Section */}
         <div className="mb-6 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
@@ -202,6 +234,12 @@ export default function InstalledAppDetailModal({
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Created</span>
               <p className="text-gray-900 dark:text-gray-100">{formatDate(deployment.createdAt)}</p>
             </div>
+            {deployment.resourceSuffix && (
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">K8s Name</span>
+                <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.name}-{deployment.resourceSuffix}</p>
+              </div>
+            )}
             {deployment.lastUpgradedAt && (
               <div>
                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Last Upgraded</span>
@@ -243,6 +281,34 @@ export default function InstalledAppDetailModal({
                         </span>
                       </td>
                       <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image ?? '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Volumes Section */}
+        {volumes.length > 0 && (
+          <div className="mb-6" data-testid="volumes-section">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+              <HardDrive size={16} className="text-blue-600 dark:text-blue-400" />
+              Volumes
+            </h3>
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-2">Local Path</th>
+                    <th className="px-3 py-2">Container Path</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {volumes.map((vol) => (
+                    <tr key={vol.container_path ?? vol.local_path}>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vol.local_path ?? '-'}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
                     </tr>
                   ))}
                 </tbody>

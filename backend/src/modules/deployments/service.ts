@@ -4,7 +4,7 @@
  * Manages the unified deployments table that replaces both workloads and application_instances.
  */
 
-import { eq, and, desc, asc, lt, gt, sql } from 'drizzle-orm';
+import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -158,7 +158,9 @@ export async function createDeployment(
 
   const components = resolveComponents(entry, versionComponents);
   const namespace = client.kubernetesNamespace;
-  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string; size_megabytes: number }>;
+  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+  const resources = parseJsonField<{ recommended?: { storage?: string }; minimum?: { storage?: string } }>(entry.resources);
+  const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
 
   // Generate secrets for env_vars.generated entries
   const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
@@ -176,6 +178,7 @@ export async function createDeployment(
   };
 
   const id = crypto.randomUUID();
+  const resourceSuffix = id.replace(/-/g, '').substring(0, 6);
 
   await db.insert(deployments).values({
     id,
@@ -187,6 +190,7 @@ export async function createDeployment(
     cpuRequest: input.cpu_request ?? '0.25',
     memoryRequest: input.memory_request ?? '256Mi',
     configuration: finalConfiguration,
+    resourceSuffix,
     installedVersion,
     targetVersion: installedVersion,
     status: 'pending',
@@ -197,12 +201,14 @@ export async function createDeployment(
     try {
       await deployCatalogEntry(k8s, {
         deploymentName: input.name,
+        resourceSuffix,
         namespace,
         components,
         volumes,
         replicaCount: input.replica_count ?? 1,
         cpuRequest: input.cpu_request ?? '0.25',
         memoryRequest: input.memory_request ?? '256Mi',
+        storageRequest,
         configuration: finalConfiguration,
         envVars: envVarsData ?? undefined,
       });
@@ -210,7 +216,7 @@ export async function createDeployment(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[deployments] K8s deploy failed for ${input.name}:`, message);
-      await db.update(deployments).set({ status: 'failed' }).where(eq(deployments.id, id));
+      await db.update(deployments).set({ status: 'failed', lastError: message }).where(eq(deployments.id, id));
     }
   }
 
@@ -231,11 +237,16 @@ export async function getDeploymentById(db: Database, clientId: string, deployme
 export async function listDeployments(
   db: Database,
   clientId: string,
-  params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' } },
+  params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; includeDeleted?: boolean },
 ): Promise<{ data: typeof deployments.$inferSelect[]; pagination: PaginationMeta }> {
-  const { limit, cursor, sort } = params;
+  const { limit, cursor, sort, includeDeleted } = params;
 
   const conditions = [eq(deployments.clientId, clientId)];
+
+  // Exclude soft-deleted deployments unless explicitly requested
+  if (!includeDeleted) {
+    conditions.push(ne(deployments.status, 'deleted'));
+  }
 
   if (cursor) {
     const decoded = decodeCursor(cursor);
@@ -323,9 +334,9 @@ export async function updateDeployment(
 
         try {
           if (input.status === 'stopped') {
-            await stopDeployment(k8s, namespace, deployment.name, components);
+            await stopDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
           } else if (input.status === 'running') {
-            await startDeployment(k8s, namespace, deployment.name, components, deployment.replicaCount ?? 1);
+            await startDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components, deployment.replicaCount ?? 1);
           }
         } catch {
           // K8s operation failed — DB already updated, status will be reconciled
@@ -345,7 +356,7 @@ export async function deleteDeployment(
 ) {
   const deployment = await getDeploymentById(db, clientId, deploymentId);
 
-  // Delete K8s resources first
+  // Soft-delete: mark as deleted and scale K8s resources to 0
   if (k8s) {
     const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
     const namespace = client?.kubernetesNamespace;
@@ -360,7 +371,91 @@ export async function deleteDeployment(
         const components = resolveComponents(entry, null);
 
         try {
-          await deleteDeploymentResources(k8s, namespace, deployment.name, components);
+          await stopDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+        } catch {
+          // K8s stop failed — still mark as deleted in DB
+        }
+      }
+    }
+  }
+
+  await db.update(deployments)
+    .set({ status: 'deleted', deletedAt: new Date() })
+    .where(eq(deployments.id, deploymentId));
+}
+
+export async function restoreDeployment(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+  k8s?: K8sClients,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  if (deployment.status !== 'deleted') {
+    throw new ApiError(
+      'DEPLOYMENT_NOT_DELETED',
+      `Deployment '${deploymentId}' is not in deleted state`,
+      400,
+      { deployment_id: deploymentId, current_status: deployment.status },
+      'Only soft-deleted deployments can be restored',
+    );
+  }
+
+  // Scale K8s resources back up
+  if (k8s) {
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+    const namespace = client?.kubernetesNamespace;
+
+    if (namespace) {
+      const [entry] = await db
+        .select()
+        .from(catalogEntries)
+        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+      if (entry) {
+        const components = resolveComponents(entry, null);
+
+        try {
+          await startDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components, deployment.replicaCount ?? 1);
+        } catch {
+          // K8s start failed — still update DB, reconciler will catch up
+        }
+      }
+    }
+  }
+
+  await db.update(deployments)
+    .set({ status: 'running', deletedAt: null, lastError: null })
+    .where(eq(deployments.id, deploymentId));
+
+  return getDeploymentById(db, clientId, deploymentId);
+}
+
+export async function hardDeleteDeployment(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+  k8s?: K8sClients,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  // Hard-delete: destroy K8s resources + PVCs + DB row
+  if (k8s) {
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+    const namespace = client?.kubernetesNamespace;
+
+    if (namespace) {
+      const [entry] = await db
+        .select()
+        .from(catalogEntries)
+        .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+      if (entry) {
+        const components = resolveComponents(entry, null);
+
+        try {
+          await deleteDeploymentResources(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
         } catch {
           // K8s cleanup failed — still delete DB record
         }
@@ -420,11 +515,12 @@ function buildConnectionInfo(
     port = components[0].ports[0].port;
   }
 
-  // Build internal K8s DNS hostname
+  // Build internal K8s DNS hostname using deployment-scoped resource naming
   const componentName = components.length > 0 ? components[0].name : entry.code;
-  const resourceSuffix = components.length > 1 ? `-${componentName}` : '';
+  const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+  const componentSuffix = components.length > 1 ? `-${componentName}` : '';
   const namespace = `client-${deployment.clientId}`;
-  const host = `${deployment.name}${resourceSuffix}.${namespace}.svc.cluster.local`;
+  const host = `${baseName}${componentSuffix}.${namespace}.svc.cluster.local`;
 
   return {
     host,

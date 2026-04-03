@@ -134,11 +134,24 @@ export async function reconcileDeploymentStatuses(
 
     try {
       const components = resolveComponentsForReconcile(entry);
-      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components);
+      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
       const newDbStatus = phaseToDbStatus(k8sStatus.phase);
 
       if (newDbStatus !== deployment.status) {
-        await db.update(deployments).set({ status: newDbStatus }).where(eq(deployments.id, deployment.id));
+        const updateValues: Record<string, unknown> = { status: newDbStatus };
+
+        // Store error message when status changes to failed
+        if (newDbStatus === 'failed') {
+          const failedComponent = k8sStatus.components.find(c => c.phase === 'failed');
+          if (failedComponent?.message) {
+            updateValues.lastError = failedComponent.message;
+          }
+        } else {
+          // Clear lastError when status recovers
+          updateValues.lastError = null;
+        }
+
+        await db.update(deployments).set(updateValues).where(eq(deployments.id, deployment.id));
         updated++;
       }
     } catch (err) {

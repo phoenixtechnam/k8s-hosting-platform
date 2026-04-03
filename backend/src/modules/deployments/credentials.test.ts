@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateSecurePassword } from './service.js';
 
 describe('generateSecurePassword', () => {
-  const validChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  const validChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*_-+=';
 
   it('should return a string of the requested length', () => {
     expect(generateSecurePassword(16)).toHaveLength(16);

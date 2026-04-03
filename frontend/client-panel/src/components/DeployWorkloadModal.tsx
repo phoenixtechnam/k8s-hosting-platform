@@ -102,8 +102,8 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     if (!name) {
       setName(img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50));
     }
-    if (img.resources?.default?.cpu) setCpuRequest(img.resources.default.cpu);
-    if (img.resources?.default?.memory) setMemoryRequest(img.resources.default.memory);
+    if (img.resources?.recommended?.cpu) setCpuRequest(img.resources.recommended.cpu);
+    if (img.resources?.recommended?.memory) setMemoryRequest(img.resources.recommended.memory);
   };
 
   const resetForm = () => {

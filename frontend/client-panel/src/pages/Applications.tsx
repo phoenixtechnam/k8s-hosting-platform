@@ -1,9 +1,9 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog } from '@/hooks/use-catalog';
-import { useDeployments, useUpdateDeployment, useDeleteDeployment } from '@/hooks/use-deployments';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
@@ -116,7 +116,6 @@ interface ParameterEntry {
 interface VolumeEntry {
   readonly local_path?: string;
   readonly container_path?: string;
-  readonly size_megabytes?: number;
   readonly description?: string;
   readonly optional?: boolean;
 }
@@ -150,7 +149,7 @@ interface ResourceTier {
 }
 
 interface ResourcesData {
-  readonly default?: ResourceTier;
+  readonly recommended?: ResourceTier;
   readonly minimum?: ResourceTier;
 }
 
@@ -528,17 +527,17 @@ function AppDetailPanel({
           </div>
 
           {/* Resource Requirements */}
-          {(resources.default ?? resources.minimum) && (
+          {(resources.recommended ?? resources.minimum) && (
             <div>
               <SectionHeading icon={Cpu} title="Resource Requirements" />
               <div className="grid grid-cols-2 gap-4">
-                {resources.default && (
+                {resources.recommended && (
                   <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Default</p>
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Recommended</p>
                     <div className="space-y-1 text-sm">
-                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.cpu}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.memory}</span></div>
-                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.default.storage}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.cpu}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Memory</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.memory}</span></div>
+                      <div className="flex justify-between"><span className="text-gray-500">Storage</span><span className="font-medium text-gray-900 dark:text-gray-100">{resources.recommended.storage}</span></div>
                     </div>
                   </div>
                 )}
@@ -723,7 +722,6 @@ function AppDetailPanel({
                     <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                       <th className="px-3 py-2">Local Path</th>
                       <th className="px-3 py-2">Container Path</th>
-                      <th className="px-3 py-2">Size</th>
                       <th className="px-3 py-2">Description</th>
                       <th className="px-3 py-2"></th>
                     </tr>
@@ -733,7 +731,6 @@ function AppDetailPanel({
                       <tr key={vol.local_path ?? i}>
                         <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{vol.local_path}</td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path}</td>
-                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.size_megabytes != null ? `${vol.size_megabytes} MB` : '-'}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{vol.description ?? '-'}</td>
                         <td className="px-3 py-2">
                           {vol.optional && (
@@ -795,16 +792,35 @@ function AppDetailPanel({
 
 // Status colors now imported from @/lib/status-colors
 
+function formatTimeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHrs = Math.floor(diffMin / 60);
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  const diffDays = Math.floor(diffHrs / 24);
+  return `${diffDays}d ago`;
+}
+
 function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
   const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(clientId ?? undefined);
   const { data: catalogData } = useCatalog();
   const updateDeployment = useUpdateDeployment(clientId ?? undefined);
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
+  const restoreDeployment = useRestoreDeployment(clientId ?? undefined);
+  const permanentDeleteDeployment = usePermanentDeleteDeployment(clientId ?? undefined);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [permanentDeleteConfirmId, setPermanentDeleteConfirmId] = useState<string | null>(null);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
 
   const deployments = deploymentsData?.data ?? [];
+
+  const activeDeployments = useMemo(() => deployments.filter(d => d.status !== 'deleted'), [deployments]);
+  const deletedDeployments = useMemo(() => deployments.filter(d => d.status === 'deleted'), [deployments]);
 
   const catalogMap = useMemo(() => {
     const map = new Map<string, CatalogEntry>();
@@ -852,12 +868,12 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
 
   return (
     <div className="space-y-8" data-testid="installed-tab">
-      {/* ── Deployments ── */}
-      {deployments.length > 0 && (
+      {/* ── Active Deployments ── */}
+      {activeDeployments.length > 0 && (
         <div className="space-y-4">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Deployments</h3>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {deployments.map((deployment) => (
+            {activeDeployments.map((deployment) => (
               <div
                 key={deployment.id}
                 className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md"
@@ -953,7 +969,100 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         </div>
       )}
 
-      {deployments.length === 0 && (
+      {/* ── Recently Deleted ── */}
+      {deletedDeployments.length > 0 && (
+        <div className="space-y-4" data-testid="deleted-deployments-section">
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+            <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">Recently Deleted</h3>
+            <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {deletedDeployments.map((deployment) => (
+              <div
+                key={deployment.id}
+                className="cursor-pointer rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-5 opacity-50 transition-opacity hover:opacity-70"
+                onClick={() => setSelectedDeploymentId(deployment.id)}
+                data-testid={`deleted-card-${deployment.id}`}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500">
+                      <AppWindow size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                        {deployment.name}
+                      </h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {getCatalogEntryName(deployment.catalogEntryId)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor('deleted')}`}>
+                      deleted
+                    </span>
+                    {deployment.deletedAt && (
+                      <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                        Deleted {formatTimeAgo(deployment.deletedAt)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); restoreDeployment.mutate(deployment.id); }}
+                    disabled={restoreDeployment.isPending}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-green-300 dark:border-green-700 px-3 py-2 text-sm font-medium text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid={`restore-app-${deployment.id}`}
+                  >
+                    {restoreDeployment.isPending ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <RotateCcw size={16} />
+                    )}
+                    Restore
+                  </button>
+                  {permanentDeleteConfirmId === deployment.id ? (
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={async (e) => { e.stopPropagation(); try { await permanentDeleteDeployment.mutateAsync(deployment.id); setPermanentDeleteConfirmId(null); } catch { /* error via hook */ } }}
+                        disabled={permanentDeleteDeployment.isPending}
+                        className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                        data-testid={`confirm-permanent-delete-${deployment.id}`}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirmId(null); }}
+                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirmId(deployment.id); }}
+                      className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                      data-testid={`permanent-delete-app-${deployment.id}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeDeployments.length === 0 && deletedDeployments.length === 0 && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-12 text-center" data-testid="installed-empty">
           <Box className="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600" />
           <h3 className="mt-4 text-sm font-medium text-gray-900 dark:text-gray-100">
