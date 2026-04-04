@@ -222,6 +222,7 @@ export interface DbManagerContext {
   readonly containerName: string;
   readonly engine: Engine;
   readonly rootPassword: string;
+  readonly rootUsername: string;
 }
 
 // ─── Query Execution Types ──────────────────────────────────────────────────
@@ -693,9 +694,10 @@ async function mongoExec(
   containerName: string,
   rootPassword: string,
   command: string,
+  rootUsername = 'root',
 ): Promise<string> {
   const authArgs = rootPassword
-    ? ['-u', 'root', '-p', rootPassword, '--authenticationDatabase', 'admin']
+    ? ['-u', rootUsername, '-p', rootPassword, '--authenticationDatabase', 'admin']
     : [];
   const { stdout, stderr } = await execInPod(
     kubeconfigPath, namespace, podName, containerName,
@@ -708,44 +710,49 @@ async function mongoExec(
 }
 
 async function mongoListDatabases(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, user = 'root',
 ): Promise<readonly DbDatabase[]> {
   const out = await mongoExec(kp, ns, pod, cn, pw,
     'db.adminCommand({listDatabases:1}).databases.filter(d=>!["admin","config","local"].includes(d.name)).map(d=>d.name).join("\\n")',
+    user,
   );
   return out.split('\n').filter(Boolean).map((name) => ({ name }));
 }
 
 async function mongoCreateDatabase(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string, user = 'root',
 ): Promise<void> {
   await mongoExec(kp, ns, pod, cn, pw,
     `db = db.getSiblingDB("${dbName}"); db.createCollection("_init")`,
+    user,
   );
 }
 
 async function mongoDropDatabase(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string, user = 'root',
 ): Promise<void> {
   await mongoExec(kp, ns, pod, cn, pw,
     `db.getSiblingDB("${dbName}").dropDatabase()`,
+    user,
   );
 }
 
 async function mongoListCollections(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, database: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, database: string, user = 'root',
 ): Promise<readonly string[]> {
   const out = await mongoExec(kp, ns, pod, cn, pw,
     `db.getSiblingDB("${database}").getCollectionNames().filter(c=>c!=='_init').join("\\n")`,
+    user,
   );
   return out.split('\n').filter(Boolean);
 }
 
 async function mongoListUsers(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, user = 'root',
 ): Promise<readonly DbUser[]> {
   const out = await mongoExec(kp, ns, pod, cn, pw,
-    'db.getSiblingDB("admin").system.users.find({},{user:1,roles:1}).map(u => u.user + "\\t" + u.roles.map(r=>r.db||"admin").join(",")).join("\\n")',
+    'db.getSiblingDB("admin").system.users.find({},{user:1,roles:1}).toArray().map(u => u.user + "\\t" + u.roles.map(r=>r.db||"admin").join(",")).join("\\n")',
+    user,
   );
   return out.split('\n').filter(Boolean).map((line) => {
     const [username, dbs] = line.split('\t');
@@ -755,28 +762,43 @@ async function mongoListUsers(
 
 async function mongoCreateUser(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
-  username: string, password: string, database?: string,
+  username: string, password: string, database?: string, rootUser = 'root',
 ): Promise<void> {
   const db = database ?? 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
     `db.getSiblingDB("${db}").createUser({user:"${username}",pwd:"${password}",roles:[{role:"readWrite",db:"${db}"}]})`,
+    rootUser,
   );
 }
 
 async function mongoDropUser(
-  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, username: string,
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string, username: string, rootUser = 'root',
 ): Promise<void> {
+  // Find the user's database first — users may be created on specific databases, not admin
+  const dbName = await mongoExec(kp, ns, pod, cn, pw,
+    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${username}"}); u ? u.db : "admin"`,
+    rootUser,
+  );
+  const targetDb = dbName.trim() || 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("admin").dropUser("${username}")`,
+    `db.getSiblingDB("${targetDb}").dropUser("${username}")`,
+    rootUser,
   );
 }
 
 async function mongoSetPassword(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
-  username: string, newPassword: string,
+  username: string, newPassword: string, rootUser = 'root',
 ): Promise<void> {
+  // Find the user's database first
+  const dbName = await mongoExec(kp, ns, pod, cn, pw,
+    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${username}"}); u ? u.db : "admin"`,
+    rootUser,
+  );
+  const targetDb = dbName.trim() || 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("admin").changeUserPassword("${username}","${newPassword}")`,
+    `db.getSiblingDB("${targetDb}").changeUserPassword("${username}","${newPassword}")`,
+    rootUser,
   );
 }
 
@@ -790,6 +812,7 @@ async function mongoExecuteQuery(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
     `db = db.getSiblingDB("${database}"); EJSON.stringify(${query})`,
+    ctx.rootUsername,
   );
   const elapsed = Date.now() - startTime;
 
@@ -821,6 +844,7 @@ async function mongoDescribeCollection(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
     `EJSON.stringify(Object.keys(db.getSiblingDB("${database}").getCollection("${collection}").findOne() || {}))`,
+    ctx.rootUsername,
   );
 
   try {
@@ -863,6 +887,7 @@ async function mongoBrowseCollection(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
     `EJSON.stringify(db.getSiblingDB("${database}").getCollection("${collection}").find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
+    ctx.rootUsername,
   );
   const start = Date.now();
 
@@ -896,6 +921,7 @@ async function mongoCountDocuments(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
     `db.getSiblingDB("${database}").getCollection("${collection}").countDocuments()`,
+    ctx.rootUsername,
   );
   return parseInt(out.trim(), 10) || 0;
 }
@@ -905,7 +931,7 @@ async function mongoCountDocuments(
  */
 async function mongoExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
   const authArgs = ctx.rootPassword
-    ? ['-u', 'root', '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
+    ? ['-u', ctx.rootUsername, '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
     : [];
   try {
     const { stdout, stderr } = await execInPod(
@@ -937,7 +963,7 @@ async function mongoImportDatabase(
   data: string,
 ): Promise<ImportResult> {
   const authArgs = ctx.rootPassword
-    ? ['-u', 'root', '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
+    ? ['-u', ctx.rootUsername, '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
     : [];
   try {
     const { stderr } = await execInPodWithStdin(
@@ -979,12 +1005,16 @@ export async function buildDbContext(
 
   // Get root password from configuration
   let rootPassword = '';
+  let rootUsername = 'root';
   if (engine === 'mariadb') rootPassword = String(configuration.MARIADB_ROOT_PASSWORD ?? '');
   else if (engine === 'mysql') rootPassword = String(configuration.MYSQL_ROOT_PASSWORD ?? '');
-  else if (engine === 'mongodb') rootPassword = String(configuration.MONGO_INITDB_ROOT_PASSWORD ?? '');
+  else if (engine === 'mongodb') {
+    rootPassword = String(configuration.MONGO_INITDB_ROOT_PASSWORD ?? '');
+    rootUsername = String(configuration.MONGO_INITDB_ROOT_USERNAME ?? 'root');
+  }
   // PostgreSQL uses peer/trust auth inside container — no password needed
 
-  return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword };
+  return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword, rootUsername };
 }
 
 export async function listDatabases(ctx: DbManagerContext): Promise<readonly DbDatabase[]> {
@@ -998,7 +1028,7 @@ export async function listDatabases(ctx: DbManagerContext): Promise<readonly DbD
   }
   if (ctx.engine === 'mongodb') {
     return mongoListDatabases(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword,
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database listing not supported`, 400);
@@ -1016,7 +1046,7 @@ export async function createDatabase(ctx: DbManagerContext, name: string): Promi
   }
   if (ctx.engine === 'mongodb') {
     return mongoCreateDatabase(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database creation not supported`, 400);
@@ -1034,7 +1064,7 @@ export async function dropDatabase(ctx: DbManagerContext, name: string): Promise
   }
   if (ctx.engine === 'mongodb') {
     return mongoDropDatabase(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} database deletion not supported`, 400);
@@ -1051,7 +1081,7 @@ export async function listUsers(ctx: DbManagerContext): Promise<readonly DbUser[
   }
   if (ctx.engine === 'mongodb') {
     return mongoListUsers(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword,
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user listing not supported`, 400);
@@ -1080,7 +1110,7 @@ export async function createUser(
   if (ctx.engine === 'mongodb') {
     return mongoCreateUser(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password, database,
+      ctx.rootPassword, username, password, database, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user creation not supported`, 400);
@@ -1098,7 +1128,7 @@ export async function dropUser(ctx: DbManagerContext, username: string): Promise
   }
   if (ctx.engine === 'mongodb') {
     return mongoDropUser(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username,
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} user deletion not supported`, 400);
@@ -1124,7 +1154,7 @@ export async function setUserPassword(
   if (ctx.engine === 'mongodb') {
     return mongoSetPassword(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, username, password,
+      ctx.rootPassword, username, password, ctx.rootUsername,
     );
   }
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} password change not supported`, 400);
@@ -1279,7 +1309,7 @@ export async function listTables(
   if (ctx.engine === 'mongodb') {
     return mongoListCollections(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ctx.rootPassword, database,
+      ctx.rootPassword, database, ctx.rootUsername,
     );
   }
 

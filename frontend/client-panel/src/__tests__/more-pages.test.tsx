@@ -52,6 +52,8 @@ vi.mock('../hooks/use-file-manager', () => ({
   useExtractArchive: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGitClone: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAuthenticatedBlobUrl: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useDiskUsage: vi.fn(() => ({ data: null, isLoading: false })),
+  useFolderSize: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 vi.mock('@monaco-editor/react', () => ({

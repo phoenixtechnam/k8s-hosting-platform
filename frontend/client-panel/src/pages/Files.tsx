@@ -12,7 +12,7 @@ import {
   FolderOpen, File, FilePlus, ChevronRight, ArrowLeft, Trash2, Edit3,
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
-  FileArchive, PackageOpen, Check, MoreVertical, Database,
+  FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import {
@@ -20,6 +20,7 @@ import {
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
   useDeleteFile, useDownloadFile, useUploadFiles, useCopyFile,
   useArchiveFiles, useExtractArchive, useGitClone, useAuthenticatedBlobUrl,
+  useDiskUsage, useFolderSize,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 
@@ -114,6 +115,19 @@ export default function Files() {
   const copyFile = useCopyFile();
   const archiveFiles = useArchiveFiles();
   const gitClone = useGitClone();
+  const { data: diskUsage } = useDiskUsage();
+  const folderSize = useFolderSize();
+  const [folderSizes, setFolderSizes] = useState<Record<string, { size: string; loading: boolean }>>({});
+
+  const calculateFolderSize = useCallback(async (dirPath: string) => {
+    setFolderSizes(prev => ({ ...prev, [dirPath]: { size: '', loading: true } }));
+    try {
+      const result = await folderSize.mutateAsync(dirPath);
+      setFolderSizes(prev => ({ ...prev, [dirPath]: { size: result.data.sizeFormatted, loading: false } }));
+    } catch {
+      setFolderSizes(prev => ({ ...prev, [dirPath]: { size: 'Error', loading: false } }));
+    }
+  }, [folderSize]);
 
   // Clear selection on navigate
   useEffect(() => { setSelected(new Set()); }, [currentPath]);
@@ -300,9 +314,30 @@ export default function Files() {
 
   const pathParts = currentPath.split('/').filter(Boolean);
 
+  const used = diskUsage?.data?.usedFormatted ?? '\u2014';
+  const total = diskUsage?.data?.totalFormatted ?? '\u2014';
+  const usagePct = diskUsage?.data ? (diskUsage.data.usedBytes / diskUsage.data.totalBytes) * 100 : 0;
+
   return (
     <div className="space-y-4">
       <FilePageHeader />
+
+      {/* Storage usage bar */}
+      <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+        <HardDrive size={16} />
+        <div className="flex-1 max-w-xs">
+          <div className="flex justify-between text-xs mb-1">
+            <span>{used} used</span>
+            <span>{total} total</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
+            <div
+              className={`h-1.5 rounded-full ${usagePct > 90 ? 'bg-red-500' : usagePct > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
+              style={{ width: `${Math.min(usagePct, 100)}%` }}
+            />
+          </div>
+        </div>
+      </div>
 
       {/* Breadcrumbs + Actions */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -335,15 +370,27 @@ export default function Files() {
 
       {/* Bulk action toolbar */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2 flex-wrap">
-          <span className="text-sm font-medium text-brand-700 dark:text-brand-300">{selected.size} selected</span>
+        <div className="flex items-center gap-2 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2.5 flex-wrap">
+          <span className="text-base font-medium text-brand-700 dark:text-brand-300">{selected.size} selected</span>
           <div className="mx-2 h-4 w-px bg-brand-200 dark:bg-brand-700" />
-          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'copy' }); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Copy size={13} /> Copy</button>
-          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'move' }); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Move size={13} /> Move</button>
-          <button onClick={() => { setArchiveOpen(true); setArchiveName(`archive-${Date.now()}`); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><FileArchive size={13} /> Archive</button>
-          <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={13} /> Delete</button>
+          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'copy' }); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Copy size={16} /> Copy</button>
+          <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'move' }); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Move size={16} /> Move</button>
+          <button onClick={() => { setArchiveOpen(true); setArchiveName(`archive-${Date.now()}`); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><FileArchive size={16} /> Archive</button>
+          {dirListing.data?.entries.some(e => e.type === 'directory' && selected.has(e.name)) && (
+            <button
+              onClick={() => {
+                const selectedDirs = dirListing.data?.entries.filter(e => e.type === 'directory' && selected.has(e.name)) ?? [];
+                for (const dir of selectedDirs) {
+                  const fullPath = joinPath(currentPath, dir.name);
+                  calculateFolderSize(fullPath);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"
+            ><Calculator size={16} /> Calculate Sizes</button>
+          )}
+          <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={16} /> Delete</button>
           <div className="flex-1" />
-          <button onClick={() => setSelected(new Set())} className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Clear</button>
+          <button onClick={() => setSelected(new Set())} className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Clear</button>
         </div>
       )}
 
@@ -424,16 +471,21 @@ export default function Files() {
                 </tr>
               )}
 
-              {dirListing.data.entries.map((entry) => (
-                <FileRow
-                  key={entry.name} entry={entry}
-                  isSelected={selected.has(entry.name)}
-                  onToggleSelect={() => toggleSelect(entry.name)}
-                  onClick={() => handleFileClick(entry)}
-                  onContextMenu={(e) => handleContextMenu(e, entry)}
-                  onActionClick={(entry) => setContextMenu({ x: 0, y: 0, entry })}
-                />
-              ))}
+              {dirListing.data.entries.map((entry) => {
+                const fullPath = joinPath(currentPath, entry.name);
+                return (
+                  <FileRow
+                    key={entry.name} entry={entry}
+                    isSelected={selected.has(entry.name)}
+                    onToggleSelect={() => toggleSelect(entry.name)}
+                    onClick={() => handleFileClick(entry)}
+                    onContextMenu={(e) => handleContextMenu(e, entry)}
+                    onActionClick={(entry) => setContextMenu({ x: 0, y: 0, entry })}
+                    folderSizeInfo={entry.type === 'directory' ? folderSizes[fullPath] : undefined}
+                    onCalculateSize={entry.type === 'directory' ? () => calculateFolderSize(fullPath) : undefined}
+                  />
+                );
+              })}
 
               {dirListing.data.entries.length === 0 && currentPath === '/' && (
                 <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400 dark:text-gray-500"><FolderOpen size={32} className="mx-auto mb-2" />Empty directory</td></tr>
@@ -465,6 +517,7 @@ export default function Files() {
             navigate(`/database-manager?file=${encodeURIComponent(relPath)}`);
             setContextMenu(null);
           }}
+          onCalculateFolderSize={(path) => { calculateFolderSize(path); setContextMenu(null); }}
         />
       )}
 
@@ -576,7 +629,7 @@ function FilePageHeader() {
 }
 
 function FileRow({
-  entry, isSelected, onToggleSelect, onClick, onContextMenu, onActionClick,
+  entry, isSelected, onToggleSelect, onClick, onContextMenu, onActionClick, folderSizeInfo, onCalculateSize,
 }: {
   readonly entry: FileEntry;
   readonly isSelected: boolean;
@@ -584,6 +637,8 @@ function FileRow({
   readonly onClick: () => void;
   readonly onContextMenu: (e: React.MouseEvent) => void;
   readonly onActionClick: (entry: FileEntry) => void;
+  readonly folderSizeInfo?: { size: string; loading: boolean };
+  readonly onCalculateSize?: () => void;
 }) {
   const isDir = entry.type === 'directory';
   const isImage = !isDir && isImageFile(entry.name);
@@ -611,7 +666,28 @@ function FileRow({
           <span className={isDir ? 'font-medium text-gray-900 dark:text-gray-100 text-[15px]' : 'text-gray-700 dark:text-gray-300 text-[15px]'}>{entry.name}</span>
         </div>
       </td>
-      <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">{isDir ? '-' : formatSize(entry.size)}</td>
+      <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+        {isDir ? (
+          folderSizeInfo?.loading ? (
+            <Loader2 size={14} className="animate-spin text-gray-400" />
+          ) : folderSizeInfo?.size ? (
+            <span className="inline-flex items-center gap-1">
+              {folderSizeInfo.size}
+              {onCalculateSize && (
+                <button onClick={(e) => { e.stopPropagation(); onCalculateSize(); }} className="text-gray-300 hover:text-gray-500 dark:text-gray-600 dark:hover:text-gray-400" title="Recalculate size" data-action="calc-size">
+                  <RefreshCw size={12} />
+                </button>
+              )}
+            </span>
+          ) : (
+            onCalculateSize ? (
+              <button onClick={(e) => { e.stopPropagation(); onCalculateSize(); }} className="text-gray-300 hover:text-gray-500 dark:text-gray-600 dark:hover:text-gray-400" title="Calculate folder size" data-action="calc-size">
+                <Calculator size={14} />
+              </button>
+            ) : '-'
+          )
+        ) : formatSize(entry.size)}
+      </td>
       <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400 hidden sm:table-cell">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : '-'}</td>
       <td className="px-3 py-3 text-right" data-action="actions">
         <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
@@ -623,7 +699,7 @@ function FileRow({
 }
 
 function ContextMenu({
-  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite,
+  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite, onCalculateFolderSize,
 }: {
   readonly entry: FileEntry;
   readonly position?: { x: number; y: number };
@@ -639,6 +715,7 @@ function ContextMenu({
   readonly onExtract: (path: string) => void;
   readonly onNavigate: (path: string) => void;
   readonly onOpenSqlite: (path: string) => void;
+  readonly onCalculateFolderSize: (path: string) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const fullPath = joinPath(currentPath, entry.name);
@@ -660,6 +737,7 @@ function ContextMenu({
       <div className="fixed inset-0 z-[99]" onClick={onClose} />
       <div ref={menuRef} style={style} className="min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
         {isDir && <button className={itemClass} onClick={() => onNavigate(fullPath)}><FolderOpen size={14} /> Open</button>}
+        {isDir && <button className={itemClass} onClick={() => onCalculateFolderSize(fullPath)}><Calculator size={14} /> Calculate Folder Size</button>}
         {isImage && <button className={itemClass} onClick={() => onViewImage(fullPath)}><ImageIcon size={14} /> View Image</button>}
         {isEditable && <button className={itemClass} onClick={() => onEdit(fullPath)}><Edit3 size={14} /> Edit</button>}
         {!isDir && <button className={itemClass} onClick={() => onDownload(fullPath)}><Download size={14} /> Download</button>}

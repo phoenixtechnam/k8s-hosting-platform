@@ -65,6 +65,8 @@ vi.mock('../hooks/use-file-manager', () => ({
   useExtractArchive: () => ({ mutate: mockMutate, isPending: false }),
   useGitClone: () => ({ mutate: mockMutate, isPending: false }),
   useAuthenticatedBlobUrl: () => ({ data: 'blob:http://localhost/test-blob', isLoading: false, error: null }),
+  useDiskUsage: () => ({ data: { data: { usedBytes: 1048576, totalBytes: 10737418240, availableBytes: 10736369664, usedFormatted: '1.0 MB', totalFormatted: '10.0 GB', availableFormatted: '10.0 GB' } }, isLoading: false }),
+  useFolderSize: () => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { path: '/', sizeBytes: 1024, sizeFormatted: '1.0 KB' } }), isPending: false }),
 }));
 
 // Mock Monaco editor

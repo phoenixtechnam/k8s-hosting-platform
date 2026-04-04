@@ -392,6 +392,63 @@ async function handleGitClone(req, res) {
   }
 }
 
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const val = bytes / Math.pow(1024, i);
+  return `${val.toFixed(val < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+async function handleDiskUsage(req, res) {
+  try {
+    // Get actual bytes used by files
+    const { stdout: duOut } = await execFileAsync('du', ['-sb', BASE], { timeout: 30_000 });
+    const usedBytes = parseInt(duOut.split('\t')[0], 10) || 0;
+
+    // Get filesystem stats
+    const { stdout: dfOut } = await execFileAsync('df', ['-B1', BASE], { timeout: 10_000 });
+    const dfLines = dfOut.trim().split('\n');
+    const dfParts = dfLines[1]?.split(/\s+/) || [];
+    const totalBytes = parseInt(dfParts[1], 10) || 0;
+    const availableBytes = parseInt(dfParts[3], 10) || 0;
+
+    sendJson(res, 200, {
+      usedBytes,
+      totalBytes,
+      availableBytes,
+      usedFormatted: formatBytes(usedBytes),
+      totalFormatted: formatBytes(totalBytes),
+      availableFormatted: formatBytes(availableBytes),
+    });
+  } catch (err) {
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleFolderSize(req, res) {
+  const { path: p } = getQuery(req.url);
+  if (!p) return sendError(res, 400, 'path query parameter required');
+  const full = safePath(p);
+  if (!full) return sendError(res, 403, 'Access denied');
+
+  try {
+    const s = await stat(full);
+    if (!s.isDirectory()) return sendError(res, 400, 'Path is not a directory');
+
+    const { stdout } = await execFileAsync('du', ['-sb', full], { timeout: 60_000 });
+    const sizeBytes = parseInt(stdout.split('\t')[0], 10) || 0;
+
+    sendJson(res, 200, {
+      path: p,
+      sizeBytes,
+      sizeFormatted: formatBytes(sizeBytes),
+    });
+  } catch (err) {
+    sendError(res, 500, err.message);
+  }
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -422,6 +479,8 @@ const server = createServer(async (req, res) => {
     if (path === '/archive' && method === 'POST') return handleArchive(req, res);
     if (path === '/extract' && method === 'POST') return handleExtract(req, res);
     if (path === '/git-clone' && method === 'POST') return handleGitClone(req, res);
+    if (path === '/disk-usage' && method === 'GET') return handleDiskUsage(req, res);
+    if (path === '/folder-size' && method === 'GET') return handleFolderSize(req, res);
 
     sendError(res, 404, 'Not found');
   } catch (err) {

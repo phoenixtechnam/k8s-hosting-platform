@@ -307,4 +307,37 @@ export function useUploadFiles() {
   return { uploads, uploadFiles, clearUploads, visible, setVisible };
 }
 
+export interface DiskUsage {
+  readonly usedBytes: number;
+  readonly totalBytes: number;
+  readonly availableBytes: number;
+  readonly usedFormatted: string;
+  readonly totalFormatted: string;
+  readonly availableFormatted: string;
+}
+
+export function useDiskUsage() {
+  const { clientId } = useClientContext();
+  return useQuery({
+    queryKey: ['disk-usage', clientId],
+    queryFn: () => apiFetch<{ data: DiskUsage }>(
+      `/api/v1/clients/${clientId}/files/disk-usage`
+    ),
+    enabled: Boolean(clientId),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useFolderSize() {
+  const { clientId } = useClientContext();
+
+  return useMutation({
+    mutationFn: (path: string) =>
+      apiFetch<{ data: { path: string; sizeBytes: number; sizeFormatted: string } }>(
+        `/api/v1/clients/${clientId}/files/folder-size?path=${encodeURIComponent(path)}`
+      ),
+  });
+}
+
 export type { FileEntry, DirectoryListing, FileContent, FileManagerStatus };

@@ -67,6 +67,40 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success({ stopped: true });
   });
 
+  // GET /api/v1/clients/:clientId/files/disk-usage — get disk usage
+  app.get('/clients/:clientId/files/disk-usage', {
+    schema: { tags: ['Files'], summary: 'Get disk usage', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/disk-usage', {});
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to get disk usage', result.status);
+    }
+    return success(JSON.parse(result.body));
+  });
+
+  // GET /api/v1/clients/:clientId/files/folder-size — calculate folder size
+  app.get('/clients/:clientId/files/folder-size', {
+    schema: { tags: ['Files'], summary: 'Calculate folder size', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const query = request.query as Record<string, string>;
+    if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
+    const namespace = await resolveNamespace(app, clientId);
+    const { k8sClients, kubeconfigPath } = getK8s();
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
+      query: { path: query.path },
+    });
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to calculate folder size', result.status);
+    }
+    return success(JSON.parse(result.body));
+  });
+
   // GET /api/v1/clients/:clientId/files — list directory
   app.get('/clients/:clientId/files', {
     schema: { tags: ['Files'], summary: 'List directory', security: [{ bearerAuth: [] }] },

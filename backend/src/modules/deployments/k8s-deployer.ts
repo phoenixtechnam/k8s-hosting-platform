@@ -77,16 +77,20 @@ function k8sResourceName(deploymentName: string, resourceSuffix: string, compone
 }
 
 function buildEnvVars(fixed?: Record<string, string>, configuration?: Record<string, unknown>): Array<{ name: string; value: string }> {
+  const seen = new Set<string>();
   const envVars: Array<{ name: string; value: string }> = [];
 
+  // Fixed env vars take precedence
   if (fixed) {
     for (const [key, value] of Object.entries(fixed)) {
+      seen.add(key);
       envVars.push({ name: key, value });
     }
   }
 
   if (configuration) {
     for (const [key, value] of Object.entries(configuration)) {
+      if (seen.has(key)) continue; // Already set by fixed
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         envVars.push({ name: key, value: String(value) });
       }

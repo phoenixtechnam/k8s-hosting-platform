@@ -173,8 +173,9 @@ export async function createDeployment(
     }
   }
 
-  // Merge: user config + generated secrets (generated cannot be overridden by user)
+  // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)
   const finalConfiguration: Record<string, unknown> = {
+    ...(envVarsData?.fixed ?? {}),
     ...(input.configuration ?? {}),
     ...generatedSecrets,
   };
