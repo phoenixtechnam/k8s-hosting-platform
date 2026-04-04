@@ -153,6 +153,89 @@ export async function proxyToFileManager(
 }
 
 /**
+ * Stream a request body directly to the file-manager sidecar.
+ * Unlike proxyToFileManager, this does NOT buffer the body — it pipes
+ * the incoming stream directly to the K8s API proxy.
+ * Used for unlimited-size file uploads.
+ */
+export async function streamToFileManager(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  sidecarPath: string,
+  incomingStream: import('node:stream').Readable,
+  options: {
+    contentType?: string;
+    contentLength?: string;
+    query?: Record<string, string>;
+  } = {},
+): Promise<ProxyResult> {
+  const kc = loadKubeConfig(kubeconfigPath);
+  const cluster = kc.getCurrentCluster();
+  if (!cluster) throw new Error('No active cluster in kubeconfig');
+
+  const queryStr = options.query
+    ? '?' + new URLSearchParams(options.query).toString()
+    : '';
+  const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
+
+  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
+  await kc.applyToHTTPSOptions(httpsOpts);
+
+  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
+  if (options.contentType) headers['Content-Type'] = options.contentType;
+  if (options.contentLength) headers['Content-Length'] = options.contentLength;
+  // Use Transfer-Encoding: chunked if no Content-Length
+  if (!options.contentLength) headers['Transfer-Encoding'] = 'chunked';
+
+  const user = kc.getCurrentUser();
+  if (user?.token) headers['Authorization'] = `Bearer ${user.token}`;
+
+  const { default: https } = await import('node:https');
+
+  return new Promise((resolve, reject) => {
+    const fullUrl = new URL(`${cluster.server}${proxyPath}`);
+    const req = https.request({
+      hostname: fullUrl.hostname,
+      port: fullUrl.port || 443,
+      path: fullUrl.pathname + fullUrl.search,
+      method: 'POST',
+      headers,
+      ca: httpsOpts.ca,
+      cert: httpsOpts.cert,
+      key: httpsOpts.key,
+      rejectUnauthorized: false,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const bodyBuffer = Buffer.concat(chunks);
+        const responseHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (typeof v === 'string') responseHeaders[k] = v;
+        }
+        resolve({
+          status: res.statusCode ?? 500,
+          body: bodyBuffer.toString('utf-8'),
+          bodyBuffer,
+          headers: responseHeaders,
+        });
+      });
+    });
+
+    req.on('error', reject);
+
+    // Pipe incoming stream directly to the K8s proxy — zero buffering
+    incomingStream.pipe(req);
+
+    // If incoming stream is destroyed (client abort), destroy the proxy request too
+    incomingStream.on('error', () => req.destroy());
+    incomingStream.on('close', () => {
+      if (!req.writableEnded) req.destroy();
+    });
+  });
+}
+
+/**
  * Ensure file manager is running and ready, then proxy a request.
  */
 export async function fileManagerRequest(

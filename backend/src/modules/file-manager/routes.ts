@@ -6,7 +6,7 @@ import { clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { fileManagerRequest, getFileManagerStatus, ensureFileManagerRunning, stopFileManager } from './service.js';
+import { fileManagerRequest, streamToFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager } from './service.js';
 
 const FM_IMAGE = 'file-manager-sidecar:latest';
 
@@ -22,10 +22,10 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
-  // Register raw body parser for binary uploads (application/octet-stream)
-  // bodyLimit must be set here to override the global Fastify limit for large file uploads
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: 500 * 1024 * 1024 }, (_req, body, done) => {
-    done(null, body);
+  // Register content type parser for binary uploads — do NOT buffer the body.
+  // The upload-raw route streams request.raw directly to the sidecar.
+  app.addContentTypeParser('application/octet-stream', (_req, _payload, done) => {
+    done(null, undefined);
   });
 
   const getK8s = () => {
@@ -362,33 +362,36 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // POST /api/v1/clients/:clientId/files/upload-raw — raw binary upload
-  // Accepts application/octet-stream body, writes to path from query param
+  // POST /api/v1/clients/:clientId/files/upload-raw — streaming raw binary upload
+  // No body limit — streams directly to sidecar without buffering
   app.post('/clients/:clientId/files/upload-raw', {
-    schema: { tags: ['Files'], summary: 'Upload file (raw binary)', security: [{ bearerAuth: [] }] },
-    bodyLimit: 500 * 1024 * 1024, // 500MB per file
-  }, async (request) => {
+    schema: { tags: ['Files'], summary: 'Upload file (raw binary, streaming)', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
     const namespace = await resolveNamespace(app, clientId);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const body = request.body as Buffer;
+    // Ensure file manager is running
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    const status = await getFileManagerStatus(k8sClients, namespace);
+    if (!status.ready) throw new Error(`File manager not ready: ${status.message}`);
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/write-raw', {
-      method: 'POST',
-      body,
+    // Stream the raw request body directly to the sidecar
+    const result = await streamToFileManager(kubeconfigPath, namespace, '/write-raw', request.raw, {
       contentType: 'application/octet-stream',
+      contentLength: request.headers['content-length'],
       query: { path: query.path },
     });
 
     if (result.status !== 200) {
-      const err = JSON.parse(result.body);
-      throw new ApiError('FILE_ERROR', err.error || 'Failed to upload', result.status);
+      let errMsg = 'Failed to upload';
+      try { errMsg = JSON.parse(result.body).error || errMsg; } catch { /* ignore parse error */ }
+      throw new ApiError('FILE_ERROR', errMsg, result.status);
     }
 
-    return success(JSON.parse(result.body));
+    return reply.send(success(JSON.parse(result.body)));
   });
 
   // POST /api/v1/clients/:clientId/files/upload — upload file (multipart, legacy)

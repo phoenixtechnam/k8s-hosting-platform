@@ -352,17 +352,31 @@ async function handleWriteRaw(req, res) {
   if (!full) return sendError(res, 403, 'Access denied');
 
   try {
-    // Ensure parent directory exists
     const dir = dirname(full);
     await mkdir(dir, { recursive: true });
 
-    // Stream the raw body directly to file
     const ws = createWriteStream(full);
+    let aborted = false;
+
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        aborted = true;
+        ws.destroy();
+        // Clean up partial file
+        rm(full, { force: true }).catch(() => {});
+      }
+    });
+
     await pipeline(req, ws);
+
+    if (aborted) return; // Response already gone
+
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
   } catch (err) {
-    sendError(res, 500, err.message);
+    // If client disconnected, clean up partial file
+    rm(full, { force: true }).catch(() => {});
+    if (!res.headersSent) sendError(res, 500, err.message);
   }
 }
 

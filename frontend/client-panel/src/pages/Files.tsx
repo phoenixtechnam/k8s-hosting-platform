@@ -878,10 +878,11 @@ function ExtractDialog({
 }
 
 function UploadProgressModal({ uploads, onClose }: { readonly uploads: readonly UploadProgress[]; readonly onClose: () => void }) {
-  const allDone = uploads.every(u => u.status === 'done' || u.status === 'error');
+  const allDone = uploads.every(u => u.status === 'done' || u.status === 'error' || u.status === 'cancelled');
   const totalFiles = uploads.length;
   const completedFiles = uploads.filter(u => u.status === 'done').length;
   const failedFiles = uploads.filter(u => u.status === 'error').length;
+  const cancelledFiles = uploads.filter(u => u.status === 'cancelled').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget && allDone) onClose(); }}>
@@ -901,19 +902,34 @@ function UploadProgressModal({ uploads, onClose }: { readonly uploads: readonly 
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
               {completedFiles} of {totalFiles} file{totalFiles > 1 ? 's' : ''} uploaded
               {failedFiles > 0 && <span className="text-red-500"> ({failedFiles} failed)</span>}
+              {cancelledFiles > 0 && <span className="text-gray-400"> ({cancelledFiles} cancelled)</span>}
             </p>
           </div>
         )}
 
         <div className="space-y-2 max-h-60 overflow-y-auto">
           {uploads.map((u, i) => (
-            <div key={i} className="rounded-lg border border-gray-100 dark:border-gray-700 p-2">
+            <div key={i} className={`rounded-lg border p-2 ${u.status === 'cancelled' ? 'border-gray-200 dark:border-gray-600 opacity-60' : 'border-gray-100 dark:border-gray-700'}`}>
               <div className="flex items-center justify-between text-sm">
-                <span className="truncate text-gray-700 dark:text-gray-300 max-w-[200px]">{u.filename}</span>
-                <span className="text-xs shrink-0 ml-2">
+                <span className={`truncate max-w-[200px] ${u.status === 'cancelled' ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-700 dark:text-gray-300'}`}>{u.filename}</span>
+                <span className="flex items-center gap-1 text-xs shrink-0 ml-2">
                   {u.status === 'done' && <span className="text-green-600">Done</span>}
                   {u.status === 'error' && <span className="text-red-500">{u.error}</span>}
-                  {u.status === 'uploading' && <span className="text-brand-600">{u.percent}%</span>}
+                  {u.status === 'cancelled' && <span className="text-gray-400">Cancelled</span>}
+                  {u.status === 'uploading' && (
+                    <>
+                      <span className="text-brand-600">{u.percent}%</span>
+                      {u.abort && (
+                        <button
+                          onClick={() => u.abort?.()}
+                          className="rounded p-1 text-gray-400 hover:text-red-500 transition-colors"
+                          title="Cancel upload"
+                        >
+                          <X size={14} />
+                        </button>
+                      )}
+                    </>
+                  )}
                 </span>
               </div>
               {u.status === 'uploading' && (
@@ -923,6 +939,9 @@ function UploadProgressModal({ uploads, onClose }: { readonly uploads: readonly 
               )}
               {u.status === 'done' && (
                 <div className="mt-1 h-1.5 rounded-full bg-green-500" />
+              )}
+              {u.status === 'cancelled' && (
+                <div className="mt-1 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
               )}
             </div>
           ))}

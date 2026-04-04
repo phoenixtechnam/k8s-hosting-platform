@@ -238,8 +238,9 @@ export interface UploadProgress {
   readonly loaded: number;
   readonly total: number;
   readonly percent: number;
-  readonly status: 'uploading' | 'done' | 'error';
+  readonly status: 'uploading' | 'done' | 'error' | 'cancelled';
   readonly error?: string;
+  readonly abort?: () => void;
 }
 
 export function useUploadFiles() {
@@ -252,10 +253,24 @@ export function useUploadFiles() {
     const filePath = targetDir === '/' ? `/${file.name}` : `${targetDir}/${file.name}`;
     const url = `${API_BASE}/api/v1/clients/${clientId}/files/upload-raw?path=${encodeURIComponent(filePath)}`;
 
-    setUploads(prev => [...prev, { filename: file.name, loaded: 0, total: file.size, percent: 0, status: 'uploading' }]);
+    const xhr = new XMLHttpRequest();
+
+    // Create abort function that cancels the XHR and updates status
+    const abortFn = () => {
+      xhr.abort();
+      setUploads(prev => prev.map(u =>
+        u.filename === file.name && u.status === 'uploading'
+          ? { ...u, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
+          : u,
+      ));
+    };
+
+    setUploads(prev => [...prev, {
+      filename: file.name, loaded: 0, total: file.size, percent: 0,
+      status: 'uploading', abort: abortFn,
+    }]);
     setVisible(true);
 
-    const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
 
     const token = localStorage.getItem('auth_token');
@@ -265,7 +280,9 @@ export function useUploadFiles() {
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         setUploads(prev => prev.map(u =>
-          u.filename === file.name ? { ...u, loaded: e.loaded, total: e.total, percent: Math.round((e.loaded / e.total) * 100) } : u,
+          u.filename === file.name && u.status === 'uploading'
+            ? { ...u, loaded: e.loaded, total: e.total, percent: Math.round((e.loaded / e.total) * 100) }
+            : u,
         ));
       }
     };
@@ -273,20 +290,34 @@ export function useUploadFiles() {
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         setUploads(prev => prev.map(u =>
-          u.filename === file.name ? { ...u, status: 'done', percent: 100, loaded: u.total } : u,
+          u.filename === file.name && u.status === 'uploading'
+            ? { ...u, status: 'done', percent: 100, loaded: u.total, abort: undefined }
+            : u,
         ));
         qc.invalidateQueries({ queryKey: ['files', clientId] });
       } else {
         const errMsg = (() => { try { return JSON.parse(xhr.responseText)?.error?.message; } catch { return xhr.statusText; } })();
         setUploads(prev => prev.map(u =>
-          u.filename === file.name ? { ...u, status: 'error', error: errMsg || 'Upload failed' } : u,
+          u.filename === file.name && u.status === 'uploading'
+            ? { ...u, status: 'error', error: errMsg || 'Upload failed', abort: undefined }
+            : u,
         ));
       }
     };
 
     xhr.onerror = () => {
       setUploads(prev => prev.map(u =>
-        u.filename === file.name ? { ...u, status: 'error', error: 'Network error' } : u,
+        u.filename === file.name && u.status === 'uploading'
+          ? { ...u, status: 'error', error: 'Network error', abort: undefined }
+          : u,
+      ));
+    };
+
+    xhr.onabort = () => {
+      setUploads(prev => prev.map(u =>
+        u.filename === file.name && u.status === 'uploading'
+          ? { ...u, status: 'cancelled' as const, error: 'Upload cancelled', abort: undefined }
+          : u,
       ));
     };
 
