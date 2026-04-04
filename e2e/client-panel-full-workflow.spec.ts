@@ -38,7 +38,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByTestId('email-heading')).toBeVisible({ timeout: 2000 });
 
     // 7. Navigate to Files — shows file manager page
-    await page.getByRole('link', { name: 'Files' }).click();
+    await page.getByRole('link', { name: 'File Manager' }).click();
     await expect(page.getByTestId('files-heading')).toBeVisible({ timeout: 2000 });
 
     // 8. Navigate to Settings
@@ -68,7 +68,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     const sidebar = page.getByTestId('sidebar');
     await expect(sidebar).toBeVisible();
 
-    for (const label of ['Dashboard', 'Domains', 'Applications', 'Files', 'Email', 'Backups', 'Settings']) {
+    for (const label of ['Dashboard', 'Domains', 'Applications', 'File Manager', 'Email', 'Backups', 'Settings']) {
       await expect(page.getByRole('link', { name: label })).toBeVisible();
     }
   });
@@ -125,7 +125,7 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
   test('Files page shows file manager UI', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await page.getByRole('link', { name: 'Files' }).click();
+    await page.getByRole('link', { name: 'File Manager' }).click();
     await expect(page.getByTestId('files-heading')).toBeVisible({ timeout: 2000 });
   });
 

@@ -68,7 +68,7 @@ test.describe('Client Panel Smoke Tests', () => {
     await expect(sidebar).toBeVisible();
 
     // All nav items should be visible
-    for (const label of ['Dashboard', 'Domains', 'Applications', 'Files', 'Email', 'Backups', 'Settings']) {
+    for (const label of ['Dashboard', 'Domains', 'Applications', 'File Manager', 'Email', 'Backups', 'Settings']) {
       await expect(page.getByRole('link', { name: label })).toBeVisible();
     }
   });
