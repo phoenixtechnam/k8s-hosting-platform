@@ -23,7 +23,8 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
 
   // Register raw body parser for binary uploads (application/octet-stream)
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => {
+  // bodyLimit must be set here to override the global Fastify limit for large file uploads
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: 500 * 1024 * 1024 }, (_req, body, done) => {
     done(null, body);
   });
 

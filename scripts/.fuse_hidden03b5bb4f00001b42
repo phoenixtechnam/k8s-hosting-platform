@@ -91,23 +91,9 @@ cmd_rebuild() {
   compose build backend admin-panel client-panel
   compose up -d --no-deps backend admin-panel client-panel
   echo ""
-  # Rebuild and reimport file-manager sidecar into k3s
-  _rebuild_sidecar
   # Verify k3s is still running (warn if not)
   _check_k3s_health
   cmd_status
-}
-
-_rebuild_sidecar() {
-  local k3s_name
-  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -z "$k3s_name" ]]; then
-    return
-  fi
-  echo "Rebuilding file-manager sidecar..."
-  docker build -t file-manager-sidecar:latest "${PROJECT_DIR}/images/file-manager-sidecar/" -q 2>/dev/null
-  docker save file-manager-sidecar:latest | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
-  echo "  Sidecar image imported into k3s"
 }
 
 _check_k3s_health() {
