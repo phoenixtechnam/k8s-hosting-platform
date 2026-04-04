@@ -257,6 +257,6 @@ test.describe('Admin CRUD Operations', () => {
     const table = page.locator('table');
     await expect(table).toBeVisible({ timeout: 2000 });
 
-    await expect(page.getByRole('columnheader', { name: /name/i }).first()).toBeVisible({ timeout: 2000 });
+    await expect(page.getByRole('columnheader', { name: /client/i }).first()).toBeVisible({ timeout: 2000 });
   });
 });
