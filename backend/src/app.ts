@@ -50,6 +50,7 @@ import { tlsSettingsRoutes } from './modules/tls-settings/routes.js';
 import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
+import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -206,8 +207,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Start webcron background scheduler (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
     app.addHook('onReady', () => {
-      const timer = startWebcronScheduler(app.db);
-      app.addHook('onClose', () => clearInterval(timer));
+      const webcronTimer = startWebcronScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(webcronTimer));
+
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const cleanupTimer = startIdleCleanup(kubeconfigPath);
+      if (cleanupTimer) {
+        app.addHook('onClose', () => clearInterval(cleanupTimer));
+      }
     });
   }
 

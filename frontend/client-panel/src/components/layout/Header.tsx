@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useResourceUsage } from '@/hooks/use-deployments';
+import { useDiskUsage } from '@/hooks/use-file-manager';
 import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
@@ -227,6 +228,7 @@ function ResourceTag({
 function ResourceUsageTags() {
   const { clientId } = useClientContext();
   const { data } = useResourceUsage(clientId);
+  const { data: diskUsageData } = useDiskUsage();
 
   const usage = data?.data;
   if (!usage) return null;
@@ -234,6 +236,16 @@ function ResourceUsageTags() {
   // Skip if limits are all zero (not provisioned)
   const cpuLimit = parseCpu(usage.cpu.limit);
   if (cpuLimit <= 0) return null;
+
+  // Use actual disk usage from file-manager sidecar when available,
+  // fall back to ResourceQuota PVC allocation otherwise
+  const diskUsage = diskUsageData?.data;
+  const storageUsed = diskUsage
+    ? `${(diskUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2)}Gi`
+    : usage.storage.used;
+  const storageLimit = diskUsage
+    ? `${(diskUsage.totalBytes / (1024 * 1024 * 1024)).toFixed(2)}Gi`
+    : usage.storage.limit;
 
   return (
     <div className="flex items-center gap-1.5" data-testid="resource-usage-tags">
@@ -258,8 +270,8 @@ function ResourceUsageTags() {
       <ResourceTag
         icon={<HardDrive size={14} />}
         label="Storage"
-        used={usage.storage.used}
-        limit={usage.storage.limit}
+        used={storageUsed}
+        limit={storageLimit}
         parser={parseStorage}
         unit="Gi"
         humanizer={humanizeBytes}

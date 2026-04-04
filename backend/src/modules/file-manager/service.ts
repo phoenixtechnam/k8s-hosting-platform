@@ -225,13 +225,21 @@ export async function streamToFileManager(
     req.on('error', reject);
 
     // Pipe incoming stream directly to the K8s proxy — zero buffering
+    // Track if pipe completed normally so we don't destroy on normal close
+    let pipeCompleted = false;
+
     incomingStream.pipe(req);
 
-    // If incoming stream is destroyed (client abort), destroy the proxy request too
-    incomingStream.on('error', () => req.destroy());
-    incomingStream.on('close', () => {
-      if (!req.writableEnded) req.destroy();
+    // When pipe completes, req.end() is called automatically by pipe
+    req.on('finish', () => { pipeCompleted = true; });
+
+    // Only handle abnormal close (client abort)
+    incomingStream.on('error', (err) => {
+      if (!pipeCompleted) req.destroy(err);
     });
+    // Removed the close handler — pipe handles normal completion.
+    // The old close handler could race with pipe's req.end(), causing
+    // "Cannot call write after a stream was destroyed".
   });
 }
 

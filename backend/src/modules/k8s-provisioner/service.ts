@@ -3,6 +3,7 @@ import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
+import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ export const PROVISION_STEPS = [
   'Create ResourceQuota',
   'Create NetworkPolicy',
   'Create PVC',
+  'Start File Manager',
 ] as const;
 
 export const DEPROVISION_STEPS = [
@@ -261,6 +263,12 @@ export async function runProvisionNamespace(
     const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);
     await updateProgress('Create PVC', 'completed');
+
+    // Step 5: Start file-manager sidecar (Deployment + Service)
+    await updateProgress('Start File Manager', 'running');
+    const FM_IMAGE = 'file-manager-sidecar:latest';
+    await ensureFileManagerRunning(k8s, namespace, FM_IMAGE);
+    await updateProgress('Start File Manager', 'completed');
 
     // All done — mark task and client as provisioned
     await db.update(provisioningTasks).set({

@@ -1,3 +1,12 @@
+/**
+ * File-manager sidecar lifecycle management.
+ *
+ * IMPORTANT: In Docker-in-Docker (DinD) local development, the first container
+ * creation takes 20-30 seconds because k3s uses the "native" snapshotter
+ * (overlayfs can't stack inside Docker). On production servers with native
+ * overlayfs, cold start is ~3-4 seconds.
+ */
+
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
 
