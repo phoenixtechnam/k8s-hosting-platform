@@ -1,6 +1,8 @@
 import { sql, eq } from 'drizzle-orm';
+import type * as k8s from '@kubernetes/client-node';
 import { dnsServers, oidcProviders } from '../../db/schema.js';
 import { getProviderForServer } from '../dns-servers/service.js';
+import { getRedis } from '../../shared/redis.js';
 import type { Database } from '../../db/index.js';
 
 export interface ServiceStatus {
@@ -78,14 +80,47 @@ export async function checkOidc(db: Database): Promise<ServiceStatus> {
   }
 }
 
-export async function runAllChecks(db: Database, encryptionKey: string): Promise<HealthCheckResult> {
-  const [dbStatus, dnsStatuses, oidcStatus] = await Promise.all([
+export async function checkKubernetes(core?: k8s.CoreV1Api): Promise<ServiceStatus> {
+  if (!core) {
+    return { name: 'kubernetes', status: 'degraded', message: 'No kubeconfig configured' };
+  }
+  const start = Date.now();
+  try {
+    const res = await core.listNode();
+    const latencyMs = Date.now() - start;
+    const nodeCount = res.items.length;
+    return { name: 'kubernetes', status: 'ok', latencyMs, message: `${nodeCount} node(s)` };
+  } catch (err) {
+    const latencyMs = Date.now() - start;
+    const message = err instanceof Error ? err.message : 'K8s API unreachable';
+    return { name: 'kubernetes', status: 'error', latencyMs, message };
+  }
+}
+
+export async function checkRedis(): Promise<ServiceStatus> {
+  const start = Date.now();
+  try {
+    const redis = getRedis();
+    await redis.ping();
+    const latencyMs = Date.now() - start;
+    return { name: 'redis', status: 'ok', latencyMs };
+  } catch (err) {
+    const latencyMs = Date.now() - start;
+    const message = err instanceof Error ? err.message : 'Redis unreachable';
+    return { name: 'redis', status: 'error', latencyMs, message };
+  }
+}
+
+export async function runAllChecks(db: Database, encryptionKey: string, k8sCore?: k8s.CoreV1Api): Promise<HealthCheckResult> {
+  const [dbStatus, dnsStatuses, oidcStatus, k8sStatus, redisStatus] = await Promise.all([
     checkDatabase(db),
     checkDnsServers(db, encryptionKey),
     checkOidc(db),
+    checkKubernetes(k8sCore),
+    checkRedis(),
   ]);
 
-  const services: readonly ServiceStatus[] = [dbStatus, ...dnsStatuses, oidcStatus];
+  const services: readonly ServiceStatus[] = [dbStatus, ...dnsStatuses, oidcStatus, k8sStatus, redisStatus];
 
   const hasError = services.some((s) => s.status === 'error');
   const hasDegraded = services.some((s) => s.status === 'degraded');

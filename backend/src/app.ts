@@ -134,7 +134,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
   });
 
-  // Health check
+  // Health check — lightweight status with real K8s/Redis connectivity
   app.get('/api/v1/admin/status', {
     preHandler: createCacheMiddleware(10_000),
     schema: {
@@ -147,22 +147,54 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             data: {
               type: 'object',
               properties: {
-                status: { type: 'string', enum: ['healthy'] },
+                status: { type: 'string', enum: ['healthy', 'degraded', 'unhealthy'] },
                 timestamp: { type: 'string', format: 'date-time' },
                 version: { type: 'string' },
+                services: {
+                  type: 'object',
+                  properties: {
+                    kubernetes: { type: 'string', enum: ['ok', 'degraded', 'error'] },
+                    redis: { type: 'string', enum: ['ok', 'error'] },
+                    database: { type: 'string', enum: ['ok', 'error'] },
+                  },
+                },
               },
             },
           },
         },
       },
     },
-  }, async () => ({
-    data: {
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      version: '0.1.0',
-    },
-  }));
+  }, async () => {
+    const { checkDatabase, checkKubernetes, checkRedis } = await import('./modules/health/service.js');
+    const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+
+    const kubeconfigPath = (deps.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    let k8sCore;
+    try { k8sCore = createK8sClients(kubeconfigPath).core; } catch { /* no kubeconfig */ }
+
+    const [dbStatus, k8sStatus, redisStatus] = await Promise.all([
+      checkDatabase(deps.db),
+      checkKubernetes(k8sCore),
+      checkRedis(),
+    ]);
+
+    const statuses = [dbStatus, k8sStatus, redisStatus];
+    const hasError = statuses.some((s) => s.status === 'error');
+    const hasDegraded = statuses.some((s) => s.status === 'degraded');
+
+    return {
+      data: {
+        status: hasError ? 'unhealthy' : hasDegraded ? 'degraded' : 'healthy',
+        timestamp: new Date().toISOString(),
+        version: '0.1.0',
+        services: {
+          kubernetes: k8sStatus.status,
+          redis: redisStatus.status,
+          database: dbStatus.status,
+        },
+      },
+    };
+  });
 
   // Routes
   await app.register(authRoutes, { prefix: '/api/v1' });

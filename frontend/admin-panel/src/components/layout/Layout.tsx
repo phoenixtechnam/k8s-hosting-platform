@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import UpdateBanner from '../UpdateBanner';
+import SystemHealthBanner from '../SystemHealthBanner';
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -16,6 +17,7 @@ export default function Layout() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={openSidebar} />
+        <SystemHealthBanner />
         <UpdateBanner />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">

@@ -37,7 +37,7 @@ export default function Dashboard() {
           value={platformStatus}
           subtitle={statusData?.data?.version}
           icon={Server}
-          accent={platformStatus === 'healthy' ? 'green' : 'amber'}
+          accent={platformStatus === 'healthy' ? 'green' : platformStatus === 'unhealthy' ? 'red' : 'amber'}
         />
         <StatCard
           title="Domains"

@@ -7,7 +7,12 @@ vi.mock('../dns-servers/service.js', () => ({
   }),
 }));
 
-const { checkDatabase, checkDnsServers, checkOidc, runAllChecks } = await import('./service.js');
+vi.mock('../../shared/redis.js', () => ({
+  getRedis: vi.fn(),
+}));
+
+const { checkDatabase, checkDnsServers, checkOidc, checkKubernetes, checkRedis, runAllChecks } = await import('./service.js');
+const { getRedis } = await import('../../shared/redis.js') as { getRedis: ReturnType<typeof vi.fn> };
 
 function createExecuteMock(shouldFail = false) {
   if (shouldFail) {
@@ -62,42 +67,29 @@ describe('health service', () => {
   });
 
   it('overall status is healthy when all services are ok', async () => {
-    const db = {
-      execute: createExecuteMock(),
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([]),
-        }),
-      }),
-    } as any;
-
-    // Mock OIDC: no providers configured
-    db.select.mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]), // no DNS servers
-      }),
-    }).mockReturnValueOnce({
-      from: vi.fn().mockResolvedValue([]), // no OIDC providers
-    });
-
-    // Re-setup with proper chaining for the actual call
-    db.select = vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([]),
-      }),
-    });
-    // Override select for oidc check (no where)
     const fromFn = vi.fn()
       .mockReturnValueOnce({ where: vi.fn().mockResolvedValue([]) }) // dns servers
       .mockResolvedValueOnce([]); // oidc providers
 
-    db.select = vi.fn().mockReturnValue({ from: fromFn });
+    const db = {
+      execute: createExecuteMock(),
+      select: vi.fn().mockReturnValue({ from: fromFn }),
+    } as any;
 
-    const result = await runAllChecks(db, '0'.repeat(64));
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockResolvedValue('PONG'),
+      status: 'ready',
+    });
+
+    const k8sCore = {
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+    };
+
+    const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);
 
     expect(result.overall).toBe('healthy');
     expect(result.checkedAt).toBeDefined();
-    expect(result.services.length).toBeGreaterThanOrEqual(2);
+    expect(result.services.length).toBeGreaterThanOrEqual(4);
   });
 
   it('overall status is unhealthy when database check fails', async () => {
@@ -109,6 +101,11 @@ describe('health service', () => {
       execute: createExecuteMock(true),
       select: vi.fn().mockReturnValue({ from: fromFn }),
     } as any;
+
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockResolvedValue('PONG'),
+      status: 'ready',
+    });
 
     const result = await runAllChecks(db, '0'.repeat(64));
 
@@ -125,8 +122,97 @@ describe('health service', () => {
       select: vi.fn().mockReturnValue({ from: fromFn }),
     } as any;
 
-    const result = await runAllChecks(db, '0'.repeat(64));
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockResolvedValue('PONG'),
+      status: 'ready',
+    });
+
+    const k8sCore = {
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+    };
+
+    const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);
 
     expect(result.overall).toBe('degraded');
+  });
+
+  // --- Kubernetes health check ---
+
+  it('kubernetes check returns ok with node count', async () => {
+    const k8sCore = {
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'node1' } }, { metadata: { name: 'node2' } }] }),
+    };
+    const result = await checkKubernetes(k8sCore as any);
+    expect(result.name).toBe('kubernetes');
+    expect(result.status).toBe('ok');
+    expect(result.message).toBe('2 node(s)');
+    expect(typeof result.latencyMs).toBe('number');
+  });
+
+  it('kubernetes check returns error when API unreachable', async () => {
+    const k8sCore = {
+      listNode: vi.fn().mockRejectedValue(new Error('getaddrinfo ENOTFOUND k3s-server')),
+    };
+    const result = await checkKubernetes(k8sCore as any);
+    expect(result.name).toBe('kubernetes');
+    expect(result.status).toBe('error');
+    expect(result.message).toContain('ENOTFOUND');
+  });
+
+  it('kubernetes check returns not_configured when no client provided', async () => {
+    const result = await checkKubernetes(undefined);
+    expect(result.name).toBe('kubernetes');
+    expect(result.status).toBe('degraded');
+    expect(result.message).toBe('No kubeconfig configured');
+  });
+
+  // --- Redis health check ---
+
+  it('redis check returns ok when ping succeeds', async () => {
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockResolvedValue('PONG'),
+      status: 'ready',
+    });
+    const result = await checkRedis();
+    expect(result.name).toBe('redis');
+    expect(result.status).toBe('ok');
+    expect(typeof result.latencyMs).toBe('number');
+  });
+
+  it('redis check returns error when ping fails', async () => {
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockRejectedValue(new Error('Connection refused')),
+      status: 'ready',
+    });
+    const result = await checkRedis();
+    expect(result.name).toBe('redis');
+    expect(result.status).toBe('error');
+    expect(result.message).toContain('Connection refused');
+  });
+
+  // --- runAllChecks includes k8s and redis ---
+
+  it('runAllChecks includes kubernetes and redis services', async () => {
+    const fromFn = vi.fn()
+      .mockReturnValueOnce({ where: vi.fn().mockResolvedValue([]) })
+      .mockResolvedValueOnce([]);
+    const db = {
+      execute: createExecuteMock(),
+      select: vi.fn().mockReturnValue({ from: fromFn }),
+    } as any;
+
+    (getRedis as ReturnType<typeof vi.fn>).mockReturnValue({
+      ping: vi.fn().mockResolvedValue('PONG'),
+      status: 'ready',
+    });
+
+    const k8sCore = {
+      listNode: vi.fn().mockResolvedValue({ items: [{ metadata: { name: 'n1' } }] }),
+    };
+
+    const result = await runAllChecks(db, '0'.repeat(64), k8sCore as any);
+    const names = result.services.map((s) => s.name);
+    expect(names).toContain('kubernetes');
+    expect(names).toContain('redis');
   });
 });

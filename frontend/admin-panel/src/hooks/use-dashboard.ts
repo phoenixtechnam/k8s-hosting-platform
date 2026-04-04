@@ -1,11 +1,18 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
+interface ServiceStatuses {
+  readonly kubernetes: 'ok' | 'degraded' | 'error';
+  readonly redis: 'ok' | 'error';
+  readonly database: 'ok' | 'error';
+}
+
 interface StatusResponse {
   readonly data: {
-    readonly status: string;
+    readonly status: 'healthy' | 'degraded' | 'unhealthy';
     readonly timestamp: string;
     readonly version: string;
+    readonly services?: ServiceStatuses;
   };
 }
 
