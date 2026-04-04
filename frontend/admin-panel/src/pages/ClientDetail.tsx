@@ -18,6 +18,7 @@ import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
+import { useClientMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups';
@@ -602,6 +603,7 @@ function ResourceLimitsCard({
 }) {
   const updateClient = useUpdateClient(clientId);
   const { data: plansData } = usePlans();
+  const { data: metricsData, isLoading: metricsLoading } = useClientMetrics(clientId);
   const plans = plansData?.data ?? [];
   const plan = plans.find((p) => p.id === client.planId);
 
@@ -766,6 +768,124 @@ function ResourceLimitsCard({
           </div>
         )}
       </form>
+
+      {/* Current Metrics */}
+      <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="current-metrics-section">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Current Usage</h3>
+        {metricsLoading && (
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <Loader2 size={14} className="animate-spin" />
+            Loading metrics...
+          </div>
+        )}
+        {!metricsLoading && !metricsData?.data && (
+          <p className="text-sm text-gray-400 dark:text-gray-500">No metrics available yet.</p>
+        )}
+        {metricsData?.data && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <MetricsUsageBlock
+              label="CPU"
+              inUse={metricsData.data.cpu.inUse}
+              reserved={metricsData.data.cpu.reserved}
+              available={metricsData.data.cpu.available}
+              formatValue={formatMetricsCpu}
+              unit="cores"
+            />
+            <MetricsUsageBlock
+              label="Memory"
+              inUse={metricsData.data.memory.inUse}
+              reserved={metricsData.data.memory.reserved}
+              available={metricsData.data.memory.available}
+              formatValue={formatMetricsGi}
+              unit=""
+            />
+            <MetricsUsageBlock
+              label="Storage"
+              inUse={metricsData.data.storage.inUse}
+              reserved={metricsData.data.storage.reserved}
+              available={metricsData.data.storage.available}
+              formatValue={formatMetricsGi}
+              unit=""
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Metrics Display Helpers ─────────────────────────────────────────────────
+
+function formatMetricsCpu(value: number): string {
+  if (value >= 10) return value.toFixed(0);
+  if (value >= 1) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function formatMetricsGi(valueGi: number): string {
+  if (valueGi <= 0) return '0 Mi';
+  if (valueGi < 1) {
+    const mi = valueGi * 1024;
+    if (mi >= 100) return `${mi.toFixed(0)} Mi`;
+    if (mi >= 10) return `${mi.toFixed(1)} Mi`;
+    return `${mi.toFixed(2)} Mi`;
+  }
+  if (valueGi >= 10) return `${valueGi.toFixed(0)} Gi`;
+  return `${valueGi.toFixed(1)} Gi`;
+}
+
+function MetricsUsageBlock({
+  label,
+  inUse,
+  reserved,
+  available,
+  formatValue,
+  unit,
+}: {
+  readonly label: string;
+  readonly inUse: number;
+  readonly reserved: number;
+  readonly available: number;
+  readonly formatValue: (v: number) => string;
+  readonly unit: string;
+}) {
+  const ratio = available > 0 ? inUse / available : 0;
+  const pct = Math.min(Math.max(ratio * 100, 0), 100);
+
+  let barColor: string;
+  if (ratio >= 0.8) {
+    barColor = 'bg-red-500 dark:bg-red-400';
+  } else if (ratio >= 0.5) {
+    barColor = 'bg-amber-500 dark:bg-amber-400';
+  } else {
+    barColor = 'bg-green-500 dark:bg-green-400';
+  }
+
+  const suffix = unit ? ` ${unit}` : '';
+
+  return (
+    <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-3">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">{formatValue(inUse)}{suffix} / {formatValue(available)}{suffix}</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 mb-2">
+        <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="space-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+        <div className="flex justify-between">
+          <span>In Use</span>
+          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(inUse)}{suffix}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Reserved</span>
+          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(reserved)}{suffix}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Available</span>
+          <span className="font-mono text-gray-700 dark:text-gray-300">{formatValue(available)}{suffix}</span>
+        </div>
+      </div>
     </div>
   );
 }

@@ -78,6 +78,7 @@ function setupMockApi() {
     if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
     if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
     if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
+    if (path.includes('/metrics')) return Promise.resolve({ data: { clientId: 'client-001', cpu: { inUse: 0.02, reserved: 0.5, available: 2 }, memory: { inUse: 0.1, reserved: 0.5, available: 4 }, storage: { inUse: 0.001, reserved: 10, available: 50 }, lastUpdatedAt: new Date().toISOString() } });
     if (path.match(/\/clients\/client-001$/)) return Promise.resolve(MOCK_CLIENT);
     return Promise.resolve({ data: [] });
   });

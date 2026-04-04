@@ -11,6 +11,7 @@ import { useSelection } from '@/hooks/use-selection';
 import { useBulkSuspendClients, useBulkReactivateClients, useBulkDeleteClients } from '@/hooks/use-bulk-clients';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { useAllClientMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
 
 export default function Clients() {
   const [search, setSearch] = useState('');
@@ -36,6 +37,10 @@ export default function Clients() {
   const hasMore = data?.pagination?.has_more ?? false;
   const nextCursor = data?.pagination?.cursor ?? null;
   const { sortedData: sortedClients, sortKey, sortDirection, onSort } = useSortable(clients, 'companyName');
+
+  const clientIds = clients.map((c) => c.id);
+  const { data: metricsData, isLoading: metricsLoading } = useAllClientMetrics(clientIds);
+  const metricsMap: Record<string, ResourceMetrics | null> = metricsData?.data ?? {};
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
   const bulkSuspend = useBulkSuspendClients();
@@ -120,7 +125,9 @@ export default function Clients() {
                     </th>
                     <SortableHeader label="Client" sortKey="companyName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Namespace" sortKey="kubernetesNamespace" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                    <th className="hidden md:table-cell px-3 py-3 text-xs">CPU</th>
+                    <th className="hidden md:table-cell px-3 py-3 text-xs">Memory</th>
+                    <th className="hidden md:table-cell px-3 py-3 text-xs">Storage</th>
                     <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
@@ -152,9 +159,21 @@ export default function Clients() {
                       <td className="px-5 py-3.5">
                         <StatusBadge status={client.status} />
                       </td>
-                      <td className="hidden px-5 py-3.5 text-xs font-mono text-gray-500 dark:text-gray-400 md:table-cell">
-                        {client.kubernetesNamespace ?? '—'}
-                      </td>
+                      <MetricsCell
+                        metrics={metricsMap[client.id]}
+                        loading={metricsLoading}
+                        resource="cpu"
+                      />
+                      <MetricsCell
+                        metrics={metricsMap[client.id]}
+                        loading={metricsLoading}
+                        resource="memory"
+                      />
+                      <MetricsCell
+                        metrics={metricsMap[client.id]}
+                        loading={metricsLoading}
+                        resource="storage"
+                      />
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                         {client.createdAt ? new Date(client.createdAt).toLocaleDateString() : '—'}
                       </td>
@@ -162,7 +181,7 @@ export default function Clients() {
                   ))}
                   {clients.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No clients found matching your search.'
                           : 'No clients yet. Click "Add Client" to create one.'}
@@ -252,5 +271,77 @@ export default function Clients() {
 
       <CreateClientModal open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
+  );
+}
+
+// ─── Metrics Cell Helpers ────────────────────────────────────────────────────
+
+function formatMetricsCpu(value: number): string {
+  if (value >= 10) return value.toFixed(0);
+  if (value >= 1) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function formatMetricsBytes(valueGi: number): string {
+  if (valueGi <= 0) return '0Mi';
+  if (valueGi < 1) {
+    const mi = valueGi * 1024;
+    if (mi >= 100) return `${mi.toFixed(0)}Mi`;
+    if (mi >= 10) return `${mi.toFixed(1)}Mi`;
+    return `${mi.toFixed(2)}Mi`;
+  }
+  if (valueGi >= 10) return `${valueGi.toFixed(0)}Gi`;
+  return `${valueGi.toFixed(1)}Gi`;
+}
+
+function MetricsCell({
+  metrics,
+  loading,
+  resource,
+}: {
+  readonly metrics: ResourceMetrics | null | undefined;
+  readonly loading: boolean;
+  readonly resource: 'cpu' | 'memory' | 'storage';
+}) {
+  if (loading) {
+    return (
+      <td className="hidden px-3 py-3.5 md:table-cell">
+        <Loader2 size={12} className="animate-spin text-gray-400" />
+      </td>
+    );
+  }
+
+  if (!metrics) {
+    return (
+      <td className="hidden px-3 py-3.5 text-xs font-mono text-gray-400 dark:text-gray-500 md:table-cell">
+        —
+      </td>
+    );
+  }
+
+  const resourceData = metrics[resource];
+  const inUse = resourceData.inUse;
+  const available = resourceData.available;
+  const ratio = available > 0 ? inUse / available : 0;
+
+  let dotColor: string;
+  if (ratio >= 0.8) {
+    dotColor = 'bg-red-500';
+  } else if (ratio >= 0.5) {
+    dotColor = 'bg-amber-500';
+  } else {
+    dotColor = 'bg-green-500';
+  }
+
+  const formatter = resource === 'cpu' ? formatMetricsCpu : formatMetricsBytes;
+  const display = `${formatter(inUse)}/${formatter(available)}`;
+
+  return (
+    <td className="hidden px-3 py-3.5 md:table-cell">
+      <span className="inline-flex items-center gap-1.5 text-xs font-mono text-gray-600 dark:text-gray-400">
+        <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
+        {display}
+      </span>
+    </td>
   );
 }

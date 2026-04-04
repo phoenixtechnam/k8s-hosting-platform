@@ -51,6 +51,8 @@ import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
+import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
+import { getRedis, closeRedis } from './shared/redis.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -204,9 +206,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
   await app.register(sqliteRoutes, { prefix: '/api/v1' });
 
-  // Start webcron background scheduler (skip in test environment)
+  // Start background schedulers (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
-    app.addHook('onReady', () => {
+    app.addHook('onReady', async () => {
+      // Connect Redis eagerly on startup
+      try {
+        await getRedis().connect();
+      } catch (err) {
+        console.warn('[redis] Failed to connect on startup:', err instanceof Error ? err.message : String(err));
+      }
+
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
 
@@ -215,6 +224,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       if (cleanupTimer) {
         app.addHook('onClose', () => clearInterval(cleanupTimer));
       }
+
+      const metricsTimer = startMetricsScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(metricsTimer));
+      app.addHook('onClose', async () => { await closeRedis(); });
     });
   }
 

@@ -3,12 +3,11 @@ import { Link } from 'react-router-dom';
 import { Menu, Search, UserCircle, KeyRound, LogOut, Settings, Cpu, HardDrive, MemoryStick } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
-import { useClientContext } from '@/hooks/use-client-context';
-import { useResourceUsage } from '@/hooks/use-deployments';
-import { useDiskUsage } from '@/hooks/use-file-manager';
+import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
+import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 
 interface HeaderProps {
   readonly onMenuClick: () => void;
@@ -137,146 +136,78 @@ export default function Header({ onMenuClick }: HeaderProps) {
   );
 }
 
-// ─── K8s Resource Usage Helpers ───────────────────────────────────────────────
+// ─── Resource Metrics Tags ──────────────────────────────────────────────────
 
-/** Parse K8s CPU string (e.g. "500m", "1.5", "2") to numeric cores. */
-function parseCpu(value: string): number {
-  if (value.endsWith('m')) return parseInt(value, 10) / 1000;
-  return parseFloat(value) || 0;
-}
-
-/** Parse K8s memory string (e.g. "512Mi", "2Gi", "1073741824") to GiB. */
-function parseMemory(value: string): number {
-  if (value.endsWith('Gi')) return parseFloat(value);
-  if (value.endsWith('Mi')) return parseFloat(value) / 1024;
-  if (value.endsWith('Ki')) return parseFloat(value) / (1024 * 1024);
-  // Plain number = bytes
-  const bytes = parseFloat(value);
-  if (isNaN(bytes)) return 0;
-  return bytes / (1024 * 1024 * 1024);
-}
-
-/** Parse K8s storage string to GiB */
-function parseStorage(value: string): number {
-  return parseMemory(value);
-}
-
-function formatNum(n: number): string {
-  if (n >= 10) return n.toFixed(0);
-  if (n >= 1) return n.toFixed(1);
-  return n.toFixed(2);
-}
-
-/** Format a K8s CPU value to human-readable text (e.g. "250m" -> "0.25 CPUs"). */
-function humanizeCpu(value: string): string {
-  const cores = parseCpu(value);
-  return `${cores % 1 === 0 ? cores.toFixed(0) : cores.toFixed(2).replace(/0+$/, '')} CPUs`;
-}
-
-/** Format a K8s memory/storage value to human-readable text (e.g. "256Mi" -> "0.25 GB"). */
-function humanizeBytes(value: string): string {
-  const gib = parseMemory(value);
-  if (gib >= 1) return `${gib % 1 === 0 ? gib.toFixed(0) : gib.toFixed(1)} GB`;
-  return `${(gib * 1024) % 1 === 0 ? (gib * 1024).toFixed(0) : (gib * 1024).toFixed(0)} MB`;
-}
-
-function ResourceTag({
-  icon,
-  label,
-  used,
-  limit,
-  parser,
-  unit,
-  humanizer,
-}: {
-  readonly icon: React.ReactNode;
-  readonly label: string;
-  readonly used: string;
-  readonly limit: string;
-  readonly parser: (v: string) => number;
-  readonly unit: string;
-  readonly humanizer: (v: string) => string;
-}) {
-  const usedNum = parser(used);
-  const limitNum = parser(limit);
-  const ratio = limitNum > 0 ? usedNum / limitNum : 0;
-
-  let colorClasses: string;
-  if (ratio >= 0.9) {
-    colorClasses = 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800';
-  } else if (ratio >= 0.7) {
-    colorClasses = 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800';
+function MetricsStatusDot({ ratio }: { readonly ratio: number }) {
+  let dotColor: string;
+  if (ratio >= 0.8) {
+    dotColor = 'bg-red-500';
+  } else if (ratio >= 0.5) {
+    dotColor = 'bg-amber-500';
   } else {
-    colorClasses = 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700';
+    dotColor = 'bg-green-500';
   }
 
-  const usedHuman = humanizer(used);
-  const limitHuman = humanizer(limit);
+  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />;
+}
 
-  return (
-    <span
-      className={`hidden lg:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-medium border ${colorClasses}`}
-      title={`${usedHuman} used of ${limitHuman} available`}
-      data-testid={`resource-tag-${label.toLowerCase()}`}
-    >
-      {icon}
-      {formatNum(usedNum)}/{formatNum(limitNum)}{unit}
-    </span>
-  );
+function PulseDot() {
+  return <span className="inline-block h-1.5 w-1.5 rounded-full bg-gray-400 animate-pulse" />;
 }
 
 function ResourceUsageTags() {
-  const { clientId } = useClientContext();
-  const { data } = useResourceUsage(clientId);
-  const { data: diskUsageData } = useDiskUsage();
+  const { data, isLoading } = useResourceMetrics();
+  const [modalOpen, setModalOpen] = useState(false);
 
-  const usage = data?.data;
-  if (!usage) return null;
+  const metrics = data?.data;
 
-  // Skip if limits are all zero (not provisioned)
-  const cpuLimit = parseCpu(usage.cpu.limit);
-  if (cpuLimit <= 0) return null;
+  // Show nothing if no data and not loading
+  if (!isLoading && !metrics) return null;
 
-  // Use actual disk usage from file-manager sidecar when available,
-  // fall back to ResourceQuota PVC allocation otherwise
-  const diskUsage = diskUsageData?.data;
-  const storageUsed = diskUsage
-    ? `${(diskUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2)}Gi`
-    : usage.storage.used;
-  const storageLimit = diskUsage
-    ? `${(diskUsage.totalBytes / (1024 * 1024 * 1024)).toFixed(2)}Gi`
-    : usage.storage.limit;
+  const cpuRatio = metrics ? (metrics.cpu.available > 0 ? metrics.cpu.inUse / metrics.cpu.available : 0) : 0;
+  const memRatio = metrics ? (metrics.memory.available > 0 ? metrics.memory.inUse / metrics.memory.available : 0) : 0;
+  const storageRatio = metrics ? (metrics.storage.available > 0 ? metrics.storage.inUse / metrics.storage.available : 0) : 0;
 
   return (
-    <div className="flex items-center gap-1.5" data-testid="resource-usage-tags">
-      <ResourceTag
-        icon={<Cpu size={14} />}
-        label="CPU"
-        used={usage.cpu.used}
-        limit={usage.cpu.limit}
-        parser={parseCpu}
-        unit=""
-        humanizer={humanizeCpu}
-      />
-      <ResourceTag
-        icon={<MemoryStick size={14} />}
-        label="Memory"
-        used={usage.memory.used}
-        limit={usage.memory.limit}
-        parser={parseMemory}
-        unit="Gi"
-        humanizer={humanizeBytes}
-      />
-      <ResourceTag
-        icon={<HardDrive size={14} />}
-        label="Storage"
-        used={storageUsed}
-        limit={storageLimit}
-        parser={parseStorage}
-        unit="Gi"
-        humanizer={humanizeBytes}
-      />
-    </div>
+    <>
+      <div
+        className="hidden lg:flex items-center gap-1.5 cursor-pointer"
+        data-testid="resource-usage-tags"
+        onClick={() => setModalOpen(true)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setModalOpen(true); }}
+      >
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/50 dark:text-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="CPU usage"
+          data-testid="resource-tag-cpu"
+        >
+          {isLoading ? <PulseDot /> : <MetricsStatusDot ratio={cpuRatio} />}
+          <Cpu size={12} />
+          {metrics ? `${formatCpuCompact(metrics.cpu.inUse)}/${formatCpuCompact(metrics.cpu.available)}` : '...'}
+        </span>
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/50 dark:text-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="Memory usage"
+          data-testid="resource-tag-memory"
+        >
+          {isLoading ? <PulseDot /> : <MetricsStatusDot ratio={memRatio} />}
+          <MemoryStick size={12} />
+          {metrics ? `${formatBytesCompact(metrics.memory.inUse)}/${formatBytesCompact(metrics.memory.available)}` : '...'}
+        </span>
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/50 dark:text-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title="Storage usage"
+          data-testid="resource-tag-storage"
+        >
+          {isLoading ? <PulseDot /> : <MetricsStatusDot ratio={storageRatio} />}
+          <HardDrive size={12} />
+          {metrics ? `${formatBytesCompact(metrics.storage.inUse)}/${formatBytesCompact(metrics.storage.available)}` : '...'}
+        </span>
+      </div>
+      <ResourceMetricsModal open={modalOpen} onClose={() => setModalOpen(false)} />
+    </>
   );
 }
 
