@@ -14,7 +14,7 @@ export function useAllClientMetrics(clientIds: readonly string[]) {
   return useQuery({
     queryKey: ['all-client-metrics', ...clientIds],
     queryFn: () => apiFetch<{ data: Record<string, ResourceMetrics | null> }>(
-      `/api/v1/admin/clients/metrics?ids=${clientIds.join(',')}`
+      `/api/v1/admin/clients/resource-metrics?ids=${clientIds.join(',')}`
     ),
     enabled: clientIds.length > 0,
     staleTime: 60_000,
@@ -24,7 +24,7 @@ export function useAllClientMetrics(clientIds: readonly string[]) {
 export function useClientMetrics(clientId: string | undefined) {
   return useQuery({
     queryKey: ['client-metrics', clientId],
-    queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/metrics`),
+    queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/resource-metrics`),
     enabled: Boolean(clientId),
     staleTime: 60_000,
   });

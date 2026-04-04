@@ -14,7 +14,7 @@ export function useResourceMetrics() {
   const { clientId } = useClientContext();
   return useQuery({
     queryKey: ['resource-metrics', clientId],
-    queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/metrics`),
+    queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/resource-metrics`),
     enabled: Boolean(clientId),
     staleTime: 60_000, // 1 minute client-side cache
   });
