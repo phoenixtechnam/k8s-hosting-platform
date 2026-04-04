@@ -52,13 +52,12 @@ export default function SystemHealthBanner() {
             {failedServices.length > 0 && (
               <>
                 {' — '}
-                {failedServices.map((s) => (
-                  <span key={s.name} className="font-medium">
-                    {s.name} ({s.status})
+                {failedServices.map((s, i) => (
+                  <span key={s.name}>
+                    {i > 0 ? ', ' : ''}
+                    <span className="font-medium">{s.name}</span> ({s.status})
                   </span>
-                )).reduce((prev, curr, i) => (
-                  <>{prev}{i > 0 ? ', ' : ''}{curr}</>
-                ) as any)}
+                ))}
               </>
             )}
           </span>
