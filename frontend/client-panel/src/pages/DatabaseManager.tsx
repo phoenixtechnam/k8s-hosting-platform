@@ -579,8 +579,9 @@ export default function DatabaseManager() {
       const file = e.target.files?.[0];
       if (!file) return;
 
-      // Only accept .sql files
-      if (!file.name.toLowerCase().endsWith('.sql')) {
+      // Only accept valid import file types
+      const validExtensions = ['.sql', '.sql.gz', '.gz', '.tar', '.zip', '.dump', '.backup'];
+      if (!validExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
         // Reset input so user can try again
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
@@ -1750,7 +1751,7 @@ export default function DatabaseManager() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".sql"
+                accept=".sql,.sql.gz,.gz,.tar,.zip,.dump,.backup"
                 onChange={handleImport}
                 className="hidden"
                 data-testid="import-file-input"
@@ -1954,7 +1955,8 @@ export default function DatabaseManager() {
                       const entryPath = pvcBrowsePath === '/'
                         ? `/${entry.name}`
                         : `${pvcBrowsePath}/${entry.name}`;
-                      const isSqlFile = entry.type === 'file' && entry.name.toLowerCase().endsWith('.sql');
+                      const importExtensions = ['.sql', '.sql.gz', '.gz', '.tar', '.zip', '.dump', '.backup'];
+                      const isSqlFile = entry.type === 'file' && importExtensions.some(ext => entry.name.toLowerCase().endsWith(ext));
                       const isDir = entry.type === 'directory';
                       const isSelected = selectedPvcFile === entryPath;
 
@@ -2012,7 +2014,7 @@ export default function DatabaseManager() {
                 {selectedPvcFile ? (
                   <span className="font-mono">{selectedPvcFile}</span>
                 ) : (
-                  'Select a .sql file to import'
+                  'Select a database file to import (.sql, .gz, .tar, .zip, .dump)'
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">

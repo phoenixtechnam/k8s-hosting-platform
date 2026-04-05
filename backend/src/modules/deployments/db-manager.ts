@@ -1753,6 +1753,8 @@ async function pgImportSql(
 /**
  * Validate a PVC-relative file path: no traversal, must be a .sql file, no absolute paths.
  */
+const VALID_IMPORT_EXTENSIONS = ['.sql', '.sql.gz', '.gz', '.tar', '.zip', '.dump', '.backup'];
+
 function validatePvcFilePath(filePath: string): void {
   if (!filePath || filePath.includes('..')) {
     throw new ApiError(
@@ -1763,14 +1765,78 @@ function validatePvcFilePath(filePath: string): void {
     );
   }
   const lower = filePath.toLowerCase();
-  if (!lower.endsWith('.sql') && !lower.endsWith('.sql.gz')) {
+  if (!VALID_IMPORT_EXTENSIONS.some(ext => lower.endsWith(ext))) {
     throw new ApiError(
       'INVALID_FILE_TYPE',
-      'Only .sql files are supported for import',
+      `Only ${VALID_IMPORT_EXTENSIONS.join(', ')} files are supported for import`,
       400,
       { filePath },
     );
   }
+}
+
+/**
+ * Extract the full extension from a file path (e.g. ".sql.gz" from "dump.sql.gz").
+ */
+function getImportFileExtension(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  // Check compound extensions first
+  if (lower.endsWith('.sql.gz')) return '.sql.gz';
+  const lastDot = lower.lastIndexOf('.');
+  return lastDot >= 0 ? lower.slice(lastDot) : '';
+}
+
+/**
+ * Build the shell command to import a database dump file based on file extension and engine.
+ *
+ * @param engine - Database engine type
+ * @param importPath - Absolute path to the import file inside the database pod
+ * @param database - Target database name
+ * @param rootPassword - Root password for database auth
+ * @param useMysqlBinary - When true, use 'mysql' instead of 'mariadb' CLI binary
+ */
+function buildImportCommand(
+  engine: Engine,
+  importPath: string,
+  database: string,
+  rootPassword: string,
+  useMysqlBinary = false,
+): readonly string[] {
+  const ext = importPath.toLowerCase();
+
+  if (engine === 'mariadb' || engine === 'mysql') {
+    const binary = useMysqlBinary ? 'mysql' : 'mariadb';
+
+    if (ext.endsWith('.sql.gz') || ext.endsWith('.gz')) {
+      return ['sh', '-c', `gunzip -c '${importPath}' | ${binary} -u root -p'${rootPassword}' '${database}'; rm -f '${importPath}'`];
+    }
+    if (ext.endsWith('.zip')) {
+      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && unzip -o '${importPath}' -d _import_dir && cat _import_dir/*.sql | ${binary} -u root -p'${rootPassword}' '${database}'; rm -rf /tmp/_import_dir '${importPath}'`];
+    }
+    if (ext.endsWith('.tar')) {
+      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && tar xf '${importPath}' -C _import_dir && cat _import_dir/*.sql | ${binary} -u root -p'${rootPassword}' '${database}'; rm -rf /tmp/_import_dir '${importPath}'`];
+    }
+    // Default: plain .sql
+    return ['sh', '-c', `cat '${importPath}' | ${binary} -u root -p'${rootPassword}' '${database}'; rm -f '${importPath}'`];
+  }
+
+  if (engine === 'postgresql') {
+    if (ext.endsWith('.sql.gz') || ext.endsWith('.gz')) {
+      return ['sh', '-c', `gunzip -c '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`];
+    }
+    if (ext.endsWith('.tar') || ext.endsWith('.dump') || ext.endsWith('.backup')) {
+      // pg_restore handles tar and custom format natively
+      return ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1; rm -f '${importPath}'`];
+    }
+    if (ext.endsWith('.zip')) {
+      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && unzip -o '${importPath}' -d _import_dir && (pg_restore -U postgres -d '${database}' _import_dir/* 2>/dev/null || cat _import_dir/*.sql | psql -U postgres '${database}'); rm -rf /tmp/_import_dir '${importPath}'`];
+    }
+    // Default: plain .sql
+    return ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`];
+  }
+
+  // Fallback for unsupported engines
+  return ['sh', '-c', `cat '${importPath}' | sh; rm -f '${importPath}'`];
 }
 
 /**
@@ -1814,7 +1880,8 @@ export async function importSqlFromPvcFile(
   // Otherwise, we use a temp import path.
   const cleanFilePath = filePath.replace(/^\/+/, '');
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
-  const importFileName = `_import_${Date.now()}.sql`;
+  const fileExt = getImportFileExtension(filePath);
+  const importFileName = `_import_${Date.now()}${fileExt}`;
 
   try {
     // Copy the source file to the database's subPath using file-manager exec
@@ -1840,23 +1907,26 @@ export async function importSqlFromPvcFile(
     const importPath = `${dataRoot}/${importFileName}`;
     let result: { stdout: string; stderr: string };
 
+    const cmd = buildImportCommand(ctx.engine, importPath, database, ctx.rootPassword);
+
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       try {
         result = await execInPod(
           ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | mariadb -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`],
+          cmd as string[],
         );
       } catch (err) {
         if (!isBinaryNotFoundError(err)) throw err;
+        const fallbackCmd = buildImportCommand(ctx.engine, importPath, database, ctx.rootPassword, true);
         result = await execInPod(
           ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | mysql -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`],
+          fallbackCmd as string[],
         );
       }
     } else if (ctx.engine === 'postgresql') {
       result = await execInPod(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`],
+        cmd as string[],
       );
     } else {
       throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} file import not supported`, 400);
