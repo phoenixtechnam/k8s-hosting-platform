@@ -3,7 +3,7 @@ import { z } from 'zod';
 const configSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3000),
-  DATABASE_URL: z.string().url().or(z.string().startsWith('mysql://')),
+  DATABASE_URL: z.string().url().or(z.string().startsWith('postgresql://')).or(z.string().startsWith('postgres://')),
   JWT_SECRET: z.string().min(16),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   CORS_ORIGINS: z.string().optional(),

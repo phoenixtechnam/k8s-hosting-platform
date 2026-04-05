@@ -12,7 +12,9 @@ import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
 import { eq } from 'drizzle-orm';
 import { catalogEntries } from '../../db/schema.js';
-import { fileManagerRequest } from '../file-manager/service.js';
+import { fileManagerRequest, ensureFileManagerRunning, getFileManagerStatus } from '../file-manager/service.js';
+
+const FM_IMAGE = 'file-manager-sidecar:latest';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -80,6 +82,12 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const updated = await service.updateDeployment(app.db, clientId, id, parsed.data, getK8s());
+
+    // Clear any previous error when deployment transitions to running
+    if (parsed.data.status === 'running') {
+      await service.clearDeploymentError(app.db, id);
+    }
+
     return success(updated);
   });
 
@@ -101,6 +109,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
+  // GET /api/v1/clients/:clientId/deployments/:id/resource-availability
+  app.get('/clients/:clientId/deployments/:id/resource-availability', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const availability = await service.getResourceAvailability(app.db, clientId, id);
+    return success(availability);
+  });
+
   // GET /api/v1/clients/:clientId/deployments/:id/credentials
   app.get('/clients/:clientId/deployments/:id/credentials', async (request) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
@@ -109,11 +124,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/clients/:clientId/deployments/:id/regenerate-credentials
-  app.post('/clients/:clientId/deployments/:id/regenerate-credentials', async (request) => {
-    const { clientId, id } = request.params as { clientId: string; id: string };
-    const body = (request.body ?? {}) as { keys?: string[] };
-    const result = await service.regenerateDeploymentCredentials(app.db, clientId, id, body.keys);
-    return success(result);
+  // Deprecated: credential regeneration is no longer supported. Credentials are
+  // generated once at deployment time and treated as read-only by the platform.
+  app.post('/clients/:clientId/deployments/:id/regenerate-credentials', async (_request, reply) => {
+    reply.status(410).send({
+      error: 'FEATURE_REMOVED',
+      message: 'Credential regeneration is not supported. Credentials are set at deployment time.',
+    });
   });
 
   // POST /api/v1/clients/:clientId/deployments/:id/restart
@@ -137,7 +154,171 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     await restartDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
 
+    // Clear any previous error on successful restart initiation
+    if (deployment.lastError) {
+      await service.clearDeploymentError(app.db, id);
+    }
+
     return success({ message: 'Rolling restart initiated' });
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/logs?lines=100
+  app.get('/clients/:clientId/deployments/:id/logs', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const query = request.query as Record<string, unknown>;
+    const tailLines = Math.min(parseInt(String(query.lines ?? '200'), 10) || 200, 1000);
+
+    const deployment = await service.getDeploymentById(app.db, clientId, id);
+    const namespace = await service.getClientNamespace(app.db, clientId);
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+
+    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+
+    // Find the pod for this deployment
+    const podList = await k8s.core.listNamespacedPod({
+      namespace,
+      labelSelector: `app=${baseName}`,
+    });
+    const pods = (podList as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string } } }[] } }[] }).items ?? [];
+    const runningPod = pods.find(p => p.status?.phase === 'Running') ?? pods[0];
+
+    if (!runningPod?.metadata?.name) {
+      throw new ApiError('POD_NOT_FOUND', 'No pod found for this deployment', 404);
+    }
+
+    const podName = runningPod.metadata.name;
+
+    // Detect termination reason from container statuses
+    let terminationReason: string | null = null;
+    for (const cs of runningPod.status?.containerStatuses ?? []) {
+      const reason = cs.lastState?.terminated?.reason;
+      if (reason) {
+        terminationReason = reason;
+        break;
+      }
+    }
+
+    // Fetch application logs
+    const logResult = await k8s.core.readNamespacedPodLog({
+      name: podName,
+      namespace,
+      tailLines,
+    });
+    const logText = typeof logResult === 'string' ? logResult : String(logResult);
+
+    type LogLine = { source: string; text: string; timestamp: string; level: string };
+    const lines: LogLine[] = [];
+
+    // Parse application log lines with level detection
+    for (const raw of logText.split('\n')) {
+      if (!raw) continue;
+      const upper = raw.toUpperCase();
+      let level = 'info';
+      if (upper.includes('ERROR') || upper.includes('FATAL')) level = 'error';
+      else if (upper.includes('WARN')) level = 'warning';
+
+      // Try to extract a leading timestamp (ISO 8601 or common log formats)
+      const tsMatch = raw.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*)/);
+      const timestamp = tsMatch ? tsMatch[1] : new Date().toISOString();
+
+      lines.push({ source: 'APP', text: raw, timestamp, level });
+    }
+
+    // Fetch K8s events for this pod
+    try {
+      const eventList = await k8s.core.listNamespacedEvent({
+        namespace,
+        fieldSelector: `involvedObject.name=${podName}`,
+      });
+      for (const evt of eventList.items ?? []) {
+        const level = evt.type === 'Warning' ? 'error' : 'info';
+        const timestamp = evt.lastTimestamp
+          ? new Date(evt.lastTimestamp).toISOString()
+          : (evt.eventTime ? String(evt.eventTime) : new Date().toISOString());
+        lines.push({
+          source: 'K8S',
+          text: evt.message ?? evt.reason ?? 'Unknown event',
+          timestamp,
+          level,
+        });
+      }
+    } catch {
+      // Events API may not be available — continue with app logs only
+    }
+
+    // Sort by timestamp (oldest first, newest last)
+    lines.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    return success({
+      podName,
+      lines,
+      terminationReason,
+      tailLines,
+    });
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/live-metrics
+  app.get('/clients/:clientId/deployments/:id/live-metrics', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+
+    const deployment = await service.getDeploymentById(app.db, clientId, id);
+    const namespace = await service.getClientNamespace(app.db, clientId);
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+
+    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+    const { parseResourceValue } = await import('../../shared/resource-parser.js');
+
+    // Get actual usage from Metrics API
+    let cpuUsed = 0;
+    let memoryUsedMi = 0;
+    try {
+      const metricsResult = await k8s.custom.listNamespacedCustomObject({
+        group: 'metrics.k8s.io',
+        version: 'v1beta1',
+        namespace,
+        plural: 'pods',
+      });
+      type PodMetric = { metadata?: { labels?: Record<string, string> }; containers?: readonly { usage?: { cpu?: string; memory?: string } }[] };
+      const pods = (metricsResult as { items?: readonly PodMetric[] }).items ?? [];
+      for (const pod of pods) {
+        if (pod.metadata?.labels?.['app'] !== baseName) continue;
+        for (const c of pod.containers ?? []) {
+          if (c.usage?.cpu) cpuUsed += parseResourceValue(c.usage.cpu, 'cpu');
+          if (c.usage?.memory) cpuUsed; // just to avoid unused, actual calc below
+          if (c.usage?.memory) memoryUsedMi += parseResourceValue(c.usage.memory, 'memory') * 1024;
+        }
+      }
+    } catch {
+      // Metrics API not available
+    }
+
+    // Get per-deployment disk usage via file-manager
+    let storageUsedBytes = 0;
+    let storageUsedFormatted = '0 B';
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
+        query: { path: `/databases/${baseName}` },
+      });
+      if (fmResult.status === 200) {
+        const parsed = JSON.parse(fmResult.body) as { sizeBytes?: number; sizeFormatted?: string };
+        storageUsedBytes = parsed.sizeBytes ?? 0;
+        storageUsedFormatted = parsed.sizeFormatted ?? '0 B';
+      }
+    } catch {
+      // File manager not available — return zero storage
+    }
+
+    return success({
+      cpuUsed: Math.round(cpuUsed * 1000) / 1000,
+      cpuRequest: deployment.cpuRequest,
+      memoryUsedMi: Math.round(memoryUsedMi),
+      memoryRequest: deployment.memoryRequest,
+      storageUsedBytes,
+      storageUsedFormatted,
+    });
   });
 
   // POST /api/v1/clients/:clientId/deployments/:id/restore
@@ -185,7 +366,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
 
     const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, baseName, entry, config);
-    return ctx;
+    // The PVC subPath for this deployment's data directory
+    const deploymentSubPath = `databases/${baseName}`;
+    return { ...ctx, deploymentSubPath };
   }
 
   // GET /api/v1/clients/:clientId/deployments/:id/databases
@@ -281,6 +464,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/clients/:clientId/deployments/:id/tables?database=mydb
+  // Returns table names with sizes
   app.get('/clients/:clientId/deployments/:id/tables', async (request) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const query = request.query as Record<string, unknown>;
@@ -291,8 +475,17 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const ctx = await buildDbCtx(clientId, id);
-    const tables = await dbManager.listTables(ctx, database);
+    const tables = await dbManager.listTablesWithSize(ctx, database);
     return success(tables);
+  });
+
+  // GET /api/v1/clients/:clientId/deployments/:id/databases-with-size
+  // Returns database names with total sizes
+  app.get('/clients/:clientId/deployments/:id/databases-with-size', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const ctx = await buildDbCtx(clientId, id);
+    const databases = await dbManager.listDatabasesWithSize(ctx);
+    return success(databases);
   });
 
   // GET /api/v1/clients/:clientId/deployments/:id/table-structure?database=mydb&table=users
@@ -357,23 +550,31 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success({ count });
   });
 
-  // POST /api/v1/clients/:clientId/deployments/:id/export?database=mydb
+  // POST /api/v1/clients/:clientId/deployments/:id/export?database=mydb&output_path=/exports
+  // Export database dump to PVC. If output_path is given, writes to PVC and returns path.
+  // Otherwise returns the dump as a downloadable file (for small DBs).
   app.post('/clients/:clientId/deployments/:id/export', async (request, reply) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
+    const outputPath = query.output_path as string | undefined;
 
     if (!database) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });
     }
 
-    const ctx = await buildDbCtx(clientId, id);
-    const dump = await dbManager.exportDatabase(ctx, database);
+    const { deploymentSubPath, ...ctx } = await buildDbCtx(clientId, id);
 
-    reply
-      .header('Content-Type', 'text/plain; charset=utf-8')
-      .header('Content-Disposition', `attachment; filename="${database}-export.sql"`)
-      .send(dump);
+    // PVC-based export (recommended for large databases)
+    const fileName = `${database}-export-${Date.now()}.sql`;
+    const result = await dbManager.exportDatabaseToPvc(ctx, database, fileName, deploymentSubPath);
+
+    return success({
+      pvcPath: result.pvcPath,
+      sizeBytes: result.sizeBytes,
+      fileName,
+      message: `Exported to ${result.pvcPath} (${(result.sizeBytes / 1024 / 1024).toFixed(1)} MB)`,
+    });
   });
 
   // POST /api/v1/clients/:clientId/deployments/:id/import
@@ -394,7 +595,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/clients/:clientId/deployments/:id/import-from-file
-  // Import SQL from a file already on the shared PVC (uploaded via file manager)
+  // Import SQL from a file on the shared PVC. The file is copied into the
+  // database pod's subPath, then piped to the database CLI. Handles files of any size.
   app.post('/clients/:clientId/deployments/:id/import-from-file', async (request) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const body = (request.body ?? {}) as { database?: string; file_path?: string };
@@ -406,39 +608,12 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'File path is required', 400, { field: 'file_path' });
     }
 
-    // Validate path: no traversal
     if (body.file_path.includes('..')) {
       throw new ApiError('INVALID_PATH', 'File path cannot contain ".." traversal', 400);
     }
 
-    const ctx = await buildDbCtx(clientId, id);
-
-    // Read the SQL file from the file-manager pod via the file-manager proxy service
-    const k8s = getK8s();
-    if (!k8s) {
-      throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
-    }
-
-    const namespace = await service.getClientNamespace(app.db, clientId);
-    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const FM_IMAGE = 'file-manager-sidecar:latest';
-
-    let fmResult: Awaited<ReturnType<typeof fileManagerRequest>>;
-    try {
-      fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/download', {
-        query: { path: body.file_path },
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to read file';
-      throw new ApiError('IMPORT_FILE_READ_ERROR', `Failed to read file: ${message}`, 500);
-    }
-
-    if (fmResult.status !== 200) {
-      throw new ApiError('FILE_NOT_FOUND', `Could not read file: ${body.file_path}`, 404);
-    }
-
-    const sqlContent = fmResult.body;
-    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, sqlContent, body.file_path);
+    const { deploymentSubPath, ...ctx } = await buildDbCtx(clientId, id);
+    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', body.file_path, deploymentSubPath);
     return success(result);
   });
 

@@ -1,17 +1,16 @@
 services:
-  mariadb-test:
-    image: mariadb:10.6
+  postgres-test:
+    image: postgres:16-alpine
     environment:
-      MARIADB_ROOT_PASSWORD: rootpassword
-      MARIADB_DATABASE: hosting_platform_test
-      MARIADB_USER: platform
-      MARIADB_PASSWORD: platform
+      POSTGRES_DB: hosting_platform_test
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
     ports:
-      - "3307:3306"
+      - "5433:5432"
     tmpfs:
-      - /var/lib/mysql
+      - /var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD-SHELL", "pg_isready -U platform -d hosting_platform_test"]
       interval: 5s
       timeout: 3s
       retries: 10

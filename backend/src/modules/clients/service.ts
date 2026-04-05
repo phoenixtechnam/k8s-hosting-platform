@@ -1,6 +1,6 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
-import { clients, domains, deployments, cronJobs, users } from '../../db/schema.js';
+import { clients, domains, deployments, cronJobs, users, hostingPlans } from '../../db/schema.js';
 import { clientNotFound } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
@@ -46,7 +46,7 @@ export async function createClient(db: Database, input: CreateClientInput, creat
     clientId: id,
     status: 'active',
     emailVerifiedAt: new Date(),
-  }).onDuplicateKeyUpdate({ set: { clientId: sql`VALUES(client_id)` } });
+  }).onConflictDoUpdate({ target: users.email, set: { clientId: sql`excluded.client_id` } });
 
   return { ...created, _generatedPassword: generatedPassword, _clientUserId: clientUserId };
 }
@@ -141,6 +141,24 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
+  }
+
+  // Sync K8s ResourceQuota when resource limits change
+  if (input.cpu_limit_override !== undefined || input.memory_limit_override !== undefined || input.storage_limit_override !== undefined || input.plan_id !== undefined) {
+    try {
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const { applyResourceQuota } = await import('../k8s-provisioner/service.js');
+      const updatedClient = await getClientById(db, id);
+      const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, updatedClient.planId));
+      const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+      await applyResourceQuota(k8s, updatedClient.kubernetesNamespace, {
+        cpu: String(updatedClient.cpuLimitOverride ?? plan?.cpuLimit ?? 2),
+        memory: String(updatedClient.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
+        storage: String(updatedClient.storageLimitOverride ?? plan?.storageLimit ?? 50),
+      });
+    } catch (err) {
+      console.warn('[clients] Failed to sync K8s ResourceQuota:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Cascade suspension to related resources

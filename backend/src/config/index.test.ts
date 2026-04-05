@@ -5,7 +5,7 @@ describe('loadConfig', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    process.env.DATABASE_URL = 'mysql://user:pass@localhost:3306/db';
+    process.env.DATABASE_URL = 'postgresql://user:pass@localhost:5432/db';
     process.env.JWT_SECRET = 'test-secret-at-least-16-chars';
   });
 
@@ -18,7 +18,7 @@ describe('loadConfig', () => {
     expect(config.PORT).toBe(0); // PORT=0 from test-setup.ts
     expect(config.NODE_ENV).toBe('test'); // set in test-setup.ts
     expect(config.LOG_LEVEL).toBe('info');
-    expect(config.DATABASE_URL).toBe('mysql://user:pass@localhost:3306/db');
+    expect(config.DATABASE_URL).toBe('postgresql://user:pass@localhost:5432/db');
   });
 
   it('should accept custom PORT', () => {

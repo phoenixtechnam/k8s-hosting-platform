@@ -31,14 +31,14 @@ for (const file of files) {
     try {
       await db.execute(sql.raw(stmt));
     } catch (err: unknown) {
-      const mysqlErr = err as { errno?: number; code?: string };
-      // Tolerate "already exists" / "already dropped" errors for idempotent migrations:
-      // 1050 = Table already exists, 1060 = Duplicate column name,
-      // 1061 = Duplicate key name, 1062 = Duplicate entry,
-      // 1091 = Can't DROP (key/column doesn't exist)
-      const toleratedErrors = [1050, 1060, 1061, 1062, 1091];
-      if (toleratedErrors.includes(mysqlErr.errno ?? 0)) {
-        console.log(`    (skipped: ${mysqlErr.code ?? 'already exists'})`);
+      const pgErr = err as { code?: string; message?: string };
+      // Tolerate "already exists" errors for idempotent migrations:
+      // 42P07 = duplicate_table, 42701 = duplicate_column,
+      // 42P16 = invalid_table_definition (duplicate constraint),
+      // 42710 = duplicate_object (type/enum already exists)
+      const toleratedCodes = ['42P07', '42701', '42P16', '42710'];
+      if (toleratedCodes.includes(pgErr.code ?? '')) {
+        console.log(`    (skipped: ${pgErr.code} — already exists)`);
       } else {
         throw err;
       }

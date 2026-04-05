@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag, Save, AlertCircle } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag, Save, AlertCircle, Terminal } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
-import { useUpdateDeploymentResources } from '@/hooks/use-deployments';
+import { useUpdateDeploymentResources, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import type { LogLine } from '@/hooks/use-deployments';
+import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
@@ -113,8 +116,17 @@ export default function InstalledAppDetailModal({
   // ─── Resource editing (Issue 7) ─────────────────────────────────────────────
   const [editingResources, setEditingResources] = useState(false);
   const [editCpu, setEditCpu] = useState('');
-  const [editMemory, setEditMemory] = useState('');
+  const [editMemoryValue, setEditMemoryValue] = useState('');
+  const [editMemoryUnit, setEditMemoryUnit] = useState<'Mi' | 'Gi'>('Mi');
+  const queryClient = useQueryClient();
+  // Derived: combine value + unit for submission
+  const editMemory = `${editMemoryValue}${editMemoryUnit}`;
   const updateResources = useUpdateDeploymentResources(clientId);
+  const availability = useResourceAvailability(clientId, editingResources ? deployment?.id : undefined);
+  const avail = availability.data?.data;
+  const [showLogs, setShowLogs] = useState(false);
+  const logs = useDeploymentLogs(clientId, deployment?.id, showLogs);
+  const liveMetrics = useDeploymentLiveMetrics(clientId, deployment?.status === 'running' ? deployment?.id : undefined);
 
   if (!open || !deployment) return null;
 
@@ -393,24 +405,33 @@ export default function InstalledAppDetailModal({
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400">No custom configuration</p>
           )}
+          {secretKeys.size > 0 && (
+            <p className="mt-3 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
+              Set at deployment time. Change passwords inside the application if needed.
+            </p>
+          )}
         </div>
 
         {/* Resources Section (Issue 7: editable) */}
         <div className="mb-6">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 mb-3">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
               <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
-              Resources
+              Assigned Resources
             </h3>
             {!editingResources && (
               <button
                 type="button"
                 onClick={() => {
                   setEditCpu(deployment.cpuRequest);
-                  setEditMemory(deployment.memoryRequest);
+                  // Parse "256Mi" or "1Gi" into value + unit
+                  const mem = deployment.memoryRequest;
+                  if (mem.endsWith('Gi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Gi'); }
+                  else if (mem.endsWith('Mi')) { setEditMemoryValue(mem.slice(0, -2)); setEditMemoryUnit('Mi'); }
+                  else { setEditMemoryValue(mem); setEditMemoryUnit('Mi'); }
                   setEditingResources(true);
                 }}
-                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                className="rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
                 data-testid="edit-resources-button"
               >
                 Edit
@@ -429,16 +450,38 @@ export default function InstalledAppDetailModal({
                     className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     data-testid="edit-cpu-input"
                   />
+                  {avail && (
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      Min: {avail.cpu.min} &middot; Max: {avail.cpu.max} cores
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Memory Request</label>
-                  <input
-                    type="text"
-                    value={editMemory}
-                    onChange={(e) => setEditMemory(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    data-testid="edit-memory-input"
-                  />
+                  <div className="flex gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      value={editMemoryValue}
+                      onChange={(e) => setEditMemoryValue(e.target.value)}
+                      className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      data-testid="edit-memory-input"
+                    />
+                    <select
+                      value={editMemoryUnit}
+                      onChange={(e) => setEditMemoryUnit(e.target.value as 'Mi' | 'Gi')}
+                      className="rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
+                      data-testid="edit-memory-unit"
+                    >
+                      <option value="Mi">MB</option>
+                      <option value="Gi">GB</option>
+                    </select>
+                  </div>
+                  {avail && (
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      Min: {avail.memory.min} &middot; Max: {avail.memory.max}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
@@ -451,7 +494,13 @@ export default function InstalledAppDetailModal({
                   onClick={() => {
                     updateResources.mutate(
                       { deploymentId: deployment.id, cpu_request: editCpu, memory_request: editMemory },
-                      { onSuccess: () => setEditingResources(false) },
+                      {
+                        onSuccess: () => {
+                          setEditingResources(false);
+                          queryClient.invalidateQueries({ queryKey: ['deployments'] });
+                          onClose();
+                        },
+                      },
                     );
                   }}
                   disabled={updateResources.isPending || (editCpu === deployment.cpuRequest && editMemory === deployment.memoryRequest)}
@@ -477,22 +526,102 @@ export default function InstalledAppDetailModal({
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
-              <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-                <Cpu size={16} className="mx-auto mb-1 text-gray-400" />
-                <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
-                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.cpuRequest}</p>
-              </div>
-              <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
-                <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
-                <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
-                <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{deployment.memoryRequest}</p>
-              </div>
+              <DetailMetricCard
+                icon={<Cpu size={16} className="mx-auto mb-1 text-gray-400" />}
+                label="CPU"
+                request={deployment.cpuRequest}
+                used={liveMetrics.data?.data?.cpuUsed}
+                type="cpu"
+              />
+              <DetailMetricCard
+                icon={<HardDrive size={16} className="mx-auto mb-1 text-gray-400" />}
+                label="Memory"
+                request={deployment.memoryRequest}
+                used={liveMetrics.data?.data?.memoryUsedMi}
+                type="memory"
+              />
+              {liveMetrics.data?.data?.storageUsedBytes != null && liveMetrics.data.data.storageUsedBytes > 0 && (() => {
+                const usedGb = liveMetrics.data.data.storageUsedBytes / (1024 * 1024 * 1024);
+                const pct = Math.min((usedGb / 10) * 100, 100);
+                const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+                return (
+                  <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+                    <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data.data.storageUsedFormatted}</p>
+                    <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+                      <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
 
+        {/* Logs Section */}
+        {showLogs && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                <Terminal size={16} className="text-gray-600 dark:text-gray-400" />
+                Recent Logs
+                {logs.data?.data?.podName && (
+                  <span className="text-xs font-normal text-gray-400">({logs.data.data.podName})</span>
+                )}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowLogs(false)}
+                className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400 leading-relaxed">
+              {logs.isLoading && <p className="text-gray-500">Loading logs...</p>}
+              {logs.isError && <p className="text-red-400">Failed to load logs</p>}
+              {logs.data?.data?.terminationReason && (
+                <div className="text-red-500 font-bold mb-2">Pod terminated: {logs.data.data.terminationReason}</div>
+              )}
+              {[...(logs.data?.data?.lines ?? [])].reverse().map((line, i) => {
+                // Handle both old format (string) and new format (LogLine object)
+                const isObj = typeof line === 'object' && line !== null;
+                const source = isObj ? (line as LogLine).source : 'APP';
+                const text = isObj ? (line as LogLine).text : String(line);
+                const level = isObj ? (line as LogLine).level : 'info';
+
+                const prefix = source === 'K8S' ? 'K8S: ' : 'APP: ';
+                const colorClass = level === 'error' ? 'text-red-400'
+                  : level === 'warning' ? 'text-amber-400'
+                  : source === 'K8S' ? 'text-blue-400'
+                  : 'text-green-400';
+
+                return (
+                  <div key={i} className={`whitespace-pre-wrap break-all ${colorClass}`}>
+                    {(line as LogLine).timestamp && source === 'K8S' && (
+                      <span className="opacity-40 mr-2">[{new Date((line as LogLine).timestamp as string).toLocaleTimeString()}]</span>
+                    )}
+                    <span className="opacity-60">{prefix}</span>{text}
+                  </div>
+                );
+              })}
+              {logs.data?.data?.lines.length === 0 && <p className="text-gray-500">No logs available</p>}
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <button
+            type="button"
+            onClick={() => setShowLogs(!showLogs)}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            data-testid="logs-button"
+          >
+            <Terminal size={16} />
+            Logs
+          </button>
           {isDatabase && (
             <button
               type="button"
@@ -555,6 +684,54 @@ export default function InstalledAppDetailModal({
           clientId={clientId}
           onClose={() => setDbModalOpen(false)}
         />
+      )}
+    </div>
+  );
+}
+
+function DetailMetricCard({
+  icon,
+  label,
+  request,
+  used,
+  type,
+}: {
+  readonly icon: React.ReactNode;
+  readonly label: string;
+  readonly request: string;
+  readonly used: number | undefined;
+  readonly type: 'cpu' | 'memory';
+}) {
+  let requestNum = 0;
+  let usedNum = used ?? 0;
+  let usedLabel = '';
+
+  if (type === 'cpu') {
+    requestNum = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    usedLabel = used != null ? `${(usedNum * 1000).toFixed(0)}m used` : '';
+  } else {
+    if (request.endsWith('Gi')) requestNum = parseFloat(request) * 1024;
+    else if (request.endsWith('Mi')) requestNum = parseFloat(request);
+    else requestNum = parseFloat(request) || 0;
+    usedLabel = used != null ? `${Math.round(usedNum)}Mi used` : '';
+  }
+
+  const ratio = requestNum > 0 ? (type === 'cpu' ? usedNum / requestNum : usedNum / requestNum) : 0;
+  const pct = Math.min(ratio * 100, 100);
+  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
+      {icon}
+      <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+      <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{request}</p>
+      {used != null && (
+        <>
+          <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+            <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+          </div>
+          <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{usedLabel}</p>
+        </>
       )}
     </div>
   );

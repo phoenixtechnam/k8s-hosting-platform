@@ -79,7 +79,7 @@ export async function generateClientManifests(
     },
   }));
 
-  // 2. ResourceQuota (includes system service headroom for file-manager/adminer)
+  // 2. ResourceQuota (includes system service headroom for file-manager)
   const totalCpu = (parseFloat(cpuLimit) + SYSTEM_CPU_RESERVE).toFixed(2);
   const totalMemoryGi = (parseFloat(memoryLimit) + SYSTEM_MEMORY_RESERVE).toFixed(2);
 

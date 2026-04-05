@@ -1,23 +1,19 @@
-import { drizzle } from 'drizzle-orm/mysql2';
-import mysql from 'mysql2/promise';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import pg from 'pg';
 import * as schema from './schema.js';
 
-let pool: mysql.Pool | null = null;
+let pool: pg.Pool | null = null;
 
 export function getDb(connectionString: string) {
   if (!pool) {
-    pool = mysql.createPool({
-      uri: connectionString,
-      waitForConnections: true,
-      connectionLimit: 25,             // Up from 10 — handles concurrent API requests
-      queueLimit: 50,                  // Max queued connection requests before rejecting
-      idleTimeout: 60_000,             // Close idle connections after 60s
-      maxIdle: 10,                     // Keep 10 idle connections warm
-      enableKeepAlive: true,           // TCP keepalive to prevent stale connections
-      keepAliveInitialDelay: 30_000,   // Keepalive probe after 30s idle
+    pool = new pg.Pool({
+      connectionString,
+      max: 25,                          // Max connections in the pool
+      idleTimeoutMillis: 60_000,        // Close idle connections after 60s
+      connectionTimeoutMillis: 10_000,  // Timeout for new connections
     });
   }
-  return drizzle(pool, { schema, mode: 'default' });
+  return drizzle(pool, { schema });
 }
 
 export async function closeDb(): Promise<void> {

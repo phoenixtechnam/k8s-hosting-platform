@@ -63,12 +63,12 @@ describe('createClient', () => {
       status: 'pending',
     };
 
-    // For createClient: insert client, select, insert user (onDuplicateKeyUpdate)
+    // For createClient: insert client, select, insert user (onConflictDoUpdate)
     const insertValues = vi.fn().mockResolvedValue(undefined);
-    const onDuplicateKeyUpdate = vi.fn().mockResolvedValue(undefined);
-    const insertFn = vi.fn().mockReturnValue({ values: insertValues, onDuplicateKeyUpdate });
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues, onConflictDoUpdate });
     // Make values return chainable too
-    insertValues.mockReturnValue({ onDuplicateKeyUpdate });
+    insertValues.mockReturnValue({ onConflictDoUpdate });
 
     const whereFn = vi.fn().mockResolvedValue([createdClient]);
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });

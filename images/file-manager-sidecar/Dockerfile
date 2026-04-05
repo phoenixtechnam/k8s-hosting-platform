@@ -3,5 +3,5 @@ RUN apk add --no-cache git tar zip unzip sqlite
 WORKDIR /app
 COPY server.mjs .
 EXPOSE 8111
-USER node
+# Run as root to read all PVC data (database dirs owned by mysql/postgres)
 CMD ["node", "server.mjs"]

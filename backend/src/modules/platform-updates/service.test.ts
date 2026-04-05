@@ -23,7 +23,7 @@ const mockDb = {
   })),
   insert: vi.fn().mockImplementation(() => ({
     values: vi.fn().mockImplementation(() => ({
-      onDuplicateKeyUpdate: vi.fn().mockResolvedValue(undefined),
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
     })),
   })),
   update: vi.fn().mockImplementation(() => ({
@@ -59,7 +59,7 @@ function createTrackedDb() {
     })),
     insert: vi.fn().mockImplementation(() => ({
       values: vi.fn().mockImplementation((vals: { key: string; value: string }) => ({
-        onDuplicateKeyUpdate: vi.fn().mockImplementation(() => {
+        onConflictDoUpdate: vi.fn().mockImplementation(() => {
           settingsStore.set(vals.key, vals.value);
           return Promise.resolve(undefined);
         }),

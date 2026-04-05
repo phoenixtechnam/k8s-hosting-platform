@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Loader2, RefreshCw, X, Cpu, MemoryStick, HardDrive } from 'lucide-react';
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
 
@@ -113,7 +114,16 @@ function ResourceSection({
   readonly reservedLabel: string;
   readonly availableLabel: string;
 }) {
-  const ratio = available > 0 ? inUse / available : 0;
+  const inUseRatio = available > 0 ? inUse / available : 0;
+  const reservedRatio = available > 0 ? reserved / available : 0;
+  const inUsePct = Math.min(inUseRatio * 100, 100);
+  const reservedPct = Math.min(reservedRatio * 100, 100);
+
+  // Color for in-use bar
+  let barColor: string;
+  if (inUseRatio >= 0.8) barColor = 'bg-red-500 dark:bg-red-400';
+  else if (inUseRatio >= 0.5) barColor = 'bg-amber-500 dark:bg-amber-400';
+  else barColor = 'bg-green-500 dark:bg-green-400';
 
   return (
     <div className="space-y-2">
@@ -121,9 +131,21 @@ function ResourceSection({
         {icon}
         <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{label}</span>
       </div>
-      <ProgressBar ratio={ratio} />
+      {/* Combined bar: grey=reserved, colored=in-use */}
+      <div className="relative h-3 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        {/* Reserved (grey) layer */}
+        <div
+          className="absolute inset-y-0 left-0 bg-gray-400/40 dark:bg-gray-500/40 rounded-full"
+          style={{ width: `${reservedPct}%` }}
+        />
+        {/* In-use (colored) layer */}
+        <div
+          className={`absolute inset-y-0 left-0 rounded-full transition-all ${barColor}`}
+          style={{ width: `${inUsePct}%` }}
+        />
+      </div>
       <p className="text-xs text-gray-600 dark:text-gray-400">
-        {formatValue(inUse)} / {formatValue(available)}
+        {formatValue(inUse)} used / {formatValue(reserved)} reserved / {formatValue(available)} available
       </p>
       <div className="space-y-1 pl-1">
         <div className="flex justify-between text-xs">
@@ -155,6 +177,12 @@ function ResourceSection({
 export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsModalProps) {
   const { data, isLoading } = useResourceMetrics();
   const refreshMetrics = useRefreshMetrics();
+
+  useEffect(() => {
+    if (open) {
+      refreshMetrics.mutate();
+    }
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!open) return null;
 
@@ -236,6 +264,12 @@ export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsM
               reservedLabel="PVC allocated capacity"
               availableLabel="subscription plan limit"
             />
+
+            {(metrics.cpu.inUse === 0 && metrics.cpu.reserved > 0) || (metrics.memory.inUse === 0 && metrics.memory.reserved > 0) ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2">
+                Exact resource usage will be available within 60 seconds after pod start.
+              </p>
+            ) : null}
 
             <div className="border-t border-gray-100 dark:border-gray-700" />
 

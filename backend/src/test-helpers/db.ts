@@ -1,19 +1,20 @@
-import mysql from 'mysql2/promise';
-import { drizzle } from 'drizzle-orm/mysql2';
+import pg from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import fs from 'fs';
 import path from 'path';
 
-const TEST_DB_URL = process.env.DATABASE_URL ?? 'mysql://platform:platform@localhost:3307/hosting_platform_test';
+const TEST_DB_URL = process.env.DATABASE_URL ?? 'postgresql://platform:local-dev-password@localhost:5432/hosting_platform_test';
 
-let pool: mysql.Pool | null = null;
+let pool: pg.Pool | null = null;
 
 export async function isDbAvailable(): Promise<boolean> {
   try {
-    const conn = await mysql.createConnection(TEST_DB_URL);
-    await conn.ping();
-    await conn.end();
+    const client = new pg.Client({ connectionString: TEST_DB_URL });
+    await client.connect();
+    await client.query('SELECT 1');
+    await client.end();
     return true;
   } catch {
     return false;
@@ -22,13 +23,12 @@ export async function isDbAvailable(): Promise<boolean> {
 
 export function getTestDb() {
   if (!pool) {
-    pool = mysql.createPool({
-      uri: TEST_DB_URL,
-      waitForConnections: true,
-      connectionLimit: 5,
+    pool = new pg.Pool({
+      connectionString: TEST_DB_URL,
+      max: 5,
     });
   }
-  return drizzle(pool, { schema, mode: 'default' });
+  return drizzle(pool, { schema });
 }
 
 export async function runMigrations() {
@@ -49,8 +49,7 @@ export async function runMigrations() {
 
 export async function cleanTables() {
   const db = getTestDb();
-  // Use DELETE instead of TRUNCATE to avoid lock issues in test parallelism
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+  // Use TRUNCATE CASCADE for PostgreSQL — handles foreign keys automatically
   const tables = [
     'audit_logs', 'cron_jobs', 'usage_metrics', 'backups',
     'deployment_upgrades', 'catalog_entry_versions',
@@ -59,12 +58,11 @@ export async function cleanTables() {
   ];
   for (const table of tables) {
     try {
-      await db.execute(sql.raw(`DELETE FROM ${table}`));
+      await db.execute(sql.raw(`TRUNCATE TABLE ${table} CASCADE`));
     } catch {
       // Table may not exist yet — safe to ignore
     }
   }
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
 export async function closeTestDb() {

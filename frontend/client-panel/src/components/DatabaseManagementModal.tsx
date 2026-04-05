@@ -2,11 +2,10 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
-  Loader2, Server, Key, Link, Plus, Trash2, Users, ExternalLink, Terminal,
+  Loader2, Server, Key, Link, Plus, Trash2, Users, Terminal,
 } from 'lucide-react';
 import {
   useDeploymentCredentials,
-  useRegenerateCredentials,
   useRestartDeployment,
   useDbDatabases,
   useCreateDbDatabase,
@@ -15,7 +14,6 @@ import {
   useCreateDbUser,
   useDropDbUser,
   useSetDbUserPassword,
-  useAdminerLogin,
 } from '@/hooks/use-deployments';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
@@ -301,29 +299,8 @@ function UsersSection({
   const createUser = useCreateDbUser(clientId);
   const dropUser = useDropDbUser(clientId);
   const setPassword = useSetDbUserPassword(clientId);
-  const adminerLogin = useAdminerLogin(clientId);
 
   const users = usersData?.data ?? [];
-
-  const handleAdminerLogin = useCallback(
-    (username: string) => {
-      if (!deploymentId) return;
-      setErrorMessage(null);
-      adminerLogin.mutate(
-        { deploymentId, username },
-        {
-          onSuccess: (result) => {
-            // The loginUrl is a relative path (/adminer/auto-login?...)
-            // served by the client panel's nginx proxy on the same origin.
-            // No need to prepend any external URL.
-            window.open(result.data.loginUrl, '_blank');
-          },
-          onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to open Adminer'),
-        },
-      );
-    },
-    [deploymentId, adminerLogin],
-  );
 
   const handleCreate = useCallback(() => {
     if (!deploymentId || !newUsername.trim()) return;
@@ -416,23 +393,6 @@ function UsersSection({
                     — Superuser
                   </span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleAdminerLogin('root')}
-                    disabled={adminerLogin.isPending}
-                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 dark:text-amber-300 dark:bg-amber-900/40 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-50"
-                    title="Open in Adminer as root"
-                    data-testid="user-adminer-root"
-                  >
-                    {adminerLogin.isPending ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <ExternalLink size={12} />
-                    )}
-                    Adminer
-                  </button>
-                </div>
               </div>
             </div>
           </div>
@@ -457,20 +417,6 @@ function UsersSection({
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleAdminerLogin(user.username)}
-                        disabled={adminerLogin.isPending}
-                        className="rounded p-1 text-gray-400 hover:text-green-500 dark:hover:text-green-400 transition-colors"
-                        title="Open in Adminer"
-                        data-testid={`user-adminer-${user.username}`}
-                      >
-                        {adminerLogin.isPending ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <ExternalLink size={14} />
-                        )}
-                      </button>
                       <button
                         type="button"
                         onClick={() => handleRegeneratePassword(user.username)}
@@ -678,7 +624,6 @@ export default function DatabaseManagementModal({
   const navigate = useNavigate();
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [revealedCredentials, setRevealedCredentials] = useState<Set<string>>(new Set());
-  const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
   const deploymentId = deployment?.id;
@@ -688,7 +633,6 @@ export default function DatabaseManagementModal({
     clientId,
     open ? deploymentId : undefined,
   );
-  const regenerateCredentials = useRegenerateCredentials(clientId);
   const restartMutation = useRestartDeployment(clientId);
 
   // Only fetch databases list when modal is open and deployment is a database type
@@ -717,19 +661,6 @@ export default function DatabaseManagementModal({
       return next;
     });
   }, []);
-
-  const handleRegenerate = useCallback(() => {
-    if (!deploymentId) return;
-    regenerateCredentials.mutate(
-      { deploymentId, keys: credentialsResult?.generatedKeys ? [...credentialsResult.generatedKeys] : undefined },
-      {
-        onSuccess: () => {
-          setRegenConfirmOpen(false);
-          setRevealedCredentials(new Set());
-        },
-      },
-    );
-  }, [deploymentId, regenerateCredentials, credentialsResult?.generatedKeys]);
 
   const handleRestart = useCallback(() => {
     if (!deploymentId) return;
@@ -896,58 +827,10 @@ export default function DatabaseManagementModal({
                   })}
                 </div>
 
-                {/* Regenerate Passwords */}
-                {(credentialsResult?.generatedKeys?.length ?? 0) > 0 && (
-                  <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700">
-                    {!regenConfirmOpen ? (
-                      <button
-                        type="button"
-                        onClick={() => setRegenConfirmOpen(true)}
-                        className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                        data-testid="regenerate-passwords-button"
-                      >
-                        <RefreshCw size={14} />
-                        Regenerate Passwords
-                      </button>
-                    ) : (
-                      <div className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3" data-testid="regenerate-confirm">
-                        <p className="text-sm text-amber-800 dark:text-amber-300 mb-3">
-                          This will generate new passwords. Running containers will need to be restarted.
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={handleRegenerate}
-                            disabled={regenerateCredentials.isPending}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            data-testid="regenerate-confirm-button"
-                          >
-                            {regenerateCredentials.isPending ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              <RefreshCw size={14} />
-                            )}
-                            Confirm
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRegenConfirmOpen(false)}
-                            disabled={regenerateCredentials.isPending}
-                            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                            data-testid="regenerate-cancel-button"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                        {regenerateCredentials.isSuccess && (
-                          <p className="mt-2 text-sm text-green-600 dark:text-green-400" data-testid="regenerate-success">
-                            Credentials regenerated successfully
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* Credentials note */}
+                <p className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
+                  Set at deployment time. Change passwords inside the application if needed.
+                </p>
               </div>
             )}
 

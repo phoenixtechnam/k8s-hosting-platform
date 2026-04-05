@@ -1,34 +1,32 @@
 services:
-  mariadb:
-    image: mariadb:10.6
+  postgres:
+    image: postgres:16-alpine
     ports:
-      - "3306:3306"
+      - "5432:5432"
     environment:
-      MARIADB_ROOT_PASSWORD: rootpassword
-      MARIADB_DATABASE: hosting_platform
-      MARIADB_USER: platform
-      MARIADB_PASSWORD: platform
+      POSTGRES_DB: hosting_platform
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
     volumes:
-      - mariadb-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD-SHELL", "pg_isready -U platform -d hosting_platform"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  mariadb-test:
-    image: mariadb:10.6
+  postgres-test:
+    image: postgres:16-alpine
     ports:
-      - "3307:3306"
+      - "5433:5432"
     environment:
-      MARIADB_ROOT_PASSWORD: rootpassword
-      MARIADB_DATABASE: hosting_platform_test
-      MARIADB_USER: platform
-      MARIADB_PASSWORD: platform
+      POSTGRES_DB: hosting_platform_test
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
     tmpfs:
-      - /var/lib/mysql
+      - /var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD-SHELL", "pg_isready -U platform -d hosting_platform_test"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -50,4 +48,4 @@ services:
       - "8025:8025"
 
 volumes:
-  mariadb-data:
+  postgres-data:

@@ -140,11 +140,21 @@ export async function reconcileDeploymentStatuses(
       if (newDbStatus !== deployment.status) {
         const updateValues: Record<string, unknown> = { status: newDbStatus };
 
-        // Store error message when status changes to failed
+        // Store user-friendly error message when status changes to failed
         if (newDbStatus === 'failed') {
           const failedComponent = k8sStatus.components.find(c => c.phase === 'failed');
           if (failedComponent?.message) {
-            updateValues.lastError = failedComponent.message;
+            const raw = failedComponent.message;
+            // Translate common K8s error messages to user-friendly text
+            if (raw.includes('OOMKilled') || raw.includes('exit code 137') || raw.includes('exit code: 137')) {
+              updateValues.lastError = 'This app ran out of memory and was shut down. Please assign more memory.';
+            } else if (raw.includes('CrashLoopBackOff')) {
+              updateValues.lastError = 'This app is crashing repeatedly. Check the logs for details.';
+            } else if (raw.includes('ImagePullBackOff') || raw.includes('ErrImagePull')) {
+              updateValues.lastError = 'Failed to download the app image. The image may not exist or the registry is unreachable.';
+            } else {
+              updateValues.lastError = raw;
+            }
           }
         } else {
           // Clear lastError when status recovers

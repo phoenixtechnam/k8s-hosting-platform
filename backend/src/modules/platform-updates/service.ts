@@ -13,7 +13,7 @@ async function getSetting(db: Database, key: string): Promise<string | null> {
 }
 
 async function setSetting(db: Database, key: string, value: string): Promise<void> {
-  await db.insert(platformSettings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
+  await db.insert(platformSettings).values({ key, value }).onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
 export async function getVersionInfo(db: Database) {

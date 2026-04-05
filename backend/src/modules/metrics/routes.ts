@@ -10,6 +10,8 @@ import { clients, hostingPlans } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes — trigger background refresh
+
 /**
  * Resolve effective plan limits for a client, applying per-client overrides.
  */
@@ -24,6 +26,26 @@ async function resolvePlanLimits(
     memoryLimitGi: Number(client.memoryLimitOverride ?? plan?.memoryLimit ?? 4),
     storageLimitGi: Number(client.storageLimitOverride ?? plan?.storageLimit ?? 50),
   };
+}
+
+/**
+ * Collect metrics for a client, swallowing errors (for background refresh).
+ */
+async function collectSafe(
+  app: FastifyInstance,
+  clientId: string,
+): Promise<void> {
+  try {
+    const client = await getClientById(app.db, clientId);
+    if (client.provisioningStatus !== 'provisioned') return;
+
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    const planLimits = await resolvePlanLimits(app.db, client);
+    await collectClientMetrics(app.db, k8s, clientId, client.kubernetesNamespace, planLimits);
+  } catch (err) {
+    console.warn(`[metrics] Background refresh failed for ${clientId}:`, err instanceof Error ? err.message : String(err));
+  }
 }
 
 export async function metricsRoutes(app: FastifyInstance): Promise<void> {
@@ -42,9 +64,9 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
     return success(metrics);
   });
 
-  // ─── Real-time resource metrics (new, Redis-cached) ─────────────────────────
+  // ─── Real-time resource metrics (Redis-cached with stale-while-revalidate) ──
 
-  // GET /api/v1/clients/:id/resource-metrics — get cached or collect on-demand
+  // GET /api/v1/clients/:id/resource-metrics — get cached, auto-refresh if stale
   app.get('/clients/:id/resource-metrics', {
     preHandler: [requireRole('admin', 'super_admin', 'read_only', 'client_admin', 'client_user'), requireClientAccess()],
   }, async (request) => {
@@ -52,9 +74,18 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
 
     // Try cache first
     const cached = await getCachedMetrics(id);
-    if (cached) return success(cached);
+    if (cached) {
+      // Stale-while-revalidate: return cached data immediately,
+      // trigger background refresh if older than threshold
+      const age = Date.now() - new Date(cached.lastUpdatedAt).getTime();
+      if (age > STALE_THRESHOLD_MS) {
+        // Fire-and-forget — don't await
+        collectSafe(app, id).catch(() => {});
+      }
+      return success(cached);
+    }
 
-    // Cache miss — collect on-demand
+    // Cache miss — collect on-demand (blocking)
     const client = await getClientById(app.db, id);
     if (client.provisioningStatus !== 'provisioned') {
       throw new ApiError('CLIENT_NOT_PROVISIONED', 'Client is not provisioned yet', 409);
@@ -73,9 +104,9 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
     return success(metrics);
   });
 
-  // POST /api/v1/clients/:id/resource-metrics/refresh — force refresh
+  // POST /api/v1/clients/:id/resource-metrics/refresh — force immediate refresh
   app.post('/clients/:id/resource-metrics/refresh', {
-    preHandler: [requireRole('admin', 'super_admin')],
+    preHandler: [requireRole('admin', 'super_admin', 'client_admin'), requireClientAccess()],
   }, async (request) => {
     const { id } = request.params as { id: string };
     const client = await getClientById(app.db, id);

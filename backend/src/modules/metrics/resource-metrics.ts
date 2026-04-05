@@ -14,6 +14,28 @@ export interface ResourceMetrics {
   readonly lastUpdatedAt: string;
 }
 
+/** Check if a pod/metrics entry is a system service (file-manager, etc.) */
+function isSystemPod(labels: Record<string, string> | undefined): boolean {
+  return labels?.['platform.io/system'] === 'true';
+}
+
+type PodMetricsItem = {
+  readonly metadata?: { readonly labels?: Record<string, string> };
+  readonly containers?: ReadonlyArray<{ readonly usage?: { readonly cpu?: string; readonly memory?: string } }>;
+};
+
+type PodItem = {
+  readonly metadata?: { readonly labels?: Record<string, string> };
+  readonly spec?: {
+    readonly containers?: ReadonlyArray<{
+      readonly resources?: {
+        readonly limits?: { readonly cpu?: string; readonly memory?: string };
+        readonly requests?: { readonly cpu?: string; readonly memory?: string };
+      };
+    }>;
+  };
+};
+
 export async function collectClientMetrics(
   _db: Database,
   k8s: K8sClients,
@@ -21,12 +43,11 @@ export async function collectClientMetrics(
   namespace: string,
   planLimits: { readonly cpuLimit: number; readonly memoryLimitGi: number; readonly storageLimitGi: number },
 ): Promise<ResourceMetrics> {
-  // 1. Actual usage from Metrics API
+  // 1. Actual usage from Metrics API — exclude system pods
   let cpuInUse = 0;
   let memoryInUse = 0;
 
   try {
-    // Use the K8s custom objects API to hit metrics.k8s.io
     const metricsResult = await k8s.custom.listNamespacedCustomObject({
       group: 'metrics.k8s.io',
       version: 'v1beta1',
@@ -34,9 +55,10 @@ export async function collectClientMetrics(
       plural: 'pods',
     });
 
-    const pods = (metricsResult as { items?: ReadonlyArray<{ containers?: ReadonlyArray<{ usage?: { cpu?: string; memory?: string } }> }> }).items ?? [];
+    const pods = (metricsResult as { items?: readonly PodMetricsItem[] }).items ?? [];
 
     for (const pod of pods) {
+      if (isSystemPod(pod.metadata?.labels)) continue; // Skip file-manager etc.
       for (const container of pod.containers ?? []) {
         if (container.usage?.cpu) {
           cpuInUse += parseResourceValue(container.usage.cpu, 'cpu');
@@ -50,30 +72,55 @@ export async function collectClientMetrics(
     console.warn(`[metrics] Failed to get metrics for ${namespace}:`, err instanceof Error ? err.message : String(err));
   }
 
-  // 2. Reserved (allocated) from ResourceQuota
+  // 2. Reserved (allocated) from actual pod specs — exclude system pods
+  //    This is more accurate than ResourceQuota status.used which includes
+  //    system services (file-manager) that shouldn't count against user quota.
   let cpuReserved = 0;
   let memoryReserved = 0;
-  let storageReserved = 0;
 
+  try {
+    const podList = await k8s.core.listNamespacedPod({ namespace });
+    const pods = (podList as { items?: readonly PodItem[] }).items ?? [];
+
+    for (const pod of pods) {
+      if (isSystemPod(pod.metadata?.labels)) continue; // Skip file-manager etc.
+      for (const container of pod.spec?.containers ?? []) {
+        const limits = container.resources?.limits;
+        if (limits?.cpu) cpuReserved += parseResourceValue(limits.cpu, 'cpu');
+        if (limits?.memory) memoryReserved += parseResourceValue(limits.memory, 'memory');
+      }
+    }
+  } catch {
+    // Fall back to ResourceQuota if pod listing fails
+    try {
+      const quota = await k8s.core.readNamespacedResourceQuota({
+        name: `${namespace}-quota`,
+        namespace,
+      });
+      const used = (quota as { status?: { used?: Record<string, string> } }).status?.used ?? {};
+      if (used['limits.cpu']) cpuReserved = parseResourceValue(used['limits.cpu'], 'cpu');
+      if (used['limits.memory']) memoryReserved = parseResourceValue(used['limits.memory'], 'memory');
+    } catch {
+      // Quota might not exist yet
+    }
+  }
+
+  // 3. Storage reserved from ResourceQuota (PVC-level, not affected by system pods)
+  let storageReserved = 0;
   try {
     const quota = await k8s.core.readNamespacedResourceQuota({
       name: `${namespace}-quota`,
       namespace,
     });
     const used = (quota as { status?: { used?: Record<string, string> } }).status?.used ?? {};
-
-    if (used['limits.cpu']) cpuReserved = parseResourceValue(used['limits.cpu'], 'cpu');
-    if (used['limits.memory']) memoryReserved = parseResourceValue(used['limits.memory'], 'memory');
     if (used['requests.storage']) storageReserved = parseResourceValue(used['requests.storage'], 'storage');
   } catch {
     // Quota might not exist yet
   }
 
-  // 3. Storage actual usage from file-manager (if running)
+  // 4. Storage actual usage from file-manager (if running)
   let storageInUse = 0;
   try {
-    // Try to get disk usage via file-manager sidecar service proxy
-    // This is optional — if sidecar isn't running, we skip
     const { proxyToFileManager } = await import('../file-manager/service.js');
     const kubeconfigPath = process.env.KUBECONFIG_PATH;
     const result = await proxyToFileManager(kubeconfigPath, namespace, '/disk-usage');

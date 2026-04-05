@@ -59,13 +59,14 @@ compose() {
 }
 
 compose_k3s() {
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile k3s "$@"
+  compose "$@"
 }
 
 cmd_up() {
   echo "Building and starting local stack..."
   compose up -d --build
   echo ""
+  _rebuild_sidecar
   _check_k3s_health
   cmd_status
 }
@@ -81,12 +82,13 @@ cmd_reset() {
   echo "Starting fresh..."
   compose up -d --build
   echo ""
+  _rebuild_sidecar
   cmd_status
 }
 
 cmd_rebuild() {
   echo "Rebuilding app services (backend, admin-panel, client-panel)..."
-  # Only rebuild app services — never touch k3s, MariaDB, or Redis
+  # Only rebuild app services — never touch k3s, PostgreSQL, or Redis
   # This prevents accidental removal of infrastructure containers
   compose build backend admin-panel client-panel
   compose up -d --no-deps backend admin-panel client-panel
@@ -145,7 +147,7 @@ cmd_status() {
   echo "    Admin Panel:  http://${DOCKER_HOST_NAME}:${PORT_ADMIN}"
   echo "    Client Panel: http://${DOCKER_HOST_NAME}:${PORT_CLIENT}"
   echo "    Backend API:  http://${DOCKER_HOST_NAME}:${PORT_API}"
-  echo "    MariaDB:      ${DOCKER_HOST_NAME}:${PORT_DB}"
+  echo "    PostgreSQL:   ${DOCKER_HOST_NAME}:${PORT_DB}"
   echo "    Redis:        ${DOCKER_HOST_NAME}:${PORT_REDIS}"
 
   # Show k3s if running

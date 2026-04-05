@@ -7,6 +7,7 @@ export function parseResourceValue(value: string, unit: 'cpu' | 'memory' | 'stor
   const trimmed = value.trim();
 
   if (unit === 'cpu') {
+    if (trimmed.endsWith('n')) return Number(trimmed.slice(0, -1)) / 1_000_000_000;
     if (trimmed.endsWith('m')) return Number(trimmed.slice(0, -1)) / 1000;
     return Number(trimmed);
   }

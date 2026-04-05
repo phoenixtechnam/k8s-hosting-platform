@@ -8,7 +8,7 @@ export async function buildTestApp(): Promise<FastifyInstance> {
     config: {
       NODE_ENV: 'test',
       PORT: 0,
-      DATABASE_URL: process.env.DATABASE_URL ?? 'mysql://platform:platform@localhost:3307/hosting_platform_test',
+      DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://platform:platform@localhost:5433/hosting_platform_test',
       JWT_SECRET: 'test-secret-key-for-testing-only',
       LOG_LEVEL: 'error',
     },

@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
+import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog } from '@/hooks/use-catalog';
-import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment } from '@/hooks/use-deployments';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
@@ -15,8 +16,8 @@ import type { CatalogEntry } from '@/types/api';
 type Tab = 'catalog' | 'installed';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
-  { id: 'catalog', label: 'Catalog' },
-  { id: 'installed', label: 'Installed' },
+  { id: 'installed', label: 'Installed Apps' },
+  { id: 'catalog', label: 'Application Catalog' },
 ] as const;
 
 const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Static', 'Databases', 'Services'] as const;
@@ -31,7 +32,7 @@ const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
 };
 
 export default function Applications() {
-  const [activeTab, setActiveTab] = useState<Tab>('catalog');
+  const [activeTab, setActiveTab] = useState<Tab>('installed');
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
 
@@ -878,13 +879,15 @@ function formatTimeAgo(dateStr: string): string {
 
 function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { clientId } = useClientContext();
+  const queryClient = useQueryClient();
   const { data: catalogData } = useCatalog();
   const updateDeployment = useUpdateDeployment(clientId ?? undefined);
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
   const restoreDeployment = useRestoreDeployment(clientId ?? undefined);
   const permanentDeleteDeployment = usePermanentDeleteDeployment(clientId ?? undefined);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [permanentDeleteConfirmId, setPermanentDeleteConfirmId] = useState<string | null>(null);
+  const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [deleteDataFolder, setDeleteDataFolder] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
 
   // ─── Notification state (Issue 6) ──────────────────────────────────────────
@@ -908,26 +911,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
-  // ─── Deployments with auto-refresh (Issue 5) ──────────────────────────────
-  // Track whether any deployment is transitioning so we can poll
-  const [pollEnabled, setPollEnabled] = useState(false);
-
+  // ─── Deployments with auto-refresh ─────────────────────────────────────────
+  // Always poll at 15s to detect crashes without page reload; use faster 3s for transitioning states
   const { data: deploymentsData, isLoading: deploymentsLoading, error } = useDeployments(
     clientId ?? undefined,
-    { refetchInterval: pollEnabled ? 3000 : false },
+    { refetchInterval: 15_000 },
   );
 
   const allDeployments = deploymentsData?.data ?? [];
-
-  // Update polling state based on current deployment statuses
-  const hasTransitioning = useMemo(
-    () => allDeployments.some((d) => ['deploying', 'pending', 'upgrading', 'deleting'].includes(d.status)),
-    [allDeployments],
-  );
-
-  useEffect(() => {
-    setPollEnabled(hasTransitioning);
-  }, [hasTransitioning]);
 
   const activeDeployments = useMemo(() => allDeployments.filter(d => d.status !== 'deleted'), [allDeployments]);
   const deletedDeployments = useMemo(() => allDeployments.filter(d => d.status === 'deleted'), [allDeployments]);
@@ -953,16 +944,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
 
   const handleToggleStatus = useCallback((deploymentId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'running' ? 'stopped' : 'running';
-    const action = newStatus === 'running' ? 'Starting' : 'Stopping';
-    addNotification('info', `${action} deployment...`);
     updateDeployment.mutate(
       { deploymentId, status: newStatus as 'running' | 'stopped' },
       {
-        onSuccess: () => addNotification('success', `Deployment ${newStatus === 'running' ? 'started' : 'stopped'} successfully`),
-        onError: () => addNotification('error', `Failed to ${newStatus === 'running' ? 'start' : 'stop'} deployment`),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['deployments'] }),
+        onError: (err) => addNotification('error', err instanceof Error ? err.message : 'Operation failed'),
       },
     );
-  }, [updateDeployment, addNotification]);
+  }, [updateDeployment, addNotification, queryClient]);
 
   const handleDelete = useCallback(async (deploymentId: string) => {
     try {
@@ -1063,17 +1052,27 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                         </div>
                       </div>
                     </div>
-                    {/* Issue 3: Spinner for transitioning, badge otherwise */}
                     {isTransitioning ? (
                       <div className="flex items-center gap-1.5">
-                        <Loader2 size={14} className="animate-spin text-blue-500" />
-                        <span className="text-xs text-blue-600 dark:text-blue-400">{deployment.status}...</span>
+                        <Loader2 size={14} className="animate-spin text-amber-500" />
+                        <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                          {deployment.status === 'pending' && updateDeployment.variables?.status === 'running' ? 'Starting'
+                            : deployment.status === 'pending' && updateDeployment.variables?.status === 'stopped' ? 'Stopping'
+                            : deployment.status === 'deploying' ? 'Deploying'
+                            : deployment.status === 'upgrading' ? 'Upgrading'
+                            : deployment.status === 'deleting' ? 'Deleting'
+                            : deployment.status === 'pending' ? 'Starting'
+                            : deployment.status}...
+                        </span>
                       </div>
                     ) : (
                       <span
                         className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}
                       >
-                        {deployment.status}
+                        {deployment.status === 'running' ? 'Running'
+                          : deployment.status === 'stopped' ? 'Stopped'
+                          : deployment.status === 'failed' ? 'Failed'
+                          : deployment.status}
                       </span>
                     )}
                   </div>
@@ -1097,25 +1096,32 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                   )}
 
                   <div className="mt-4 grid grid-cols-2 gap-2 text-center">
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
-                      <p className="text-xs text-gray-500 dark:text-gray-400">CPU</p>
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        {deployment.cpuRequest}
-                      </p>
-                    </div>
-                    <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
-                      <p className="text-xs text-gray-500 dark:text-gray-400">Memory</p>
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        {deployment.memoryRequest}
-                      </p>
-                    </div>
+                    <DeploymentMetricBar
+                      label="CPU"
+                      deploymentId={deployment.id}
+                      request={deployment.cpuRequest}
+                      enabled={deployment.status === 'running'}
+                      type="cpu"
+                    />
+                    <DeploymentMetricBar
+                      label="Memory"
+                      deploymentId={deployment.id}
+                      request={deployment.memoryRequest}
+                      enabled={deployment.status === 'running'}
+                      type="memory"
+                    />
+                    <DeploymentStorageDisplay
+                      deploymentId={deployment.id}
+                      enabled={!['deleted', 'deleting'].includes(deployment.status)}
+                    />
                   </div>
 
+                  {!isTransitioning && (
                   <div className="mt-4 flex gap-2">
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); handleToggleStatus(deployment.id, deployment.status); }}
-                      disabled={updateDeployment.isPending || isTransitioning}
+                      disabled={updateDeployment.isPending}
                       className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                         deployment.status === 'running'
                           ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
@@ -1131,6 +1137,15 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                         <Play size={16} />
                       )}
                       {deployment.status === 'running' ? 'Stop' : 'Start'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setSelectedDeploymentId(deployment.id); }}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      data-testid={`details-app-${deployment.id}`}
+                    >
+                      <Settings2 size={14} />
+                      Details
                     </button>
                     {deleteConfirmId === deployment.id ? (
                       <div className="flex gap-1">
@@ -1149,6 +1164,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       </button>
                     )}
                   </div>
+                  )}
                 </div>
               );
             })}
@@ -1213,35 +1229,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     )}
                     Restore
                   </button>
-                  {permanentDeleteConfirmId === deployment.id ? (
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        onClick={async (e) => { e.stopPropagation(); try { await permanentDeleteDeployment.mutateAsync(deployment.id); setPermanentDeleteConfirmId(null); } catch { /* error via hook */ } }}
-                        disabled={permanentDeleteDeployment.isPending}
-                        className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                        data-testid={`confirm-permanent-delete-${deployment.id}`}
-                      >
-                        Confirm
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirmId(null); }}
-                        className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirmId(deployment.id); }}
-                      className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
-                      data-testid={`permanent-delete-app-${deployment.id}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirm({ id: deployment.id, name: deployment.name }); setDeleteDataFolder(false); }}
+                    className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                    data-testid={`permanent-delete-app-${deployment.id}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
             ))}
@@ -1272,6 +1267,140 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         }}
         isToggling={updateDeployment.isPending}
       />
+
+      {/* Permanent Delete Confirmation Modal */}
+      {permanentDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="permanent-delete-modal">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setPermanentDeleteConfirm(null)} />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-2">Permanently Delete</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Are you sure you want to permanently delete <span className="font-semibold text-gray-900 dark:text-gray-100">{permanentDeleteConfirm.name}</span>? This action cannot be undone.
+            </p>
+            <label className="flex items-center gap-2 mb-6 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deleteDataFolder}
+                onChange={(e) => setDeleteDataFolder(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-red-600 focus:ring-red-500"
+                data-testid="delete-data-folder-checkbox"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                Also delete data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/databases/{permanentDeleteConfirm.name}</code>
+              </span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPermanentDeleteConfirm(null)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await permanentDeleteDeployment.mutateAsync({ deploymentId: permanentDeleteConfirm.id, deleteData: deleteDataFolder });
+                    setPermanentDeleteConfirm(null);
+                    setDeleteDataFolder(false);
+                    addNotification('success', 'Deployment permanently deleted');
+                  } catch {
+                    addNotification('error', 'Failed to permanently delete deployment');
+                  }
+                }}
+                disabled={permanentDeleteDeployment.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid={`confirm-permanent-delete-${permanentDeleteConfirm.id}`}
+              >
+                {permanentDeleteDeployment.isPending && <Loader2 size={14} className="animate-spin" />}
+                Permanently Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Live metrics bar for deployment tiles ──────────────────────────────────
+
+function DeploymentMetricBar({
+  label,
+  deploymentId,
+  request,
+  enabled,
+  type,
+}: {
+  readonly label: string;
+  readonly deploymentId: string;
+  readonly request: string;
+  readonly enabled: boolean;
+  readonly type: 'cpu' | 'memory';
+}) {
+  const { clientId } = useClientContext();
+  const { data } = useDeploymentLiveMetrics(
+    clientId ?? undefined,
+    enabled ? deploymentId : undefined,
+  );
+  const metrics = data?.data;
+
+  // Parse request value for ratio calculation
+  let requestNum = 0;
+  let usedNum = 0;
+  let usedLabel = '';
+
+  if (type === 'cpu') {
+    requestNum = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    usedNum = metrics?.cpuUsed ?? 0;
+    usedLabel = metrics ? `${(usedNum * 1000).toFixed(0)}m` : '';
+  } else {
+    // Memory: convert request to Mi
+    if (request.endsWith('Gi')) requestNum = parseFloat(request) * 1024;
+    else if (request.endsWith('Mi')) requestNum = parseFloat(request);
+    else requestNum = parseFloat(request) || 0;
+    usedNum = metrics?.memoryUsedMi ?? 0;
+    usedLabel = metrics ? `${Math.round(usedNum)}Mi` : '';
+  }
+
+  const ratio = requestNum > 0 ? usedNum / (type === 'cpu' ? requestNum : requestNum) : 0;
+  const pct = Math.min(ratio * 100, 100);
+  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+
+  return (
+    <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
+      <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{request}</p>
+      {metrics && (
+        <>
+          <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+            <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+          </div>
+          <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{usedLabel} used</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DeploymentStorageDisplay({ deploymentId, enabled }: { readonly deploymentId: string; readonly enabled: boolean }) {
+  const { clientId } = useClientContext();
+  const { data } = useDeploymentLiveMetrics(clientId ?? undefined, enabled ? deploymentId : undefined);
+  const metrics = data?.data;
+  if (!metrics?.storageUsedBytes || metrics.storageUsedBytes === 0) return null;
+
+  const usedGb = metrics.storageUsedBytes / (1024 * 1024 * 1024);
+  const pct = Math.min((usedGb / 10) * 100, 100); // relative to 10GB reference
+  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+
+  return (
+    <div className="col-span-2 rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
+      <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
+      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{metrics.storageUsedFormatted}</p>
+      <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }

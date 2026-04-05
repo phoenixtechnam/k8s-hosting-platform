@@ -5,7 +5,7 @@
  */
 
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { deployments, catalogEntries, catalogEntryVersions, clients } from '../../db/schema.js';
+import { deployments, catalogEntries, catalogEntryVersions, clients, hostingPlans } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
@@ -237,6 +237,10 @@ export async function getDeploymentById(db: Database, clientId: string, deployme
   return deployment;
 }
 
+export async function clearDeploymentError(db: Database, deploymentId: string): Promise<void> {
+  await db.update(deployments).set({ lastError: null }).where(eq(deployments.id, deploymentId));
+}
+
 export async function listDeployments(
   db: Database,
   clientId: string,
@@ -314,7 +318,13 @@ export async function updateDeployment(
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
   if (input.configuration !== undefined) updateValues.configuration = input.configuration;
-  if (input.status !== undefined) updateValues.status = input.status;
+  // For start/stop: set to 'pending' first, let status-reconciler confirm final state
+  if (input.status === 'running' || input.status === 'stopped') {
+    updateValues.status = 'pending';
+    updateValues.lastError = null;
+  } else if (input.status !== undefined) {
+    updateValues.status = input.status;
+  }
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(deployments).set(updateValues).where(eq(deployments.id, deploymentId));
@@ -326,7 +336,6 @@ export async function updateDeployment(
     const namespace = client?.kubernetesNamespace;
 
     if (namespace) {
-      // Load catalog entry to get component definitions
       const [entry] = await db
         .select()
         .from(catalogEntries)
@@ -341,8 +350,13 @@ export async function updateDeployment(
           } else if (input.status === 'running') {
             await startDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components, deployment.replicaCount ?? 1);
           }
-        } catch {
-          // K8s operation failed — DB already updated, status will be reconciled
+        } catch (err) {
+          console.error('[deployments] K8s start/stop failed:', err instanceof Error ? err.message : String(err));
+          // Mark as failed so the user sees the error
+          await db.update(deployments).set({
+            status: 'failed',
+            lastError: err instanceof Error ? err.message : String(err),
+          }).where(eq(deployments.id, deploymentId));
         }
       }
     }
@@ -471,6 +485,63 @@ export async function hardDeleteDeployment(
 
 // ─── Resource Adjustment + Restart (Issue 7) ────────────────────────────────
 
+/**
+ * Get resource availability for a deployment — how much the client can allocate.
+ * Returns min (from catalog entry) and max (remaining plan capacity + current deployment alloc).
+ */
+export async function getResourceAvailability(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const { parseResourceValue } = await import('../../shared/resource-parser.js');
+
+  // Get plan limits (with overrides)
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
+  const cpuLimit = Number(client.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
+  const memoryLimitGi = Number(client.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
+
+  // Sum all OTHER deployments' resource requests
+  const allDeployments = await db.select().from(deployments)
+    .where(and(
+      eq(deployments.clientId, clientId),
+      ne(deployments.id, deploymentId),
+      ne(deployments.status, 'deleted'),
+    ));
+
+  let otherCpu = 0;
+  let otherMemoryGi = 0;
+  for (const d of allDeployments) {
+    otherCpu += parseResourceValue(d.cpuRequest || '0', 'cpu');
+    otherMemoryGi += parseResourceValue(d.memoryRequest || '0', 'memory');
+  }
+
+  // Get min from catalog entry
+  const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+  const resources = parseJsonField<{ minimum?: { cpu?: string; memory?: string }; recommended?: { cpu?: string; memory?: string } }>(entry?.resources);
+
+  const minCpu = resources?.minimum?.cpu ?? '0.1';
+  const minMemory = resources?.minimum?.memory ?? '64Mi';
+
+  return {
+    cpu: {
+      min: minCpu,
+      max: String(Math.round((cpuLimit - otherCpu) * 100) / 100),
+      current: deployment.cpuRequest,
+      planLimit: String(cpuLimit),
+    },
+    memory: {
+      min: minMemory,
+      max: `${Math.round((memoryLimitGi - otherMemoryGi) * 1024)}Mi`,
+      current: deployment.memoryRequest,
+      planLimit: `${memoryLimitGi}Gi`,
+    },
+  };
+}
+
 export async function updateDeploymentResources(
   db: Database,
   clientId: string,
@@ -479,6 +550,42 @@ export async function updateDeploymentResources(
   k8s?: K8sClients,
 ) {
   const deployment = await getDeploymentById(db, clientId, deploymentId);
+  const { parseResourceValue } = await import('../../shared/resource-parser.js');
+
+  // Validate against plan limits
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client '${clientId}' not found`, 404, { client_id: clientId });
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
+  const cpuLimit = Number(client.cpuLimitOverride ?? plan?.cpuLimit ?? 2);
+  const memoryLimitGi = Number(client.memoryLimitOverride ?? plan?.memoryLimit ?? 4);
+
+  // Sum all OTHER deployments
+  const allDeployments = await db.select().from(deployments)
+    .where(and(
+      eq(deployments.clientId, clientId),
+      ne(deployments.id, deploymentId),
+      ne(deployments.status, 'deleted'),
+    ));
+
+  let otherCpu = 0;
+  let otherMemoryGi = 0;
+  for (const d of allDeployments) {
+    otherCpu += parseResourceValue(d.cpuRequest || '0', 'cpu');
+    otherMemoryGi += parseResourceValue(d.memoryRequest || '0', 'memory');
+  }
+
+  const newCpu = input.cpu_request ? parseResourceValue(input.cpu_request, 'cpu') : parseResourceValue(deployment.cpuRequest || '0', 'cpu');
+  const newMemoryGi = input.memory_request ? parseResourceValue(input.memory_request, 'memory') : parseResourceValue(deployment.memoryRequest || '0', 'memory');
+
+  if (newCpu + otherCpu > cpuLimit) {
+    const available = Math.round((cpuLimit - otherCpu) * 100) / 100;
+    throw new ApiError('RESOURCE_LIMIT_EXCEEDED', `CPU request ${input.cpu_request} exceeds available capacity. Maximum: ${available} cores (plan limit: ${cpuLimit} cores)`, 400, { field: 'cpu_request', available: String(available), limit: String(cpuLimit) });
+  }
+
+  if (newMemoryGi + otherMemoryGi > memoryLimitGi) {
+    const availableMi = Math.round((memoryLimitGi - otherMemoryGi) * 1024);
+    throw new ApiError('RESOURCE_LIMIT_EXCEEDED', `Memory request ${input.memory_request} exceeds available capacity. Maximum: ${availableMi}Mi (plan limit: ${memoryLimitGi}Gi)`, 400, { field: 'memory_request', available: `${availableMi}Mi`, limit: `${memoryLimitGi}Gi` });
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.cpu_request) updateValues.cpuRequest = input.cpu_request;
@@ -487,6 +594,10 @@ export async function updateDeploymentResources(
   if (Object.keys(updateValues).length === 0) {
     return deployment;
   }
+
+  // Set to pending since pod will restart with new resources
+  updateValues.status = 'pending';
+  updateValues.lastError = null;
 
   await db.update(deployments).set(updateValues).where(eq(deployments.id, deploymentId));
 
@@ -520,6 +631,22 @@ export async function updateDeploymentResources(
           configuration: config,
           envVars: envVarsData ?? undefined,
         });
+        // Force pod restart by deleting existing pods — K8s recreates from updated spec.
+        // The patchNamespacedDeployment annotation approach doesn't work reliably
+        // with this K8s client version due to content-type issues.
+        const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+        try {
+          const podList = await k8s.core.listNamespacedPod({
+            namespace,
+            labelSelector: `app=${baseName}`,
+          });
+          const pods = (podList as { items?: readonly { metadata?: { name?: string } }[] }).items ?? [];
+          for (const pod of pods) {
+            if (pod.metadata?.name) {
+              await k8s.core.deleteNamespacedPod({ name: pod.metadata.name, namespace });
+            }
+          }
+        } catch { /* pod deletion is best-effort */ }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[deployments] K8s resource update failed for ${deployment.name}:`, message);
@@ -591,6 +718,60 @@ export async function resolveDeploymentComponents(
 
   if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId);
   return resolveComponents(entry, null);
+}
+
+/**
+ * Redeploy a deployment with its current configuration.
+ * Used after credential regeneration to update pod env vars.
+ */
+export async function redeployWithCurrentConfig(
+  db: Database,
+  deployment: typeof deployments.$inferSelect,
+  k8s: K8sClients,
+): Promise<void> {
+  const [entry] = await db
+    .select()
+    .from(catalogEntries)
+    .where(eq(catalogEntries.id, deployment.catalogEntryId));
+
+  if (!entry) return;
+
+  const namespace = await getClientNamespace(db, deployment.clientId);
+  const components = resolveComponents(entry, null);
+  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+  const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
+  const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
+  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
+  const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+
+  await deployCatalogEntry(k8s, {
+    deploymentName: deployment.name,
+    resourceSuffix: deployment.resourceSuffix,
+    namespace,
+    components,
+    volumes,
+    replicaCount: deployment.replicaCount ?? 1,
+    cpuRequest: deployment.cpuRequest,
+    memoryRequest: deployment.memoryRequest,
+    storageRequest,
+    configuration: config,
+    envVars: envVarsData ?? undefined,
+  });
+
+  // Force pod restart by deleting existing pods — K8s recreates from updated spec.
+  const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+  try {
+    const podList = await k8s.core.listNamespacedPod({
+      namespace,
+      labelSelector: `app=${baseName}`,
+    });
+    const pods = (podList as { items?: readonly { metadata?: { name?: string } }[] }).items ?? [];
+    for (const pod of pods) {
+      if (pod.metadata?.name) {
+        await k8s.core.deleteNamespacedPod({ name: pod.metadata.name, namespace });
+      }
+    }
+  } catch { /* best-effort */ }
 }
 
 export async function getClientNamespace(
@@ -681,6 +862,11 @@ export async function getDeploymentCredentials(
   return { credentials, connectionInfo, generatedKeys };
 }
 
+/**
+ * @deprecated Credential regeneration is no longer supported. Credentials are
+ * generated once at deployment time and treated as read-only by the platform.
+ * Kept for potential rollback — do not call from new code.
+ */
 export async function regenerateDeploymentCredentials(
   db: Database,
   clientId: string,

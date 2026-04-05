@@ -33,7 +33,6 @@ import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
-import { adminerRoutes } from './modules/adminer/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
@@ -221,7 +220,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
-  await app.register(adminerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
@@ -259,6 +257,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const metricsTimer = startMetricsScheduler(app.db);
       app.addHook('onClose', () => clearInterval(metricsTimer));
+
+      // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
+      const reconcileInterval = setInterval(async () => {
+        try {
+          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
+          const k8s = createK8sClients(kubePath);
+          await reconcileDeploymentStatuses(app.db, k8s);
+        } catch {
+          // K8s not available — skip this cycle
+        }
+      }, 15_000); // Every 15 seconds
+      app.addHook('onClose', () => clearInterval(reconcileInterval));
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }

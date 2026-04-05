@@ -346,21 +346,17 @@ export async function stopDeployment(
 
     try {
       if (component.type === 'deployment' || component.type === 'statefulset') {
-        await k8s.apps.patchNamespacedDeployment({
+        // Read current scale, set replicas to 0, replace
+        const current = await k8s.apps.readNamespacedDeploymentScale({ name, namespace });
+        const scale = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
+        await k8s.apps.replaceNamespacedDeploymentScale({
           name,
           namespace,
-          body: { spec: { replicas: 0 } },
-          contentType: 'application/strategic-merge-patch+json',
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
-      } else if (component.type === 'cronjob') {
-        await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.patchNamespacedCronJob({
-          name,
-          namespace,
-          body: { spec: { suspend: true } },
-          contentType: 'application/strategic-merge-patch+json',
-        });
+          body: { ...scale, spec: { ...scale.spec, replicas: 0 } },
+        } as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
       }
     } catch (err: unknown) {
+      console.error(`[k8s-deployer] Failed to stop ${name}:`, err instanceof Error ? err.message : String(err));
       if (!isK8s404(err)) throw err;
     }
   }
@@ -383,18 +379,18 @@ export async function startDeployment(
 
     try {
       if (component.type === 'deployment' || component.type === 'statefulset') {
-        await k8s.apps.patchNamespacedDeployment({
+        const current = await k8s.apps.readNamespacedDeploymentScale({ name, namespace });
+        const scale = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
+        await k8s.apps.replaceNamespacedDeploymentScale({
           name,
           namespace,
-          body: { spec: { replicas } },
-          contentType: 'application/strategic-merge-patch+json',
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
+          body: { ...scale, spec: { ...scale.spec, replicas } },
+        } as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
       } else if (component.type === 'cronjob') {
         await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.patchNamespacedCronJob({
           name,
           namespace,
           body: { spec: { suspend: false } },
-          contentType: 'application/strategic-merge-patch+json',
         });
       }
     } catch (err: unknown) {
@@ -628,6 +624,25 @@ async function getK8sDeploymentStatus(
 
   if (readyReplicas >= desiredReplicas) {
     return { name: componentName, type: 'deployment', phase: 'running', ready: true };
+  }
+
+  // If no pods exist but replicas are desired, check K8s events for FailedCreate (quota exceeded, etc.)
+  if (podList.length === 0 && desiredReplicas > 0) {
+    try {
+      const events = await k8s.core.listNamespacedEvent({ namespace });
+      const eventItems = (events as { items?: readonly { reason?: string; message?: string; involvedObject?: { kind?: string; name?: string } }[] }).items ?? [];
+      const failedEvent = eventItems.find(
+        e => e.reason === 'FailedCreate' && e.involvedObject?.kind === 'ReplicaSet' && e.involvedObject?.name?.startsWith(name),
+      );
+      if (failedEvent?.message) {
+        const msg = failedEvent.message;
+        if (msg.includes('exceeded quota')) {
+          return { name: componentName, type: 'deployment', phase: 'failed', ready: false,
+            message: 'Insufficient resources: the client quota has been exceeded. Free up resources or upgrade the plan.' };
+        }
+        return { name: componentName, type: 'deployment', phase: 'failed', ready: false, message: msg };
+      }
+    } catch { /* events not available */ }
   }
 
   return {

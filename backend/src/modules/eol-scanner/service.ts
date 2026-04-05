@@ -70,7 +70,7 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
   await db
     .insert(platformSettings)
     .values({ key, value })
-    .onDuplicateKeyUpdate({ set: { value } });
+    .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
 // ─── EOL Settings ───────────────────────────────────────────────────────────

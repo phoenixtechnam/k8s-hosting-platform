@@ -40,6 +40,21 @@ export function useExecuteQuery(clientId: string | null | undefined, deploymentI
   });
 }
 
+export function useDatabasesWithSize(
+  clientId: string | null | undefined,
+  deploymentId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ['sql-databases-size', clientId, deploymentId],
+    queryFn: () =>
+      apiFetch<{ data: readonly { name: string; sizeBytes: number }[] }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/databases-with-size`,
+      ),
+    enabled: Boolean(clientId) && Boolean(deploymentId),
+    staleTime: 30_000,
+  });
+}
+
 export function useListTables(
   clientId: string | null | undefined,
   deploymentId: string | undefined,
@@ -48,7 +63,7 @@ export function useListTables(
   return useQuery({
     queryKey: ['sql-tables', clientId, deploymentId, database],
     queryFn: () =>
-      apiFetch<{ data: readonly string[] }>(
+      apiFetch<{ data: readonly { name: string; sizeBytes: number; rowCount: number }[] }>(
         `/api/v1/clients/${clientId}/deployments/${deploymentId}/tables?database=${encodeURIComponent(database!)}`,
       ),
     enabled: Boolean(clientId) && Boolean(deploymentId) && Boolean(database),
@@ -120,29 +135,22 @@ export function useRowCount(
   });
 }
 
+export interface ExportResult {
+  readonly pvcPath: string;
+  readonly sizeBytes: number;
+  readonly fileName: string;
+  readonly message: string;
+}
+
 export function useExportDatabase(clientId: string | null | undefined) {
   return useMutation({
     mutationFn: async ({ deploymentId, database }: { readonly deploymentId: string; readonly database: string }) => {
       if (!clientId) throw new Error('No client selected');
-      const token = localStorage.getItem('auth_token');
-      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
-      const res = await fetch(
-        `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/export?database=${encodeURIComponent(database)}`,
-        { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      // Export to PVC — returns { pvcPath, sizeBytes, fileName, message }
+      return apiFetch<{ data: ExportResult }>(
+        `/api/v1/clients/${clientId}/deployments/${deploymentId}/export?database=${encodeURIComponent(database)}`,
+        { method: 'POST' },
       );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: { message: 'Export failed' } }));
-        throw new Error(body.error?.message ?? 'Export failed');
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${database}.sql`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     },
   });
 }
@@ -160,23 +168,48 @@ export function useImportSql(clientId: string | null | undefined) {
     }) => {
       if (!clientId) throw new Error('No client selected');
 
-      // Read the .sql file as text, then send as JSON — the backend expects { database, sql }
-      const sql = await file.text();
+      // Read the .sql file as text, then send as raw text body — avoids JSON encoding overhead
+      // that doubles memory for large files with escape characters
+      let sql: string;
       try {
-        return await apiFetch<{ data: { message: string } }>(
-          `/api/v1/clients/${clientId}/deployments/${deploymentId}/import`,
-          { method: 'POST', body: JSON.stringify({ database, sql }) },
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Import failed';
-        if (message.includes('too large') || message.includes('413') || message.includes('Payload Too Large')) {
-          throw new Error('File is too large. Maximum upload size is 50MB.');
-        }
-        if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('Load failed')) {
-          throw new Error('Upload failed — the file may be too large or the server is unreachable.');
-        }
-        throw err;
+        sql = await file.text();
+      } catch {
+        throw new Error(`Failed to read file "${file.name}" — it may be too large for the browser to process.`);
       }
+
+      if (!sql.trim()) {
+        throw new Error('The SQL file is empty.');
+      }
+
+      const token = localStorage.getItem('auth_token');
+      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+      const res = await fetch(
+        `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/import?database=${encodeURIComponent(database)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ database, sql }),
+        },
+      );
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: { message: 'Import failed' } }));
+        const message = body.error?.message ?? `Import failed (HTTP ${res.status})`;
+        if (res.status === 413) {
+          throw new Error('File is too large. Maximum upload size is 50MB. For larger files, upload via File Manager and use "Import from File".');
+        }
+        throw new Error(message);
+      }
+
+      const result = await res.json();
+      // Backend returns 200 with { success: false } for import errors (OOM, syntax, etc.)
+      if (result.data && result.data.success === false && result.data.error) {
+        throw new Error(result.data.error);
+      }
+      return result as { data: { message: string } };
     },
   });
 }
@@ -217,10 +250,15 @@ export function useImportSqlFromFile(clientId: string | null | undefined) {
       readonly filePath: string;
     }) => {
       if (!clientId) throw new Error('No client selected');
-      return apiFetch<{ data: { success: boolean; error?: string } }>(
+      const result = await apiFetch<{ data: { success: boolean; error?: string } }>(
         `/api/v1/clients/${clientId}/deployments/${deploymentId}/import-from-file`,
         { method: 'POST', body: JSON.stringify({ database, file_path: filePath }) },
       );
+      // Backend returns 200 with { success: false } for import errors (OOM, syntax, etc.)
+      if (result.data && !result.data.success && result.data.error) {
+        throw new Error(result.data.error);
+      }
+      return result;
     },
   });
 }

@@ -604,7 +604,7 @@ generate_platform_secrets() {
       --namespace=platform \
       --from-literal=password="$db_password" \
       --from-literal=root-password="$db_root_password" \
-      --from-literal=url="mysql://platform:${db_password}@mariadb.platform.svc.cluster.local:3306/hosting_platform"
+      --from-literal=url="postgresql://platform:${db_password}@postgres.platform.svc.cluster.local:5432/hosting_platform"
     log "DB credentials secret created."
   fi
 

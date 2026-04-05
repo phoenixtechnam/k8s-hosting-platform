@@ -3,19 +3,18 @@
 # Or:    docker compose --env-file .env.local -f docker-compose.local.yml up -d --build
 
 services:
-  mariadb:
-    image: mariadb:10.6
+  postgres:
+    image: postgres:16-alpine
     ports:
-      - "${PORT_DB:-2013}:3306"
+      - "${PORT_DB:-2013}:5432"
     environment:
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-local-root-password}
-      MARIADB_DATABASE: ${DB_NAME:-hosting_platform}
-      MARIADB_USER: ${DB_USER:-platform}
-      MARIADB_PASSWORD: ${DB_PASSWORD:-local-password}
+      POSTGRES_DB: ${DB_NAME:-hosting_platform}
+      POSTGRES_USER: ${DB_USER:-platform}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-local-dev-password}
     volumes:
-      - mariadb-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-platform} -d ${DB_NAME:-hosting_platform}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,7 +40,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       LOG_LEVEL: debug
-      DATABASE_URL: "mysql://${DB_USER:-platform}:${DB_PASSWORD:-local-password}@mariadb:3306/${DB_NAME:-hosting_platform}"
+      DATABASE_URL: "postgresql://${DB_USER:-platform}:${DB_PASSWORD:-local-dev-password}@postgres:5432/${DB_NAME:-hosting_platform}"
       JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-not-for-production-use}
       REDIS_URL: redis://redis:6379
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@platform.local}
@@ -55,11 +54,12 @@ services:
       INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
       KUBECONFIG_PATH: /k8s/kubeconfig.yaml
       DISABLE_RATE_LIMIT: "true"
-      ADMINER_PROXY_PORT: "8081"
     depends_on:
-      mariadb:
+      postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      k3s-server:
         condition: service_healthy
     volumes:
       - k3s-kubeconfig:/k8s:ro
@@ -147,8 +147,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    profiles:
-      - k3s
 
   # Init job: wait for k3s ready, install NGINX ingress, verify storage
   k3s-init:
@@ -256,11 +254,9 @@ services:
     depends_on:
       k3s-server:
         condition: service_healthy
-    profiles:
-      - k3s
 
 volumes:
-  mariadb-data:
+  postgres-data:
   dex-data:
   k3s-data:
   k3s-kubeconfig:

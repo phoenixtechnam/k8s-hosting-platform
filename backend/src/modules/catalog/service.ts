@@ -562,7 +562,7 @@ export async function listCatalogEntries(
     conditions.push(
       or(
         like(catalogEntries.name, `%${search}%`),
-        sql`JSON_CONTAINS(${catalogEntries.tags}, JSON_QUOTE(${search}))`,
+        sql`${catalogEntries.tags}::jsonb @> to_jsonb(${search}::text)`,
       ),
     );
   }

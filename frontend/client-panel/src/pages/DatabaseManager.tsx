@@ -6,13 +6,14 @@ import {
   ChevronRight, ArrowLeft, Loader2, AlertCircle, Columns3,
   ChevronLeft, ChevronDown, Terminal, FileText, Plus, Users,
   X, Edit3, PlusCircle, Minus, Copy, Check, RefreshCw, FolderOpen,
-  File,
+  File, Server,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import {
   useDeployments,
+  useDeploymentLiveMetrics,
   useDbDatabases,
   useCreateDbDatabase,
   useDropDbDatabase,
@@ -32,6 +33,7 @@ import {
   useExportDatabase,
   useImportSql,
   useImportSqlFromFile,
+  useDatabasesWithSize,
   useListPvcFiles,
   useSqliteQuery,
   useSqliteTables,
@@ -119,6 +121,13 @@ function detectEngine(catalogEntryName: string | undefined): DbEngine {
   return 'sql';
 }
 
+/** Quote an identifier for the target database engine. MariaDB/MySQL use backticks; PostgreSQL/SQLite use double quotes. */
+function quoteId(name: string, runtime: string | undefined): string {
+  const r = (runtime ?? '').toLowerCase();
+  if (r.includes('mariadb') || r.includes('mysql')) return `\`${name}\``;
+  return `"${name}"`;
+}
+
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export default function DatabaseManager() {
@@ -153,6 +162,7 @@ export default function DatabaseManager() {
 
   // Import
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
   // Import from PVC file picker
@@ -167,6 +177,10 @@ export default function DatabaseManager() {
   const [confirmDropTable, setConfirmDropTable] = useState<string | null>(null);
   const [tableActionPending, setTableActionPending] = useState(false);
   const [tableActionError, setTableActionError] = useState<string | null>(null);
+  const [tableSortBy, setTableSortBy] = useState<'name' | 'size'>('name');
+  const [importDropdownOpen, setImportDropdownOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<'database' | 'users'>('database');
+  const [confirmTruncateTable, setConfirmTruncateTable] = useState<string | null>(null);
 
   // Add column state (for structure view)
   const [addColumnOpen, setAddColumnOpen] = useState(false);
@@ -186,7 +200,7 @@ export default function DatabaseManager() {
   // ─── Data queries ───────────────────────────────────────────────────────────
 
   const { data: catalogData } = useCatalog();
-  const { data: deploymentsData, isLoading: deploymentsLoading } = useDeployments(clientId ?? undefined);
+  const { data: deploymentsData, isLoading: deploymentsLoading } = useDeployments(clientId ?? undefined, { refetchInterval: 15_000 });
 
   const catalogEntries = catalogData?.data ?? [];
   const allDeployments = deploymentsData?.data ?? [];
@@ -206,6 +220,15 @@ export default function DatabaseManager() {
   const selectedDeployment = databaseDeployments.find((d) => d.id === selectedDeploymentId);
   const selectedCatalogEntry = catalogEntries.find((e) => e.id === selectedDeployment?.catalogEntryId);
   const engine: DbEngine = isSqlite ? 'sql' : detectEngine(selectedCatalogEntry?.name);
+  const dbRuntime = isSqlite ? undefined : (selectedCatalogEntry?.runtime ?? selectedCatalogEntry?.code);
+
+  // Auto-deselect deployment if it crashes or stops
+  useEffect(() => {
+    if (selectedDeployment && ['stopped', 'failed', 'deleted'].includes(selectedDeployment.status)) {
+      setSelectedDeploymentId('');
+      setSelectedDatabase('');
+    }
+  }, [selectedDeployment?.status]);
 
   // Databases for selected deployment (deployment mode only)
   const { data: dbData, isLoading: dbLoading } = useDbDatabases(
@@ -213,6 +236,13 @@ export default function DatabaseManager() {
     isSqlite ? undefined : (selectedDeploymentId || undefined),
   );
   const databases = dbData?.data ?? [];
+  const { data: dbSizesData } = useDatabasesWithSize(
+    isSqlite ? undefined : (clientId ?? undefined),
+    isSqlite ? undefined : (selectedDeploymentId || undefined),
+  );
+  const dbSizeMap = new Map(
+    (dbSizesData?.data ?? []).map((d) => [d.name, d.sizeBytes]),
+  );
 
   // Auto-select first database (deployment mode only)
   useEffect(() => {
@@ -301,7 +331,20 @@ export default function DatabaseManager() {
 
   // ─── Unified data accessors ───────────────────────────────────────────────
 
-  const tables = isSqlite ? (sqliteTablesData?.data ?? []) : (deployTablesData?.data ?? []);
+  // Deploy tables returns { name, sizeBytes, rowCount }; SQLite returns string[]. Normalize to string[].
+  const deployTableEntries = deployTablesData?.data ?? [];
+  const deployTableSizeMap = new Map(
+    deployTableEntries.map((t) => [typeof t === 'string' ? t : t.name, typeof t === 'string' ? 0 : t.sizeBytes]),
+  );
+  const unsortedTables: readonly string[] = isSqlite
+    ? (sqliteTablesData?.data ?? []) as readonly string[]
+    : deployTableEntries.map((t) => typeof t === 'string' ? t : t.name);
+  const tables = [...unsortedTables].sort((a, b) => {
+    if (tableSortBy === 'size') {
+      return (deployTableSizeMap.get(b) ?? 0) - (deployTableSizeMap.get(a) ?? 0);
+    }
+    return a.localeCompare(b);
+  });
   const tablesLoading = isSqlite ? sqliteTablesLoading : deployTablesLoading;
 
   const columns: readonly ColumnInfo[] = isSqlite
@@ -355,8 +398,11 @@ export default function DatabaseManager() {
       { deploymentId: selectedDeploymentId, name: newDbName.trim() },
       {
         onSuccess: () => {
+          const createdName = newDbName.trim();
           setNewDbName('');
           setCreateDbOpen(false);
+          // Auto-select the newly created database
+          setSelectedDatabase(createdName);
         },
       },
     );
@@ -483,6 +529,8 @@ export default function DatabaseManager() {
     setBrowsePage(1);
     setBrowseSortCol(undefined);
     setResultsView('browse');
+    // Scroll the results area into view
+    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }, []);
 
   const handleViewStructure = useCallback((tableName: string) => {
@@ -490,12 +538,26 @@ export default function DatabaseManager() {
     setResultsView('structure');
   }, []);
 
+  const [exportResult, setExportResult] = useState<string | null>(null);
+
   const handleExport = useCallback(() => {
     if (isSqlite && sqliteFile) {
       sqliteExportDb.mutate({ filePath: sqliteFile });
     } else {
       if (!selectedDeploymentId || !selectedDatabase) return;
-      deployExportDb.mutate({ deploymentId: selectedDeploymentId, database: selectedDatabase });
+      setExportResult(null);
+      deployExportDb.mutate(
+        { deploymentId: selectedDeploymentId, database: selectedDatabase },
+        {
+          onSuccess: (result) => {
+            const data = result.data;
+            setExportResult(`Exported to ${data.pvcPath} (${(data.sizeBytes / 1024 / 1024).toFixed(1)} MB). Download via File Manager.`);
+          },
+          onError: (err) => {
+            setExportResult(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          },
+        },
+      );
     }
   }, [isSqlite, sqliteFile, selectedDeploymentId, selectedDatabase, sqliteExportDb, deployExportDb]);
 
@@ -508,6 +570,8 @@ export default function DatabaseManager() {
     queryClient.invalidateQueries({ queryKey: ['sqlite-structure'] });
     queryClient.invalidateQueries({ queryKey: ['sql-row-count'] });
     queryClient.invalidateQueries({ queryKey: ['sqlite-row-count'] });
+    queryClient.invalidateQueries({ queryKey: ['sql-databases-size'] });
+    queryClient.invalidateQueries({ queryKey: ['db-databases'] });
   }, [queryClient]);
 
   const handleImport = useCallback(
@@ -610,13 +674,13 @@ export default function DatabaseManager() {
     if (validCols.length === 0) return;
 
     const colDefs = validCols.map((c) => {
-      const parts = [`"${c.name.trim()}" ${c.type}`];
+      const parts = [`${quoteId(c.name.trim(), dbRuntime)} ${c.type}`];
       if (c.primaryKey) parts.push('PRIMARY KEY');
       if (!c.nullable && !c.primaryKey) parts.push('NOT NULL');
       return parts.join(' ');
     });
 
-    const sql = `CREATE TABLE "${name}" (${colDefs.join(', ')})`;
+    const sql = `CREATE TABLE ${quoteId(name, dbRuntime)} (${colDefs.join(', ')})`;
     setTableActionPending(true);
     setTableActionError(null);
 
@@ -640,7 +704,7 @@ export default function DatabaseManager() {
     setTableActionError(null);
 
     try {
-      await executeDdl(`DROP TABLE "${tableName}"`);
+      await executeDdl(`DROP TABLE ${quoteId(tableName, dbRuntime)}`);
       setConfirmDropTable(null);
       if (browseTable === tableName) setBrowseTable('');
       if (structureTable === tableName) setStructureTable('');
@@ -658,7 +722,7 @@ export default function DatabaseManager() {
     const colName = addColumnName.trim();
     if (!colName || !structureTable) return;
 
-    const sql = `ALTER TABLE "${structureTable}" ADD COLUMN "${colName}" ${addColumnType}`;
+    const sql = `ALTER TABLE ${quoteId(structureTable, dbRuntime)} ADD COLUMN ${quoteId(colName, dbRuntime)} ${addColumnType}`;
     setTableActionPending(true);
     setTableActionError(null);
 
@@ -680,7 +744,7 @@ export default function DatabaseManager() {
   const handleDropColumn = useCallback(async (colName: string) => {
     if (!structureTable) return;
 
-    const sql = `ALTER TABLE "${structureTable}" DROP COLUMN "${colName}"`;
+    const sql = `ALTER TABLE ${quoteId(structureTable, dbRuntime)} DROP COLUMN ${quoteId(colName, dbRuntime)}`;
     setTableActionPending(true);
     setTableActionError(null);
 
@@ -738,7 +802,7 @@ export default function DatabaseManager() {
     const pkValue = rowData[browseTablePkColumn];
     if (pkValue === undefined) return;
 
-    const sql = `DELETE FROM "${browseTable}" WHERE "${browseTablePkColumn}" = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `DELETE FROM ${quoteId(browseTable, dbRuntime)} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -763,8 +827,8 @@ export default function DatabaseManager() {
     const setClauses = Object.entries(editRowData)
       .filter(([key, val]) => val !== editRowOriginal[key])
       .map(([key, val]) => {
-        if (val === '' || val === 'NULL') return `"${key}" = NULL`;
-        return `"${key}" = '${val.replace(/'/g, "''")}'`;
+        if (val === '' || val === 'NULL') return `${quoteId(key, dbRuntime)} = NULL`;
+        return `${quoteId(key, dbRuntime)} = '${val.replace(/'/g, "''")}'`;
       });
 
     if (setClauses.length === 0) {
@@ -773,7 +837,7 @@ export default function DatabaseManager() {
       return;
     }
 
-    const sql = `UPDATE "${browseTable}" SET ${setClauses.join(', ')} WHERE "${browseTablePkColumn}" = '${pkValue.replace(/'/g, "''")}'`;
+    const sql = `UPDATE ${quoteId(browseTable, dbRuntime)} SET ${setClauses.join(', ')} WHERE ${quoteId(browseTablePkColumn, dbRuntime)} = '${pkValue.replace(/'/g, "''")}'`;
     setRowActionPending(true);
     setRowActionError(null);
 
@@ -796,9 +860,9 @@ export default function DatabaseManager() {
     const entries = Object.entries(insertRowData).filter(([, val]) => val.trim() !== '');
     if (entries.length === 0) return;
 
-    const colNames = entries.map(([key]) => `"${key}"`).join(', ');
+    const colNames = entries.map(([key]) => quoteId(key, dbRuntime)).join(', ');
     const values = entries.map(([, val]) => `'${val.replace(/'/g, "''")}'`).join(', ');
-    const sql = `INSERT INTO "${browseTable}" (${colNames}) VALUES (${values})`;
+    const sql = `INSERT INTO ${quoteId(browseTable, dbRuntime)} (${colNames}) VALUES (${values})`;
 
     setRowActionPending(true);
     setRowActionError(null);
@@ -999,10 +1063,15 @@ export default function DatabaseManager() {
         )}
       </div>
 
+      {/* Resource stats bar */}
+      {!isSqlite && selectedDeployment && (
+        <DeploymentStatsBar deployment={selectedDeployment} />
+      )}
+
       {/* Main content */}
-      <div className="flex gap-4 min-h-[600px]">
+      <div className="flex gap-4 items-start">
         {/* Sidebar */}
-        <div className="w-72 shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
+        <div className="w-72 shrink-0 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col sticky top-4 max-h-[calc(100vh-8rem)]">
           {/* Database selector (deployment mode) or file info (SQLite mode) */}
           <div className="p-3 border-b border-gray-200 dark:border-gray-700">
             {isSqlite ? (
@@ -1038,11 +1107,15 @@ export default function DatabaseManager() {
                   data-testid="database-selector"
                 >
                   {databases.length === 0 && <option value="">No databases</option>}
-                  {databases.map((db) => (
-                    <option key={db.name} value={db.name}>
-                      {db.name}
-                    </option>
-                  ))}
+                  {databases.map((db) => {
+                    const size = dbSizeMap.get(db.name);
+                    const sizeStr = size ? ` (${formatTableSize(size)})` : '';
+                    return (
+                      <option key={db.name} value={db.name}>
+                        {db.name}{sizeStr}
+                      </option>
+                    );
+                  })}
                 </select>
                 <button
                   type="button"
@@ -1128,13 +1201,66 @@ export default function DatabaseManager() {
             )}
           </div>
 
-          {/* Table list */}
+          {/* DATABASE / USERS tabs */}
+          {!isSqlite && selectedDeploymentId && (
+            <div className="flex border-b border-gray-200 dark:border-gray-700">
+              <button
+                type="button"
+                onClick={() => setSidebarTab('database')}
+                className={clsx(
+                  'flex-1 py-2 text-xs font-semibold uppercase tracking-wide text-center transition-colors',
+                  sidebarTab === 'database'
+                    ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
+                )}
+              >
+                Database
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarTab('users')}
+                className={clsx(
+                  'flex-1 py-2 text-xs font-semibold uppercase tracking-wide text-center transition-colors',
+                  sidebarTab === 'users'
+                    ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
+                )}
+              >
+                Users
+              </button>
+            </div>
+          )}
+
+          {/* Table list — shown when database tab active or no tabs (SQLite) */}
+          {(isSqlite || !selectedDeploymentId || sidebarTab === 'database') && (
           <div className="flex-1 overflow-y-auto p-3">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                 {engine === 'redis' ? 'Keys' : engine === 'mongodb' ? 'Collections' : 'Tables'}
               </span>
-              {tablesLoading && <Loader2 size={12} className="animate-spin text-gray-400" />}
+              <div className="flex items-center gap-2">
+                {!isSqlite && (
+                  <div className="flex rounded border border-gray-200 dark:border-gray-700 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setTableSortBy('name')}
+                      className={clsx('px-1.5 py-0.5', tableSortBy === 'name' ? 'bg-gray-200 dark:bg-gray-600 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700')}
+                      title="Sort by name"
+                    >
+                      A-Z
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTableSortBy('size')}
+                      className={clsx('px-1.5 py-0.5', tableSortBy === 'size' ? 'bg-gray-200 dark:bg-gray-600 font-medium' : 'hover:bg-gray-100 dark:hover:bg-gray-700')}
+                      title="Sort by size"
+                    >
+                      Size
+                    </button>
+                  </div>
+                )}
+                {tablesLoading && <Loader2 size={12} className="animate-spin text-gray-400" />}
+              </div>
             </div>
 
             {!tablesLoading && tables.length === 0 && (
@@ -1148,42 +1274,18 @@ export default function DatabaseManager() {
                 <TableRow
                   key={table}
                   name={table}
+                  sizeBytes={deployTableSizeMap.get(table)}
                   engine={engine}
                   isActive={browseTable === table || structureTable === table}
                   onBrowse={() => handleBrowseTable(table)}
                   onStructure={() => handleViewStructure(table)}
+                  onTruncate={() => setConfirmTruncateTable(table)}
                   onDrop={() => setConfirmDropTable(table)}
                 />
               ))}
             </div>
 
-            {/* Confirm drop table */}
-            {confirmDropTable && (
-              <div className="mt-2 rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-2" data-testid="confirm-drop-table">
-                <p className="text-xs text-red-700 dark:text-red-300 mb-1.5">
-                  Drop table <span className="font-mono font-semibold">{confirmDropTable}</span>? This cannot be undone.
-                </p>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleDropTable(confirmDropTable)}
-                    disabled={tableActionPending}
-                    className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                    data-testid="confirm-drop-table-button"
-                  >
-                    {tableActionPending ? <Loader2 size={12} className="animate-spin" /> : 'Drop'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDropTable(null)}
-                    className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-                    data-testid="cancel-drop-table-button"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
+            {/* Drop/Truncate confirmations moved to modal popups below */}
 
             {/* Error display */}
             {tableActionError && (
@@ -1294,10 +1396,11 @@ export default function DatabaseManager() {
               </>
             )}
           </div>
+          )}
 
-          {/* Users section (deployment mode only -- SQLite has no users) */}
-          {!isSqlite && selectedDeploymentId && (
-            <div className="border-t border-gray-200 dark:border-gray-700 p-3" data-testid="users-section">
+          {/* Users section — shown when users tab active */}
+          {!isSqlite && selectedDeploymentId && sidebarTab === 'users' && (
+            <div className="flex-1 overflow-y-auto p-3" data-testid="users-section">
               <button
                 type="button"
                 onClick={() => setUsersExpanded((prev) => !prev)}
@@ -1516,6 +1619,15 @@ export default function DatabaseManager() {
 
         {/* Right panel */}
         <div className="flex-1 flex flex-col gap-4 min-w-0">
+          {/* Connection Info Banner */}
+          {!isSqlite && selectedDeploymentId && selectedDatabase && selectedDeployment && (
+            <div className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-2 text-xs font-mono text-gray-600 dark:text-gray-400">
+              <Server size={14} className="text-gray-400 shrink-0" />
+              <span><strong className="text-gray-700 dark:text-gray-300">Host:</strong> {selectedDeployment.name}-{selectedDeployment.resourceSuffix}</span>
+              <span><strong className="text-gray-700 dark:text-gray-300">Port:</strong> {engine === 'mongodb' ? '27017' : engine === 'redis' ? '6379' : '3306'}</span>
+              <span><strong className="text-gray-700 dark:text-gray-300">Database:</strong> {selectedDatabase}</span>
+            </div>
+          )}
           {/* SQL Editor */}
           <div
             className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden"
@@ -1588,29 +1700,53 @@ export default function DatabaseManager() {
                 {exportIsPending ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
                 Export
               </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importIsPending || !canImport}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-                data-testid="import-button"
-              >
-                {importIsPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                Import
-              </button>
-              {!isSqlite && (
+              {exportResult && (
+                <span className={clsx(
+                  'text-xs px-2 py-1 rounded',
+                  exportResult.startsWith('Export failed')
+                    ? 'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20'
+                    : 'text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20',
+                )}>
+                  {exportResult}
+                </span>
+              )}
+              <div className="relative">
                 <button
                   type="button"
-                  onClick={handleOpenPvcPicker}
+                  onClick={() => setImportDropdownOpen(!importDropdownOpen)}
                   disabled={importIsPending || !canImport}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-                  data-testid="import-from-file-button"
-                  title="Import a .sql file already uploaded to the shared volume"
+                  data-testid="import-button"
                 >
-                  {deployImportFromFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
-                  Import from File
+                  {importIsPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                  Import
+                  <ChevronDown size={12} />
                 </button>
-              )}
+                {importDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-20 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 min-w-[180px]">
+                    <button
+                      type="button"
+                      onClick={() => { fileInputRef.current?.click(); setImportDropdownOpen(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+                      data-testid="import-upload-option"
+                    >
+                      <Upload size={14} />
+                      Upload SQL File
+                    </button>
+                    {!isSqlite && (
+                      <button
+                        type="button"
+                        onClick={() => { handleOpenPvcPicker(); setImportDropdownOpen(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+                        data-testid="import-from-file-option"
+                      >
+                        <FolderOpen size={14} />
+                        From File Manager
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1661,7 +1797,7 @@ export default function DatabaseManager() {
           )}
 
           {/* Results area */}
-          <div className="flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
+          <div ref={resultsRef} className="flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
             {/* Results tabs */}
             <div className="flex items-center border-b border-gray-200 dark:border-gray-700 px-4">
               <ResultsTab
@@ -1902,25 +2038,146 @@ export default function DatabaseManager() {
           </div>
         </div>
       )}
+      {/* Drop Table confirmation popup */}
+      {confirmDropTable && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmDropTable(null)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()} data-testid="confirm-drop-table">
+            <h3 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-2">Drop Table</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Are you sure you want to drop <span className="font-mono font-semibold">{confirmDropTable}</span>? This will permanently delete the table and all its data.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmDropTable(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+              <button type="button" onClick={() => handleDropTable(confirmDropTable)} disabled={tableActionPending} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid="confirm-drop-table-button">
+                {tableActionPending ? <Loader2 size={14} className="animate-spin" /> : 'Drop Table'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Truncate Table confirmation popup */}
+      {confirmTruncateTable && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmTruncateTable(null)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()} data-testid="confirm-truncate-table">
+            <h3 className="text-lg font-semibold text-amber-600 dark:text-amber-400 mb-2">Truncate Table</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Are you sure you want to truncate <span className="font-mono font-semibold">{confirmTruncateTable}</span>? This will delete all rows but keep the table structure.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmTruncateTable(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+              <button type="button" onClick={async () => {
+                setTableActionPending(true);
+                try {
+                  await executeDdl(`TRUNCATE TABLE ${quoteId(confirmTruncateTable, dbRuntime)}`);
+                  setConfirmTruncateTable(null);
+                  invalidateTableQueries();
+                } catch (err) {
+                  setTableActionError(err instanceof Error ? err.message : 'Failed to truncate table');
+                  setConfirmTruncateTable(null);
+                } finally {
+                  setTableActionPending(false);
+                }
+              }} disabled={tableActionPending} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50" data-testid="confirm-truncate-table-button">
+                {tableActionPending ? <Loader2 size={14} className="animate-spin" /> : 'Truncate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Deployment Stats Bar ────────────────────────────────────────────────────
+
+function DeploymentStatsBar({ deployment }: { readonly deployment: { id: string; name: string; status: string; cpuRequest: string; memoryRequest: string; resourceSuffix: string } }) {
+  const { clientId } = useClientContext();
+  const { data } = useDeploymentLiveMetrics(clientId ?? undefined, deployment.status === 'running' ? deployment.id : undefined);
+  const metrics = data?.data;
+
+  const statusColor = deployment.status === 'running' ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
+    : deployment.status === 'stopped' ? 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700'
+    : deployment.status === 'failed' ? 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20'
+    : 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20';
+
+  return (
+    <div className="flex items-center gap-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 mb-4">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{deployment.name}-{deployment.resourceSuffix}</span>
+        <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', statusColor)}>
+          {deployment.status}
+        </span>
+      </div>
+      <div className="flex-1" />
+      <MiniMetric label="CPU" used={metrics?.cpuUsed} request={deployment.cpuRequest} type="cpu" />
+      <MiniMetric label="Memory" used={metrics?.memoryUsedMi} request={deployment.memoryRequest} type="memory" />
+      {metrics?.storageUsedFormatted && (
+        <div className="text-xs text-gray-500 dark:text-gray-400">
+          <span className="font-medium text-gray-700 dark:text-gray-300">{metrics.storageUsedFormatted}</span> disk
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniMetric({ label, used, request, type }: { readonly label: string; readonly used: number | undefined; readonly request: string; readonly type: 'cpu' | 'memory' }) {
+  if (used === undefined) return null;
+
+  let requestNum = 0;
+  let usedLabel = '';
+  if (type === 'cpu') {
+    requestNum = request.endsWith('m') ? parseFloat(request) / 1000 : parseFloat(request) || 0;
+    usedLabel = `${(used * 1000).toFixed(0)}m / ${request}`;
+  } else {
+    if (request.endsWith('Gi')) requestNum = parseFloat(request) * 1024;
+    else if (request.endsWith('Mi')) requestNum = parseFloat(request);
+    else requestNum = parseFloat(request) || 0;
+    usedLabel = `${Math.round(used)}Mi / ${request}`;
+  }
+
+  const ratio = requestNum > 0 ? (type === 'cpu' ? used / requestNum : used / requestNum) : 0;
+  const pct = Math.min(ratio * 100, 100);
+  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-gray-500 dark:text-gray-400">{label}:</span>
+      <div className="w-16 h-1.5 rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
+        <div className={clsx('h-full rounded-full', barColor)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-gray-700 dark:text-gray-300 font-medium">{usedLabel}</span>
     </div>
   );
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
+function formatTableSize(bytes: number | undefined): string {
+  if (bytes == null || bytes === 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 function TableRow({
   name,
+  sizeBytes,
   engine,
   isActive,
   onBrowse,
   onStructure,
+  onTruncate,
   onDrop,
 }: {
   readonly name: string;
+  readonly sizeBytes?: number;
   readonly engine: DbEngine;
   readonly isActive: boolean;
   readonly onBrowse: () => void;
   readonly onStructure: () => void;
+  readonly onTruncate: () => void;
   readonly onDrop: () => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1962,6 +2219,11 @@ function TableRow({
       >
         {name}
       </button>
+      {sizeBytes != null && sizeBytes > 0 && (
+        <span className="shrink-0 text-xs text-gray-400 dark:text-gray-500 font-normal">
+          {formatTableSize(sizeBytes)}
+        </span>
+      )}
 
       {/* Right-click context menu */}
       {contextMenu && (
@@ -1990,6 +2252,15 @@ function TableRow({
               Structure
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => { onTruncate(); setContextMenu(null); }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+            data-testid={`table-truncate-menu-${name}`}
+          >
+            <Trash2 size={14} />
+            Truncate
+          </button>
           <button
             type="button"
             onClick={() => { onDrop(); setContextMenu(null); }}

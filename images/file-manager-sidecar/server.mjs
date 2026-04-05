@@ -356,20 +356,20 @@ async function handleWriteRaw(req, res) {
     await mkdir(dir, { recursive: true });
 
     const ws = createWriteStream(full);
-    let aborted = false;
 
-    req.on('close', () => {
-      if (!res.writableEnded) {
-        aborted = true;
+    // Only abort on actual errors — NOT on normal 'close' events.
+    // The K8s service proxy closes the request after transferring all data,
+    // which races with pipeline() flushing to disk.
+    let pipelineDone = false;
+    req.on('error', () => {
+      if (!pipelineDone) {
         ws.destroy();
-        // Clean up partial file
         rm(full, { force: true }).catch(() => {});
       }
     });
 
     await pipeline(req, ws);
-
-    if (aborted) return; // Response already gone
+    pipelineDone = true;
 
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
@@ -416,11 +416,13 @@ function formatBytes(bytes) {
 
 async function handleDiskUsage(req, res) {
   try {
-    // Get actual bytes used by files
+    // Use du for actual bytes used — runs as root so it can read all dirs
+    // (database data owned by mysql/postgres user).
     const { stdout: duOut } = await execFileAsync('du', ['-sb', BASE], { timeout: 30_000 });
     const usedBytes = parseInt(duOut.split('\t')[0], 10) || 0;
 
-    // Get filesystem stats
+    // df gives PVC capacity on real block storage (correct in production).
+    // On local-path provisioner (local dev), it returns host FS size — acceptable trade-off.
     const { stdout: dfOut } = await execFileAsync('df', ['-B1', BASE], { timeout: 10_000 });
     const dfLines = dfOut.trim().split('\n');
     const dfParts = dfLines[1]?.split(/\s+/) || [];
@@ -450,6 +452,7 @@ async function handleFolderSize(req, res) {
     const s = await stat(full);
     if (!s.isDirectory()) return sendError(res, 400, 'Path is not a directory');
 
+    // Runs as root — can read all dirs including database data
     const { stdout } = await execFileAsync('du', ['-sb', full], { timeout: 60_000 });
     const sizeBytes = parseInt(stdout.split('\t')[0], 10) || 0;
 

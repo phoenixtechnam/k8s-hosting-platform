@@ -55,6 +55,62 @@ export function useUpdateDeployment(clientId: string | undefined) {
   });
 }
 
+export interface DeploymentLiveMetrics {
+  readonly cpuUsed: number;
+  readonly cpuRequest: string;
+  readonly memoryUsedMi: number;
+  readonly memoryRequest: string;
+  readonly storageUsedBytes?: number;
+  readonly storageUsedFormatted?: string;
+}
+
+export function useDeploymentLiveMetrics(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['deployment-live-metrics', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: DeploymentLiveMetrics }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/live-metrics`),
+    enabled: Boolean(clientId && deploymentId),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export interface LogLine {
+  readonly source: 'K8S' | 'APP';
+  readonly text: string;
+  readonly timestamp?: string;
+  readonly level: 'info' | 'warning' | 'error';
+}
+
+export interface DeploymentLogs {
+  readonly podName: string;
+  readonly lines: readonly LogLine[];
+  readonly terminationReason: string | null;
+  readonly tailLines: number;
+}
+
+export function useDeploymentLogs(clientId: string | undefined, deploymentId: string | undefined, enabled = false) {
+  return useQuery({
+    queryKey: ['deployment-logs', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: DeploymentLogs }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/logs?lines=200`),
+    enabled: Boolean(clientId && deploymentId) && enabled,
+    staleTime: 10_000,
+  });
+}
+
+export interface ResourceAvailability {
+  readonly cpu: { readonly min: string; readonly max: string; readonly current: string; readonly planLimit: string };
+  readonly memory: { readonly min: string; readonly max: string; readonly current: string; readonly planLimit: string };
+}
+
+export function useResourceAvailability(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['resource-availability', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: ResourceAvailability }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/resource-availability`),
+    enabled: Boolean(clientId && deploymentId),
+    staleTime: 30_000,
+  });
+}
+
 export function useUpdateDeploymentResources(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -145,8 +201,11 @@ export function useRestoreDeployment(clientId: string | undefined) {
 export function usePermanentDeleteDeployment(clientId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (deploymentId: string) =>
-      apiFetch<void>(`/api/v1/clients/${clientId}/deployments/${deploymentId}?force=true`, { method: 'DELETE' }),
+    mutationFn: ({ deploymentId, deleteData }: { deploymentId: string; deleteData?: boolean }) => {
+      const params = new URLSearchParams({ force: 'true' });
+      if (deleteData) params.set('deleteData', 'true');
+      return apiFetch<void>(`/api/v1/clients/${clientId}/deployments/${deploymentId}?${params.toString()}`, { method: 'DELETE' });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', clientId] });
     },
@@ -256,18 +315,6 @@ export function useDropDbUser(clientId: string | undefined) {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['db-users', clientId, variables.deploymentId] });
     },
-  });
-}
-
-// ─── Adminer Hooks ──────────────────────────────────────────────────────────
-
-export function useAdminerLogin(clientId: string | undefined) {
-  return useMutation({
-    mutationFn: ({ deploymentId, username }: { deploymentId: string; username: string }) =>
-      apiFetch<{ data: { loginUrl: string } }>(
-        `/api/v1/clients/${clientId}/adminer/login`,
-        { method: 'POST', body: JSON.stringify({ deploymentId, username }) },
-      ),
   });
 }
 

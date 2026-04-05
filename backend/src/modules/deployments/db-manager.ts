@@ -82,7 +82,26 @@ async function execInPod(
     },
   });
 
+  // Wait for both the exec status callback AND the streams to finish.
+  // The status callback can fire before all data is flushed to stdout/stderr,
+  // causing empty results for large outputs (e.g., database exports).
+  let statusError: Error | null = null;
+
   await new Promise<void>((resolve, reject) => {
+    let statusDone = false;
+    let stdoutDone = false;
+    let stderrDone = false;
+
+    const tryResolve = () => {
+      if (statusDone && stdoutDone && stderrDone) {
+        if (statusError) reject(statusError);
+        else resolve();
+      }
+    };
+
+    stdoutStream.on('finish', () => { stdoutDone = true; tryResolve(); });
+    stderrStream.on('finish', () => { stderrDone = true; tryResolve(); });
+
     exec
       .exec(
         namespace,
@@ -95,15 +114,19 @@ async function execInPod(
         false,
         (status) => {
           const s = status as Record<string, unknown>;
-          // K8s exec returns status.status === 'Success' on success
-          // Some versions return empty/null status on success too
           if (!s || s.status === 'Success' || s.status === undefined) {
-            resolve();
+            // Success — end the writable streams so 'finish' fires
+            stdoutStream.end();
+            stderrStream.end();
           } else {
             const msg = (s.message as string) ?? stderr ?? 'Command execution failed in pod';
             console.error(`[db-manager] Exec failed: status=${JSON.stringify(s)}, stderr=${stderr}`);
-            reject(new Error(msg));
+            statusError = new Error(msg);
+            stdoutStream.end();
+            stderrStream.end();
           }
+          statusDone = true;
+          tryResolve();
         },
       )
       .catch(reject);
@@ -223,6 +246,7 @@ export interface DbManagerContext {
   readonly engine: Engine;
   readonly rootPassword: string;
   readonly rootUsername: string;
+  readonly k8s?: K8sClients;
 }
 
 // ─── Query Execution Types ──────────────────────────────────────────────────
@@ -1014,7 +1038,7 @@ export async function buildDbContext(
   }
   // PostgreSQL uses peer/trust auth inside container — no password needed
 
-  return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword, rootUsername };
+  return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword, rootUsername, k8s };
 }
 
 export async function listDatabases(ctx: DbManagerContext): Promise<readonly DbDatabase[]> {
@@ -1316,6 +1340,97 @@ export async function listTables(
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table listing not supported`, 400);
 }
 
+// ─── Table/Database Sizes ────────────────────────────────────────────────────
+
+export interface TableWithSize {
+  readonly name: string;
+  readonly sizeBytes: number;
+  readonly rowCount: number;
+}
+
+export interface DatabaseWithSize {
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+export async function listTablesWithSize(
+  ctx: DbManagerContext,
+  database: string,
+): Promise<readonly TableWithSize[]> {
+  validateDatabaseName(database);
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    const out = await mysqlExec(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword,
+      `SELECT TABLE_NAME, COALESCE(DATA_LENGTH + INDEX_LENGTH, 0), TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${database}' ORDER BY TABLE_NAME`,
+    );
+    return out.split('\n').filter(Boolean).map((line) => {
+      const [name, size, rows] = line.split('\t');
+      return { name, sizeBytes: parseInt(size, 10) || 0, rowCount: parseInt(rows, 10) || 0 };
+    });
+  }
+
+  if (ctx.engine === 'postgresql') {
+    const csvOut = await pgExecCsv(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      database,
+      "SELECT tablename, pg_total_relation_size(schemaname || '.' || tablename), COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = tablename), 0) FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+    );
+    const { rows } = parsePgCsvOutput(csvOut);
+    return rows.filter((r) => r[0]).map((r) => ({
+      name: r[0],
+      sizeBytes: parseInt(r[1], 10) || 0,
+      rowCount: parseInt(r[2], 10) || 0,
+    }));
+  }
+
+  // MongoDB: return collection stats
+  if (ctx.engine === 'mongodb') {
+    const tables = await mongoListCollections(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword, database, ctx.rootUsername,
+    );
+    return tables.map((name) => ({ name, sizeBytes: 0, rowCount: 0 }));
+  }
+
+  throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} table size not supported`, 400);
+}
+
+export async function listDatabasesWithSize(
+  ctx: DbManagerContext,
+): Promise<readonly DatabaseWithSize[]> {
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    const systemDbs = new Set(['information_schema', 'performance_schema', 'mysql', 'sys', '']);
+    const out = await mysqlExec(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ctx.rootPassword,
+      "SELECT TABLE_SCHEMA, SUM(DATA_LENGTH + INDEX_LENGTH) FROM information_schema.TABLES GROUP BY TABLE_SCHEMA",
+    );
+    return out.split('\n').filter(Boolean)
+      .map((line) => { const [name, size] = line.split('\t'); return { name, sizeBytes: parseInt(size, 10) || 0 }; })
+      .filter((d) => !systemDbs.has(d.name));
+  }
+
+  if (ctx.engine === 'postgresql') {
+    const systemDbs = new Set(['template0', 'template1', 'postgres', '']);
+    const csvOut = await pgExecCsv(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      'postgres',
+      "SELECT datname, pg_database_size(datname) FROM pg_database WHERE datistemplate = false",
+    );
+    const { rows } = parsePgCsvOutput(csvOut);
+    return rows.filter((r) => r[0] && !systemDbs.has(r[0])).map((r) => ({
+      name: r[0],
+      sizeBytes: parseInt(r[1], 10) || 0,
+    }));
+  }
+
+  // Fallback: return databases without sizes
+  const dbs = await listDatabases(ctx);
+  return dbs.map((d) => ({ ...d, sizeBytes: 0 }));
+}
+
 // ─── Table Structure ────────────────────────────────────────────────────────
 
 /**
@@ -1491,6 +1606,9 @@ export async function countRows(
   throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} row counting not supported`, 400);
 }
 
+// ──��� Apply New Credentials to Running Database ─────────────────────────────
+
+
 // ─── Export Database ────────────────────────────────────────────────────────
 
 /**
@@ -1660,33 +1778,224 @@ function validatePvcFilePath(filePath: string): void {
  * The route handler reads the file content from the file-manager pod and passes it here.
  * This bypasses the MAX_IMPORT_LENGTH check since the data is read server-side.
  */
+/**
+ * Import SQL from a file on the shared PVC.
+ *
+ * Architecture: Database pods mount the PVC with a subPath (e.g. databases/maria-52c5ef),
+ * so they only see their own directory as their data root (e.g. /var/lib/mysql).
+ * The file-manager pod mounts the full PVC at /data.
+ *
+ * Strategy: The backend copies the source file into the database's subPath directory
+ * via the file-manager, then the database pod reads it from its own mount.
+ */
 export async function importSqlFromPvcFile(
   ctx: DbManagerContext,
   database: string,
-  sqlContent: string,
+  _sqlContent: string,
   filePath: string,
+  deploymentSubPath: string,
 ): Promise<ImportResult> {
   validateDatabaseName(database);
   validatePvcFilePath(filePath);
 
-  if (!sqlContent || sqlContent.length === 0) {
-    return { success: false, error: 'File is empty' };
-  }
+  // The file to import is at /data/<filePath> in the file-manager pod.
+  // The database pod only sees /data/<deploymentSubPath>/ as its data root.
+  // We need to reference the file relative to the database pod's mount.
+
+  // Determine the database pod's data root path (engine-specific)
+  const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
+    ? '/var/lib/mysql'
+    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql/data' : '/data/db');
+
+  // The import file path inside the database pod:
+  // File-manager path: /data/<filePath>
+  // Database subPath: databases/<name>-<suffix>
+  // If the file is inside the database's subPath, we can reference it directly.
+  // Otherwise, we use a temp import path.
+  const cleanFilePath = filePath.replace(/^\/+/, '');
+  const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
+  const importFileName = `_import_${Date.now()}.sql`;
 
   try {
+    // Copy the source file to the database's subPath using file-manager exec
+    // Both paths are visible to the file-manager pod at /data/
+    const fmPods = await ctx.k8s!.core.listNamespacedPod({
+      namespace: ctx.namespace,
+      labelSelector: 'app=file-manager',
+    });
+    const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
+    const fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
+
+    if (!fmPod?.metadata?.name) {
+      throw new Error('File manager pod not found or not running');
+    }
+
+    // Copy file into the database's subPath directory
+    await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
+      ['cp', `/data/${cleanFilePath}`, `/data/${cleanSubPath}/${importFileName}`],
+    );
+
+    // Now import from the database pod's mount
+    const importPath = `${dataRoot}/${importFileName}`;
+    let result: { stdout: string; stderr: string };
+
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      return await mysqlImportSql(ctx, database, sqlContent);
+      try {
+        result = await execInPod(
+          ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `cat '${importPath}' | mariadb -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`],
+        );
+      } catch (err) {
+        if (!isBinaryNotFoundError(err)) throw err;
+        result = await execInPod(
+          ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `cat '${importPath}' | mysql -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`],
+        );
+      }
+    } else if (ctx.engine === 'postgresql') {
+      result = await execInPod(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`],
+      );
+    } else {
+      throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} file import not supported`, 400);
     }
-    if (ctx.engine === 'postgresql') {
-      return await pgImportSql(ctx, database, sqlContent);
+
+    if (result.stderr && result.stderr.includes('ERROR')) {
+      return { success: false, error: result.stderr };
     }
-    if (ctx.engine === 'mongodb') {
-      return await mongoImportDatabase(ctx, database, sqlContent);
+
+    // Post-import pod health check: wait and verify the pod is still healthy.
+    // OOM kills can happen seconds after the import command returns (the DB processes
+    // the SQL in the background). We wait 5 seconds to catch delayed crashes.
+    if (ctx.k8s) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      try {
+        const healthPods = await ctx.k8s.core.listNamespacedPod({
+          namespace: ctx.namespace,
+          labelSelector: `app=${ctx.podName.replace(/-[a-z0-9]+-[a-z0-9]+$/, '')}`,
+        });
+        type HealthPod = {
+          status?: {
+            phase?: string;
+            containerStatuses?: readonly {
+              state?: { waiting?: { reason?: string } };
+              lastState?: { terminated?: { reason?: string } };
+            }[];
+          };
+        };
+        const healthPodItems = (healthPods as { items?: readonly HealthPod[] }).items ?? [];
+        for (const pod of healthPodItems) {
+          for (const cs of pod.status?.containerStatuses ?? []) {
+            const waitingReason = cs.state?.waiting?.reason;
+            const terminatedReason = cs.lastState?.terminated?.reason;
+            const restartCount = (cs as { restartCount?: number }).restartCount ?? 0;
+            if (waitingReason === 'CrashLoopBackOff' || terminatedReason === 'OOMKilled' || (terminatedReason && restartCount > 0)) {
+              return {
+                success: false,
+                error: 'Import caused the database to crash (Out of Memory). The database is restarting. Consider splitting the import into smaller files or increasing memory allocation.',
+              };
+            }
+          }
+        }
+      } catch {
+        // Health check failed — not critical, proceed with success
+      }
     }
-    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
+
+    return { success: true };
   } catch (err) {
+    // Clean up temp import file via file-manager pod (best-effort)
+    try {
+      if (ctx.k8s) {
+        const fmPods = await ctx.k8s.core.listNamespacedPod({ namespace: ctx.namespace, labelSelector: 'app=file-manager' });
+        const fmPod = ((fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? []).find(p => p.status?.phase === 'Running');
+        if (fmPod?.metadata?.name) {
+          await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
+            ['rm', '-f', `/data/${cleanSubPath}/${importFileName}`]);
+        }
+      }
+    } catch { /* cleanup is best-effort */ }
+
     if (err instanceof ApiError) throw err;
     const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('exit code 137') || message.includes('OOMKilled')) {
+      return { success: false, error: 'Import failed: Out of Memory. The database ran out of memory while processing the SQL file. Try splitting the import into smaller files, or increase the deployment memory allocation.' };
+    }
+    if (message.includes('exit code')) {
+      return { success: false, error: `Import failed: ${message}. Check the SQL file for syntax errors.` };
+    }
     return { success: false, error: message };
   }
+}
+
+/**
+ * Export a database dump to a file on the shared PVC.
+ * Returns the PVC path where the file was written (relative to /data/).
+ */
+export async function exportDatabaseToPvc(
+  ctx: DbManagerContext,
+  database: string,
+  outputFileName: string,
+  deploymentSubPath: string,
+): Promise<{ pvcPath: string; sizeBytes: number }> {
+  validateDatabaseName(database);
+
+  const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
+    ? '/var/lib/mysql'
+    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql/data' : '/data/db');
+
+  const exportPath = `${dataRoot}/${outputFileName}`;
+  const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
+
+  if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    try {
+      const { stderr } = await execInPod(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `mariadb-dump -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
+      );
+      if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+    } catch (err) {
+      if (!isBinaryNotFoundError(err)) throw err;
+      const { stderr } = await execInPod(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `mysqldump -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
+      );
+      if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+    }
+  } else if (ctx.engine === 'postgresql') {
+    const { stderr } = await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['sh', '-c', `pg_dump -U postgres '${database}' > '${exportPath}'`],
+    );
+    if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+  } else {
+    throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} PVC export not supported`, 400);
+  }
+
+  // Get file size
+  const { stdout: sizeOut } = await execInPod(
+    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    ['stat', '-c', '%s', exportPath],
+  );
+  const sizeBytes = parseInt(sizeOut.trim(), 10) || 0;
+
+  // Move the export from the database subPath to /data/exports/ via file-manager pod
+  const fmPods = await ctx.k8s!.core.listNamespacedPod({
+    namespace: ctx.namespace,
+    labelSelector: 'app=file-manager',
+  });
+  const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
+  const fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
+
+  if (fmPod?.metadata?.name) {
+    await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
+      ['sh', '-c', `mkdir -p /data/exports && mv '/data/${cleanSubPath}/${outputFileName}' '/data/exports/${outputFileName}'`],
+    );
+  }
+
+  const pvcPath = `/exports/${outputFileName}`;
+  return { pvcPath, sizeBytes };
 }

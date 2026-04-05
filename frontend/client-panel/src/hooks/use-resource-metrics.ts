@@ -16,7 +16,8 @@ export function useResourceMetrics() {
     queryKey: ['resource-metrics', clientId],
     queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/resource-metrics`),
     enabled: Boolean(clientId),
-    staleTime: 60_000, // 1 minute client-side cache
+    staleTime: 60_000,
+    refetchInterval: 60_000, // Auto-refresh every 60 seconds
   });
 }
 
@@ -24,7 +25,7 @@ export function useRefreshMetrics() {
   const { clientId } = useClientContext();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/metrics/refresh`, { method: 'POST' }),
+    mutationFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/clients/${clientId}/resource-metrics/refresh`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['resource-metrics', clientId] });
     },

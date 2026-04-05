@@ -17,6 +17,12 @@ function isK8s404(err: unknown): boolean {
   return false;
 }
 
+function isK8s409(err: unknown): boolean {
+  if (err instanceof Error && err.message.includes('HTTP-Code: 409')) return true;
+  if ((err as { statusCode?: number }).statusCode === 409) return true;
+  return false;
+}
+
 // ─── Step Definitions ────────────────────────────────────────────────────────
 
 export const PROVISION_STEPS = [
@@ -62,9 +68,9 @@ export function updateStepStatus(
 
 // ─── System Service Reserves ────────────────────────────────────────────────
 // Extra CPU/memory headroom added to ResourceQuota to accommodate system pods
-// (file-manager, adminer) so they don't count against the client's plan limits.
-export const SYSTEM_CPU_RESERVE = 0.5;    // 500m for file-manager + adminer
-export const SYSTEM_MEMORY_RESERVE = 0.5; // 512Mi
+// (file-manager) so they don't count against the client's plan limits.
+export const SYSTEM_CPU_RESERVE = 0.25;   // 250m for file-manager
+export const SYSTEM_MEMORY_RESERVE = 0.25; // 256Mi
 
 // ─── K8s Resource Creators ───────────────────────────────────────────────────
 
@@ -101,26 +107,32 @@ export async function applyResourceQuota(
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
 ): Promise<void> {
-  // Add system service headroom so file-manager/adminer don't eat into the client's quota
+  // Add system service headroom so file-manager doesn't eat into the client's quota
   const totalCpu = (parseFloat(limits.cpu) + SYSTEM_CPU_RESERVE).toFixed(2);
   const totalMemoryGi = (parseFloat(limits.memory) + SYSTEM_MEMORY_RESERVE).toFixed(2);
 
-  await k8s.core.createNamespacedResourceQuota({
-    namespace,
-    body: {
-      metadata: {
-        name: `${namespace}-quota`,
-        namespace,
-      },
-      spec: {
-        hard: {
-          'limits.cpu': totalCpu,
-          'limits.memory': `${totalMemoryGi}Gi`,
-          'requests.storage': `${limits.storage}Gi`,
-        },
+  const quotaName = `${namespace}-quota`;
+  const body = {
+    metadata: { name: quotaName, namespace },
+    spec: {
+      hard: {
+        'limits.cpu': totalCpu,
+        'limits.memory': `${totalMemoryGi}Gi`,
+        'requests.storage': `${limits.storage}Gi`,
       },
     },
-  });
+  };
+
+  try {
+    await k8s.core.createNamespacedResourceQuota({ namespace, body });
+  } catch (err: unknown) {
+    // Already exists — replace with updated values
+    if (isK8s409(err)) {
+      await k8s.core.replaceNamespacedResourceQuota({ name: quotaName, namespace, body } as Parameters<typeof k8s.core.replaceNamespacedResourceQuota>[0]);
+    } else {
+      throw err;
+    }
+  }
 }
 
 export async function applyNetworkPolicy(

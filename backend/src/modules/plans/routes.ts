@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { hostingPlans } from '../../db/schema.js';
+import { hostingPlans, clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
@@ -67,6 +67,40 @@ export async function planRoutes(app: FastifyInstance) {
     }
 
     const [updated] = await app.db.select().from(hostingPlans).where(eq(hostingPlans.id, id));
+
+    // Cascade K8s ResourceQuota to all provisioned clients on this plan
+    // (only those without per-client overrides — overrides take precedence)
+    if (body.cpu_limit !== undefined || body.memory_limit !== undefined || body.storage_limit !== undefined) {
+      try {
+        const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+        const { applyResourceQuota } = await import('../k8s-provisioner/service.js');
+        const k8s = createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+
+        // Find all provisioned clients on this plan without resource overrides
+        const affectedClients = await app.db.select().from(clients)
+          .where(and(
+            eq(clients.planId, id),
+            eq(clients.provisioningStatus, 'provisioned'),
+          ));
+
+        for (const client of affectedClients) {
+          try {
+            await applyResourceQuota(k8s, client.kubernetesNamespace, {
+              cpu: String(client.cpuLimitOverride ?? updated.cpuLimit),
+              memory: String(client.memoryLimitOverride ?? updated.memoryLimit),
+              storage: String(client.storageLimitOverride ?? updated.storageLimit),
+            });
+          } catch (err) {
+            console.warn(`[plans] Failed to sync quota for client ${client.id}:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+
+        console.log(`[plans] Synced ResourceQuota for ${affectedClients.length} clients on plan ${id}`);
+      } catch (err) {
+        console.warn('[plans] Failed to cascade quota update:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
     return success(updated);
   });
 
