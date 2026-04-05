@@ -4,7 +4,7 @@ import { uuidField, paginatedResponseSchema } from './shared.js';
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
 export const createDnsRecordSchema = z.object({
-  record_type: z.enum(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS']),
+  record_type: z.enum(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA', 'PTR', 'SOA', 'ALIAS', 'DNAME']),
   record_name: z.string().max(253).optional(),
   record_value: z.string().max(1000),
   ttl: z.number().int().min(60).max(86400).default(3600),

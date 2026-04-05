@@ -339,7 +339,7 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
             <div>
               <label htmlFor="dns-type" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Type</label>
               <select id="dns-type" value={form.record_type} onChange={(e) => setForm({ ...form, record_type: e.target.value as 'A' })} className={INPUT_CLASS} data-testid="dns-type-select">
-                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS'].map((t) => <option key={t} value={t}>{t}</option>)}
+                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA', 'PTR', 'SOA', 'ALIAS', 'DNAME'].map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
