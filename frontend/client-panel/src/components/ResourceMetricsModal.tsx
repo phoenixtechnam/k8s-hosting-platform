@@ -182,7 +182,7 @@ export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsM
     if (open) {
       refreshMetrics.mutate();
     }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open]); 
 
   if (!open) return null;
 

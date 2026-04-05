@@ -12,7 +12,7 @@ import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
 import { eq } from 'drizzle-orm';
 import { catalogEntries } from '../../db/schema.js';
-import { fileManagerRequest, ensureFileManagerRunning, getFileManagerStatus } from '../file-manager/service.js';
+import { fileManagerRequest } from '../file-manager/service.js';
 
 const FM_IMAGE = 'file-manager-sidecar:latest';
 
@@ -286,7 +286,6 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         if (pod.metadata?.labels?.['app'] !== baseName) continue;
         for (const c of pod.containers ?? []) {
           if (c.usage?.cpu) cpuUsed += parseResourceValue(c.usage.cpu, 'cpu');
-          if (c.usage?.memory) cpuUsed; // just to avoid unused, actual calc below
           if (c.usage?.memory) memoryUsedMi += parseResourceValue(c.usage.memory, 'memory') * 1024;
         }
       }
@@ -553,11 +552,10 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/clients/:clientId/deployments/:id/export?database=mydb&output_path=/exports
   // Export database dump to PVC. If output_path is given, writes to PVC and returns path.
   // Otherwise returns the dump as a downloadable file (for small DBs).
-  app.post('/clients/:clientId/deployments/:id/export', async (request, reply) => {
+  app.post('/clients/:clientId/deployments/:id/export', async (request, _reply) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const query = request.query as Record<string, unknown>;
     const database = query.database as string | undefined;
-    const outputPath = query.output_path as string | undefined;
 
     if (!database) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'database query parameter is required', 400, { field: 'database' });

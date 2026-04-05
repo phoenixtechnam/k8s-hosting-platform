@@ -1753,7 +1753,7 @@ async function pgImportSql(
 /**
  * Validate a PVC-relative file path: no traversal, must be a .sql file, no absolute paths.
  */
-const VALID_IMPORT_EXTENSIONS = ['.sql', '.sql.gz', '.gz', '.tar', '.zip', '.dump', '.backup'];
+const VALID_IMPORT_EXTENSIONS = ['.sql', '.sql.gz', '.gz', '.tar', '.tar.gz', '.tgz', '.zip', '.dump', '.backup'];
 
 function validatePvcFilePath(filePath: string): void {
   if (!filePath || filePath.includes('..')) {
@@ -1782,6 +1782,7 @@ function getImportFileExtension(filePath: string): string {
   const lower = filePath.toLowerCase();
   // Check compound extensions first
   if (lower.endsWith('.sql.gz')) return '.sql.gz';
+  if (lower.endsWith('.tar.gz')) return '.tar.gz';
   const lastDot = lower.lastIndexOf('.');
   return lastDot >= 0 ? lower.slice(lastDot) : '';
 }
@@ -1795,49 +1796,6 @@ function getImportFileExtension(filePath: string): string {
  * @param rootPassword - Root password for database auth
  * @param useMysqlBinary - When true, use 'mysql' instead of 'mariadb' CLI binary
  */
-function buildImportCommand(
-  engine: Engine,
-  importPath: string,
-  database: string,
-  rootPassword: string,
-  useMysqlBinary = false,
-): readonly string[] {
-  const ext = importPath.toLowerCase();
-
-  if (engine === 'mariadb' || engine === 'mysql') {
-    const binary = useMysqlBinary ? 'mysql' : 'mariadb';
-
-    if (ext.endsWith('.sql.gz') || ext.endsWith('.gz')) {
-      return ['sh', '-c', `gunzip -c '${importPath}' | ${binary} -u root -p'${rootPassword}' '${database}'; rm -f '${importPath}'`];
-    }
-    if (ext.endsWith('.zip')) {
-      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && unzip -o '${importPath}' -d _import_dir && cat _import_dir/*.sql | ${binary} -u root -p'${rootPassword}' '${database}'; rm -rf /tmp/_import_dir '${importPath}'`];
-    }
-    if (ext.endsWith('.tar')) {
-      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && tar xf '${importPath}' -C _import_dir && cat _import_dir/*.sql | ${binary} -u root -p'${rootPassword}' '${database}'; rm -rf /tmp/_import_dir '${importPath}'`];
-    }
-    // Default: plain .sql
-    return ['sh', '-c', `cat '${importPath}' | ${binary} -u root -p'${rootPassword}' '${database}'; rm -f '${importPath}'`];
-  }
-
-  if (engine === 'postgresql') {
-    if (ext.endsWith('.sql.gz') || ext.endsWith('.gz')) {
-      return ['sh', '-c', `gunzip -c '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`];
-    }
-    if (ext.endsWith('.tar') || ext.endsWith('.dump') || ext.endsWith('.backup')) {
-      // pg_restore handles tar and custom format natively
-      return ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1; rm -f '${importPath}'`];
-    }
-    if (ext.endsWith('.zip')) {
-      return ['sh', '-c', `cd /tmp && mkdir -p _import_dir && unzip -o '${importPath}' -d _import_dir && (pg_restore -U postgres -d '${database}' _import_dir/* 2>/dev/null || cat _import_dir/*.sql | psql -U postgres '${database}'); rm -rf /tmp/_import_dir '${importPath}'`];
-    }
-    // Default: plain .sql
-    return ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`];
-  }
-
-  // Fallback for unsupported engines
-  return ['sh', '-c', `cat '${importPath}' | sh; rm -f '${importPath}'`];
-}
 
 /**
  * Import SQL from a file already on the shared PVC (uploaded via the file manager).
@@ -1897,37 +1855,65 @@ export async function importSqlFromPvcFile(
       throw new Error('File manager pod not found or not running');
     }
 
-    // Copy file into the database's subPath directory
-    await execInPod(
-      ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
-      ['cp', `/data/${cleanFilePath}`, `/data/${cleanSubPath}/${importFileName}`],
-    );
+    // Step 1: Extract/decompress archives in the file-manager pod (has tar, unzip, gunzip).
+    // Database pods (especially MySQL 8) lack these tools.
+    // Result: a plain .sql (or pg_restore-compatible) file in the database's subPath.
+    const fmPodName = fmPod.metadata.name;
+    const fmSrcPath = `/data/${cleanFilePath}`;
+    const fmDestDir = `/data/${cleanSubPath}`;
+    const sqlFileName = `_import_${Date.now()}.sql`;
+    const fmSqlPath = `${fmDestDir}/${sqlFileName}`;
+    const ext = getImportFileExtension(filePath);
 
-    // Now import from the database pod's mount
-    const importPath = `${dataRoot}/${importFileName}`;
+    // For pg_restore formats, keep the original extension
+    const isPgRestore = ctx.engine === 'postgresql' && ['.tar', '.dump', '.backup'].includes(ext);
+    const dbImportFileName = isPgRestore ? importFileName : sqlFileName;
+
+    if (isPgRestore) {
+      // PostgreSQL native format — copy as-is for pg_restore
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['cp', fmSrcPath, `${fmDestDir}/${importFileName}`]);
+    } else if (ext === '.sql') {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['cp', fmSrcPath, fmSqlPath]);
+    } else if (ext === '.sql.gz' || ext === '.gz') {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', `gunzip -c '${fmSrcPath}' > '${fmSqlPath}'`]);
+    } else if (ext === '.tar.gz' || ext === '.tgz') {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', `mkdir -p /tmp/_imp && tar xzf '${fmSrcPath}' -C /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+    } else if (ext === '.tar') {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', `mkdir -p /tmp/_imp && tar xf '${fmSrcPath}' -C /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+    } else if (ext === '.zip') {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', `mkdir -p /tmp/_imp && unzip -o '${fmSrcPath}' -d /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+    } else {
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['cp', fmSrcPath, fmSqlPath]);
+    }
+
+    // Step 2: Import from the database pod's mount (only needs the database CLI)
+    const importPath = `${dataRoot}/${dbImportFileName}`;
     let result: { stdout: string; stderr: string };
-
-    const cmd = buildImportCommand(ctx.engine, importPath, database, ctx.rootPassword);
 
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       try {
-        result = await execInPod(
-          ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          cmd as string[],
-        );
+        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `cat '${importPath}' | mariadb -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`]);
       } catch (err) {
         if (!isBinaryNotFoundError(err)) throw err;
-        const fallbackCmd = buildImportCommand(ctx.engine, importPath, database, ctx.rootPassword, true);
-        result = await execInPod(
-          ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          fallbackCmd as string[],
-        );
+        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `cat '${importPath}' | mysql -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`]);
       }
     } else if (ctx.engine === 'postgresql') {
-      result = await execInPod(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        cmd as string[],
-      );
+      if (isPgRestore) {
+        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1; rm -f '${importPath}'`]);
+      } else {
+        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`]);
+      }
     } else {
       throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} file import not supported`, 400);
     }

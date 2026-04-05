@@ -703,7 +703,7 @@ function DetailMetricCard({
   readonly type: 'cpu' | 'memory';
 }) {
   let requestNum = 0;
-  let usedNum = used ?? 0;
+  const usedNum = used ?? 0;
   let usedLabel = '';
 
   if (type === 'cpu') {
