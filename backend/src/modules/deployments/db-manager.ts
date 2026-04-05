@@ -1840,6 +1840,7 @@ export async function importSqlFromPvcFile(
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
   const fileExt = getImportFileExtension(filePath);
   const importFileName = `_import_${Date.now()}${fileExt}`;
+  const sqlFileName = `_import_${Date.now()}.sql`;
 
   try {
     // Copy the source file to the database's subPath using file-manager exec
@@ -1861,7 +1862,6 @@ export async function importSqlFromPvcFile(
     const fmPodName = fmPod.metadata.name;
     const fmSrcPath = `/data/${cleanFilePath}`;
     const fmDestDir = `/data/${cleanSubPath}`;
-    const sqlFileName = `_import_${Date.now()}.sql`;
     const fmSqlPath = `${fmDestDir}/${sqlFileName}`;
     const ext = getImportFileExtension(filePath);
 
@@ -1969,7 +1969,7 @@ export async function importSqlFromPvcFile(
         const fmPod = ((fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? []).find(p => p.status?.phase === 'Running');
         if (fmPod?.metadata?.name) {
           await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
-            ['rm', '-f', `/data/${cleanSubPath}/${importFileName}`]);
+            ['sh', '-c', `rm -f '/data/${cleanSubPath}/${importFileName}' '/data/${cleanSubPath}/${sqlFileName}'`]);
         }
       }
     } catch { /* cleanup is best-effort */ }

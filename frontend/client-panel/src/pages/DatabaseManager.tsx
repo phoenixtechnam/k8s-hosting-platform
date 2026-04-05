@@ -580,8 +580,9 @@ export default function DatabaseManager() {
       if (!file) return;
 
       // Only accept valid import file types
-      const validExtensions = ['.sql', '.sql.gz', '.gz', '.tar', '.tar.gz', '.tgz', '.zip', '.dump', '.backup'];
-      if (!validExtensions.some(ext => file.name.toLowerCase().endsWith(ext))) {
+      // Direct upload only supports .sql files. For archives (.gz, .tar, .zip),
+      // use File Manager to upload first, then "Import from File".
+      if (!file.name.toLowerCase().endsWith('.sql')) {
         // Reset input so user can try again
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
@@ -1751,7 +1752,7 @@ export default function DatabaseManager() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".sql,.sql.gz,.gz,.tar,.tar.gz,.tgz,.zip,.dump,.backup"
+                accept=".sql"
                 onChange={handleImport}
                 className="hidden"
                 data-testid="import-file-input"
