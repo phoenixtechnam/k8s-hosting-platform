@@ -523,7 +523,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const limit = query.limit ? parseInt(String(query.limit), 10) : undefined;
     const offset = query.offset ? parseInt(String(query.offset), 10) : undefined;
     const orderBy = query.orderBy as string | undefined;
-    const orderDir = (query.orderDir as string | undefined) === 'desc' ? 'desc' as const : 'asc' as const;
+    const orderDir = (query.orderDir as string | undefined)?.toLowerCase() === 'desc' ? 'desc' as const : 'asc' as const;
 
     const ctx = await buildDbCtx(clientId, id);
     const result = await dbManager.browseTable(ctx, database, table, { limit, offset, orderBy, orderDir });

@@ -114,7 +114,7 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
     const limit = query.limit ? parseInt(String(query.limit), 10) : undefined;
     const offset = query.offset ? parseInt(String(query.offset), 10) : undefined;
     const orderBy = query.orderBy as string | undefined;
-    const orderDir = (query.orderDir as string | undefined) === 'desc' ? 'desc' as const : 'asc' as const;
+    const orderDir = (query.orderDir as string | undefined)?.toLowerCase() === 'desc' ? 'desc' as const : 'asc' as const;
 
     const { k8sClients, kubeconfigPath } = requireK8s();
     const namespace = await resolveNamespace(clientId);
