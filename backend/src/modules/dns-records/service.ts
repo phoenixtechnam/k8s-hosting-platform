@@ -7,20 +7,24 @@ import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 
 const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
-export async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
+export async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'update' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
   try {
     const servers = await getActiveServers(db);
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey());
-        if (action === 'create') {
+        if (action === 'create' || action === 'update') {
           await provider.createRecord(domainName, { type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 3600, priority: record.priority ?? undefined });
         } else if (action === 'delete' && record.id) {
           await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
         }
-      } catch { /* DNS sync failure shouldn't block — log and continue */ }
+      } catch (err) {
+        console.warn(`[dns-sync] Failed to ${action} record on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
+      }
     }
-  } catch { /* no servers configured */ }
+  } catch (err) {
+    console.warn('[dns-sync] Failed to get active DNS servers:', err instanceof Error ? err.message : String(err));
+  }
 }
 
 async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
@@ -119,6 +123,19 @@ export async function updateDnsRecord(
     .select()
     .from(dnsRecords)
     .where(eq(dnsRecords.id, recordId));
+
+  // Sync updated record to external DNS servers
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (domain && updated) {
+    await syncRecordToProviders(db, domain.domainName, 'update', {
+      type: updated.recordType,
+      name: updated.recordName ?? '@',
+      content: updated.recordValue ?? '',
+      ttl: updated.ttl,
+      priority: updated.priority,
+      id: recordId,
+    });
+  }
 
   return updated;
 }
