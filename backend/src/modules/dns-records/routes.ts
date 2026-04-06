@@ -86,4 +86,51 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     const records = await service.syncRecordsFromProvider(app.db, clientId, domainId);
     return success(records);
   });
+
+  // GET /api/v1/clients/:clientId/domains/:domainId/dns-records/diff
+  app.get('/clients/:clientId/domains/:domainId/dns-records/diff', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const diff = await service.diffRecordsWithProvider(app.db, clientId, domainId);
+    return success(diff);
+  });
+
+  // POST /api/v1/clients/:clientId/domains/:domainId/dns-records/pull
+  app.post('/clients/:clientId/domains/:domainId/dns-records/pull', async (request, reply) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const body = request.body as { type: string; name: string; value: string; ttl?: number; local_id?: string };
+
+    if (body.local_id) {
+      // Update existing local record
+      const updated = await service.updateDnsRecord(app.db, clientId, domainId, body.local_id, {
+        record_value: body.value,
+        ttl: body.ttl,
+      });
+      return success(updated);
+    } else {
+      // Create new local record (without syncing to remote — it already exists there)
+      const created = await service.createDnsRecordLocalOnly(app.db, clientId, domainId, {
+        record_type: body.type as 'A',
+        record_name: body.name,
+        record_value: body.value,
+        ttl: body.ttl ?? 3600,
+      });
+      reply.status(201);
+      return success(created);
+    }
+  });
+
+  // POST /api/v1/clients/:clientId/domains/:domainId/dns-records/push
+  app.post('/clients/:clientId/domains/:domainId/dns-records/push', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const body = request.body as { type: string; name: string; value: string; ttl?: number };
+
+    const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
+    if (!domain) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
+
+    await service.syncRecordToProviders(app.db, domain.domainName, 'create', {
+      type: body.type, name: body.name, content: body.value, ttl: body.ttl ?? 3600,
+    }, domainId);
+
+    return success({ message: 'Record pushed to DNS server' });
+  });
 }

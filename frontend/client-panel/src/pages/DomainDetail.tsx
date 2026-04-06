@@ -3,13 +3,18 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
   Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network, Pencil, Check, RefreshCw,
+  ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
-import { useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords } from '@/hooks/use-dns-records';
+import {
+  useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords,
+  useDnsRecordDiff, usePullDnsRecord, usePushDnsRecord,
+  type DnsRecordDiffEntry,
+} from '@/hooks/use-dns-records';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useHostingSettings, useUpdateHostingSettings } from '@/hooks/use-hosting-settings';
@@ -475,6 +480,7 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showSyncConfirm, setShowSyncConfirm] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<{ record_value: string; ttl: number; priority?: number }>({ record_value: '', ttl: 3600 });
   const recordsRaw = response?.data ?? [];
@@ -545,6 +551,15 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
       <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Records</h2>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSyncModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+            data-testid="sync-records-button"
+          >
+            <ArrowLeftRight size={14} />
+            Sync Records
+          </button>
           <button
             type="button"
             onClick={() => setShowSyncConfirm(true)}
@@ -750,6 +765,301 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
           </tbody>
         </table>
       )}
+
+      {showSyncModal && (
+        <SyncRecordsModal clientId={clientId} domainId={domainId} onClose={() => setShowSyncModal(false)} />
+      )}
+    </div>
+  );
+}
+
+// ─── Sync Records Modal ──────────────────────────────────────────────────────
+
+function SyncRecordsModal({ clientId, domainId, onClose }: {
+  readonly clientId: string;
+  readonly domainId: string;
+  readonly onClose: () => void;
+}) {
+  const { data: diffData, isLoading, isError, refetch } = useDnsRecordDiff(clientId, domainId, true);
+  const pullRecord = usePullDnsRecord(clientId, domainId);
+  const pushRecord = usePushDnsRecord(clientId, domainId);
+  const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
+
+  const diff = diffData?.data ?? [];
+
+  const markCompleted = (key: string) => {
+    setCompletedActions((prev) => new Set([...prev, key]));
+  };
+
+  const entryKey = (entry: DnsRecordDiffEntry) => `${entry.type}|${entry.name}|${entry.local?.value ?? ''}|${entry.remote?.value ?? ''}`;
+
+  const handlePull = async (entry: DnsRecordDiffEntry) => {
+    if (!entry.remote) return;
+    await pullRecord.mutateAsync({
+      type: entry.type,
+      name: entry.name,
+      value: entry.remote.value,
+      ttl: entry.remote.ttl,
+      local_id: entry.local?.id,
+    });
+    markCompleted(entryKey(entry));
+  };
+
+  const handlePush = async (entry: DnsRecordDiffEntry) => {
+    if (!entry.local) return;
+    await pushRecord.mutateAsync({
+      type: entry.type,
+      name: entry.name,
+      value: entry.local.value,
+      ttl: entry.local.ttl,
+    });
+    markCompleted(entryKey(entry));
+  };
+
+  const handlePullAllMissing = async () => {
+    const remoteOnly = diff.filter((e) => e.status === 'remote_only' && !completedActions.has(entryKey(e)));
+    for (const entry of remoteOnly) {
+      if (entry.remote) {
+        await pullRecord.mutateAsync({
+          type: entry.type,
+          name: entry.name,
+          value: entry.remote.value,
+          ttl: entry.remote.ttl,
+        });
+        markCompleted(entryKey(entry));
+      }
+    }
+  };
+
+  const handlePushAllMissing = async () => {
+    const localOnly = diff.filter((e) => e.status === 'local_only' && !completedActions.has(entryKey(e)));
+    for (const entry of localOnly) {
+      if (entry.local) {
+        await pushRecord.mutateAsync({
+          type: entry.type,
+          name: entry.name,
+          value: entry.local.value,
+          ttl: entry.local.ttl,
+        });
+        markCompleted(entryKey(entry));
+      }
+    }
+  };
+
+  const handleRefresh = () => {
+    setCompletedActions(new Set());
+    refetch();
+  };
+
+  const statusIcon = (entry: DnsRecordDiffEntry) => {
+    if (completedActions.has(entryKey(entry))) {
+      return <CheckCircle2 size={16} className="text-green-500" />;
+    }
+    switch (entry.status) {
+      case 'in_sync': return <CheckCircle2 size={16} className="text-green-500" />;
+      case 'conflict': return <AlertCircle size={16} className="text-red-500" />;
+      case 'remote_only': return <ArrowDownToLine size={16} className="text-blue-500" />;
+      case 'local_only': return <ArrowUpFromLine size={16} className="text-amber-500" />;
+    }
+  };
+
+  const statusBg = (entry: DnsRecordDiffEntry) => {
+    if (completedActions.has(entryKey(entry))) return 'bg-green-50 dark:bg-green-900/10';
+    switch (entry.status) {
+      case 'in_sync': return 'bg-green-50 dark:bg-green-900/10';
+      case 'conflict': return 'bg-red-50 dark:bg-red-900/10';
+      case 'remote_only': return 'bg-blue-50 dark:bg-blue-900/10';
+      case 'local_only': return 'bg-amber-50 dark:bg-amber-900/10';
+    }
+  };
+
+  const remoteOnlyCount = diff.filter((e) => e.status === 'remote_only' && !completedActions.has(entryKey(e))).length;
+  const localOnlyCount = diff.filter((e) => e.status === 'local_only' && !completedActions.has(entryKey(e))).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="sync-records-modal">
+      <div className="mx-4 w-full max-w-4xl max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-gray-800 shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync Records</h3>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={isLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
+              data-testid="sync-refresh-button"
+            >
+              {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              data-testid="sync-modal-close"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {isLoading && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={24} className="animate-spin text-blue-600" />
+              <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Comparing records...</span>
+            </div>
+          )}
+
+          {isError && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+              <AlertCircle size={16} />
+              Failed to fetch record diff from DNS server.
+            </div>
+          )}
+
+          {!isLoading && !isError && diff.length === 0 && (
+            <div className="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+              <CheckCircle2 size={32} className="mx-auto mb-2 text-green-500" />
+              All records are in sync.
+            </div>
+          )}
+
+          {!isLoading && !isError && diff.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm" data-testid="sync-diff-table">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-2.5 w-10">Status</th>
+                    <th className="px-3 py-2.5 w-16">Type</th>
+                    <th className="px-3 py-2.5 w-32">Name</th>
+                    <th className="px-3 py-2.5">Local Value</th>
+                    <th className="px-3 py-2.5">Remote Value</th>
+                    <th className="px-3 py-2.5 w-40 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {diff.map((entry) => {
+                    const key = entryKey(entry);
+                    const done = completedActions.has(key);
+                    return (
+                      <tr key={key} className={statusBg(entry)}>
+                        <td className="px-3 py-2.5">{statusIcon(entry)}</td>
+                        <td className="px-3 py-2.5">
+                          <span className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-xs font-medium dark:text-gray-300">{entry.type}</span>
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-gray-900 dark:text-gray-100">{entry.name}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 max-w-[200px] truncate">
+                          {entry.local ? (
+                            <span title={entry.local.value}>{entry.local.value}<span className="ml-1 text-gray-400 dark:text-gray-500">(TTL:{entry.local.ttl})</span></span>
+                          ) : (
+                            <span className="italic text-gray-400 dark:text-gray-500">--</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-gray-600 dark:text-gray-400 max-w-[200px] truncate">
+                          {entry.remote ? (
+                            <span title={entry.remote.value}>{entry.remote.value}<span className="ml-1 text-gray-400 dark:text-gray-500">(TTL:{entry.remote.ttl})</span></span>
+                          ) : (
+                            <span className="italic text-gray-400 dark:text-gray-500">--</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          {done ? (
+                            <span className="text-xs text-green-600 dark:text-green-400 font-medium">Done</span>
+                          ) : entry.status === 'in_sync' ? (
+                            <span className="text-xs text-green-600 dark:text-green-400 font-medium">In Sync</span>
+                          ) : entry.status === 'conflict' ? (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handlePull(entry)}
+                                disabled={pullRecord.isPending}
+                                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                                data-testid={`pull-${key}`}
+                              >
+                                <ArrowDownToLine size={10} /> Pull
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePush(entry)}
+                                disabled={pushRecord.isPending}
+                                className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                                data-testid={`push-${key}`}
+                              >
+                                Push <ArrowUpFromLine size={10} />
+                              </button>
+                            </div>
+                          ) : entry.status === 'remote_only' ? (
+                            <button
+                              type="button"
+                              onClick={() => handlePull(entry)}
+                              disabled={pullRecord.isPending}
+                              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                              data-testid={`pull-${key}`}
+                            >
+                              <ArrowDownToLine size={10} /> Pull
+                            </button>
+                          ) : entry.status === 'local_only' ? (
+                            <button
+                              type="button"
+                              onClick={() => handlePush(entry)}
+                              disabled={pushRecord.isPending}
+                              className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                              data-testid={`push-${key}`}
+                            >
+                              Push <ArrowUpFromLine size={10} />
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {!isLoading && !isError && (remoteOnlyCount > 0 || localOnlyCount > 0) && (
+          <div className="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 px-6 py-4">
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              {diff.filter((e) => e.status === 'conflict').length > 0 && (
+                <span className="mr-3 text-red-600 dark:text-red-400 font-medium">{diff.filter((e) => e.status === 'conflict').length} conflicts</span>
+              )}
+              {remoteOnlyCount > 0 && <span className="mr-3">{remoteOnlyCount} remote only</span>}
+              {localOnlyCount > 0 && <span>{localOnlyCount} local only</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              {remoteOnlyCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handlePullAllMissing}
+                  disabled={pullRecord.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  data-testid="pull-all-missing"
+                >
+                  {pullRecord.isPending && <Loader2 size={12} className="animate-spin" />}
+                  <ArrowDownToLine size={14} />
+                  Pull All Missing
+                </button>
+              )}
+              {localOnlyCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handlePushAllMissing}
+                  disabled={pushRecord.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                  data-testid="push-all-missing"
+                >
+                  {pushRecord.isPending && <Loader2 size={12} className="animate-spin" />}
+                  <ArrowUpFromLine size={14} />
+                  Push All Missing
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

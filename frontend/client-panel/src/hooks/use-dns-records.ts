@@ -79,3 +79,48 @@ export function useSyncDnsRecords(clientId: string | undefined, domainId: string
     },
   });
 }
+
+export interface DnsRecordDiffEntry {
+  readonly type: string;
+  readonly name: string;
+  readonly local: { value: string; ttl: number; id: string } | null;
+  readonly remote: { value: string; ttl: number } | null;
+  readonly status: 'in_sync' | 'conflict' | 'local_only' | 'remote_only';
+}
+
+export function useDnsRecordDiff(clientId: string | undefined, domainId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['dns-record-diff', clientId, domainId],
+    queryFn: () => apiFetch<{ data: readonly DnsRecordDiffEntry[] }>(
+      `${basePath(clientId!, domainId!)}/diff`
+    ),
+    enabled: Boolean(clientId && domainId) && enabled,
+  });
+}
+
+export function usePullDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { type: string; name: string; value: string; ttl?: number; local_id?: string }) =>
+      apiFetch(`${basePath(clientId!, domainId!)}/pull`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
+      qc.invalidateQueries({ queryKey: ['dns-record-diff'] });
+    },
+  });
+}
+
+export function usePushDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { type: string; name: string; value: string; ttl?: number }) =>
+      apiFetch(`${basePath(clientId!, domainId!)}/push`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dns-record-diff'] });
+    },
+  });
+}

@@ -13,12 +13,13 @@ interface DeployWorkloadModalProps {
   readonly onClose: () => void;
   readonly preSelectedImageId?: string | null;
   readonly onSuccess?: () => void;
+  readonly existingNames?: readonly string[];
 }
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess }: DeployWorkloadModalProps) {
+export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess, existingNames = [] }: DeployWorkloadModalProps) {
   const { clientId } = useClientContext();
   const { data: catalogData } = useCatalog();
   const { data: domainsData } = useDomains(clientId ?? undefined);
@@ -138,7 +139,15 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const handleSelectImage = (img: CatalogEntry) => {
     setSelectedImageId(img.id);
     if (!name) {
-      setName(img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50));
+      const baseName = img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50);
+      const nameSet = new Set(existingNames);
+      let candidate = baseName;
+      let suffix = 2;
+      while (nameSet.has(candidate)) {
+        candidate = `${baseName}-${suffix}`;
+        suffix++;
+      }
+      setName(candidate);
     }
     if (img.resources?.recommended?.cpu) setCpuRequest(img.resources.recommended.cpu);
     if (img.resources?.recommended?.memory) setMemoryRequest(img.resources.recommended.memory);

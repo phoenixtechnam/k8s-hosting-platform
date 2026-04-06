@@ -180,6 +180,154 @@ export async function deleteDnsRecord(
   }
 }
 
+export interface DnsRecordDiffEntry {
+  readonly type: string;
+  readonly name: string;
+  readonly local: { value: string; ttl: number; id: string } | null;
+  readonly remote: { value: string; ttl: number } | null;
+  readonly status: 'in_sync' | 'conflict' | 'local_only' | 'remote_only';
+}
+
+export async function diffRecordsWithProvider(
+  db: Database,
+  clientId: string,
+  domainId: string,
+): Promise<DnsRecordDiffEntry[]> {
+  await verifyDomainOwnership(db, clientId, domainId);
+
+  const [domainRow] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domainRow) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
+
+  // Get local records
+  const localRecords = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+
+  // Get remote records from provider
+  const servers = await getActiveServersForDomain(db, domainId);
+  if (servers.length === 0) {
+    const allServers = await getActiveServers(db);
+    if (allServers.length === 0) throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+    servers.push(...allServers);
+  }
+
+  const provider = getProviderForServer(servers[0], encryptionKey());
+  let remoteRecords: Awaited<ReturnType<typeof provider.listRecords>>;
+  try {
+    remoteRecords = await provider.listRecords(domainRow.domainName);
+  } catch {
+    throw new ApiError('DNS_PROVIDER_ERROR', 'Failed to fetch records from DNS server', 503);
+  }
+
+  // Normalize names for comparison
+  const domainFqdn = domainRow.domainName.endsWith('.') ? domainRow.domainName : `${domainRow.domainName}.`;
+
+  function normalizeRecordName(name: string | null | undefined): string {
+    if (!name || name === '@') return '@';
+    const n = name.endsWith('.') ? name : `${name}.`;
+    // Strip the domain suffix to get relative name
+    if (n === domainFqdn) return '@';
+    if (n.endsWith(`.${domainFqdn}`)) return n.slice(0, -(domainFqdn.length + 1));
+    return name;
+  }
+
+  // Normalize value for comparison (strip TXT quotes, trailing dots on CNAME/NS/MX targets)
+  function normalizeValue(value: string): string {
+    let v = value;
+    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+    return v;
+  }
+
+  // Build maps keyed by "type|normalizedName|normalizedValue"
+  const localMap = new Map<string, typeof localRecords[0]>();
+  for (const r of localRecords) {
+    const key = `${r.recordType}|${normalizeRecordName(r.recordName)}|${normalizeValue(r.recordValue ?? '')}`;
+    localMap.set(key, r);
+  }
+
+  const remoteMap = new Map<string, { type: string; name: string; content: string; ttl: number }>();
+  for (const r of remoteRecords) {
+    const key = `${r.type}|${normalizeRecordName(r.name)}|${normalizeValue(r.content)}`;
+    remoteMap.set(key, r);
+  }
+
+  // Compute diff
+  const diff: DnsRecordDiffEntry[] = [];
+  const seen = new Set<string>();
+
+  // Check local records against remote
+  for (const [key, local] of localMap) {
+    seen.add(key);
+    const remote = remoteMap.get(key);
+    if (remote) {
+      diff.push({
+        type: local.recordType,
+        name: normalizeRecordName(local.recordName),
+        local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
+        remote: { value: remote.content, ttl: remote.ttl },
+        status: 'in_sync',
+      });
+    } else {
+      // Check if there's a remote with same type+name but different value (conflict)
+      const typeNamePrefix = key.split('|').slice(0, 2).join('|');
+      const conflicting = Array.from(remoteMap.entries()).find(([k]) => k.startsWith(typeNamePrefix + '|') && !seen.has(k));
+      if (conflicting) {
+        seen.add(conflicting[0]);
+        diff.push({
+          type: local.recordType,
+          name: normalizeRecordName(local.recordName),
+          local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
+          remote: { value: conflicting[1].content, ttl: conflicting[1].ttl },
+          status: 'conflict',
+        });
+      } else {
+        diff.push({
+          type: local.recordType,
+          name: normalizeRecordName(local.recordName),
+          local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
+          remote: null,
+          status: 'local_only',
+        });
+      }
+    }
+  }
+
+  // Check remote records not yet seen (remote_only)
+  for (const [key, remote] of remoteMap) {
+    if (!seen.has(key)) {
+      diff.push({
+        type: remote.type,
+        name: normalizeRecordName(remote.name),
+        local: null,
+        remote: { value: remote.content, ttl: remote.ttl },
+        status: 'remote_only',
+      });
+    }
+  }
+
+  // Sort: conflicts first, then remote_only, then local_only, then in_sync
+  const statusOrder = { conflict: 0, remote_only: 1, local_only: 2, in_sync: 3 };
+  diff.sort((a, b) => statusOrder[a.status] - statusOrder[b.status] || a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+
+  return diff;
+}
+
+export async function createDnsRecordLocalOnly(db: Database, clientId: string, domainId: string, input: CreateDnsRecordInput) {
+  await verifyDomainOwnership(db, clientId, domainId);
+  const id = crypto.randomUUID();
+  await db.insert(dnsRecords).values({
+    id,
+    domainId,
+    recordType: input.record_type as typeof dnsRecords.$inferInsert['recordType'],
+    recordName: input.record_name ?? null,
+    recordValue: input.record_value,
+    ttl: input.ttl ?? 3600,
+    priority: input.priority ?? null,
+    weight: input.weight ?? null,
+    port: input.port ?? null,
+  });
+  const [created] = await db.select().from(dnsRecords).where(eq(dnsRecords.id, id));
+  return created;
+}
+
 export async function syncRecordsFromProvider(
   db: Database,
   clientId: string,

@@ -183,21 +183,33 @@ export async function createDeployment(
   const id = crypto.randomUUID();
   const resourceSuffix = id.replace(/-/g, '').substring(0, 6);
 
-  await db.insert(deployments).values({
-    id,
-    clientId,
-    catalogEntryId: input.catalog_entry_id,
-    name: input.name,
-    domainName: input.domain_name ?? null,
-    replicaCount: input.replica_count ?? 1,
-    cpuRequest: input.cpu_request ?? catalogCpu,
-    memoryRequest: input.memory_request ?? catalogMemory,
-    configuration: finalConfiguration,
-    resourceSuffix,
-    installedVersion,
-    targetVersion: installedVersion,
-    status: 'pending',
-  });
+  try {
+    await db.insert(deployments).values({
+      id,
+      clientId,
+      catalogEntryId: input.catalog_entry_id,
+      name: input.name,
+      domainName: input.domain_name ?? null,
+      replicaCount: input.replica_count ?? 1,
+      cpuRequest: input.cpu_request ?? catalogCpu,
+      memoryRequest: input.memory_request ?? catalogMemory,
+      configuration: finalConfiguration,
+      resourceSuffix,
+      installedVersion,
+      targetVersion: installedVersion,
+      status: 'pending',
+    });
+  } catch (err) {
+    if ((err as { code?: string }).code === '23505') {
+      throw new ApiError(
+        'DUPLICATE_NAME',
+        `A deployment named '${input.name}' already exists for this client`,
+        409,
+        { name: input.name },
+      );
+    }
+    throw err;
+  }
 
   // Deploy to K8s if cluster is available
   if (k8s && namespace) {

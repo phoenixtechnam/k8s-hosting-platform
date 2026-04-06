@@ -32,6 +32,13 @@ const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
 };
 
 export default function Applications() {
+  const { clientId } = useClientContext();
+  const { data: deploymentsForNames } = useDeployments(clientId ?? undefined);
+  const existingDeploymentNames = useMemo(
+    () => (deploymentsForNames?.data ?? []).filter(d => d.status !== 'deleted').map(d => d.name),
+    [deploymentsForNames],
+  );
+
   const [activeTab, setActiveTab] = useState<Tab>('installed');
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
@@ -92,6 +99,7 @@ export default function Applications() {
         onClose={() => { setDeployModalOpen(false); setDeployPreSelectedImage(null); }}
         preSelectedImageId={deployPreSelectedImage}
         onSuccess={() => setActiveTab('installed')}
+        existingNames={existingDeploymentNames}
       />
     </div>
   );
