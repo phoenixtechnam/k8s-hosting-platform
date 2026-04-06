@@ -14,10 +14,21 @@ import { CloudflareDnsProvider } from './cloudflare.js';
 import { Route53DnsProvider } from './route53.js';
 import { HetznerDnsProvider } from './hetzner.js';
 
+// Mock providers must be singletons — they store state in memory.
+// Without caching, each call creates a fresh instance and zones/records are lost.
+const mockProviderCache = new Map<string, MockDnsProvider>();
+
 export function createProvider(providerType: string, config: Record<string, unknown>): DnsProviderAdapter {
   switch (providerType) {
-    case 'mock':
-      return new MockDnsProvider(config as unknown as MockConfig);
+    case 'mock': {
+      const key = JSON.stringify(config);
+      let mock = mockProviderCache.get(key);
+      if (!mock) {
+        mock = new MockDnsProvider(config as unknown as MockConfig);
+        mockProviderCache.set(key, mock);
+      }
+      return mock;
+    }
     case 'powerdns':
       return new PowerDnsProvider(config as unknown as PowerDnsConfig);
     case 'rndc':
