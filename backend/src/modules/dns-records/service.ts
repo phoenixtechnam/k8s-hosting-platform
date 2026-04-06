@@ -4,6 +4,7 @@ import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
+import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
 
 const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
@@ -167,4 +168,44 @@ export async function deleteDnsRecord(
       id: recordId,
     });
   }
+}
+
+export async function syncRecordsFromProvider(
+  db: Database,
+  clientId: string,
+  domainId: string,
+): Promise<DnsRecordRow[]> {
+  await verifyDomainOwnership(db, clientId, domainId);
+
+  const [domainRow] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domainRow) {
+    throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
+  }
+
+  const servers = await getActiveServers(db);
+  if (servers.length === 0) {
+    throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+  }
+
+  const provider = getProviderForServer(servers[0], encryptionKey());
+  const remoteRecords = await provider.listRecords(domainRow.domainName);
+
+  // Delete all existing local records for this domain
+  await db.delete(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+
+  // Insert remote records
+  for (const r of remoteRecords) {
+    await db.insert(dnsRecords).values({
+      id: crypto.randomUUID(),
+      domainId,
+      recordType: r.type as typeof dnsRecords.$inferInsert['recordType'],
+      recordName: r.name,
+      recordValue: r.content,
+      ttl: r.ttl ?? 3600,
+      priority: r.priority ?? null,
+    });
+  }
+
+  // Return updated list
+  return db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
 }

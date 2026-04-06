@@ -242,8 +242,24 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
 }
 
 export async function deleteDomain(db: Database, clientId: string, domainId: string, k8s?: K8sClients) {
-  await getDomainById(db, clientId, domainId);
+  const domainRow = await getDomainById(db, clientId, domainId);
   await db.delete(domains).where(eq(domains.id, domainId));
+
+  // Delete zone from DNS servers
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  try {
+    const servers = await getActiveServers(db);
+    for (const server of servers) {
+      try {
+        const provider = getProviderForServer(server, encryptionKey);
+        await provider.deleteZone(domainRow.domainName);
+      } catch {
+        // DNS cleanup failure shouldn't block domain deletion
+      }
+    }
+  } catch {
+    // No DNS servers configured — that's fine
+  }
 
   // Reconcile Ingress after domain removal
   if (k8s) {

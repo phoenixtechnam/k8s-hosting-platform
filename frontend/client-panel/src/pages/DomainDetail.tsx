@@ -2,14 +2,14 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
-  Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network,
+  Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network, Pencil, Check, RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
-import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
+import { useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords } from '@/hooks/use-dns-records';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useHostingSettings, useUpdateHostingSettings } from '@/hooks/use-hosting-settings';
@@ -286,9 +286,14 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly domainId: string }) {
   const { data: response, isLoading, isError } = useDnsRecords(clientId, domainId);
   const createRecord = useCreateDnsRecord(clientId, domainId);
+  const updateRecord = useUpdateDnsRecord(clientId, domainId);
   const deleteRecord = useDeleteDnsRecord(clientId, domainId);
+  const syncRecords = useSyncDnsRecords(clientId, domainId);
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [showSyncConfirm, setShowSyncConfirm] = useState(false);
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<{ record_value: string; ttl: number; priority?: number }>({ record_value: '', ttl: 3600 });
   const recordsRaw = response?.data ?? [];
   const { sortedData: records, sortKey, sortDirection, onSort } = useSortable(recordsRaw, 'recordName');
 
@@ -318,20 +323,103 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
     catch { /* error via deleteRecord.error */ }
   };
 
+  const startEditing = (r: typeof recordsRaw[number]) => {
+    setEditingRecordId(r.id);
+    setEditValues({
+      record_value: r.recordValue ?? '',
+      ttl: r.ttl,
+      priority: r.priority ?? undefined,
+    });
+  };
+
+  const cancelEditing = () => {
+    setEditingRecordId(null);
+    setEditValues({ record_value: '', ttl: 3600 });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingRecordId) return;
+    try {
+      await updateRecord.mutateAsync({
+        recordId: editingRecordId,
+        record_value: editValues.record_value,
+        ttl: editValues.ttl,
+        priority: editValues.priority,
+      });
+      cancelEditing();
+    } catch { /* error via updateRecord.error */ }
+  };
+
+  const handleSync = async () => {
+    try {
+      await syncRecords.mutateAsync();
+      setShowSyncConfirm(false);
+    } catch { /* error via syncRecords.error */ }
+  };
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-records-section">
       <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Records</h2>
-        <button
-          type="button"
-          onClick={() => setShowForm((p) => !p)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          data-testid="add-dns-record-button"
-        >
-          {showForm ? <X size={14} /> : <Plus size={14} />}
-          {showForm ? 'Cancel' : 'Add Record'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSyncConfirm(true)}
+            disabled={syncRecords.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
+            data-testid="sync-dns-records-button"
+          >
+            {syncRecords.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            Sync from Server
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowForm((p) => !p)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            data-testid="add-dns-record-button"
+          >
+            {showForm ? <X size={14} /> : <Plus size={14} />}
+            {showForm ? 'Cancel' : 'Add Record'}
+          </button>
+        </div>
       </div>
+
+      {showSyncConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="sync-confirm-modal">
+          <div className="mx-4 w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync DNS Records</h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              This will replace all local DNS records with records from the DNS server. Any local-only records will be lost.
+            </p>
+            {syncRecords.error && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <AlertCircle size={14} />
+                {syncRecords.error instanceof Error ? syncRecords.error.message : 'Sync failed'}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSyncConfirm(false)}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
+                data-testid="sync-cancel-button"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSync}
+                disabled={syncRecords.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                data-testid="sync-confirm-button"
+              >
+                {syncRecords.isPending && <Loader2 size={14} className="animate-spin" />}
+                Sync
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleCreate} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="dns-record-form">
@@ -366,6 +454,13 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
         </form>
       )}
 
+      {updateRecord.error && (
+        <div className="border-b border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-5 py-3 text-sm text-red-600 dark:text-red-400 flex items-center gap-2" data-testid="dns-update-error">
+          <AlertCircle size={14} />
+          {updateRecord.error instanceof Error ? updateRecord.error.message : 'Failed to update record'}
+        </div>
+      )}
+
       {isLoading && <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>}
       {isError && <div className="px-5 py-6 text-center text-sm text-red-500" data-testid="dns-records-error">Failed to load DNS records.</div>}
 
@@ -382,23 +477,88 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {records.map((r) => (
-              <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                <td className="px-5 py-3 text-sm"><span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium dark:text-gray-300">{r.recordType}</span></td>
-                <td className="px-5 py-3 text-sm text-gray-900 dark:text-gray-100">{r.recordName ?? '@'}</td>
-                <td className="px-5 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{r.recordValue}</td>
-                <td className="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{r.ttl}</td>
-                <td className="px-5 py-3 text-right">
-                  {deleteConfirmId === r.id ? (
-                    <div className="inline-flex items-center gap-1">
-                      <button type="button" onClick={() => handleDelete(r.id)} disabled={deleteRecord.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-dns-${r.id}`}>Confirm</button>
-                      <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
-                    </div>
-                  ) : (
-                    <button type="button" onClick={() => setDeleteConfirmId(r.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-dns-${r.id}`}>
-                      <Trash2 size={12} /> Delete
-                    </button>
-                  )}
+              <tr
+                key={r.id}
+                className="hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                onDoubleClick={() => { if (editingRecordId !== r.id) startEditing(r); }}
+              >
+                <td className="px-5 py-3 text-sm">
+                  <span className="rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium dark:text-gray-300">{r.recordType}</span>
                 </td>
+                <td className="px-5 py-3 text-sm text-gray-900 dark:text-gray-100">{r.recordName ?? '@'}</td>
+                {editingRecordId === r.id ? (
+                  <>
+                    <td className="px-5 py-2">
+                      <input
+                        type="text"
+                        value={editValues.record_value}
+                        onChange={(e) => setEditValues({ ...editValues, record_value: e.target.value })}
+                        className={INPUT_CLASS}
+                        data-testid={`edit-value-${r.id}`}
+                      />
+                    </td>
+                    <td className="px-5 py-2">
+                      <input
+                        type="number"
+                        value={editValues.ttl}
+                        onChange={(e) => setEditValues({ ...editValues, ttl: Number(e.target.value) || 3600 })}
+                        className={INPUT_CLASS + ' w-24'}
+                        min={60}
+                        max={86400}
+                        data-testid={`edit-ttl-${r.id}`}
+                      />
+                    </td>
+                    <td className="px-5 py-2 text-right">
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleSaveEdit}
+                          disabled={updateRecord.isPending}
+                          className="inline-flex items-center gap-1 rounded-md bg-green-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                          data-testid={`save-edit-dns-${r.id}`}
+                        >
+                          {updateRecord.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEditing}
+                          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                          data-testid={`cancel-edit-dns-${r.id}`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-5 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{r.recordValue}</td>
+                    <td className="px-5 py-3 text-sm text-gray-500 dark:text-gray-400">{r.ttl}</td>
+                    <td className="px-5 py-3 text-right">
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => startEditing(r)}
+                          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                          data-testid={`edit-dns-${r.id}`}
+                        >
+                          <Pencil size={12} /> Edit
+                        </button>
+                        {deleteConfirmId === r.id ? (
+                          <>
+                            <button type="button" onClick={() => handleDelete(r.id)} disabled={deleteRecord.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-dns-${r.id}`}>Confirm</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteConfirmId(r.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-dns-${r.id}`}>
+                            <Trash2 size={12} /> Delete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </>
+                )}
               </tr>
             ))}
             {records.length === 0 && (

@@ -164,12 +164,16 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   async deleteRecord(zone: string, recordId: string): Promise<void> {
     const [name, type] = recordId.split('|');
     const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    // Ensure record name is FQDN with trailing dot
+    const recordName = name === '@' || name === ''
+      ? normalized
+      : name.endsWith('.') ? name : `${name}.${normalized}`;
 
     await this.request<void>(`/zones/${normalized}`, {
       method: 'PATCH',
       body: JSON.stringify({
         rrsets: [{
-          name,
+          name: recordName,
           type,
           changetype: 'DELETE',
           records: [],

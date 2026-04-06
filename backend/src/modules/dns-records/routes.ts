@@ -79,4 +79,11 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     await service.deleteDnsRecord(app.db, clientId, domainId, recordId);
     reply.status(204).send();
   });
+
+  // POST /api/v1/clients/:clientId/domains/:domainId/dns-records/sync
+  app.post('/clients/:clientId/domains/:domainId/dns-records/sync', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const records = await service.syncRecordsFromProvider(app.db, clientId, domainId);
+    return success(records);
+  });
 }

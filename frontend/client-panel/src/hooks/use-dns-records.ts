@@ -36,11 +36,44 @@ export function useCreateDnsRecord(clientId: string | undefined, domainId: strin
   });
 }
 
+interface UpdateDnsRecordInput {
+  readonly record_value?: string;
+  readonly ttl?: number;
+  readonly priority?: number;
+}
+
+export function useUpdateDnsRecord(clientId: string | undefined, domainId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ recordId, ...input }: UpdateDnsRecordInput & { readonly recordId: string }) =>
+      apiFetch<{ data: DnsRecordResponse }>(`${basePath(clientId!, domainId!)}/${recordId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
+    },
+  });
+}
+
 export function useDeleteDnsRecord(clientId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (recordId: string) =>
       apiFetch<void>(`${basePath(clientId!, domainId!)}/${recordId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
+    },
+  });
+}
+
+export function useSyncDnsRecords(clientId: string | undefined, domainId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: readonly DnsRecordResponse[] }>(`${basePath(clientId!, domainId!)}/sync`, {
+        method: 'POST',
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dns-records', clientId, domainId] });
     },
