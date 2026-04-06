@@ -259,22 +259,26 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
 
 export async function deleteDomain(db: Database, clientId: string, domainId: string, k8s?: K8sClients) {
   const domainRow = await getDomainById(db, clientId, domainId);
+
+  // Resolve DNS servers BEFORE deleting the domain (need dnsGroupId which is on the domain row)
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  let dnsServersToClean: Awaited<ReturnType<typeof getActiveServersForDomain>> = [];
+  try {
+    dnsServersToClean = await getActiveServersForDomain(db, domainId);
+  } catch { /* no servers */ }
+
+  // Delete domain from DB
   await db.delete(domains).where(eq(domains.id, domainId));
 
-  // Delete zone from the domain's group servers (not all servers)
-  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
-  try {
-    const servers = await getActiveServersForDomain(db, domainId);
-    for (const server of servers) {
-      try {
-        const provider = getProviderForServer(server, encryptionKey);
-        await provider.deleteZone(domainRow.domainName);
-      } catch {
-        // DNS cleanup failure shouldn't block domain deletion
-      }
+  // Delete zone from DNS servers
+  for (const server of dnsServersToClean) {
+    try {
+      const provider = getProviderForServer(server, encryptionKey);
+      await provider.deleteZone(domainRow.domainName);
+      console.log(`[dns] Deleted zone ${domainRow.domainName} from ${server.displayName}`);
+    } catch (err) {
+      console.warn(`[dns] Failed to delete zone ${domainRow.domainName} from ${server.displayName}:`, err instanceof Error ? err.message : String(err));
     }
-  } catch {
-    // No DNS servers configured — that's fine
   }
 
   // Reconcile Ingress after domain removal
