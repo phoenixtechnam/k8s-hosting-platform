@@ -320,12 +320,15 @@ export async function migrateDomainDns(
   try {
     const { syncRecordsFromProvider } = await import('../dns-records/service.js');
     await syncRecordsFromProvider(db, clientId, domainId);
-  } catch {
-    // Sync may fail if old provider is down — use whatever's in the local DB
+    const synced = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+    console.log(`[dns-migrate] Synced ${synced.length} records from source provider for ${domainRow.domainName}`);
+  } catch (err) {
+    console.warn(`[dns-migrate] Failed to sync from source provider:`, err instanceof Error ? err.message : String(err));
   }
 
   // Get current records (now includes synced NS/SOA from provider)
   const records = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+  console.log(`[dns-migrate] ${records.length} records to push to target for ${domainRow.domainName}`);
 
   // Determine old group servers
   const oldGroupId = domainRow.dnsGroupId;
@@ -350,7 +353,8 @@ export async function migrateDomainDns(
     }
   }
 
-  // Step 2: Sync all records to target group
+  // Step 2: Sync all records to target group — track failures
+  let pushFailures = 0;
   for (const record of records) {
     for (const server of targetServers) {
       try {
@@ -362,14 +366,21 @@ export async function migrateDomainDns(
           ttl: record.ttl ?? 3600,
           priority: record.priority ?? undefined,
         });
-      } catch {
-        // Record sync failure — log and continue
+      } catch (err) {
+        pushFailures++;
+        console.warn(`[dns-migrate] Failed to push ${record.recordType} ${record.recordName} to ${server.displayName}:`, err instanceof Error ? err.message : String(err));
       }
     }
   }
 
+  // If ALL record pushes failed, abort — don't delete the old zone
+  if (records.length > 0 && pushFailures === records.length * targetServers.length) {
+    throw new ApiError('MIGRATION_FAILED', `Migration aborted: all ${pushFailures} record pushes to the target group failed. The old zone has been preserved. Check that the target group has a working DNS server.`, 500);
+  }
+
   // Step 3: Update domain.dnsGroupId
   await db.update(domains).set({ dnsGroupId: targetGroupId }).where(eq(domains.id, domainId));
+  console.log(`[dns-migrate] Updated ${domainRow.domainName} to group ${targetGroupId} (${pushFailures} push failures)`);
 
   // Step 4: Delete zone from old group's servers
   for (const server of oldServers) {
