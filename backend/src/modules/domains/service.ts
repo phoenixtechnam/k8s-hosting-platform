@@ -94,6 +94,16 @@ export async function createDomain(db: Database, clientId: string, input: Create
         }
       }
     }
+
+    // Pull all records from DNS server into local DB (captures SOA, NS, etc.)
+    if (created) {
+      try {
+        const { syncRecordsFromProvider } = await import('../dns-records/service.js');
+        await syncRecordsFromProvider(db, clientId, created.id);
+      } catch {
+        // Non-blocking — records can be synced later via Sync Records
+      }
+    }
   } catch {
     // No DNS servers configured — that's fine
   }
