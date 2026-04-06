@@ -89,7 +89,7 @@ export interface DnsProviderGroup {
 export function useDnsProviderGroups() {
   return useQuery({
     queryKey: ['dns-provider-groups'],
-    queryFn: () => apiFetch<{ data: readonly DnsProviderGroup[] }>('/api/v1/admin/dns-provider-groups'),
+    queryFn: () => apiFetch<{ data: readonly DnsProviderGroup[] }>('/api/v1/dns-provider-groups'),
   });
 }
 

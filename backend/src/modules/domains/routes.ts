@@ -10,11 +10,17 @@ import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { listProviderGroups } from '../dns-servers/service.js';
 
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
   app.addHook('onRequest', requireClientAccess());
+
+  // GET /api/v1/dns-provider-groups — public for all authenticated users (read-only)
+  app.get('/dns-provider-groups', async () => {
+    return success(await listProviderGroups(app.db));
+  });
 
   const getK8s = () => {
     try {

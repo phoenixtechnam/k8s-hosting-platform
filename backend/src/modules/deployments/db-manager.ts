@@ -1881,16 +1881,32 @@ export async function importSqlFromPvcFile(
         ['sh', '-c', `gunzip -c '${fmSrcPath}' > '${fmSqlPath}'`]);
     } else if (ext === '.tar.gz' || ext === '.tgz') {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `mkdir -p /tmp/_imp && tar xzf '${fmSrcPath}' -C /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; tar xzf '${fmSrcPath}' -C /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
     } else if (ext === '.tar') {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `mkdir -p /tmp/_imp && tar xf '${fmSrcPath}' -C /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; tar xf '${fmSrcPath}' -C /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
     } else if (ext === '.zip') {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `mkdir -p /tmp/_imp && unzip -o '${fmSrcPath}' -d /tmp/_imp && cat /tmp/_imp/*.sql > '${fmSqlPath}' 2>/dev/null || cp /tmp/_imp/* '${fmSqlPath}' 2>/dev/null; rm -rf /tmp/_imp`]);
+        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; unzip -o '${fmSrcPath}' -d /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
     } else {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
         ['cp', fmSrcPath, fmSqlPath]);
+    }
+
+    // Verify the extracted file has content (archives may contain no .sql files)
+    if (!isPgRestore && ext !== '.sql') {
+      const sizeResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', `stat -c '%s' '${fmSqlPath}' 2>/dev/null || echo 0`]);
+      const fileSize = parseInt(sizeResult.stdout.trim(), 10) || 0;
+      if (fileSize === 0) {
+        // Clean up empty file
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+          ['sh', '-c', `rm -f '${fmSqlPath}'`]).catch(() => {});
+        return {
+          success: false,
+          error: 'No SQL content found in the archive. Ensure the archive contains .sql files.',
+        };
+      }
     }
 
     // Step 2: Import from the database pod's mount (only needs the database CLI)
