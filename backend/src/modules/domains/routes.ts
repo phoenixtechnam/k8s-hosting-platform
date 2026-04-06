@@ -14,13 +14,17 @@ import { listProviderGroups } from '../dns-servers/service.js';
 
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
-  app.addHook('onRequest', requireClientAccess());
 
-  // GET /api/v1/dns-provider-groups — public for all authenticated users (read-only)
-  app.get('/dns-provider-groups', async () => {
+  // GET /api/v1/dns-provider-groups — registered BEFORE requireClientAccess
+  // because this endpoint has no :clientId in the path
+  app.get('/dns-provider-groups', {
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user')],
+  }, async () => {
     return success(await listProviderGroups(app.db));
   });
+
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientAccess());
 
   const getK8s = () => {
     try {
