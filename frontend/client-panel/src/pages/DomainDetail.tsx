@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
   Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network, Pencil, Check, RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain, useDeleteDomain } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords } from '@/hooks/use-dns-records';
@@ -26,8 +26,12 @@ type Tab = 'routing' | 'dns' | 'hosting' | 'protected';
 export default function DomainDetail() {
   const { domainId } = useParams<{ domainId: string }>();
   const { clientId } = useClientContext();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('routing');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const verifyDomain = useVerifyDomain(clientId ?? undefined);
+  const deleteDomain = useDeleteDomain(clientId ?? undefined);
 
   const { data: domainsData, isLoading } = useDomains(clientId ?? undefined);
   const domain = domainsData?.data?.find((d) => d.id === domainId);
@@ -71,16 +75,27 @@ export default function DomainDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           {domain.domainName}
         </h1>
-        <button
-          type="button"
-          onClick={() => verifyDomain.mutate(domainId!)}
-          disabled={verifyDomain.isPending}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
-          data-testid="verify-dns-button"
-        >
-          {verifyDomain.isPending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-          Verify DNS
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => verifyDomain.mutate(domainId!)}
+            disabled={verifyDomain.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
+            data-testid="verify-dns-button"
+          >
+            {verifyDomain.isPending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+            Verify DNS
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowDeleteModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+            data-testid="delete-domain-button"
+          >
+            <Trash2 size={14} />
+            Delete Domain
+          </button>
+        </div>
       </div>
       {verifyDomain.isSuccess && verifyDomain.data?.data && (
         <div
@@ -104,6 +119,65 @@ export default function DomainDetail() {
         <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="verify-dns-error">
           <AlertCircle size={14} className="mr-1 inline" />
           {verifyDomain.error instanceof Error ? verifyDomain.error.message : 'Verification request failed.'}
+        </div>
+      )}
+
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="delete-domain-modal">
+          <div className="mx-4 w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-red-600 dark:text-red-400">Delete Domain</h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              Are you sure you want to delete this domain? This will also remove all DNS records and the DNS zone from the server. This action cannot be undone.
+            </p>
+            <div className="mt-4">
+              <label htmlFor="delete-confirm-input" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Type <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{domain.domainName}</span> to confirm
+              </label>
+              <input
+                id="delete-confirm-input"
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={domain.domainName}
+                className={INPUT_CLASS + ' mt-1'}
+                data-testid="delete-confirm-input"
+              />
+            </div>
+            {deleteDomain.isError && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <AlertCircle size={14} />
+                {deleteDomain.error instanceof Error ? deleteDomain.error.message : 'Failed to delete domain'}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowDeleteModal(false); setDeleteConfirmText(''); }}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
+                data-testid="delete-cancel-button"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteDomain.mutate(domainId!, {
+                    onSuccess: () => {
+                      setShowDeleteModal(false);
+                      setDeleteConfirmText('');
+                      navigate('/domains');
+                    },
+                  });
+                }}
+                disabled={deleteConfirmText !== domain.domainName || deleteDomain.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="delete-confirm-button"
+              >
+                {deleteDomain.isPending && <Loader2 size={14} className="animate-spin" />}
+                Delete Domain
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

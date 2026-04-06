@@ -47,6 +47,17 @@ export interface VerificationResult {
   readonly domainName: string;
 }
 
+export function useDeleteDomain(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (domainId: string) =>
+      apiFetch<void>(`/api/v1/clients/${clientId}/domains/${domainId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
+    },
+  });
+}
+
 export function useVerifyDomain(clientId: string | undefined) {
   const queryClient = useQueryClient();
 
