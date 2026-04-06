@@ -103,7 +103,10 @@ export class PowerDnsProvider implements DnsProviderAdapter {
 
   async createRecord(zone: string, input: DnsRecordInput): Promise<DnsRecord> {
     const normalized = zone.endsWith('.') ? zone : `${zone}.`;
-    const recordName = input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    // '@' means zone root; other names become FQDN with trailing dot
+    const recordName = input.name === '@' || input.name === ''
+      ? normalized
+      : input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
 
     // PowerDNS uses PATCH with RRSets for record management
     await this.request<void>(`/zones/${normalized}`, {
@@ -239,6 +242,14 @@ function toZone(z: PdnsZone): DnsZone {
 function formatContent(input: DnsRecordInput): string {
   if (input.type === 'MX' && input.priority != null) {
     return `${input.priority} ${input.content}`;
+  }
+  // PowerDNS requires TXT/SPF records to be double-quoted
+  if ((input.type === 'TXT' || input.type === 'SPF') && !input.content.startsWith('"')) {
+    return `"${input.content}"`;
+  }
+  // CNAME, MX, NS, PTR targets must be FQDN with trailing dot
+  if (['CNAME', 'NS', 'PTR', 'DNAME'].includes(input.type) && !input.content.endsWith('.')) {
+    return `${input.content}.`;
   }
   return input.content;
 }
