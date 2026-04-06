@@ -364,8 +364,9 @@ export async function migrateDomainDns(
     try {
       const provider = getProviderForServer(server, encryptionKey);
       await provider.deleteZone(domainRow.domainName);
-    } catch {
-      // Old zone cleanup failure — non-blocking
+      console.log(`[dns-migrate] Deleted zone ${domainRow.domainName} from ${server.displayName}`);
+    } catch (err) {
+      console.warn(`[dns-migrate] Failed to delete zone from ${server.displayName}:`, err instanceof Error ? err.message : String(err));
     }
   }
 
