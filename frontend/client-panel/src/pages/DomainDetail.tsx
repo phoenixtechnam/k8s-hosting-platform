@@ -780,7 +780,7 @@ function SyncRecordsModal({ clientId, domainId, onClose }: {
   readonly domainId: string;
   readonly onClose: () => void;
 }) {
-  const { data: diffData, isLoading, isError, refetch } = useDnsRecordDiff(clientId, domainId, true);
+  const { data: diffData, isLoading, isFetching, isError, refetch } = useDnsRecordDiff(clientId, domainId, true);
   const pullRecord = usePullDnsRecord(clientId, domainId);
   const pushRecord = usePushDnsRecord(clientId, domainId);
   const [completedActions, setCompletedActions] = useState<Set<string>>(new Set());
@@ -885,11 +885,11 @@ function SyncRecordsModal({ clientId, domainId, onClose }: {
             <button
               type="button"
               onClick={handleRefresh}
-              disabled={isLoading}
+              disabled={isFetching}
               className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
               data-testid="sync-refresh-button"
             >
-              {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              {isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               Refresh
             </button>
             <button

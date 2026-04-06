@@ -1866,8 +1866,9 @@ export async function importSqlFromPvcFile(
     const ext = getImportFileExtension(filePath);
 
     // For pg_restore formats, keep the original extension
-    const isPgRestore = ctx.engine === 'postgresql' && ['.tar', '.dump', '.backup'].includes(ext);
-    const dbImportFileName = isPgRestore ? importFileName : sqlFileName;
+    let isPgRestore = ctx.engine === 'postgresql' && ['.tar', '.dump', '.backup'].includes(ext);
+    let dbImportFileName = isPgRestore ? importFileName : sqlFileName;
+    const pgRestoreFileName = `_import_${Date.now()}.pgdump`;
 
     if (isPgRestore) {
       // PostgreSQL native format — copy as-is for pg_restore
@@ -1879,15 +1880,42 @@ export async function importSqlFromPvcFile(
     } else if (ext === '.sql.gz' || ext === '.gz') {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
         ['sh', '-c', `gunzip -c '${fmSrcPath}' > '${fmSqlPath}'`]);
-    } else if (ext === '.tar.gz' || ext === '.tgz') {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; tar xzf '${fmSrcPath}' -C /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
-    } else if (ext === '.tar') {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; tar xf '${fmSrcPath}' -C /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
-    } else if (ext === '.zip') {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; unzip -o '${fmSrcPath}' -d /tmp/_imp; find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; rm -rf /tmp/_imp`]);
+    } else if (ext === '.tar.gz' || ext === '.tgz' || ext === '.tar' || ext === '.zip') {
+      // Extract archive, then detect content type.
+      // For PostgreSQL: archives may contain .sql (plain dump) or a pg_dump binary file.
+      const extractCmd = ext === '.zip'
+        ? `unzip -o '${fmSrcPath}' -d /tmp/_imp`
+        : ext === '.tar'
+          ? `tar xf '${fmSrcPath}' -C /tmp/_imp`
+          : `tar xzf '${fmSrcPath}' -C /tmp/_imp`;
+
+      const detectResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        ['sh', '-c', [
+          `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; ${extractCmd}`,
+          // Check for .sql files first
+          `sql_count=$(find /tmp/_imp -name '*.sql' -type f | wc -l)`,
+          `if [ "$sql_count" -gt 0 ]; then`,
+          `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; echo SQL`,
+          `elif [ "$(find /tmp/_imp -type f | wc -l)" -gt 0 ]; then`,
+          // No .sql files — copy first file (possibly a pg_dump binary)
+          `  f=$(find /tmp/_imp -type f | head -1); cp "$f" '${fmDestDir}/${pgRestoreFileName}'; echo PGDUMP`,
+          `else echo EMPTY; fi`,
+          `rm -rf /tmp/_imp`,
+        ].join('; ')]);
+
+      const mode = detectResult.stdout.trim();
+      if (mode === 'PGDUMP' && ctx.engine === 'postgresql') {
+        isPgRestore = true;
+        dbImportFileName = pgRestoreFileName;
+      } else if (mode === 'PGDUMP') {
+        // Non-PostgreSQL engine: the archive had no .sql files
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+          ['rm', '-f', `${fmDestDir}/${pgRestoreFileName}`]).catch(() => {});
+        return { success: false, error: 'No SQL content found in the archive. Ensure the archive contains .sql files.' };
+      } else if (mode === 'EMPTY') {
+        return { success: false, error: 'The archive is empty.' };
+      }
+      // mode === 'SQL' → fmSqlPath has the concatenated SQL content
     } else {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
         ['cp', fmSrcPath, fmSqlPath]);
