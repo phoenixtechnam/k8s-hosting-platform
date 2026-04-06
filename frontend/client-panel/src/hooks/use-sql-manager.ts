@@ -235,6 +235,7 @@ export function useListPvcFiles(
       ),
     enabled: enabled && Boolean(clientId),
     staleTime: 0,
+    gcTime: 0,
   });
 }
 

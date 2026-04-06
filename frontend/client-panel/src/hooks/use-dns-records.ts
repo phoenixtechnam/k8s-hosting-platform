@@ -95,6 +95,9 @@ export function useDnsRecordDiff(clientId: string | undefined, domainId: string 
       `${basePath(clientId!, domainId!)}/diff`
     ),
     enabled: Boolean(clientId && domainId) && enabled,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
   });
 }
 

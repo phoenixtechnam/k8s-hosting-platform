@@ -1914,27 +1914,30 @@ export async function importSqlFromPvcFile(
     let result: { stdout: string; stderr: string };
 
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      try {
-        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | mariadb -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`]);
-      } catch (err) {
-        if (!isBinaryNotFoundError(err)) throw err;
-        result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | mysql -u root -p'${ctx.rootPassword}' '${database}'; rm -f '${importPath}'`]);
-      }
+      // Use the correct CLI binary for the engine — mariadb containers have 'mariadb',
+      // MySQL 8+ containers only have 'mysql'. Using sh -c with the wrong binary silently
+      // fails because sh itself succeeds even when the inner command is not found.
+      const dbCli = ctx.engine === 'mysql' ? 'mysql' : 'mariadb';
+      result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `cat '${importPath}' | ${dbCli} -u root -p'${ctx.rootPassword}' '${database}'`]);
+      // Clean up import file after import (best-effort)
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['rm', '-f', importPath]).catch(() => {});
     } else if (ctx.engine === 'postgresql') {
       if (isPgRestore) {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1; rm -f '${importPath}'`]);
+          ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1`]);
       } else {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'; rm -f '${importPath}'`]);
+          ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'`]);
       }
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['rm', '-f', importPath]).catch(() => {});
     } else {
       throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} file import not supported`, 400);
     }
 
-    if (result.stderr && result.stderr.includes('ERROR')) {
+    if (result.stderr && (result.stderr.includes('ERROR') || result.stderr.includes('error'))) {
       return { success: false, error: result.stderr };
     }
 
@@ -2022,20 +2025,12 @@ export async function exportDatabaseToPvc(
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
 
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-    try {
-      const { stderr } = await execInPod(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `mariadb-dump -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
-      );
-      if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
-    } catch (err) {
-      if (!isBinaryNotFoundError(err)) throw err;
-      const { stderr } = await execInPod(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `mysqldump -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
-      );
-      if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
-    }
+    const dumpCli = ctx.engine === 'mysql' ? 'mysqldump' : 'mariadb-dump';
+    const { stderr } = await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['sh', '-c', `${dumpCli} -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
+    );
+    if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'postgresql') {
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
