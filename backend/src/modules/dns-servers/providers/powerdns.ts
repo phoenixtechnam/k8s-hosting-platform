@@ -216,6 +216,27 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     return toZone(zone);
   }
 
+  async replaceNsRecords(zone: string, nameservers: string[]): Promise<void> {
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const records = nameservers.map(ns => ({
+      content: ns.endsWith('.') ? ns : `${ns}.`,
+      disabled: false,
+    }));
+
+    await this.request<void>(`/zones/${normalized}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        rrsets: [{
+          name: normalized,
+          type: 'NS',
+          ttl: 3600,
+          changetype: 'REPLACE',
+          records,
+        }],
+      }),
+    });
+  }
+
   async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
     const normalized = name.endsWith('.') ? name : `${name}.`;
     try {

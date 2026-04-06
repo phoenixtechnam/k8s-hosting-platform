@@ -115,6 +115,27 @@ export class MockDnsProvider implements DnsProviderAdapter {
     return zone;
   }
 
+  async replaceNsRecords(zone: string, nameservers: string[]): Promise<void> {
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const entry = this.zones.get(normalized);
+    if (!entry) throw new Error(`Zone '${zone}' not found`);
+
+    // Remove existing NS records at zone root
+    const filtered = entry.records.filter(r => !(r.type === 'NS' && r.name === normalized));
+    // Add new NS records
+    for (const ns of nameservers) {
+      filtered.push({
+        id: `mock-${this.nextRecordId++}`,
+        type: 'NS',
+        name: normalized,
+        content: ns.endsWith('.') ? ns : `${ns}.`,
+        ttl: 3600,
+        priority: null,
+      });
+    }
+    entry.records.splice(0, entry.records.length, ...filtered);
+  }
+
   async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
     const normalized = name.endsWith('.') ? name : `${name}.`;
     const entry = this.zones.get(normalized);

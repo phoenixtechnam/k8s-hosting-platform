@@ -1401,15 +1401,19 @@ export async function listDatabasesWithSize(
   ctx: DbManagerContext,
 ): Promise<readonly DatabaseWithSize[]> {
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
+    // Use lightweight SHOW DATABASES instead of information_schema.TABLES.
+    // The aggregate query (SUM over all schemas) forces InnoDB to stat every tablespace,
+    // consuming 100+ Mi of temporary memory — enough to OOM-kill small containers.
+    // Per-database sizes are fetched individually via listTablesWithSize when selected.
     const systemDbs = new Set(['information_schema', 'performance_schema', 'mysql', 'sys', '']);
     const out = await mysqlExec(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       ctx.rootPassword,
-      "SELECT TABLE_SCHEMA, SUM(DATA_LENGTH + INDEX_LENGTH) FROM information_schema.TABLES GROUP BY TABLE_SCHEMA",
+      'SHOW DATABASES',
     );
     return out.split('\n').filter(Boolean)
-      .map((line) => { const [name, size] = line.split('\t'); return { name, sizeBytes: parseInt(size, 10) || 0 }; })
-      .filter((d) => !systemDbs.has(d.name));
+      .filter((name) => !systemDbs.has(name))
+      .map((name) => ({ name, sizeBytes: 0 }));
   }
 
   if (ctx.engine === 'postgresql') {
@@ -1961,8 +1965,11 @@ export async function importSqlFromPvcFile(
         ['rm', '-f', importPath]).catch(() => {});
     } else if (ctx.engine === 'postgresql') {
       if (isPgRestore) {
+        // pg_restore exits 1 on non-fatal warnings (ownership, privileges) which is normal
+        // in containerized environments. Only exit 2+ indicates fatal errors.
+        // --no-owner --no-privileges avoids most warnings from dumps made on different servers.
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `pg_restore -U postgres -d '${database}' '${importPath}' 2>&1`]);
+          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges -d '${database}' '${importPath}' 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
       } else {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
           ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'`]);

@@ -77,6 +77,23 @@ export async function createDomain(db: Database, clientId: string, input: Create
         // DNS provisioning failure shouldn't block domain creation — log and continue
       }
     }
+
+    // Replace auto-created NS records with group's configured nameservers
+    if (dnsGroupId) {
+      const group = await getProviderGroupById(db, dnsGroupId);
+      if (group.nsHostnames && group.nsHostnames.length > 0) {
+        for (const server of activeServers) {
+          try {
+            const provider = getProviderForServer(server, encryptionKey);
+            if (provider.replaceNsRecords) {
+              await provider.replaceNsRecords(input.domain_name, group.nsHostnames);
+            }
+          } catch (err) {
+            console.warn(`[dns] Failed to set NS records on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+    }
   } catch {
     // No DNS servers configured — that's fine
   }
@@ -350,6 +367,21 @@ export async function migrateDomainDns(
       await provider.createZone(domainRow.domainName, zoneKind);
     } catch {
       // Zone may already exist — continue
+    }
+  }
+
+  // Replace auto-created NS records with target group's configured nameservers
+  const targetGroup = await getProviderGroupById(db, targetGroupId);
+  if (targetGroup.nsHostnames && targetGroup.nsHostnames.length > 0) {
+    for (const server of targetServers) {
+      try {
+        const provider = getProviderForServer(server, encryptionKey);
+        if (provider.replaceNsRecords) {
+          await provider.replaceNsRecords(domainRow.domainName, targetGroup.nsHostnames);
+        }
+      } catch (err) {
+        console.warn(`[dns-migrate] Failed to set NS records on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
+      }
     }
   }
 

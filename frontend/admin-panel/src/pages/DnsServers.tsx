@@ -116,22 +116,35 @@ function ProviderGroupForm({ onClose, initial }: ProviderGroupFormProps) {
   const update = useUpdateDnsProviderGroup();
   const isEdit = Boolean(initial);
 
-  const [form, setForm] = useState({
-    name: initial?.name ?? '',
-    is_default: initial?.isDefault ?? false,
-    ns_hostnames: initial?.nsHostnames?.join(', ') ?? '',
-  });
+  const [name, setName] = useState(initial?.name ?? '');
+  const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
+  const [nsHostnames, setNsHostnames] = useState<string[]>(
+    initial?.nsHostnames && initial.nsHostnames.length > 0
+      ? [...initial.nsHostnames]
+      : [''],
+  );
+
+  const updateNsHostname = (index: number, value: string) => {
+    const updated = nsHostnames.map((h, i) => (i === index ? value : h));
+    setNsHostnames(updated);
+  };
+
+  const removeNsHostname = (index: number) => {
+    const updated = nsHostnames.filter((_, i) => i !== index);
+    setNsHostnames(updated.length > 0 ? updated : ['']);
+  };
+
+  const addNsHostname = () => {
+    setNsHostnames([...nsHostnames, '']);
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const nsHostnames = form.ns_hostnames
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const filteredNs = nsHostnames.map((s) => s.trim()).filter(Boolean);
     const payload = {
-      name: form.name,
-      is_default: form.is_default,
-      ns_hostnames: nsHostnames.length > 0 ? nsHostnames : undefined,
+      name,
+      is_default: isDefault,
+      ns_hostnames: filteredNs.length > 0 ? filteredNs : undefined,
     };
     try {
       if (isEdit && initial) {
@@ -148,18 +161,45 @@ function ProviderGroupForm({ onClose, initial }: ProviderGroupFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid={isEdit ? 'edit-provider-group-form' : 'add-provider-group-form'}>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Group Name</label>
-          <input type="text" className={INPUT_CLASS} placeholder="Primary Group" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required data-testid="provider-group-name-input" />
+      <div>
+        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Group Name</label>
+        <input type="text" className={INPUT_CLASS} placeholder="Primary Group" value={name} onChange={(e) => setName(e.target.value)} required data-testid="provider-group-name-input" />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">NS Hostnames</label>
+        <div className="space-y-2">
+          {nsHostnames.map((hostname, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                type="text"
+                className={INPUT_CLASS}
+                placeholder={`ns${index + 1}.example.com`}
+                value={hostname}
+                onChange={(e) => updateNsHostname(index, e.target.value)}
+                data-testid={`provider-group-ns-input-${index}`}
+              />
+              <button
+                type="button"
+                onClick={() => removeNsHostname(index)}
+                className="shrink-0 rounded-md border border-gray-200 dark:border-gray-700 p-2 text-gray-400 hover:text-red-500 hover:border-red-300 dark:hover:border-red-700 dark:hover:text-red-400"
+                data-testid={`remove-ns-hostname-${index}`}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">NS Hostnames (comma-separated)</label>
-          <input type="text" className={INPUT_CLASS} placeholder="ns1.example.com, ns2.example.com" value={form.ns_hostnames} onChange={(e) => setForm({ ...form, ns_hostnames: e.target.value })} data-testid="provider-group-ns-input" />
-        </div>
+        <button
+          type="button"
+          onClick={addNsHostname}
+          className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:border-brand-400 hover:text-brand-500 dark:hover:border-brand-500 dark:hover:text-brand-400"
+          data-testid="add-ns-hostname-button"
+        >
+          <Plus size={12} /> Add NS Hostname
+        </button>
       </div>
       <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-        <input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} className="rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500" data-testid="provider-group-default-checkbox" />
+        <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} className="rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500" data-testid="provider-group-default-checkbox" />
         Set as default group (new domains will use this group)
       </label>
       {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}

@@ -42,6 +42,9 @@ export interface DnsProviderAdapter {
   // Optional — secondary/slave DNS support
   createSlaveZone?(name: string, masterIp: string): Promise<DnsZone>;
   getZoneAxfrStatus?(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }>;
+
+  // Optional — replace all NS records at zone root with specific nameservers
+  replaceNsRecords?(zone: string, nameservers: string[]): Promise<void>;
 }
 
 // ─── Provider Config Types ───────────────────────────────────────────────────
