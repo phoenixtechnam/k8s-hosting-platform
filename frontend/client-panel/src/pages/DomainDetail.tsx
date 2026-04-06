@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useDomains, useVerifyDomain, useDeleteDomain } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords } from '@/hooks/use-dns-records';
@@ -29,9 +29,13 @@ export default function DomainDetail() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('routing');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const verifyDomain = useVerifyDomain(clientId ?? undefined);
   const deleteDomain = useDeleteDomain(clientId ?? undefined);
+  const migrateDns = useMigrateDomainDns(clientId ?? undefined);
+  const { data: groupsData } = useDnsProviderGroups();
+  const groups = groupsData?.data ?? [];
 
   const { data: domainsData, isLoading } = useDomains(clientId ?? undefined);
   const domain = domainsData?.data?.find((d) => d.id === domainId);
@@ -75,7 +79,27 @@ export default function DomainDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           {domain.domainName}
         </h1>
+        {(() => {
+          const dnsGroupId = (domain as Record<string, unknown>).dnsGroupId as string | null | undefined;
+          const groupName = dnsGroupId ? groups.find((g) => g.id === dnsGroupId)?.name : null;
+          return (
+            <span className="rounded-full bg-indigo-50 dark:bg-indigo-900/20 px-2.5 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400" data-testid="domain-dns-group-badge">
+              {groupName ?? 'Default DNS Group'}
+            </span>
+          );
+        })()}
         <div className="ml-auto flex items-center gap-2">
+          {groups.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setShowMigrateModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+              data-testid="migrate-dns-button"
+            >
+              <RefreshCw size={14} />
+              Migrate DNS
+            </button>
+          )}
           <button
             type="button"
             onClick={() => verifyDomain.mutate(domainId!)}
@@ -181,6 +205,16 @@ export default function DomainDetail() {
         </div>
       )}
 
+      {showMigrateModal && (
+        <MigrateDnsModal
+          domainId={domainId!}
+          currentGroupId={(domain as Record<string, unknown>).dnsGroupId as string | null | undefined}
+          groups={groups}
+          migrateDns={migrateDns}
+          onClose={() => setShowMigrateModal(false)}
+        />
+      )}
+
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {tabs.map((tab) => (
           <button
@@ -205,6 +239,81 @@ export default function DomainDetail() {
       {activeTab === 'dns' && <DnsTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'hosting' && <HostingTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'protected' && <ProtectedTab clientId={clientId!} domainId={domainId!} />}
+    </div>
+  );
+}
+
+// ─── Migrate DNS Modal ────────────────────────────────────────────────────────
+
+function MigrateDnsModal({ domainId, currentGroupId, groups, migrateDns, onClose }: {
+  readonly domainId: string;
+  readonly currentGroupId: string | null | undefined;
+  readonly groups: readonly import('@/hooks/use-domains').DnsProviderGroup[];
+  readonly migrateDns: ReturnType<typeof useMigrateDomainDns>;
+  readonly onClose: () => void;
+}) {
+  const [targetGroupId, setTargetGroupId] = useState('');
+
+  const availableGroups = groups.filter((g) => g.id !== currentGroupId);
+  const currentGroup = currentGroupId ? groups.find((g) => g.id === currentGroupId) : null;
+
+  const handleMigrate = () => {
+    if (!targetGroupId) return;
+    migrateDns.mutate(
+      { domainId, target_group_id: targetGroupId },
+      { onSuccess: () => onClose() },
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="migrate-dns-modal">
+      <div className="mx-4 w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Migrate DNS</h3>
+        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          Move this domain from <span className="font-medium text-gray-900 dark:text-gray-100">{currentGroup?.name ?? 'Default Group'}</span> to a different DNS provider group. All DNS records will be synced to the new group.
+        </p>
+        <div className="mt-4">
+          <label htmlFor="target-group-select" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Target Group</label>
+          <select
+            id="target-group-select"
+            value={targetGroupId}
+            onChange={(e) => setTargetGroupId(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            data-testid="migrate-target-group-select"
+          >
+            <option value="">Select a group...</option>
+            {availableGroups.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}{g.isDefault ? ' (default)' : ''}</option>
+            ))}
+          </select>
+        </div>
+        {migrateDns.isError && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            <AlertCircle size={14} />
+            {migrateDns.error instanceof Error ? migrateDns.error.message : 'Migration failed'}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
+            data-testid="migrate-cancel-button"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleMigrate}
+            disabled={!targetGroupId || migrateDns.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            data-testid="migrate-confirm-button"
+          >
+            {migrateDns.isPending && <Loader2 size={14} className="animate-spin" />}
+            Migrate
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

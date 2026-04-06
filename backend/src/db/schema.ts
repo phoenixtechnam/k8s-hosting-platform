@@ -173,6 +173,7 @@ export const domains = pgTable('domains', {
   clientId: varchar('client_id', { length: 36 }).notNull(),
   domainName: varchar('domain_name', { length: 255 }).notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
+  dnsGroupId: varchar('dns_group_id', { length: 36 }),
   status: domainStatusEnum().notNull().default('pending'),
   dnsMode: dnsModeEnum().notNull().default('cname'),
   masterIp: varchar('master_ip', { length: 45 }),
@@ -187,6 +188,17 @@ export const domains = pgTable('domains', {
   index('domains_status_idx').on(table.status),
 ]);
 
+// ─── DNS Provider Groups ───
+
+export const dnsProviderGroups = pgTable('dns_provider_groups', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  isDefault: integer('is_default').notNull().default(0),
+  nsHostnames: jsonb('ns_hostnames').$type<string[]>(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 // ─── DNS Servers (External Providers) ───
 
 export const dnsServers = pgTable('dns_servers', {
@@ -195,6 +207,8 @@ export const dnsServers = pgTable('dns_servers', {
   providerType: dnsProviderTypeEnum().notNull(),
   connectionConfigEncrypted: varchar('connection_config_encrypted', { length: 2000 }).notNull(),
   zoneDefaultKind: zoneDefaultKindEnum().notNull().default('Native'),
+  groupId: varchar('group_id', { length: 36 }),
+  role: varchar('role', { length: 20 }).notNull().default('primary'),
   isDefault: integer('is_default').notNull().default(0),
   enabled: integer('enabled').notNull().default(1),
   lastHealthCheck: timestamp('last_health_check'),
@@ -820,3 +834,5 @@ export type SslCertificate = typeof sslCertificates.$inferSelect;
 export type NewSslCertificate = typeof sslCertificates.$inferInsert;
 export type ProvisioningTask = typeof provisioningTasks.$inferSelect;
 export type NewProvisioningTask = typeof provisioningTasks.$inferInsert;
+export type DnsProviderGroup = typeof dnsProviderGroups.$inferSelect;
+export type NewDnsProviderGroup = typeof dnsProviderGroups.$inferInsert;

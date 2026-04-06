@@ -116,6 +116,19 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     return success({ ...result, domainId, domainName: domain.domainName });
   });
 
+  // POST /api/v1/clients/:clientId/domains/:domainId/migrate-dns
+  app.post('/clients/:clientId/domains/:domainId/migrate-dns', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const body = request.body as { target_group_id?: string };
+
+    if (!body.target_group_id) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'target_group_id is required', 400, { field: 'target_group_id' });
+    }
+
+    const updated = await service.migrateDomainDns(app.db, clientId, domainId, body.target_group_id);
+    return success(updated);
+  });
+
   // ─── Bulk Operations ────────────────────────────────────────────────────────
 
   // POST /api/v1/admin/domains/bulk

@@ -1,10 +1,10 @@
 import { eq, and, like, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { domains } from '../../db/schema.js';
+import { domains, dnsRecords } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
-import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
+import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
 import { reconcileIngress } from './k8s-ingress.js';
 import { createRoute } from '../ingress-routes/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -12,7 +12,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 
-export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string }, k8s?: K8sClients) {
+export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify client exists
   await getClientById(db, clientId);
 
@@ -32,6 +32,20 @@ export async function createDomain(db: Database, clientId: string, input: Create
     throw duplicateEntry('domain', input.domain_name);
   }
 
+  // Resolve DNS group: use provided, or fall back to default
+  let dnsGroupId = input.dns_group_id ?? null;
+  if (!dnsGroupId) {
+    const defaultGroup = await getDefaultGroup(db);
+    if (defaultGroup) {
+      dnsGroupId = defaultGroup.id;
+    }
+  }
+
+  // Validate group exists if provided
+  if (dnsGroupId) {
+    await getProviderGroupById(db, dnsGroupId);
+  }
+
   const id = crypto.randomUUID();
   await db.insert(domains).values({
     id,
@@ -40,15 +54,16 @@ export async function createDomain(db: Database, clientId: string, input: Create
     dnsMode: input.dns_mode,
     masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
     deploymentId: input.deployment_id ?? null,
+    dnsGroupId,
     status: 'pending',
   });
 
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
 
-  // Auto-provision DNS zone on all active DNS servers
+  // Auto-provision DNS zone on the domain's group servers (or all active if no group)
   const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
   try {
-    const activeServers = await getActiveServers(db);
+    const activeServers = await getActiveServersForDomain(db, id);
     for (const server of activeServers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
@@ -213,7 +228,7 @@ export async function listDomains(
   };
 }
 
-export async function updateDomain(db: Database, clientId: string, domainId: string, input: UpdateDomainInput, k8s?: K8sClients) {
+export async function updateDomain(db: Database, clientId: string, domainId: string, input: UpdateDomainInput & { dns_group_id?: string | null }, k8s?: K8sClients) {
   await getDomainById(db, clientId, domainId);
 
   const updateValues: Record<string, unknown> = {};
@@ -221,6 +236,7 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
   if (input.ssl_auto_renew !== undefined) updateValues.sslAutoRenew = input.ssl_auto_renew ? 1 : 0;
   if (input.status !== undefined) updateValues.status = input.status;
   if (input.deployment_id !== undefined) updateValues.deploymentId = input.deployment_id;
+  if (input.dns_group_id !== undefined) updateValues.dnsGroupId = input.dns_group_id;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(domains).set(updateValues).where(eq(domains.id, domainId));
@@ -245,10 +261,10 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
   const domainRow = await getDomainById(db, clientId, domainId);
   await db.delete(domains).where(eq(domains.id, domainId));
 
-  // Delete zone from DNS servers
+  // Delete zone from the domain's group servers (not all servers)
   const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
   try {
-    const servers = await getActiveServers(db);
+    const servers = await getActiveServersForDomain(db, domainId);
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
@@ -272,4 +288,86 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
       }
     }
   }
+}
+
+/**
+ * Migrate a domain's DNS from one provider group to another.
+ * Flow:
+ * 1. Get domain + current records from local DB
+ * 2. Create zone on target group's servers
+ * 3. Sync all records to target group
+ * 4. Update domain.dnsGroupId
+ * 5. Delete zone from old group's servers
+ * 6. Return success
+ */
+export async function migrateDomainDns(
+  db: Database,
+  clientId: string,
+  domainId: string,
+  targetGroupId: string,
+) {
+  const domainRow = await getDomainById(db, clientId, domainId);
+  const encryptionKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+
+  // Validate target group exists
+  await getProviderGroupById(db, targetGroupId);
+
+  // Get current records
+  const records = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+
+  // Determine old group servers
+  const oldGroupId = domainRow.dnsGroupId;
+  const oldServers = oldGroupId
+    ? await getPrimaryServersForGroup(db, oldGroupId)
+    : await getActiveServers(db);
+
+  // Get target group servers
+  const targetServers = await getPrimaryServersForGroup(db, targetGroupId);
+  if (targetServers.length === 0) {
+    throw new ApiError('NO_TARGET_SERVERS', 'Target group has no primary servers', 400);
+  }
+
+  // Step 1: Create zone on target group's servers
+  for (const server of targetServers) {
+    try {
+      const provider = getProviderForServer(server, encryptionKey);
+      const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
+      await provider.createZone(domainRow.domainName, zoneKind);
+    } catch {
+      // Zone may already exist — continue
+    }
+  }
+
+  // Step 2: Sync all records to target group
+  for (const record of records) {
+    for (const server of targetServers) {
+      try {
+        const provider = getProviderForServer(server, encryptionKey);
+        await provider.createRecord(domainRow.domainName, {
+          type: record.recordType,
+          name: record.recordName ?? '@',
+          content: record.recordValue ?? '',
+          ttl: record.ttl ?? 3600,
+          priority: record.priority ?? undefined,
+        });
+      } catch {
+        // Record sync failure — log and continue
+      }
+    }
+  }
+
+  // Step 3: Update domain.dnsGroupId
+  await db.update(domains).set({ dnsGroupId: targetGroupId }).where(eq(domains.id, domainId));
+
+  // Step 4: Delete zone from old group's servers
+  for (const server of oldServers) {
+    try {
+      const provider = getProviderForServer(server, encryptionKey);
+      await provider.deleteZone(domainRow.domainName);
+    } catch {
+      // Old zone cleanup failure — non-blocking
+    }
+  }
+
+  return getDomainById(db, clientId, domainId);
 }

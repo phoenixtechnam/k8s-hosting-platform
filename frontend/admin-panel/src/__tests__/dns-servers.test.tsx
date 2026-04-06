@@ -52,7 +52,7 @@ describe('DnsServers page', () => {
     await waitFor(() => {
       expect(screen.getByText('DNS Servers')).toBeInTheDocument();
     });
-    expect(screen.getByText('Manage external DNS servers for domain provisioning.')).toBeInTheDocument();
+    expect(screen.getByText('Manage DNS provider groups and servers for domain provisioning.')).toBeInTheDocument();
   });
 
   it('shows empty state when no servers exist', async () => {
@@ -92,6 +92,8 @@ describe('DnsServers page', () => {
           displayName: 'Primary DNS',
           providerType: 'powerdns',
           zoneDefaultKind: 'Native',
+          groupId: null,
+          role: 'primary',
           isDefault: true,
           enabled: true,
           lastHealthCheck: null,

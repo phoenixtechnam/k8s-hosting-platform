@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
-import type { CreateDnsServerInput } from './service.js';
+import type { CreateDnsServerInput, CreateProviderGroupInput, UpdateProviderGroupInput } from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -10,6 +10,8 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
+
+  // ─── DNS Servers ────────────────────────────────────────────────────────────
 
   // GET /api/v1/admin/dns-servers
   app.get('/admin/dns-servers', async () => {
@@ -55,5 +57,37 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
     const provider = service.getProviderForServer(server, encryptionKey);
     const zones = await provider.listZones();
     return success(zones);
+  });
+
+  // ─── DNS Provider Groups ──────────────────────────────────────────────────
+
+  // GET /api/v1/admin/dns-provider-groups
+  app.get('/admin/dns-provider-groups', async () => {
+    return success(await service.listProviderGroups(app.db));
+  });
+
+  // POST /api/v1/admin/dns-provider-groups
+  app.post('/admin/dns-provider-groups', async (request, reply) => {
+    const input = request.body as unknown as CreateProviderGroupInput;
+    if (!input.name) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', 'name is required', 400);
+    }
+    const group = await service.createProviderGroup(app.db, input);
+    reply.status(201).send(success(group));
+  });
+
+  // PATCH /api/v1/admin/dns-provider-groups/:id
+  app.patch('/admin/dns-provider-groups/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const input = request.body as unknown as UpdateProviderGroupInput;
+    const updated = await service.updateProviderGroup(app.db, id, input);
+    return success(updated);
+  });
+
+  // DELETE /api/v1/admin/dns-provider-groups/:id
+  app.delete('/admin/dns-provider-groups/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await service.deleteProviderGroup(app.db, id);
+    reply.status(204).send();
   });
 }

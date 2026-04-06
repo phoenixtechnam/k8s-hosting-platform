@@ -1,16 +1,26 @@
 import { eq, and } from 'drizzle-orm';
 import { dnsRecords, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
+import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
 
 const encryptionKey = () => process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
-export async function syncRecordToProviders(db: Database, domainName: string, action: 'create' | 'update' | 'delete', record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string }) {
+export async function syncRecordToProviders(
+  db: Database,
+  domainName: string,
+  action: 'create' | 'update' | 'delete',
+  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string },
+  domainId?: string,
+) {
   try {
-    const servers = await getActiveServers(db);
+    // Use domain-scoped servers when domainId is available, otherwise fall back to all active servers
+    const servers = domainId
+      ? await getActiveServersForDomain(db, domainId)
+      : await getActiveServers(db);
+
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey());
@@ -76,13 +86,13 @@ export async function createDnsRecord(
     .from(dnsRecords)
     .where(eq(dnsRecords.id, id));
 
-  // Sync to external DNS servers
+  // Sync to external DNS servers (domain-scoped)
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain) {
     await syncRecordToProviders(db, domain.domainName, 'create', {
       type: input.record_type, name: input.record_name ?? '@', content: input.record_value,
       ttl: input.ttl, priority: input.priority,
-    });
+    }, domainId);
   }
 
   return created;
@@ -125,7 +135,7 @@ export async function updateDnsRecord(
     .from(dnsRecords)
     .where(eq(dnsRecords.id, recordId));
 
-  // Sync updated record to external DNS servers
+  // Sync updated record to external DNS servers (domain-scoped)
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain && updated) {
     await syncRecordToProviders(db, domain.domainName, 'update', {
@@ -135,7 +145,7 @@ export async function updateDnsRecord(
       ttl: updated.ttl,
       priority: updated.priority,
       id: recordId,
-    });
+    }, domainId);
   }
 
   return updated;
@@ -160,13 +170,13 @@ export async function deleteDnsRecord(
 
   await db.delete(dnsRecords).where(eq(dnsRecords.id, recordId));
 
-  // Sync deletion to external DNS servers
+  // Sync deletion to external DNS servers (domain-scoped)
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain && record.recordType && record.recordValue) {
     await syncRecordToProviders(db, domain.domainName, 'delete', {
       type: record.recordType, name: record.recordName ?? '@', content: record.recordValue ?? '',
       id: recordId,
-    });
+    }, domainId);
   }
 }
 
@@ -182,9 +192,15 @@ export async function syncRecordsFromProvider(
     throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
   }
 
-  const servers = await getActiveServers(db);
+  // Use domain-scoped servers
+  const servers = await getActiveServersForDomain(db, domainId);
   if (servers.length === 0) {
-    throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+    // Fall back to all active servers for backward compat
+    const allServers = await getActiveServers(db);
+    if (allServers.length === 0) {
+      throw new ApiError('NO_DNS_SERVERS', 'No DNS servers configured', 400);
+    }
+    servers.push(...allServers);
   }
 
   const provider = getProviderForServer(servers[0], encryptionKey());

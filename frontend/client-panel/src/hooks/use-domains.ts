@@ -72,3 +72,37 @@ export function useVerifyDomain(clientId: string | undefined) {
     },
   });
 }
+
+// ─── DNS Provider Groups ────────────────────────────────────────────────────
+
+export interface DnsProviderGroup {
+  readonly id: string;
+  readonly name: string;
+  readonly isDefault: boolean;
+  readonly nsHostnames: readonly string[] | null;
+  readonly serverCount?: number;
+  readonly domainCount?: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export function useDnsProviderGroups() {
+  return useQuery({
+    queryKey: ['dns-provider-groups'],
+    queryFn: () => apiFetch<{ data: readonly DnsProviderGroup[] }>('/api/v1/admin/dns-provider-groups'),
+  });
+}
+
+export function useMigrateDomainDns(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ domainId, target_group_id }: { domainId: string; target_group_id: string }) =>
+      apiFetch<{ data: Domain }>(
+        `/api/v1/clients/${clientId}/domains/${domainId}/migrate-dns`,
+        { method: 'POST', body: JSON.stringify({ target_group_id }) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains', clientId] });
+    },
+  });
+}

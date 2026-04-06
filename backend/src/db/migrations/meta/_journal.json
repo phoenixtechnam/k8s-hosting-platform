@@ -15,6 +15,13 @@
       "when": 1775431969995,
       "tag": "0001_flimsy_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775478312828,
+      "tag": "0002_dns_provider_groups",
+      "breakpoints": true
     }
   ]
 }
