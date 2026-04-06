@@ -316,7 +316,15 @@ export async function migrateDomainDns(
   // Validate target group exists
   await getProviderGroupById(db, targetGroupId);
 
-  // Get current records
+  // Sync records from old provider into local DB first (captures NS, SOA, etc.)
+  try {
+    const { syncRecordsFromProvider } = await import('../dns-records/service.js');
+    await syncRecordsFromProvider(db, clientId, domainId);
+  } catch {
+    // Sync may fail if old provider is down — use whatever's in the local DB
+  }
+
+  // Get current records (now includes synced NS/SOA from provider)
   const records = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
 
   // Determine old group servers
