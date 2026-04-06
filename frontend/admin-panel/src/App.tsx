@@ -25,6 +25,7 @@ import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
 import TlsSettings from '@/pages/TlsSettings';
 import Placeholder from '@/pages/Placeholder';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +39,7 @@ const queryClient = new QueryClient({
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
@@ -75,5 +77,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

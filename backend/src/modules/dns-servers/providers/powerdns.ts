@@ -108,7 +108,23 @@ export class PowerDnsProvider implements DnsProviderAdapter {
       ? normalized
       : input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
 
-    // PowerDNS uses PATCH with RRSets for record management
+    // PowerDNS RRSets are keyed by (name, type). REPLACE replaces ALL records
+    // in the set, so we must include existing records to avoid overwriting them.
+    let existingRecords: Array<{ content: string; disabled: boolean }> = [];
+    try {
+      const zone = await this.request<{ rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }> }>(`/zones/${normalized}`);
+      const rrset = zone.rrsets?.find(rr => rr.name === recordName && rr.type === input.type);
+      if (rrset) {
+        existingRecords = rrset.records.filter(r => !r.disabled);
+      }
+    } catch { /* zone might not exist yet */ }
+
+    const newContent = formatContent(input);
+    // Don't add duplicate
+    if (!existingRecords.some(r => r.content === newContent)) {
+      existingRecords.push({ content: newContent, disabled: false });
+    }
+
     await this.request<void>(`/zones/${normalized}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -117,7 +133,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
           type: input.type,
           ttl: input.ttl ?? 3600,
           changetype: 'REPLACE',
-          records: [{ content: formatContent(input), disabled: false }],
+          records: existingRecords,
         }],
       }),
     });

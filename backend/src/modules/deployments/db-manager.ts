@@ -1881,27 +1881,35 @@ export async function importSqlFromPvcFile(
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
         ['sh', '-c', `gunzip -c '${fmSrcPath}' > '${fmSqlPath}'`]);
     } else if (ext === '.tar.gz' || ext === '.tgz' || ext === '.tar' || ext === '.zip') {
-      // Extract archive, then detect content type.
-      // For PostgreSQL: archives may contain .sql (plain dump) or a pg_dump binary file.
+      // Extract archive and detect content type.
+      // PostgreSQL rules: .sql → psql, .tar/.dump/.backup → pg_restore
+      // MariaDB/MySQL: only .sql files are supported
       const extractCmd = ext === '.zip'
-        ? `unzip -o '${fmSrcPath}' -d /tmp/_imp`
+        ? `unzip -o '${fmSrcPath}' -d /tmp/_imp > /dev/null`
         : ext === '.tar'
           ? `tar xf '${fmSrcPath}' -C /tmp/_imp`
           : `tar xzf '${fmSrcPath}' -C /tmp/_imp`;
 
+      // Extract, then detect: SQL (has .sql files), PGDUMP (has .tar/.dump/.backup), or EMPTY
       const detectResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', [
-          `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; ${extractCmd}`,
-          // Check for .sql files first
-          `sql_count=$(find /tmp/_imp -name '*.sql' -type f | wc -l)`,
-          `if [ "$sql_count" -gt 0 ]; then`,
-          `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'; echo SQL`,
-          `elif [ "$(find /tmp/_imp -type f | wc -l)" -gt 0 ]; then`,
-          // No .sql files — copy first file (possibly a pg_dump binary)
-          `  f=$(find /tmp/_imp -type f | head -1); cp "$f" '${fmDestDir}/${pgRestoreFileName}'; echo PGDUMP`,
-          `else echo EMPTY; fi`,
+        ['sh', '-c',
+          `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; ${extractCmd}\n` +
+          `if [ "$(find /tmp/_imp -name '*.sql' -type f | wc -l)" -gt 0 ]; then\n` +
+          `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'\n` +
+          `  echo SQL\n` +
+          `elif [ "$(find /tmp/_imp \\( -name '*.tar' -o -name '*.dump' -o -name '*.backup' \\) -type f | wc -l)" -gt 0 ]; then\n` +
+          `  f=$(find /tmp/_imp \\( -name '*.tar' -o -name '*.dump' -o -name '*.backup' \\) -type f | head -1)\n` +
+          `  cp "$f" '${fmDestDir}/${pgRestoreFileName}'\n` +
+          `  echo PGDUMP\n` +
+          `elif [ "$(find /tmp/_imp -type f | wc -l)" -gt 0 ]; then\n` +
+          `  f=$(find /tmp/_imp -type f | head -1)\n` +
+          `  cp "$f" '${fmDestDir}/${pgRestoreFileName}'\n` +
+          `  echo PGDUMP\n` +
+          `else\n` +
+          `  echo EMPTY\n` +
+          `fi\n` +
           `rm -rf /tmp/_imp`,
-        ].join('; ')]);
+        ]);
 
       const mode = detectResult.stdout.trim();
       if (mode === 'PGDUMP' && ctx.engine === 'postgresql') {
@@ -1994,7 +2002,7 @@ export async function importSqlFromPvcFile(
             const waitingReason = cs.state?.waiting?.reason;
             const terminatedReason = cs.lastState?.terminated?.reason;
             const restartCount = (cs as { restartCount?: number }).restartCount ?? 0;
-            if (waitingReason === 'CrashLoopBackOff' || terminatedReason === 'OOMKilled' || (terminatedReason && restartCount > 0)) {
+            if (waitingReason === 'CrashLoopBackOff' || terminatedReason === 'OOMKilled') {
               return {
                 success: false,
                 error: 'Import caused the database to crash (Out of Memory). The database is restarting. Consider splitting the import into smaller files or increasing memory allocation.',

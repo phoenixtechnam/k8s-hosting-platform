@@ -16,6 +16,7 @@ import DomainDetail from '@/pages/DomainDetail';
 import SubUsers from '@/pages/SubUsers';
 import DatabaseManager from '@/pages/DatabaseManager';
 import Placeholder from '@/pages/Placeholder';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +30,7 @@ const queryClient = new QueryClient({
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
@@ -57,5 +59,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
