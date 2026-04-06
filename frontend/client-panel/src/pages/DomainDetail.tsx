@@ -11,7 +11,7 @@ import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, use
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import {
-  useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord, useSyncDnsRecords,
+  useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord,
   useDnsRecordDiff, usePullDnsRecord, usePushDnsRecord,
   type DnsRecordDiffEntry,
 } from '@/hooks/use-dns-records';
@@ -476,10 +476,8 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
   const createRecord = useCreateDnsRecord(clientId, domainId);
   const updateRecord = useUpdateDnsRecord(clientId, domainId);
   const deleteRecord = useDeleteDnsRecord(clientId, domainId);
-  const syncRecords = useSyncDnsRecords(clientId, domainId);
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [showSyncConfirm, setShowSyncConfirm] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<{ record_value: string; ttl: number; priority?: number }>({ record_value: '', ttl: 3600 });
@@ -539,13 +537,6 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
     } catch { /* error via updateRecord.error */ }
   };
 
-  const handleSync = async () => {
-    try {
-      await syncRecords.mutateAsync();
-      setShowSyncConfirm(false);
-    } catch { /* error via syncRecords.error */ }
-  };
-
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-records-section">
       <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
@@ -562,16 +553,6 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
           </button>
           <button
             type="button"
-            onClick={() => setShowSyncConfirm(true)}
-            disabled={syncRecords.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
-            data-testid="sync-dns-records-button"
-          >
-            {syncRecords.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Sync from Server
-          </button>
-          <button
-            type="button"
             onClick={() => setShowForm((p) => !p)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
             data-testid="add-dns-record-button"
@@ -582,42 +563,7 @@ function DnsTab({ clientId, domainId }: { readonly clientId: string; readonly do
         </div>
       </div>
 
-      {showSyncConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="sync-confirm-modal">
-          <div className="mx-4 w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync DNS Records</h3>
-            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-              This will replace all local DNS records with records from the DNS server. Any local-only records will be lost.
-            </p>
-            {syncRecords.error && (
-              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-                <AlertCircle size={14} />
-                {syncRecords.error instanceof Error ? syncRecords.error.message : 'Sync failed'}
-              </div>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowSyncConfirm(false)}
-                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
-                data-testid="sync-cancel-button"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSync}
-                disabled={syncRecords.isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                data-testid="sync-confirm-button"
-              >
-                {syncRecords.isPending && <Loader2 size={14} className="animate-spin" />}
-                Sync
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Old sync-from-server modal removed — replaced by Sync Records diff modal */}
 
       {showForm && (
         <form onSubmit={handleCreate} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="dns-record-form">
@@ -881,6 +827,7 @@ function SyncRecordsModal({ clientId, domainId, onClose }: {
       <div className="mx-4 w-full max-w-4xl max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-gray-800 shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Sync Records</h3>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Consolidate DNS records between local DB and remote DNS server.</p>
           <div className="flex items-center gap-2">
             <button
               type="button"
