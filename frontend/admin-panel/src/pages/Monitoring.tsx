@@ -9,8 +9,9 @@ import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import StorageUsageTab from '@/components/StorageUsageTab';
 
-type Tab = 'active-alerts' | 'alert-history' | 'system-metrics';
+type Tab = 'active-alerts' | 'alert-history' | 'system-metrics' | 'storage';
 
 interface Alert {
   readonly id: string;
@@ -79,6 +80,7 @@ const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'active-alerts', label: 'Active Alerts' },
   { key: 'alert-history', label: 'Alert History' },
   { key: 'system-metrics', label: 'System Metrics' },
+  { key: 'storage', label: 'Storage Usage' },
 ] as const;
 
 const severityToBadgeStatus = {
@@ -246,8 +248,9 @@ export default function Monitoring() {
           <AlertTable alerts={older} resolved isLoading={auditLoading} />
         )}
         {activeTab === 'system-metrics' && <SystemMetrics />}
+        {activeTab === 'storage' && <StorageUsageTab />}
 
-        {activeTab !== 'system-metrics' && (
+        {activeTab !== 'system-metrics' && activeTab !== 'storage' && (
           <PaginationBar
             totalCount={totalCount}
             pageSize={pagination.limit}

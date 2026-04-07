@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History, LayoutGrid } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History, LayoutGrid, Tag } from 'lucide-react';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
-import { useCatalog, useUpdateCatalogBadges } from '@/hooks/use-catalog';
+import { useCatalog, useUpdateCatalogBadges, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import type { CatalogEntry } from '@/hooks/use-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
 import {
@@ -542,6 +542,9 @@ function AppDetailPanel({
   const { data: capacityResponse } = useCapacityCheck(minCpu, minMemory, minStorage);
   const capacity = capacityResponse?.data;
 
+  const { data: versionsData } = useCatalogEntryVersions(entry.id);
+  const versions = versionsData?.data ?? [];
+
   const components = asComponents(entry.components);
   const parameters = asParameters(entry.parameters);
   const networking = asNetworking(entry.networking);
@@ -853,6 +856,38 @@ function AppDetailPanel({
           )}
 
           </CollapsibleSection>
+
+          {/* Supported Versions */}
+          {versions.length > 0 && (
+            <div>
+              <SectionHeading icon={Tag} title="Supported Versions" />
+              <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-gray-700/50 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                      <th className="px-3 py-2">Version</th>
+                      <th className="px-3 py-2">Image</th>
+                      <th className="px-3 py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                    {versions.map(v => (
+                      <tr key={v.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">
+                          {v.version}
+                          {v.isDefault ? <span className="ml-2 inline-flex rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">default</span> : null}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{v.components?.[0]?.image ?? '-'}</td>
+                        <td className="px-3 py-2">
+                          <span className="inline-flex rounded-full bg-green-100 dark:bg-green-900/40 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-300">{v.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">

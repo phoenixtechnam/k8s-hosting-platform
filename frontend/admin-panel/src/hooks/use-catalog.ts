@@ -72,6 +72,23 @@ export function useCatalogEntry(id: string | undefined) {
   });
 }
 
+export interface CatalogEntryVersion {
+  readonly id: string;
+  readonly version: string;
+  readonly isDefault: number;
+  readonly status: string;
+  readonly components: ReadonlyArray<{ readonly name: string; readonly image: string }>;
+}
+
+export function useCatalogEntryVersions(entryId: string | undefined) {
+  return useQuery({
+    queryKey: ['catalog', entryId, 'versions'],
+    queryFn: () => apiFetch<{ data: CatalogEntryVersion[] }>(`/api/v1/catalog/${entryId}/versions`),
+    enabled: Boolean(entryId),
+    staleTime: 300_000,
+  });
+}
+
 interface UpdateBadgesInput {
   readonly id: string;
   readonly featured?: boolean;

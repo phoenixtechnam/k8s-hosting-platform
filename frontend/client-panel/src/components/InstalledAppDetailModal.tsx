@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag, Save, AlertCircle, Terminal } from 'lucide-react';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import type { LogLine } from '@/hooks/use-deployments';
 import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
@@ -112,6 +113,7 @@ export default function InstalledAppDetailModal({
 }: InstalledAppDetailModalProps) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
   const [dbModalOpen, setDbModalOpen] = useState(false);
+  const { data: versionsData } = useCatalogEntryVersions(catalogEntry?.id);
 
   // ─── Resource editing (Issue 7) ─────────────────────────────────────────────
   const [editingResources, setEditingResources] = useState(false);
@@ -273,6 +275,33 @@ export default function InstalledAppDetailModal({
             )}
           </div>
         </div>
+
+        {/* Supported Versions */}
+        {(versionsData?.data ?? []).length > 0 && (
+          <div className="mb-6">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
+              <TagIcon size={16} className="text-blue-600 dark:text-blue-400" />
+              Supported Versions
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {(versionsData?.data ?? []).map(v => (
+                <span
+                  key={v.id}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm',
+                    deployment.installedVersion === v.version
+                      ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
+                  )}
+                >
+                  {v.version}
+                  {v.isDefault ? <span className="text-[10px] font-medium text-blue-500 dark:text-blue-400">default</span> : null}
+                  {deployment.installedVersion === v.version ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Components Section */}
         {components.length > 0 && (
