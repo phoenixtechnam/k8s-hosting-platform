@@ -748,6 +748,10 @@ export const catalogEntryVersions = pgTable('catalog_entry_versions', {
   envChanges: jsonb('env_changes').$type<readonly { key: string; action: string; oldKey?: string; default?: unknown }[] | null>(),
   migrationNotes: text('migration_notes'),
   minResources: jsonb('min_resources').$type<{ cpu?: string; memory?: string; storage?: string } | null>(),
+  // Version-specific volume overrides (replaces entry-level volumes when present)
+  volumes: jsonb('volumes').$type<readonly { local_path: string; container_path: string; description?: string }[] | null>(),
+  // Version-specific env var overrides (merged on top of entry-level env_vars, version-level wins on fixed conflicts)
+  envVars: jsonb('env_vars').$type<{ fixed?: Record<string, string>; configurable?: string[] } | null>(),
   status: catalogVersionStatusEnum().notNull().default('available'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),

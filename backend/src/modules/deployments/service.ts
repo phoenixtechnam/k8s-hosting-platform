@@ -91,6 +91,78 @@ function resolveComponents(
   });
 }
 
+// ─── Version-Aware Deployment Configuration Resolver ───────────────────────
+
+export interface ResolvedDeploymentConfig {
+  readonly components: DeployComponentInput[];
+  readonly volumes: Array<{ local_path: string; container_path: string }>;
+  readonly fixedEnvVars: Record<string, string>;
+  readonly generatedEnvKeys: readonly string[];
+  readonly installedVersion: string | null;
+}
+
+/**
+ * Resolve the effective deployment configuration by merging entry-level defaults
+ * with version-specific overrides.
+ *
+ * Version-specific volumes REPLACE entry-level volumes when present.
+ * Version-specific fixed env vars MERGE with entry-level (version wins on conflict).
+ * Generated env keys come from the entry level only (not version-specific).
+ */
+export async function resolveVersionAwareDeploymentConfig(
+  db: Database,
+  entry: typeof catalogEntries.$inferSelect,
+  targetVersion: string | null | undefined,
+): Promise<ResolvedDeploymentConfig> {
+  // Fetch version record if a version is requested
+  let versionRecord: typeof catalogEntryVersions.$inferSelect | null = null;
+  const effectiveVersion = targetVersion ?? entry.defaultVersion ?? null;
+
+  if (effectiveVersion) {
+    const [version] = await db
+      .select()
+      .from(catalogEntryVersions)
+      .where(
+        and(
+          eq(catalogEntryVersions.catalogEntryId, entry.id),
+          eq(catalogEntryVersions.version, effectiveVersion),
+        ),
+      );
+    if (version) versionRecord = version;
+  }
+
+  // Components
+  const versionComponents = versionRecord
+    ? parseJsonField<readonly { name: string; image: string }[]>(versionRecord.components)
+    : null;
+  const components = resolveComponents(entry, versionComponents);
+
+  // Volumes — version overrides entry-level completely
+  const entryVolumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+  const versionVolumes = versionRecord
+    ? parseJsonField<Array<{ local_path: string; container_path: string }>>(versionRecord.volumes)
+    : null;
+  const volumes = (versionVolumes && versionVolumes.length > 0) ? versionVolumes : entryVolumes;
+
+  // Env vars — merge fixed (version wins on conflict), generated from entry level only
+  const entryEnvVars = parseJsonField<{ generated?: string[]; fixed?: Record<string, string>; configurable?: string[] }>(entry.envVars);
+  const versionEnvVars = versionRecord
+    ? parseJsonField<{ fixed?: Record<string, string>; configurable?: string[] }>(versionRecord.envVars)
+    : null;
+  const fixedEnvVars: Record<string, string> = {
+    ...(entryEnvVars?.fixed ?? {}),
+    ...(versionEnvVars?.fixed ?? {}),
+  };
+
+  return {
+    components,
+    volumes,
+    fixedEnvVars,
+    generatedEnvKeys: entryEnvVars?.generated ?? [],
+    installedVersion: versionRecord?.version ?? null,
+  };
+}
+
 function resolveIngressPorts(
   entry: typeof catalogEntries.$inferSelect,
 ): Array<{ port: number; protocol: string; ingress?: boolean }> {
@@ -121,64 +193,31 @@ export async function createDeployment(
 
   if (!entry) throw catalogEntryNotFound(input.catalog_entry_id);
 
-  // Resolve version-specific components
-  let versionComponents: readonly { name: string; image: string }[] | null = null;
-  let installedVersion: string | null = null;
-
-  if (input.version) {
-    const [version] = await db
-      .select()
-      .from(catalogEntryVersions)
-      .where(
-        and(
-          eq(catalogEntryVersions.catalogEntryId, entry.id),
-          eq(catalogEntryVersions.version, input.version),
-        ),
-      );
-    if (version) {
-      versionComponents = parseJsonField<readonly { name: string; image: string }[]>(version.components);
-      installedVersion = version.version;
-    }
-  } else if (entry.defaultVersion) {
-    // Use default version
-    const [version] = await db
-      .select()
-      .from(catalogEntryVersions)
-      .where(
-        and(
-          eq(catalogEntryVersions.catalogEntryId, entry.id),
-          eq(catalogEntryVersions.version, entry.defaultVersion),
-        ),
-      );
-    if (version) {
-      versionComponents = parseJsonField<readonly { name: string; image: string }[]>(version.components);
-      installedVersion = version.version;
-    }
-  }
-
-  const components = resolveComponents(entry, versionComponents);
+  // Resolve version-aware configuration: components, volumes, env vars
+  const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);
+  const { components, volumes, fixedEnvVars, generatedEnvKeys, installedVersion } = resolved;
   const namespace = client.kubernetesNamespace;
-  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
   const catalogCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
 
   // Generate secrets for env_vars.generated entries
-  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
   const generatedSecrets: Record<string, string> = {};
-  if (envVarsData?.generated) {
-    for (const key of envVarsData.generated) {
-      generatedSecrets[key] = generateSecurePassword(32);
-    }
+  for (const key of generatedEnvKeys) {
+    generatedSecrets[key] = generateSecurePassword(32);
   }
 
   // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)
   const finalConfiguration: Record<string, unknown> = {
-    ...(envVarsData?.fixed ?? {}),
+    ...fixedEnvVars,
     ...(input.configuration ?? {}),
     ...generatedSecrets,
   };
+
+  // Build envVars object for the deployer — merged fixed so deployer treats them uniformly
+  const finalEnvVars = { fixed: fixedEnvVars };
 
   const id = crypto.randomUUID();
   const resourceSuffix = id.replace(/-/g, '').substring(0, 6);
@@ -225,7 +264,7 @@ export async function createDeployment(
         memoryRequest: input.memory_request ?? catalogMemory,
         storageRequest,
         configuration: finalConfiguration,
-        envVars: envVarsData ?? undefined,
+        envVars: finalEnvVars,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {
@@ -622,11 +661,10 @@ export async function updateDeploymentResources(
       .where(eq(catalogEntries.id, deployment.catalogEntryId));
 
     if (entry && namespace) {
-      const components = resolveComponents(entry, null);
-      const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+      // Use version-aware resolver — respects per-version volume/env overrides
+      const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
       const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
       const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
-      const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
       const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
       try {
@@ -634,14 +672,14 @@ export async function updateDeploymentResources(
           deploymentName: deployment.name,
           resourceSuffix: deployment.resourceSuffix,
           namespace,
-          components,
-          volumes,
+          components: resolved.components,
+          volumes: resolved.volumes,
           replicaCount: deployment.replicaCount ?? 1,
           cpuRequest: input.cpu_request ?? deployment.cpuRequest,
           memoryRequest: input.memory_request ?? deployment.memoryRequest,
           storageRequest,
           configuration: config,
-          envVars: envVarsData ?? undefined,
+          envVars: { fixed: resolved.fixedEnvVars },
         });
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
@@ -749,25 +787,24 @@ export async function redeployWithCurrentConfig(
   if (!entry) return;
 
   const namespace = await getClientNamespace(db, deployment.clientId);
-  const components = resolveComponents(entry, null);
-  const volumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+  // Use version-aware resolver — respects per-version volume/env overrides
+  const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
-  const envVarsData = parseJsonField<{ generated?: string[]; fixed?: Record<string, string> }>(entry.envVars);
   const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
   await deployCatalogEntry(k8s, {
     deploymentName: deployment.name,
     resourceSuffix: deployment.resourceSuffix,
     namespace,
-    components,
-    volumes,
+    components: resolved.components,
+    volumes: resolved.volumes,
     replicaCount: deployment.replicaCount ?? 1,
     cpuRequest: deployment.cpuRequest,
     memoryRequest: deployment.memoryRequest,
     storageRequest,
     configuration: config,
-    envVars: envVarsData ?? undefined,
+    envVars: { fixed: resolved.fixedEnvVars },
   });
 
   // Force pod restart by deleting existing pods — K8s recreates from updated spec.

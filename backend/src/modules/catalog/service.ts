@@ -40,6 +40,10 @@ interface SupportedVersion {
   readonly migrationNotes?: string;
   readonly minResources?: { cpu?: string; memory?: string; storage?: string };
   readonly isDefault?: boolean;
+  // Version-specific volume overrides — REPLACES the entry's top-level volumes when present.
+  readonly volumes?: readonly { local_path: string; container_path: string; description?: string }[];
+  // Version-specific env var overrides — fixed env vars are MERGED with entry-level fixed (version wins on conflict).
+  readonly env_vars?: { fixed?: Record<string, string>; configurable?: readonly string[] };
 }
 
 interface EntryManifest {
@@ -464,6 +468,13 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
             envChanges: sv.envChanges && sv.envChanges.length > 0 ? [...sv.envChanges] : null,
             migrationNotes: sv.migrationNotes ?? null,
             minResources: sv.minResources ?? null,
+            volumes: sv.volumes && sv.volumes.length > 0 ? [...sv.volumes] : null,
+            envVars: sv.env_vars
+              ? {
+                  fixed: sv.env_vars.fixed,
+                  configurable: sv.env_vars.configurable ? [...sv.env_vars.configurable] : undefined,
+                }
+              : null,
             status: resolveVersionStatus(sv.eolDate),
           });
         }
@@ -475,7 +486,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
           isDefault: 1,
           eolDate: null, components: null, upgradeFrom: null,
           breakingChanges: null, envChanges: null, migrationNotes: null,
-          minResources: null, status: 'available',
+          minResources: null, volumes: null, envVars: null, status: 'available',
         });
       }
 
