@@ -121,6 +121,7 @@ services:
   # ─── k3s — Local Kubernetes cluster for testing PVCs, Helm, manifests ──────
   k3s-server:
     image: rancher/k3s:v1.31.4-k3s1
+    hostname: k8s-local  # Fixed so PV nodeAffinity stays stable across container restarts
     command:
       - server
       - --disable=traefik
@@ -129,6 +130,7 @@ services:
       - --write-kubeconfig-mode=644
       - --tls-san=${DOCKER_HOST_NAME:-dind.local}
       - --tls-san=k3s-server
+      - --node-name=k8s-local
     ports:
       - "${PORT_K3S_API:-2016}:6443"
       # Stalwart mail server NodePorts (exposed via docker-compose so host can
