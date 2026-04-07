@@ -94,15 +94,15 @@ describe('K8s Provisioner Service', () => {
     it('should create ResourceQuota with plan limits plus system reserve', async () => {
       const { applyResourceQuota } = await import('./service.js');
       await applyResourceQuota(mockK8s, 'test-ns', { cpu: '2', memory: '4', storage: '50' });
-      // Plan: 2 CPU / 4Gi + system reserve: 0.5 CPU / 0.5 Gi
+      // Plan: 2 CPU / 4Gi + system reserve: 0.25 CPU / 0.25 Gi (file-manager sidecar)
       expect(mockK8s.core.createNamespacedResourceQuota).toHaveBeenCalledWith(
         expect.objectContaining({
           namespace: 'test-ns',
           body: expect.objectContaining({
             spec: expect.objectContaining({
               hard: {
-                'limits.cpu': '2.50',
-                'limits.memory': '4.50Gi',
+                'limits.cpu': '2.25',
+                'limits.memory': '4.25Gi',
                 'requests.storage': '50Gi',
               },
             }),

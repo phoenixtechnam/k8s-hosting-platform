@@ -33,6 +33,9 @@ vi.mock('../hooks/use-deployments', () => ({
   useDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useRestoreDeployment: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePermanentDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useResourceAvailability: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useDeploymentLogs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useDeploymentLiveMetrics: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
 vi.mock('../hooks/use-catalog', () => ({
@@ -68,8 +71,8 @@ describe('Applications Page', () => {
     renderWithProviders(<Applications />);
     expect(screen.getByTestId('tab-catalog')).toBeInTheDocument();
     expect(screen.getByTestId('tab-installed')).toBeInTheDocument();
-    expect(screen.getByText('Catalog')).toBeInTheDocument();
-    expect(screen.getByText('Installed')).toBeInTheDocument();
+    expect(screen.getByText('Application Catalog')).toBeInTheDocument();
+    expect(screen.getByText('Installed Apps')).toBeInTheDocument();
   });
 
   it('shows tab bar', () => {

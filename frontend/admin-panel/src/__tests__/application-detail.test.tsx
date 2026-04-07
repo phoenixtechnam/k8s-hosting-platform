@@ -122,6 +122,11 @@ describe('Application Detail Panel', () => {
 
   it('opens the detail panel when clicking an app card', async () => {
     mockApiFetch.mockImplementation((url: string) => {
+      // /catalog/:id/versions must be handled before /catalog to avoid
+      // returning the full catalog list for versions requests.
+      if (url.includes('/versions')) {
+        return Promise.resolve({ data: [] });
+      }
       if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
@@ -177,6 +182,11 @@ describe('Application Detail Panel', () => {
 
   it('closes the detail panel when clicking Close', async () => {
     mockApiFetch.mockImplementation((url: string) => {
+      // /catalog/:id/versions must be handled before /catalog to avoid
+      // returning the full catalog list for versions requests.
+      if (url.includes('/versions')) {
+        return Promise.resolve({ data: [] });
+      }
       if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }
@@ -236,6 +246,11 @@ describe('Application Detail Panel', () => {
 
   it('does not show capacity warning when resources fit', async () => {
     mockApiFetch.mockImplementation((url: string) => {
+      // /catalog/:id/versions must be handled before /catalog to avoid
+      // returning the full catalog list for versions requests.
+      if (url.includes('/versions')) {
+        return Promise.resolve({ data: [] });
+      }
       if (url.includes('/catalog')) {
         return Promise.resolve({ data: MOCK_CATALOG_ENTRIES });
       }

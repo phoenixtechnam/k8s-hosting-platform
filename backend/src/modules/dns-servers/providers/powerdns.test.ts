@@ -204,7 +204,11 @@ describe('PowerDnsProvider', () => {
 
   describe('createRecord', () => {
     it('should PATCH rrsets to create a record', async () => {
-      const { fn, calls } = mockFetch([{ status: 204 }]);
+      // First call (GET zone) returns empty rrsets, second call (PATCH) succeeds
+      const { fn, calls } = mockFetch([
+        { status: 200, body: { rrsets: [] } },
+        { status: 204 },
+      ]);
       globalThis.fetch = fn;
 
       const provider = new PowerDnsProvider(config);
@@ -215,13 +219,17 @@ describe('PowerDnsProvider', () => {
       expect(record.type).toBe('A');
       expect(record.content).toBe('1.2.3.4');
       expect(record.ttl).toBe(300);
-      expect(calls[0].options.method).toBe('PATCH');
-      const body = JSON.parse(calls[0].options.body as string);
+      // calls[0] is GET (fetch existing rrsets), calls[1] is PATCH
+      expect(calls[1].options.method).toBe('PATCH');
+      const body = JSON.parse(calls[1].options.body as string);
       expect(body.rrsets[0].changetype).toBe('REPLACE');
     });
 
     it('should format MX records with priority', async () => {
-      const { fn, calls } = mockFetch([{ status: 204 }]);
+      const { fn, calls } = mockFetch([
+        { status: 200, body: { rrsets: [] } },
+        { status: 204 },
+      ]);
       globalThis.fetch = fn;
 
       const provider = new PowerDnsProvider(config);
@@ -229,7 +237,7 @@ describe('PowerDnsProvider', () => {
         type: 'MX', name: 'mail', content: 'mail.example.com.', priority: 10,
       });
 
-      const body = JSON.parse(calls[0].options.body as string);
+      const body = JSON.parse(calls[1].options.body as string);
       expect(body.rrsets[0].records[0].content).toBe('10 mail.example.com.');
     });
   });

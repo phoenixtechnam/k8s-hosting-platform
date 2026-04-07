@@ -197,7 +197,8 @@ describe('Files Page', () => {
       const user = userEvent.setup();
       renderFiles();
       const headerRow = screen.getAllByRole('row')[0];
-      const selectAll = within(headerRow).getByRole('button');
+      // First button in header row is the select-all checkbox (others are sort buttons)
+      const selectAll = within(headerRow).getAllByRole('button')[0];
       await user.click(selectAll);
       expect(screen.getByText(`${dirEntries.length} selected`)).toBeInTheDocument();
     });
@@ -319,9 +320,9 @@ describe('Files Page', () => {
       const user = userEvent.setup();
       renderFiles();
 
-      // Select all
+      // Select all — first button in header row (select-all checkbox; other buttons are sort headers)
       const headerRow = screen.getAllByRole('row')[0];
-      await user.click(within(headerRow).getByRole('button'));
+      await user.click(within(headerRow).getAllByRole('button')[0]);
 
       // Click Archive
       await user.click(screen.getByText('Archive'));
@@ -413,9 +414,9 @@ describe('Files Page', () => {
       const user = userEvent.setup();
       renderFiles();
 
-      // Select all
+      // Select all — first button in header row (select-all checkbox; other buttons are sort headers)
       const headerRow = screen.getAllByRole('row')[0];
-      await user.click(within(headerRow).getByRole('button'));
+      await user.click(within(headerRow).getAllByRole('button')[0]);
 
       // The "Delete" in toolbar
       const deleteButtons = screen.getAllByText('Delete');

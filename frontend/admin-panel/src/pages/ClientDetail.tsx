@@ -778,10 +778,10 @@ function ResourceLimitsCard({
             Loading metrics...
           </div>
         )}
-        {!metricsLoading && !metricsData?.data && (
+        {!metricsLoading && (!metricsData?.data?.cpu || !metricsData?.data?.memory || !metricsData?.data?.storage) && (
           <p className="text-sm text-gray-400 dark:text-gray-500">No metrics available yet.</p>
         )}
-        {metricsData?.data && (
+        {metricsData?.data?.cpu && metricsData?.data?.memory && metricsData?.data?.storage && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <MetricsUsageBlock
               label="CPU"

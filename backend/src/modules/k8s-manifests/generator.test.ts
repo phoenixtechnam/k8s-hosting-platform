@@ -165,7 +165,7 @@ describe('generateClientManifests', () => {
     expect(rqFile).toBeDefined();
 
     const rq = yaml.load(rqFile!.content) as Record<string, unknown>;
-    // Plan: 2 CPU / 4Gi memory + system reserve: 0.5 CPU / 0.5 Gi
+    // Plan: 2 CPU / 4Gi memory + system reserve: 0.25 CPU / 0.25 Gi
     expect(rq).toMatchObject({
       apiVersion: 'v1',
       kind: 'ResourceQuota',
@@ -175,8 +175,8 @@ describe('generateClientManifests', () => {
       },
       spec: {
         hard: {
-          'limits.cpu': '2.50',
-          'limits.memory': '4.50Gi',
+          'limits.cpu': '2.25',
+          'limits.memory': '4.25Gi',
           'requests.storage': '20Gi',
         },
       },
@@ -467,12 +467,12 @@ describe('generateClientManifests', () => {
 
     const rqFile = result.find(f => f.filename === 'resource-quota.yaml');
     const rq = yaml.load(rqFile!.content) as Record<string, unknown>;
-    // Overrides: 4 CPU / 8 Gi + system reserve: 0.5 CPU / 0.5 Gi
+    // Overrides: 4 CPU / 8 Gi + system reserve: 0.25 CPU / 0.25 Gi
     expect(rq).toMatchObject({
       spec: {
         hard: {
-          'limits.cpu': '4.50',
-          'limits.memory': '8.50Gi',
+          'limits.cpu': '4.25',
+          'limits.memory': '8.25Gi',
           'requests.storage': '50Gi',
         },
       },
