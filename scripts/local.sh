@@ -144,7 +144,41 @@ _check_k3s_health() {
   if [[ -n "$backend_name" ]] && ! docker exec "$backend_name" test -f /k8s/kubeconfig.yaml 2>/dev/null; then
     echo "⚠️  Backend cannot see kubeconfig! The k3s-kubeconfig volume may be empty."
     echo "    Fix: ./scripts/local.sh k3s-up"
+    return
   fi
+  # Auto-repair the stale kubeconfig server URL that occurs whenever k3s-server
+  # is recreated without re-running k3s-init. k3s writes its own kubeconfig
+  # with `https://127.0.0.1:6443` on every startup; that URL is wrong for the
+  # backend container which reaches k3s at `https://k3s-server:6443`.
+  _repair_kubeconfig || true
+}
+
+_repair_kubeconfig() {
+  local k3s_name
+  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
+  [[ -z "$k3s_name" ]] && return 0
+  # Check current server URL in the shared kubeconfig
+  local current_url
+  current_url=$(docker exec "$k3s_name" sh -c 'grep "server:" /output/kubeconfig.yaml 2>/dev/null | head -1 | tr -d " "' 2>/dev/null || true)
+  if [[ "$current_url" == *"127.0.0.1:6443"* ]]; then
+    echo "⚠️  Stale kubeconfig detected (server URL points to 127.0.0.1). Repairing..."
+    docker exec "$k3s_name" sh -c \
+      'sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /output/kubeconfig.yaml' 2>/dev/null || {
+        echo "  Failed to repair kubeconfig"
+        return 1
+      }
+    echo "  Kubeconfig server URL rewritten to https://k3s-server:6443"
+    # Backend caches the kubeconfig at startup — restart it so the admin panel
+    # stops reporting kubernetes as down.
+    local backend_name
+    backend_name=$(docker ps --filter "name=backend" --format '{{.Names}}' 2>/dev/null | head -1)
+    if [[ -n "$backend_name" ]]; then
+      echo "  Restarting backend to pick up new kubeconfig..."
+      docker restart "$backend_name" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+  return 0
 }
 
 cmd_logs() {
@@ -247,6 +281,9 @@ cmd_mail_up() {
     echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
     return 1
   fi
+  # Self-heal: make sure the backend can still reach k3s (guards against the
+  # kubeconfig URL drift after a k3s-server recreate)
+  _repair_kubeconfig || true
   _mail_sync_manifests
   _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/stalwart"
   echo ""
