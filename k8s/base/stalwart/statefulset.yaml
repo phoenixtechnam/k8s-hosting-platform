@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stalwart-mail
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  serviceName: stalwart-mail-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stalwart-mail
+  template:
+    metadata:
+      labels:
+        app: stalwart-mail
+        app.kubernetes.io/part-of: hosting-platform
+      annotations:
+        # Roll the pod when the config changes
+        checksum/config: "to-be-computed-by-ci"
+    spec:
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        fsGroup: 0
+      containers:
+        - name: stalwart
+          image: stalwartlabs/stalwart:v0.15.5
+          imagePullPolicy: IfNotPresent
+          # Override default entrypoint: copy the ConfigMap-backed config.toml
+          # into the PVC at /opt/stalwart/etc/ (which Stalwart expects as a
+          # writable directory), then exec the server.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /opt/stalwart/etc /opt/stalwart/data /opt/stalwart/blobs /opt/stalwart/logs
+              cp -f /config-src/config.toml /opt/stalwart/etc/config.toml
+              echo "Stalwart starting with config:"
+              head -5 /opt/stalwart/etc/config.toml
+              exec /usr/local/bin/stalwart --config /opt/stalwart/etc/config.toml
+          ports:
+            - name: smtp
+              containerPort: 25
+              protocol: TCP
+            - name: submissions
+              containerPort: 465
+              protocol: TCP
+            - name: submission
+              containerPort: 587
+              protocol: TCP
+            - name: imap
+              containerPort: 143
+              protocol: TCP
+            - name: imaps
+              containerPort: 993
+              protocol: TCP
+            - name: pop3
+              containerPort: 110
+              protocol: TCP
+            - name: pop3s
+              containerPort: 995
+              protocol: TCP
+            - name: sieve
+              containerPort: 4190
+              protocol: TCP
+            - name: mgmt-http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: stalwart-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /opt/stalwart
+            - name: config-src
+              mountPath: /config-src
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          startupProbe:
+            tcpSocket:
+              port: mgmt-http
+            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: mgmt-http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: imap
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: config-src
+          configMap:
+            name: stalwart-config
+            items:
+              - key: config.toml
+                path: config.toml
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: stalwart-mail
+          app.kubernetes.io/part-of: hosting-platform
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi

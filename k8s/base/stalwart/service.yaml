@@ -1,0 +1,95 @@
+#
+# Public-facing mail ports.
+# Production: LoadBalancer (Hetzner Cloud LB provisioned automatically).
+# Dev overlay patches this to NodePort so the ports are reachable via
+# docker-compose port mappings on the k3s-server container.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: stalwart-mail
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp
+      protocol: TCP
+    - name: submissions
+      port: 465
+      targetPort: submissions
+      protocol: TCP
+    - name: submission
+      port: 587
+      targetPort: submission
+      protocol: TCP
+    - name: imap
+      port: 143
+      targetPort: imap
+      protocol: TCP
+    - name: imaps
+      port: 993
+      targetPort: imaps
+      protocol: TCP
+    - name: pop3
+      port: 110
+      targetPort: pop3
+      protocol: TCP
+    - name: pop3s
+      port: 995
+      targetPort: pop3s
+      protocol: TCP
+    - name: sieve
+      port: 4190
+      targetPort: sieve
+      protocol: TCP
+---
+#
+# Management HTTP (WebAdmin UI + REST API + Prometheus metrics).
+# Cluster-internal only; expose via Ingress + auth proxy when needed.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail-mgmt
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: stalwart-mail
+  ports:
+    - name: mgmt-http
+      port: 8080
+      targetPort: mgmt-http
+      protocol: TCP
+---
+#
+# Headless Service backing the StatefulSet for stable DNS names.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail-headless
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  clusterIP: None
+  selector:
+    app: stalwart-mail
+  ports:
+    - name: mgmt-http
+      port: 8080
+      targetPort: mgmt-http
+      protocol: TCP

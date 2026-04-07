@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-config
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  config.toml: |
+    # ─── Server identity ───────────────────────────────────────────────────
+    [server]
+    hostname = "%{env:STALWART_HOSTNAME}%"
+
+    # ─── Listeners ─────────────────────────────────────────────────────────
+
+    [server.listener.smtp]
+    bind = "[::]:25"
+    protocol = "smtp"
+
+    [server.listener.submission]
+    bind = "[::]:587"
+    protocol = "smtp"
+
+    [server.listener.submissions]
+    bind = "[::]:465"
+    protocol = "smtp"
+    tls.implicit = true
+
+    [server.listener.imap]
+    bind = "[::]:143"
+    protocol = "imap"
+
+    [server.listener.imaptls]
+    bind = "[::]:993"
+    protocol = "imap"
+    tls.implicit = true
+
+    [server.listener.pop3]
+    bind = "[::]:110"
+    protocol = "pop3"
+
+    [server.listener.pop3s]
+    bind = "[::]:995"
+    protocol = "pop3"
+    tls.implicit = true
+
+    [server.listener.sieve]
+    bind = "[::]:4190"
+    protocol = "managesieve"
+
+    [server.listener.http]
+    protocol = "http"
+    bind = "[::]:8080"
+
+    # ─── Storage ───────────────────────────────────────────────────────────
+    # Phase 1: RocksDB for metadata/FTS/lookup; filesystem for blobs.
+    # All data lives on the local PVC under /opt/stalwart.
+    # Migration targets (zero code change, see docs/04-deployment/MAIL_SERVER_OPERATIONS.md):
+    #   - hcloud-volumes  → change PVC storageClassName
+    #   - NFS             → change PVC storageClassName
+    #   - S3 blobs        → add [store."s3-blob"] and flip storage.blob
+    [storage]
+    data = "rocksdb"
+    fts = "rocksdb"
+    lookup = "rocksdb"
+    blob = "fs-blob"
+    directory = "internal"
+
+    [store.rocksdb]
+    type = "rocksdb"
+    path = "/opt/stalwart/data"
+    compression = "lz4"
+
+    [store.fs-blob]
+    type = "fs"
+    path = "/opt/stalwart/blobs"
+    depth = 2
+
+    # ─── Directory (internal by default; prod overlay switches to SQL) ────
+    [directory.internal]
+    type = "internal"
+    store = "rocksdb"
+
+    # ─── Authentication ────────────────────────────────────────────────────
+    # Fallback admin: emergency access to WebAdmin (port 8080).
+    # Master user: used by Roundcube SSO in Phase 2 via `<mailbox>%master` syntax.
+    # Secrets are injected from the `stalwart-secrets` Secret.
+    [authentication.fallback-admin]
+    user = "admin"
+    secret = "%{env:ADMIN_SECRET}%"
+
+    [authentication.master]
+    user = "master"
+    secret = "%{env:MASTER_SECRET}%"
+
+    # ─── Telemetry ─────────────────────────────────────────────────────────
+    [tracer.stdout]
+    type = "stdout"
+    level = "info"
+    ansi = false
+    enable = true
+
+    [metrics.prometheus]
+    enable = true

@@ -1,0 +1,79 @@
+#
+# NetworkPolicy for Stalwart Mail Server.
+# Ingress: public on all mail ports; cluster-internal on management port.
+# Egress: DNS, HTTPS (for DNSBL/ACME/future relay), Postgres (future SQL directory).
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stalwart-mail
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: stalwart-mail
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Public mail ports — accept from anywhere
+    - from: []
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
+        - protocol: TCP
+          port: 110
+        - protocol: TCP
+          port: 995
+        - protocol: TCP
+          port: 4190
+    # Management HTTP — cluster-internal only
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Outbound SMTP (port 25) for direct MX delivery
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 25
+    # Outbound SMTP submission for commercial relays (Mailgun/Postmark/etc.)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+    # HTTPS for DNSBL, ACME, relay APIs
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    # PostgreSQL — future SQL directory integration
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 5432

@@ -1,0 +1,63 @@
+#
+# Dev patch: convert LoadBalancer → NodePort with deterministic node ports.
+# Docker-compose then maps host ports 2025..2995 → these node ports on the
+# k3s-server container, making the mail server reachable from the host.
+#
+# Host port mapping (set in docker-compose.local.yml):
+#   host 2025  → k3s-server 30025 → Stalwart smtp (25)
+#   host 2465  → k3s-server 30465 → Stalwart submissions (465)
+#   host 2587  → k3s-server 30587 → Stalwart submission (587)
+#   host 2143  → k3s-server 30143 → Stalwart imap (143)
+#   host 2993  → k3s-server 30993 → Stalwart imaps (993)
+#   host 2110  → k3s-server 30110 → Stalwart pop3 (110)
+#   host 2995  → k3s-server 30995 → Stalwart pop3s (995)
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail
+  namespace: mail
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp
+      nodePort: 30025
+      protocol: TCP
+    - name: submissions
+      port: 465
+      targetPort: submissions
+      nodePort: 30465
+      protocol: TCP
+    - name: submission
+      port: 587
+      targetPort: submission
+      nodePort: 30587
+      protocol: TCP
+    - name: imap
+      port: 143
+      targetPort: imap
+      nodePort: 30143
+      protocol: TCP
+    - name: imaps
+      port: 993
+      targetPort: imaps
+      nodePort: 30993
+      protocol: TCP
+    - name: pop3
+      port: 110
+      targetPort: pop3
+      nodePort: 30110
+      protocol: TCP
+    - name: pop3s
+      port: 995
+      targetPort: pop3s
+      nodePort: 30995
+      protocol: TCP
+    - name: sieve
+      port: 4190
+      targetPort: sieve
+      nodePort: 30190
+      protocol: TCP

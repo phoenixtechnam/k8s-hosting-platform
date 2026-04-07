@@ -1,0 +1,40 @@
+#
+# Dev overlay for Stalwart Mail Server.
+#
+# Standalone kustomization — deploy independently of the main dev overlay so
+# the bootstrap.sh auto-regenerated dev/kustomization.yaml never touches it.
+#
+# Deploy:
+#   kubectl apply -k k8s/overlays/dev/stalwart/
+#
+# Or via local.sh:
+#   ./scripts/local.sh mail-up
+#
+# Differences from the base:
+#   1. Service type LoadBalancer → NodePort (DinD k3s has no LB provider)
+#   2. Dev secrets (PLAINTEXT bcrypt hashes for admin / master user)
+#   3. Dev hostname mail.dind.local
+#   4. NetworkPolicy removed (DinD k3s has no NP enforcer)
+#
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart
+  - secret.yaml
+
+patches:
+  - path: service-nodeport-patch.yaml
+    target:
+      kind: Service
+      name: stalwart-mail
+  # Remove the NetworkPolicy in dev — local k3s has no enforcer and it only adds noise
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: stalwart-mail
+        namespace: mail

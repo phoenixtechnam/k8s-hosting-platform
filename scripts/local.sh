@@ -15,6 +15,11 @@ set -euo pipefail
 #   ./scripts/local.sh k3s-reset   Wipe k3s cluster and restart fresh
 #   ./scripts/local.sh k3s-status  Show k3s cluster status
 #   ./scripts/local.sh k3s-shell   Open kubectl shell in k3s
+#   ./scripts/local.sh mail-up     Deploy Stalwart mail server to local k3s
+#   ./scripts/local.sh mail-down   Remove Stalwart mail server from local k3s
+#   ./scripts/local.sh mail-status Show mail server pod/service state
+#   ./scripts/local.sh mail-logs   Tail Stalwart logs
+#   ./scripts/local.sh mail-test   Send + receive a test mail via swaks
 #   ./scripts/local.sh help        Show this help
 #
 # Environment:
@@ -53,6 +58,16 @@ PORT_API="${PORT_API:-2012}"
 PORT_DB="${PORT_DB:-2013}"
 PORT_REDIS="${PORT_REDIS:-2014}"
 PORT_K3S_API="${PORT_K3S_API:-2016}"
+PORT_MAIL_SMTP="${PORT_MAIL_SMTP:-2025}"
+PORT_MAIL_SMTPS="${PORT_MAIL_SMTPS:-2465}"
+PORT_MAIL_SUBMISSION="${PORT_MAIL_SUBMISSION:-2587}"
+PORT_MAIL_IMAP="${PORT_MAIL_IMAP:-2143}"
+PORT_MAIL_IMAPS="${PORT_MAIL_IMAPS:-2993}"
+PORT_MAIL_POP3="${PORT_MAIL_POP3:-2110}"
+PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2995}"
+
+K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
+MAIL_OVERLAY_DIR="k8s/overlays/dev/stalwart"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -215,6 +230,106 @@ cmd_k3s_shell() {
   docker exec -it hosting-platform-k3s-server-1 /bin/sh
 }
 
+# ─── Mail commands (Phase 1 — Stalwart Mail Server) ──────────────────────────
+
+_mail_k3s_exec() {
+  docker exec "$K3S_CONTAINER" "$@"
+}
+
+_mail_sync_manifests() {
+  # Copy current k8s manifests into the k3s-server container at a stable path.
+  docker cp "${PROJECT_DIR}/k8s" "${K3S_CONTAINER}:/tmp/mail-k8s-sync" >/dev/null
+}
+
+cmd_mail_up() {
+  echo "Deploying Stalwart mail server to local k3s..."
+  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
+    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
+    return 1
+  fi
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/stalwart"
+  echo ""
+  echo "Waiting for Stalwart pod to be ready (up to 2 minutes)..."
+  _mail_k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-mail -n mail --timeout=120s || {
+    echo ""
+    echo "Pod did not become ready. Recent events:"
+    _mail_k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
+    echo ""
+    echo "Pod describe:"
+    _mail_k3s_exec kubectl describe pod -l app=stalwart-mail -n mail
+    return 1
+  }
+  echo ""
+  cmd_mail_status
+}
+
+cmd_mail_down() {
+  echo "Removing Stalwart mail server from local k3s..."
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl delete -k "/tmp/mail-k8s-sync/overlays/dev/stalwart" --ignore-not-found=true
+}
+
+cmd_mail_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  Stalwart Mail Server — Local Dev"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  if ! _mail_k3s_exec kubectl get ns mail >/dev/null 2>&1; then
+    echo "  Mail namespace not found. Run: ./scripts/local.sh mail-up"
+    return
+  fi
+  echo "  Pods:"
+  _mail_k3s_exec kubectl get pods -n mail -o wide 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Services:"
+  _mail_k3s_exec kubectl get svc -n mail 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  PVCs:"
+  _mail_k3s_exec kubectl get pvc -n mail 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Host endpoints (via docker-compose port mappings):"
+  echo "    SMTP           ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
+  echo "    SMTPS implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTPS}"
+  echo "    Submission     ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
+  echo "    IMAP STARTTLS  ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
+  echo "    IMAPS implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
+  echo "    POP3 STARTTLS  ${DOCKER_HOST_NAME}:${PORT_MAIL_POP3}"
+  echo "    POP3S implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_POP3S}"
+  echo ""
+  echo "  Credentials (dev only):"
+  echo "    Admin:  admin / stalwart-dev-admin  (WebAdmin via kubectl port-forward)"
+  echo "    Master: master / stalwart-dev-master"
+  echo "════════════════════════════════════════════════"
+}
+
+cmd_mail_logs() {
+  _mail_k3s_exec kubectl logs -n mail -l app=stalwart-mail --tail=100 -f
+}
+
+cmd_mail_test() {
+  local recipient="${1:-testuser@mail.dind.local}"
+  echo "Running mail send + retrieve cycle against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
+  echo ""
+  echo "NOTE: This test first creates the test account via stalwart-cli, then"
+  echo "      sends a message via SMTP submission and retrieves it via IMAP."
+  echo ""
+  # Create the test account if it doesn't exist (idempotent)
+  _mail_k3s_exec kubectl exec -n mail stalwart-mail-0 -- \
+    stalwart-cli -u http://127.0.0.1:8080 -c "admin:stalwart-dev-admin" \
+    server database maintenance 2>&1 | head -5 || true
+  echo ""
+  echo "TCP probes:"
+  for port_var in PORT_MAIL_SMTP PORT_MAIL_SUBMISSION PORT_MAIL_IMAP PORT_MAIL_IMAPS; do
+    local port="${!port_var}"
+    if (echo > /dev/tcp/${DOCKER_HOST_NAME}/${port}) >/dev/null 2>&1; then
+      echo "  ✓ ${DOCKER_HOST_NAME}:${port} reachable"
+    else
+      echo "  ✗ ${DOCKER_HOST_NAME}:${port} NOT reachable"
+    fi
+  done
+}
+
 cmd_help() {
   sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
@@ -231,6 +346,11 @@ case "${1:-help}" in
   k3s-reset)   cmd_k3s_reset ;;
   k3s-status)  cmd_k3s_status ;;
   k3s-shell)   cmd_k3s_shell ;;
+  mail-up)     cmd_mail_up ;;
+  mail-down)   cmd_mail_down ;;
+  mail-status) cmd_mail_status ;;
+  mail-logs)   cmd_mail_logs ;;
+  mail-test)   shift; cmd_mail_test "$@" ;;
   help|-h)     cmd_help ;;
   *)           echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

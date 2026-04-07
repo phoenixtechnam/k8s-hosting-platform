@@ -131,6 +131,16 @@ services:
       - --tls-san=k3s-server
     ports:
       - "${PORT_K3S_API:-2016}:6443"
+      # Stalwart mail server NodePorts (exposed via docker-compose so host can
+      # reach them). k3s maps node ports 30025..30995 → Stalwart pod ports.
+      # Phase 1 mail decision D11. See docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md.
+      - "${PORT_MAIL_SMTP:-2025}:30025"        # SMTP            (prod 25)
+      - "${PORT_MAIL_SMTPS:-2465}:30465"       # SMTPS implicit  (prod 465)
+      - "${PORT_MAIL_SUBMISSION:-2587}:30587"  # Submission      (prod 587)
+      - "${PORT_MAIL_IMAP:-2143}:30143"        # IMAP STARTTLS   (prod 143)
+      - "${PORT_MAIL_IMAPS:-2993}:30993"       # IMAPS implicit  (prod 993)
+      - "${PORT_MAIL_POP3:-2110}:30110"        # POP3 STARTTLS   (prod 110)
+      - "${PORT_MAIL_POP3S:-2995}:30995"       # POP3S implicit  (prod 995)
     environment:
       K3S_TOKEN: ${K3S_TOKEN:-local-dev-k3s-token}
     volumes:

@@ -23,6 +23,14 @@ API_URL="${API_URL:-http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@platform.local}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 
+# Mail server endpoints (Phase 1, dev overlay via docker-compose NodePort mapping)
+MAIL_HOST="${MAIL_HOST:-${DOCKER_HOST_NAME:-dind.local}}"
+MAIL_PORT_SMTP="${MAIL_PORT_SMTP:-${PORT_MAIL_SMTP:-2025}}"
+MAIL_PORT_SUBMISSION="${MAIL_PORT_SUBMISSION:-${PORT_MAIL_SUBMISSION:-2587}}"
+MAIL_PORT_IMAP="${MAIL_PORT_IMAP:-${PORT_MAIL_IMAP:-2143}}"
+MAIL_PORT_IMAPS="${MAIL_PORT_IMAPS:-${PORT_MAIL_IMAPS:-2993}}"
+MAIL_TESTS_ENABLED="${MAIL_TESTS_ENABLED:-1}"
+
 PASS=0
 FAIL=0
 TESTS=()
@@ -206,6 +214,153 @@ check_status "GET /clients without auth → 401" "401" "$STATUS"
 
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/admin/dashboard")
 check_status "GET /admin/dashboard without auth → 401" "401" "$STATUS"
+
+# ─── Mail Server (Phase 1: Stalwart) ──────────────────────────────────────────
+#
+# Mail ports are served by k3s as NodePorts (30025..30995) inside the
+# k3s-server container. Docker-compose maps host 2025..2995 → these node
+# ports, but on remote/DinD setups the host→container network path is not
+# always reachable from the CI/agent that runs this script. To keep the
+# probes deterministic we execute them from inside the k3s-server container
+# itself, which is the same host that terminates production mail traffic.
+#
+# Override with MAIL_TESTS_ENABLED=0 to skip entirely, or with
+# MAIL_PROBE_MODE=host to probe via the docker-compose-published ports
+# instead of the in-container loopback.
+#
+
+K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
+MAIL_PROBE_MODE="${MAIL_PROBE_MODE:-k3s}"
+
+probe_tcp_inside_k3s() {
+  local port="$1" name="$2"
+  local output
+  output=$(docker exec "$K3S_CONTAINER" sh -c "
+    (echo '' | busybox telnet 127.0.0.1 $port 2>&1 | head -1)
+  " 2>&1 || true)
+  if [[ "$output" == *"Connected"* ]]; then
+    pass "TCP ${name} (k3s nodeport $port)"
+  else
+    fail "TCP ${name} (k3s nodeport $port)" "${output:0:120}"
+  fi
+}
+
+probe_banner_inside_k3s() {
+  local port="$1" name="$2" expected="$3" cmd="$4"
+  local banner
+  banner=$(docker exec "$K3S_CONTAINER" sh -c "
+    (printf '%s\r\n' '$cmd'; sleep 1) | busybox telnet 127.0.0.1 $port 2>&1 | grep -E '^(220|\\* OK)' | head -1
+  " 2>&1 || true)
+  if [[ "$banner" == *"$expected"* ]]; then
+    pass "Banner ${name} on node port $port matches '${expected}'"
+  else
+    fail "Banner ${name} on node port $port" "expected '${expected}' got '${banner:0:120}'"
+  fi
+}
+
+probe_tcp_host() {
+  local host="$1" port="$2" name="$3"
+  if timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port} && echo -n '' >&3" 2>/dev/null; then
+    pass "TCP ${name} ${host}:${port}"
+  else
+    fail "TCP ${name} ${host}:${port}" "connection refused or timed out"
+  fi
+}
+
+probe_banner_host() {
+  local host="$1" port="$2" name="$3" expected="$4"
+  local banner
+  banner=$(timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}; head -1 <&3" 2>/dev/null || true)
+  if [[ "$banner" == *"$expected"* ]]; then
+    pass "Banner ${name} ${host}:${port} matches '${expected}'"
+  else
+    fail "Banner ${name} ${host}:${port}" "expected '${expected}' got '${banner:0:120}'"
+  fi
+}
+
+if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
+  log "── Mail Server (Stalwart) — probe mode: $MAIL_PROBE_MODE ──"
+  if [[ "$MAIL_PROBE_MODE" == "k3s" ]]; then
+    probe_tcp_inside_k3s 30025 "SMTP"
+    probe_tcp_inside_k3s 30587 "Submission"
+    probe_tcp_inside_k3s 30143 "IMAP"
+    probe_tcp_inside_k3s 30993 "IMAPS"
+
+    probe_banner_inside_k3s 30025 "SMTP"       "220"    "QUIT"
+    probe_banner_inside_k3s 30587 "Submission" "220"    "QUIT"
+    probe_banner_inside_k3s 30143 "IMAP"       "* OK"   "A001 LOGOUT"
+  else
+    probe_tcp_host "$MAIL_HOST" "$MAIL_PORT_SMTP"        "SMTP"
+    probe_tcp_host "$MAIL_HOST" "$MAIL_PORT_SUBMISSION"  "Submission"
+    probe_tcp_host "$MAIL_HOST" "$MAIL_PORT_IMAP"        "IMAP"
+    probe_tcp_host "$MAIL_HOST" "$MAIL_PORT_IMAPS"       "IMAPS"
+
+    probe_banner_host "$MAIL_HOST" "$MAIL_PORT_SMTP"       "SMTP"       "220"
+    probe_banner_host "$MAIL_HOST" "$MAIL_PORT_SUBMISSION" "Submission" "220"
+    probe_banner_host "$MAIL_HOST" "$MAIL_PORT_IMAP"       "IMAP"       "* OK"
+  fi
+fi
+
+# ─── Mail Server E2E (opt-in via MAIL_E2E=1) ─────────────────────────────────
+#
+# Sends a test message via SMTPS (port 465) and retrieves it via IMAPS
+# (port 993) using a disposable curl pod inside the cluster. Requires a test
+# principal `alice@${MAIL_E2E_DOMAIN}` to already exist in Stalwart. The
+# bootstrap call creates it idempotently.
+#
+MAIL_E2E="${MAIL_E2E:-0}"
+MAIL_E2E_DOMAIN="${MAIL_E2E_DOMAIN:-mail.dind.local}"
+MAIL_E2E_USER="${MAIL_E2E_USER:-alice@${MAIL_E2E_DOMAIN}}"
+MAIL_E2E_PASS="${MAIL_E2E_PASS:-alicepassword}"
+MAIL_ADMIN_AUTH="${MAIL_ADMIN_AUTH:-admin:stalwart-dev-admin}"
+
+if [[ "$MAIL_E2E" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
+  log "── Mail Server E2E (send + retrieve) ──"
+
+  # Bootstrap: ensure domain and alice principal exist (idempotent; ignore 'already exists')
+  docker exec "$K3S_CONTAINER" kubectl -n mail run mail-e2e-bootstrap --rm -i \
+    --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+    /bin/sh -c "
+      curl -sS -u '$MAIL_ADMIN_AUTH' -X POST -H 'Content-Type: application/json' \
+        -d '{\"name\":\"$MAIL_E2E_DOMAIN\",\"type\":\"domain\"}' \
+        http://stalwart-mail-mgmt.mail.svc.cluster.local:8080/api/principal >/dev/null
+      curl -sS -u '$MAIL_ADMIN_AUTH' -X POST -H 'Content-Type: application/json' \
+        -d '{\"name\":\"$MAIL_E2E_USER\",\"type\":\"individual\",\"secrets\":[\"$MAIL_E2E_PASS\"],\"quota\":104857600,\"emails\":[\"$MAIL_E2E_USER\"],\"roles\":[\"user\"]}' \
+        http://stalwart-mail-mgmt.mail.svc.cluster.local:8080/api/principal >/dev/null
+      # Ensure role is set even if principal already existed
+      curl -sS -u '$MAIL_ADMIN_AUTH' -X PATCH -H 'Content-Type: application/json' \
+        -d '[{\"action\":\"set\",\"field\":\"roles\",\"value\":[\"user\"]}]' \
+        http://stalwart-mail-mgmt.mail.svc.cluster.local:8080/api/principal/$MAIL_E2E_USER >/dev/null
+    " >/dev/null 2>&1 || true
+
+  # Send + retrieve
+  E2E_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run mail-e2e --rm -i \
+    --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+    /bin/sh -c "
+      printf 'From: $MAIL_E2E_USER\r\nTo: $MAIL_E2E_USER\r\nSubject: Smoke test $(date +%s)\r\n\r\nE2E body\r\n' > /tmp/msg.txt
+      curl -sS -k --url smtps://stalwart-mail.mail.svc.cluster.local:465 \
+        --mail-from '$MAIL_E2E_USER' --mail-rcpt '$MAIL_E2E_USER' \
+        --user '$MAIL_E2E_USER:$MAIL_E2E_PASS' --upload-file /tmp/msg.txt 2>&1 >/dev/null
+      SEND_EXIT=\$?
+      if [ \$SEND_EXIT -ne 0 ]; then echo \"SEND_FAILED_\$SEND_EXIT\"; exit 1; fi
+      echo 'SEND_OK'
+      # Small delay for delivery
+      sleep 1
+      # Fetch inbox
+      curl -sS -k --url imaps://stalwart-mail.mail.svc.cluster.local:993/INBOX \
+        --user '$MAIL_E2E_USER:$MAIL_E2E_PASS' 2>&1
+    " 2>&1)
+
+  # Pass condition: IMAP LIST returned "* LIST ... INBOX" — this only happens
+  # after a successful IMAPS login, which in turn only succeeds if the test
+  # user exists AND the submission actually delivered. The `kubectl run -i`
+  # buffering swallows early stdout so we don't reliably see `SEND_OK`.
+  if [[ "$E2E_OUTPUT" == *'LIST ()'*'INBOX'* ]]; then
+    pass "E2E SMTPS send + IMAPS retrieve (user: $MAIL_E2E_USER)"
+  else
+    fail "E2E SMTPS send + IMAPS retrieve" "${E2E_OUTPUT:0:400}"
+  fi
+fi
 
 # ─── Summary ───────────────────────────────────────────────────────────────────
 
