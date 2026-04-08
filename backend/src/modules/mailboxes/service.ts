@@ -350,20 +350,22 @@ export async function generateWebmailToken(
     throw new ApiError('USER_NOT_FOUND', 'User not found or has no client', 404);
   }
 
-  // Phase 3.C.3: suspended clients cannot access webmail at all,
-  // even if individual mailboxes are still marked active. The data
-  // is retained but all access paths (IMAP / POP / SMTP-auth /
-  // webmail SSO / inbound SMTP delivery) are blocked.
+  // Phase 3.C.3: suspended / cancelled clients cannot access webmail.
+  // Data is retained but all access paths (IMAP / POP / SMTP-auth /
+  // webmail SSO / inbound SMTP delivery) are blocked. `pending` is
+  // allowed so newly created clients can set up their first mailbox
+  // before provisioning flips the status to `active`.
   const [client] = await db
     .select({ status: clients.status })
     .from(clients)
     .where(eq(clients.id, user.clientId));
-  if (!client || client.status !== 'active') {
+  const clientStatus = client?.status;
+  if (!client || (clientStatus !== 'active' && clientStatus !== 'pending')) {
     throw new ApiError(
       'CLIENT_SUSPENDED',
-      'This client account is suspended — webmail access is blocked',
+      'This client account is not currently active — webmail access is blocked',
       403,
-      { client_id: user.clientId, status: client?.status ?? 'unknown' },
+      { client_id: user.clientId, status: clientStatus ?? 'unknown' },
       'Contact your administrator to restore access',
     );
   }

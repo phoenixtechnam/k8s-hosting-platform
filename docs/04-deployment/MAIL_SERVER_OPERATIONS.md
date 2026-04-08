@@ -442,19 +442,239 @@ Stalwart only offers PLAIN/LOGIN auth **after** STARTTLS has been negotiated (or
 
 ---
 
-## 7. Status Tracking
+## 7. Phase 3 Operational Procedures
+
+### 7.1 Bootstrap Stalwart production TLS cert (Phase 3.A.1)
+
+The backend can provision a cert-manager `Certificate` CR for the
+platform mail hostname (via `certificates/service.ts
+ensureMailServerCertificate`). The resulting `stalwart-tls` Secret in
+the `mail` namespace is mounted into the Stalwart StatefulSet by the
+production overlay.
+
+One-time bootstrap:
+
+1. Set the mail hostname via the platform admin UI or API:
+   ```bash
+   curl -X PATCH $API/api/v1/admin/webmail-settings \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"mailServerHostname": "mail.your-platform.com"}'
+   ```
+   (This also triggers cert provisioning automatically.)
+
+2. OR trigger cert provisioning manually:
+   ```bash
+   curl -X POST $API/api/v1/admin/mail/certificate/ensure \
+     -H "Authorization: Bearer $TOKEN"
+   ```
+
+3. Verify the Secret exists:
+   ```bash
+   kubectl -n mail get secret stalwart-tls
+   ```
+
+4. Apply the production overlay (adds volume mount + `[certificate.default]`):
+   ```bash
+   kubectl apply -k k8s/overlays/production/stalwart/
+   ```
+
+5. Restart Stalwart to pick up the cert:
+   ```bash
+   kubectl -n mail rollout restart statefulset/stalwart-mail
+   ```
+
+### 7.2 Configure outbound SMTP relay (Phase 3.B.1)
+
+The platform renders Stalwart's `[queue.outbound]` from the
+`smtp_relay_configs` table. Adding / updating / deleting a relay via
+the admin UI automatically reconciles the Stalwart `stalwart-outbound-config`
+ConfigMap.
+
+Operator steps:
+
+1. Go to **Admin → Email → SMTP Relays**, click **Add SMTP Relay**
+2. Pick the provider (Mailgun / Postmark / Direct)
+3. Fill in host, username, password
+4. Click **Save**
+
+Stalwart config reloads on the next config reload trigger. To force:
+
+```bash
+kubectl -n mail exec stalwart-mail-0 -- \
+  stalwart-cli -u http://127.0.0.1:8080 \
+  --credentials "admin:$ADMIN_PASSWORD" \
+  server reload-config
+```
+
+Manual reconcile (if the automatic trigger failed):
+
+```bash
+curl -X POST $API/api/v1/admin/mail/outbound/reconcile \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 7.3 Set per-customer email send rate limits (Phase 3.B.3)
+
+Global default (applies to all customers):
+
+```bash
+curl -X PATCH $API/api/v1/admin/webmail-settings \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"emailSendRateLimitDefault": 500}'
+# 500 messages per hour globally
+```
+
+Per-customer override:
+
+```bash
+curl -X PATCH $API/api/v1/clients/$CLIENT_ID \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email_send_rate_limit": 5000}'
+# This customer gets 5000/hour instead of the global 500
+```
+
+Setting `email_send_rate_limit: 0` blocks all outbound for that
+customer. Setting it to `null` restores the global default.
+
+**Suspended customers are automatically forced to rate=0** regardless
+of their `email_send_rate_limit` value. See §7.4.
+
+### 7.4 Suspend a customer's mail access (Phase 3.C.3)
+
+Suspending a client (via the admin panel or via
+`PATCH /api/v1/clients/:id {"status": "suspended"}`) blocks **all**
+mail access paths while keeping data intact:
+
+- IMAP / POP / SMTP-auth login fails (stalwart.principals view
+  filters out suspended clients)
+- Inbound mail rejected at 550 (stalwart.domains view filters out)
+- Outbound rate-limited to 0/hour
+- Webmail SSO returns 403 CLIENT_SUSPENDED
+
+To unsuspend:
+
+```bash
+curl -X PATCH $API/api/v1/clients/$CLIENT_ID \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "active"}'
+```
+
+All previous data (mailboxes, domains, mail content) is retained and
+accessible again immediately.
+
+### 7.5 Blocklist remediation (Spamhaus, UCEPROTECT, etc.)
+
+If the platform IP ends up on a DNSBL:
+
+1. **Check which lists:** https://mxtoolbox.com/blacklists.aspx enter the IP
+2. **Spamhaus (PBL/CBL):** Submit removal at https://www.spamhaus.org/lookup/
+3. **UCEPROTECT Level 1:** Auto-expires in ~7 days if spam stops
+4. **UCEPROTECT Level 2/3:** Paid expedited removal only; wait or switch IPs
+5. **Check abuse source:** tail Stalwart logs for the offending sender:
+   ```bash
+   kubectl -n mail logs stalwart-mail-0 --since=24h | grep -i 'rcpt accepted'
+   ```
+6. **Suspend the offending customer** (§7.4) if abuse confirmed
+
+### 7.6 Rotate DKIM keys
+
+*Deferred to Phase 3.B.2 (not yet shipped).* Current behavior: one
+long-lived key per email domain, generated at provisioning time,
+no rotation.
+
+Manual rotation procedure (until B.2 lands):
+
+1. Generate a new key:
+   ```bash
+   docker exec hosting-platform-backend-1 node -e "
+     import('./dist/modules/email-domains/dkim.js').then(m => {
+       const { generateDkimKeyPair, formatDkimDnsValue } = m;
+       const kp = generateDkimKeyPair();
+       console.log('PUBLIC:', formatDkimDnsValue(kp.publicKey));
+     });
+   "
+   ```
+2. Update the `email_domains` row with the new private key
+3. Update the DKIM DNS TXT record with the new public key
+4. Wait 7 days for the old key to age out of caches
+5. Remove the old DNS record
+
+### 7.7 Lightweight mail stats (Phase 3.D.1)
+
+Admin panel shows current Stalwart counters + platform DB mailbox
+summary. No Prometheus, no Grafana — just a backend endpoint that
+proxies Stalwart's own `/metrics` output.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" $API/api/v1/admin/mail/stats | jq
+```
+
+Returns:
+
+```json
+{
+  "data": {
+    "stalwartReachable": true,
+    "counters": {
+      "stalwart_messages_received_total": 1234,
+      "stalwart_messages_sent_total": 987,
+      ...
+    },
+    "mailboxSummary": {
+      "total": 50,
+      "active": 48,
+      "suspended": 2,
+      "totalQuotaMb": 512000,
+      "totalUsedMb": 13400
+    }
+  }
+}
+```
+
+### 7.8 Mailbox usage (used_mb) reconciliation (Phase 3.D.2)
+
+Runs automatically every 15 minutes by default. Configure the
+interval:
+
+```bash
+curl -X PATCH $API/api/v1/admin/webmail-settings \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mailboxUsageSyncIntervalMinutes": 30}'
+```
+
+Or trigger manually:
+
+```bash
+curl -X POST $API/api/v1/admin/mail/stats/reconcile-usage \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 8. Status Tracking
 
 | Item | Status | Notes |
 |---|---|---|
 | Hetzner port 25 unblock request | **REQUESTED** (2026-04-07) | User filed the request; awaiting approval |
 | Production deployment | Pending | Blocked on port 25 unblock + real secrets + PTR setup |
-| cert-manager Certificate for mail hostname | Not provisioned | Add once production target hostname is chosen |
-| Prometheus scrape config | Not configured | Phase 5 |
-| Grafana dashboard 23498 | Not imported | Phase 5 |
-| Scheduled off-node backups | Not configured | Phase 5 |
-| DKIM key rotation | Phase 3 | Currently single key per domain, no rotation |
-| DNS SRV / autodiscover | Phase 4 | `dns-provisioning.ts` does not yet emit SRV records |
-| Website sendmail from workload pods | Phase 4 | Requires per-pod auth + audit log |
-| SQL directory integration (real mailboxes from platform DB) | ✅ Shipped (Phase 2a, 2026-04-08) | `stalwart` schema in platform DB; `stalwart_reader` NOLOGIN role; Endpoints bridge for local dev |
+| cert-manager Certificate for mail hostname | ✅ Shipped (Phase 3.A.1) | Backend provisions via `ensureMailServerCertificate`; production overlay mounts it |
+| Scheduled off-node backups | Not configured | Phase 5 / ops |
+| DKIM key rotation | **Deferred Phase 3.B.2** | Manual rotation documented in §7.6 |
+| DNS SRV / autodiscover | ✅ Shipped (Phase 3.C.1 + 3.C.2) | email-autodiscover module + DNS records in provisioning |
+| Website sendmail from workload pods | Deferred Phase 4 | Requires per-pod auth + audit log |
+| SQL directory integration | ✅ Shipped (Phase 2a) | `stalwart` schema + `stalwart_reader` role |
+| Suspend enforcement across all mail paths | ✅ Shipped (Phase 3.C.3) | Migration 0009 updated all four stalwart views |
+| Stalwart outbound queue from DB | ✅ Shipped (Phase 3.B.1) | `email-outbound` reconciler + ConfigMap target |
+| Per-customer send rate limits | ✅ Shipped (Phase 3.B.3) | `clients.email_send_rate_limit` + global default setting |
+| Lightweight mail metrics (no Prometheus) | ✅ Shipped (Phase 3.D.1) | `GET /admin/mail/stats` proxies Stalwart `/metrics` |
+| `used_mb` reconciliation cron | ✅ Shipped (Phase 3.D.2) | 15 min default, configurable |
+| Rate limit on webmail-token endpoint | ✅ Shipped (Phase 3.A.3) | 5/min per user |
 | TLS between Stalwart and platform Postgres | **Production hardening required** | Base ConfigMap has `enable = false`; production overlay must set `enable = true` + strict cert verification |
-| VRFY / EXPN cross-client enumeration | Phase 3 | `verify` query is currently unscoped; consider disabling VRFY at Stalwart config level |
+| VRFY / EXPN cross-client enumeration | Phase 3 follow-up | `verify` query is currently unscoped |
+| IMAPSync job runner for mailbox migrations | **Deferred** (ties into Plesk migration) | Phase 5 / migration service |
+| Bounce-at-SMTP smoke coverage | **Deferred Phase 3.B.4** | Needs a real relay with bad credentials to fully exercise |

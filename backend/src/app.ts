@@ -41,6 +41,7 @@ import { healthRoutes } from './modules/health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailAutodiscoverRoutes } from './modules/email-autodiscover/routes.js';
+import { mailStatsRoutes } from './modules/mail-stats/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
@@ -54,6 +55,7 @@ import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
+import { startMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
@@ -235,6 +237,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // the platform base URL (or at autoconfig.<domain> / autodiscover.<domain>
   // CNAMEs that resolve to the platform ingress).
   await app.register(emailAutodiscoverRoutes);
+  await app.register(mailStatsRoutes, { prefix: '/api/v1' });
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
@@ -267,6 +270,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const metricsTimer = startMetricsScheduler(app.db);
       app.addHook('onClose', () => clearInterval(metricsTimer));
+
+      // Phase 3.D.2: mailbox used_mb reconciliation (15 min default,
+      // configurable via platform_settings key
+      // `mailbox_usage_sync_interval_minutes`)
+      const mailStatsTimer = startMailStatsScheduler(app.db);
+      app.addHook('onClose', () => clearInterval(mailStatsTimer));
 
       // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
       const reconcileInterval = setInterval(async () => {
