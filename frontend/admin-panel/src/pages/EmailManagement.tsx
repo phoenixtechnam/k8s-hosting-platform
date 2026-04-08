@@ -1,8 +1,20 @@
 import { useState } from 'react';
-import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X } from 'lucide-react';
+import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X, Key, RefreshCw, Copy } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
-import { useAdminEmailDomains, useSmtpRelays, useCreateSmtpRelay, useDeleteSmtpRelay, useTestSmtpRelay, useUpdateEmailDomain } from '@/hooks/use-email';
+import {
+  useAdminEmailDomains,
+  useSmtpRelays,
+  useCreateSmtpRelay,
+  useDeleteSmtpRelay,
+  useTestSmtpRelay,
+  useUpdateEmailDomain,
+  useDkimKeys,
+  useRotateDkimKey,
+  useActivateDkimKey,
+  type DkimKey,
+  type DkimRotateResult,
+} from '@/hooks/use-email';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -69,6 +81,8 @@ interface EmailDomainRow {
 
 function EmailDomainsTable({ domains, isLoading }: { readonly domains: readonly EmailDomainRow[]; readonly isLoading: boolean }) {
   const { sortedData: sortedDomains, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName');
+  const [dkimDomain, setDkimDomain] = useState<EmailDomainRow | null>(null);
+
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>;
 
   return (
@@ -82,22 +96,30 @@ function EmailDomainsTable({ domains, isLoading }: { readonly domains: readonly 
             <SortableHeader label="Spam Filter" sortKey="spamThresholdJunk" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3">Webmail</th>
             <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <th className="px-5 py-3">DKIM</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
           {sortedDomains.map(d => (
-            <EmailDomainRowView key={d.id} domain={d} />
+            <EmailDomainRowView key={d.id} domain={d} onOpenDkim={() => setDkimDomain(d)} />
           ))}
           {domains.length === 0 && (
-            <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No email-enabled domains yet.</td></tr>
+            <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No email-enabled domains yet.</td></tr>
           )}
         </tbody>
       </table>
+
+      {dkimDomain && (
+        <DkimRotationModal
+          domain={dkimDomain}
+          onClose={() => setDkimDomain(null)}
+        />
+      )}
     </div>
   );
 }
 
-function EmailDomainRowView({ domain: d }: { readonly domain: EmailDomainRow }) {
+function EmailDomainRowView({ domain: d, onOpenDkim }: { readonly domain: EmailDomainRow; readonly onOpenDkim: () => void }) {
   const updateDomain = useUpdateEmailDomain(d.clientId);
   const webmailOn = d.webmailEnabled !== 0 && d.webmailEnabled !== undefined ? d.webmailEnabled === 1 : true;
 
@@ -141,7 +163,183 @@ function EmailDomainRowView({ domain: d }: { readonly domain: EmailDomainRow }) 
         </button>
       </td>
       <td className="px-5 py-3.5"><StatusBadge status={d.enabled ? 'active' : 'suspended'} /></td>
+      <td className="px-5 py-3.5">
+        <button
+          type="button"
+          onClick={onOpenDkim}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+          data-testid={`dkim-button-${d.id}`}
+          title="Manage DKIM keys"
+        >
+          <Key size={12} /> DKIM
+        </button>
+      </td>
     </tr>
+  );
+}
+
+// ─── DKIM Rotation Modal ──────────────────────────────────────────────────
+
+function DkimRotationModal({ domain: d, onClose }: { readonly domain: EmailDomainRow; readonly onClose: () => void }) {
+  const { data: keysRes, isLoading } = useDkimKeys(d.clientId, d.domainId);
+  const keys = keysRes?.data ?? [];
+  const rotate = useRotateDkimKey(d.clientId, d.domainId);
+  const activate = useActivateDkimKey(d.clientId, d.domainId);
+  const [lastRotation, setLastRotation] = useState<DkimRotateResult | null>(null);
+
+  const handleRotate = async () => {
+    setLastRotation(null);
+    const res = await rotate.mutateAsync();
+    setLastRotation(res.data);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-3xl rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <Key size={18} className="text-amber-500" />
+            DKIM keys — {d.domainName}
+          </h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" data-testid="dkim-modal-close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-y-auto px-6 py-4 space-y-4">
+          {/* Rotation banner — primary mode auto-publishes, cname/secondary returns the record */}
+          {lastRotation && (
+            <div className={`rounded-lg border p-4 ${lastRotation.manualDnsRequired ? 'border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20' : 'border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20'}`}>
+              <div className="flex items-start gap-2">
+                {lastRotation.manualDnsRequired
+                  ? <Shield size={16} className="mt-0.5 text-amber-600 dark:text-amber-400" />
+                  : <CheckCircle size={16} className="mt-0.5 text-green-600 dark:text-green-400" />}
+                <div className="flex-1 text-sm">
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {lastRotation.manualDnsRequired
+                      ? `New key generated. The platform does NOT manage DNS for this domain (${lastRotation.mode} mode) — publish the record below at your DNS provider, then click Activate.`
+                      : `New key rotated and DNS published automatically (${lastRotation.mode} mode).`}
+                  </p>
+                  <DnsRecordCard
+                    name={lastRotation.dnsRecordName}
+                    value={lastRotation.dnsRecordValue}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              {keys.length} historical {keys.length === 1 ? 'key' : 'keys'}
+            </p>
+            <button
+              type="button"
+              onClick={handleRotate}
+              disabled={rotate.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="dkim-rotate-button"
+            >
+              {rotate.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Rotate key
+            </button>
+          </div>
+
+          {isLoading && <div className="flex justify-center py-6"><Loader2 size={20} className="animate-spin text-brand-500" /></div>}
+
+          {!isLoading && keys.length === 0 && (
+            <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
+              No DKIM keys yet. Click <strong>Rotate key</strong> to generate the first one.
+            </div>
+          )}
+
+          {keys.map(k => (
+            <DkimKeyRow key={k.id} k={k} onActivate={() => activate.mutate(k.id)} activatePending={activate.isPending} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DkimKeyRow({ k, onActivate, activatePending }: { readonly k: DkimKey; readonly onActivate: () => void; readonly activatePending: boolean }) {
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <code className="text-sm font-mono text-gray-900 dark:text-gray-100">{k.selector}</code>
+          <DkimStatusBadge status={k.status} />
+        </div>
+        {k.status === 'pending' && (
+          <button
+            type="button"
+            onClick={onActivate}
+            disabled={activatePending}
+            className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20 px-2 py-1 text-xs font-medium text-green-700 dark:text-green-400 hover:bg-green-100 disabled:opacity-50"
+            data-testid={`dkim-activate-${k.id}`}
+          >
+            {activatePending && <Loader2 size={10} className="animate-spin" />}
+            Activate
+          </button>
+        )}
+      </div>
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        Created {new Date(k.createdAt).toLocaleString()}
+        {k.activatedAt && ` · Activated ${new Date(k.activatedAt).toLocaleString()}`}
+        {k.retiredAt && ` · Retired ${new Date(k.retiredAt).toLocaleString()}`}
+      </div>
+      {(k.status === 'pending' || k.status === 'active') && (
+        <DnsRecordCard name={`${k.selector}._domainkey`} value={k.dnsRecordValue} compact />
+      )}
+    </div>
+  );
+}
+
+function DkimStatusBadge({ status }: { readonly status: 'pending' | 'active' | 'retired' }) {
+  const styles = {
+    active: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
+    pending: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
+    retired: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+  } as const;
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
+      {status}
+    </span>
+  );
+}
+
+function DnsRecordCard({ name, value, compact }: { readonly name: string; readonly value: string; readonly compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copyValue = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Browsers without clipboard API — silently ignore
+    }
+  };
+  return (
+    <div className={`mt-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 ${compact ? 'p-2' : 'p-3'}`}>
+      <div className={`grid grid-cols-[80px_1fr] gap-2 ${compact ? 'text-xs' : 'text-sm'}`}>
+        <span className="font-medium text-gray-500 dark:text-gray-400">Type</span>
+        <span className="font-mono text-gray-900 dark:text-gray-100">TXT</span>
+        <span className="font-medium text-gray-500 dark:text-gray-400">Name</span>
+        <code className="break-all font-mono text-gray-900 dark:text-gray-100">{name}</code>
+        <span className="font-medium text-gray-500 dark:text-gray-400">Value</span>
+        <div className="flex items-start gap-1">
+          <code className="flex-1 break-all font-mono text-gray-900 dark:text-gray-100">{value}</code>
+          <button
+            type="button"
+            onClick={copyValue}
+            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+            title="Copy value to clipboard"
+          >
+            {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

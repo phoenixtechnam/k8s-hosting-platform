@@ -261,3 +261,110 @@ export function useAccessibleMailboxes() {
     queryFn: () => apiFetch<AccessibleMailboxesResponse>('/api/v1/email/accessible-mailboxes'),
   });
 }
+
+// ─── Phase 3 T1.1 — DKIM key rotation ───
+
+export interface DkimKey {
+  readonly id: string;
+  readonly emailDomainId: string;
+  readonly selector: string;
+  readonly status: 'pending' | 'active' | 'retired';
+  readonly dnsRecordValue: string;
+  readonly dnsVerifiedAt: string | null;
+  readonly activatedAt: string | null;
+  readonly retiredAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface DkimKeysResponse { readonly data: readonly DkimKey[] }
+
+export interface DkimRotateResult {
+  readonly keyId: string;
+  readonly newSelector: string;
+  readonly mode: 'primary' | 'cname' | 'secondary';
+  readonly status: 'pending' | 'active';
+  readonly manualDnsRequired: boolean;
+  readonly dnsRecordName: string;
+  readonly dnsRecordValue: string;
+}
+
+interface DkimRotateResponse { readonly data: DkimRotateResult }
+
+export function useDkimKeys(clientId?: string, domainId?: string) {
+  return useQuery({
+    queryKey: ['dkim-keys', clientId, domainId],
+    queryFn: () => apiFetch<DkimKeysResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys`),
+    enabled: !!clientId && !!domainId,
+  });
+}
+
+export function useRotateDkimKey(clientId: string, domainId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<DkimRotateResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/rotate`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+      qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
+    },
+  });
+}
+
+export function useActivateDkimKey(clientId: string, domainId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) =>
+      apiFetch<{ data: { id: string; status: string } }>(
+        `/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys/${keyId}/activate`,
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+    },
+  });
+}
+
+// ─── Phase 3 T5.1 — Mail submit credentials (sendmail compat) ───
+
+export interface MailSubmitCredentialInfo {
+  readonly exists: boolean;
+  readonly id?: string;
+  readonly username?: string;
+  readonly createdAt?: string;
+  readonly lastUsedAt?: string | null;
+}
+
+export interface MailSubmitRotateResult {
+  readonly id: string;
+  readonly username: string;
+  readonly password: string;
+  readonly pushedToPvc: boolean;
+  readonly pushError?: string;
+}
+
+export function useMailSubmitCredential(clientId?: string) {
+  return useQuery({
+    queryKey: ['mail-submit-credential', clientId],
+    queryFn: () =>
+      apiFetch<{ data: MailSubmitCredentialInfo }>(`/api/v1/clients/${clientId}/mail/submit-credential`),
+    enabled: !!clientId,
+  });
+}
+
+export function useRotateMailSubmitCredential(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { note?: string; pushToPvc?: boolean }) =>
+      apiFetch<{ data: MailSubmitRotateResult }>(
+        `/api/v1/clients/${clientId}/mail/submit-credential/rotate`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mail-submit-credential', clientId] });
+    },
+  });
+}

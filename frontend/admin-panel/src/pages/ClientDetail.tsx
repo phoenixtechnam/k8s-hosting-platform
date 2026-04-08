@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -12,7 +12,7 @@ import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
-import { useEmailDomains, useMailboxes } from '@/hooks/use-email';
+import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, type MailSubmitRotateResult } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
@@ -323,7 +323,7 @@ export default function ClientDetail() {
               <p className="mt-1 text-xs">Use "Login as Client" to access the file manager.</p>
             </div>
           )}
-          {activeTab === 'email' && <EmailTab emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
+          {activeTab === 'email' && <EmailTab clientId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />}
         </div>
       </div>
@@ -444,11 +444,12 @@ function ApplicationsTab() {
 interface EmailTabProps {
   readonly emailDomains: readonly { readonly id: string; readonly domainName: string; readonly enabled: number; readonly mailboxCount?: number; readonly createdAt: string }[] | undefined;
   readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string; readonly displayName: string | null; readonly status: string; readonly quotaMb: number; readonly usedMb: number; readonly createdAt: string }[] | undefined;
+  readonly clientId?: string;
   readonly isLoading: boolean;
   readonly error: Error | null;
 }
 
-function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) {
+function EmailTab({ emailDomains, mailboxes, clientId, isLoading, error }: EmailTabProps) {
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load email data." />;
 
@@ -493,6 +494,8 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
         </table>
       </div>
 
+      {clientId && <MailSubmitCredentialPanel clientId={clientId} />}
+
       {mboxes.length > 0 && (
         <div>
           <h3 className="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100">Mailboxes</h3>
@@ -518,6 +521,114 @@ function EmailTab({ emailDomains, mailboxes, isLoading, error }: EmailTabProps) 
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Mail Submit Credential Panel (sendmail compat) ──────────────────────
+
+function MailSubmitCredentialPanel({ clientId }: { readonly clientId: string }) {
+  const { data, isLoading } = useMailSubmitCredential(clientId);
+  const rotate = useRotateMailSubmitCredential(clientId);
+  const [latest, setLatest] = useState<MailSubmitRotateResult | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const cred = data?.data;
+
+  const handleRotate = async (pushToPvc: boolean) => {
+    setLatest(null);
+    const res = await rotate.mutateAsync({ pushToPvc });
+    setLatest(res.data);
+  };
+
+  const copyPassword = async () => {
+    if (!latest?.password) return;
+    try {
+      await navigator.clipboard.writeText(latest.password);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Browsers without clipboard API — silently ignore
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4" data-testid="mail-submit-panel">
+      <div className="mb-3 flex items-center gap-2">
+        <Mail size={16} className="text-brand-500" />
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sendmail submission credentials</h3>
+      </div>
+
+      <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+        Per-customer SMTP credentials used by workload pods (WordPress, PHP <code>mail()</code>, etc.) to relay outbound mail through Stalwart. The auth file is written to the customer PVC at <code>.platform/sendmail-auth</code> and hidden from the file manager.
+      </p>
+
+      {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+
+      {!isLoading && cred && cred.exists && (
+        <div className="mb-3 grid grid-cols-[100px_1fr] gap-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs">
+          <span className="font-medium text-gray-500 dark:text-gray-400">Username</span>
+          <code className="font-mono text-gray-900 dark:text-gray-100">{cred.username}</code>
+          <span className="font-medium text-gray-500 dark:text-gray-400">Created</span>
+          <span className="text-gray-700 dark:text-gray-300">{cred.createdAt ? new Date(cred.createdAt).toLocaleString() : '—'}</span>
+          <span className="font-medium text-gray-500 dark:text-gray-400">Last used</span>
+          <span className="text-gray-700 dark:text-gray-300">{cred.lastUsedAt ? new Date(cred.lastUsedAt).toLocaleString() : 'never'}</span>
+        </div>
+      )}
+
+      {!isLoading && cred && !cred.exists && (
+        <p className="mb-3 text-xs text-gray-500 dark:text-gray-400 italic">No credentials provisioned yet.</p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => handleRotate(true)}
+          disabled={rotate.isPending}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="rotate-submit-credential"
+        >
+          {rotate.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          Rotate &amp; push to PVC
+        </button>
+        <button
+          type="button"
+          onClick={() => handleRotate(false)}
+          disabled={rotate.isPending}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          Rotate only
+        </button>
+      </div>
+
+      {latest && (
+        <div className="mt-3 rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs">
+          <p className="mb-2 font-medium text-amber-900 dark:text-amber-100">
+            New credential generated. The plain password is shown ONCE — copy it now if you need it for manual configuration.
+          </p>
+          <div className="grid grid-cols-[80px_1fr] gap-2">
+            <span className="font-medium text-gray-500 dark:text-gray-400">Username</span>
+            <code className="font-mono text-gray-900 dark:text-gray-100">{latest.username}</code>
+            <span className="font-medium text-gray-500 dark:text-gray-400">Password</span>
+            <div className="flex items-start gap-1">
+              <code className="flex-1 break-all font-mono text-gray-900 dark:text-gray-100">{latest.password}</code>
+              <button
+                type="button"
+                onClick={copyPassword}
+                className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                title="Copy password to clipboard"
+              >
+                {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
+            {latest.pushedToPvc
+              ? '✓ Auth file written to customer PVC. Workload pods will pick it up on next mail send.'
+              : `⚠ PVC write skipped or failed${latest.pushError ? `: ${latest.pushError}` : ''}.`}
+          </p>
         </div>
       )}
     </div>
