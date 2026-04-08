@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: roundcube-config-extra
+  namespace: mail
+  labels:
+    app: roundcube
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  # Extra Roundcube config (mounted at /var/roundcube/config/, which the
+  # Roundcube docker-entrypoint includes via a glob loop). This file enables
+  # the jwt_auth plugin and tightens a few defaults.
+  jwt_auth.inc.php: |
+    <?php
+    // Enable the jwt_auth plugin (the docker-entrypoint will also include
+    // any plugins listed in the ROUNDCUBEMAIL_PLUGINS env var, so this is
+    // belt-and-braces.)
+    if (!in_array('jwt_auth', $config['plugins'] ?? [])) {
+      $config['plugins'][] = 'jwt_auth';
+    }
+
+    // Phase 2b: Stalwart accepts implicit TLS on 993; the docker-entrypoint
+    // sets the host via env vars but does not always honour `ssl://` prefixes,
+    // so we re-set them here defensively.
+    $config['imap_host'] = getenv('ROUNDCUBEMAIL_DEFAULT_HOST');
+    $config['smtp_host'] = getenv('ROUNDCUBEMAIL_SMTP_SERVER');
+
+    // Stalwart ships with a self-signed TLS cert on 993/465 in dev. Roundcube
+    // uses PHP stream contexts for its IMAP and SMTP connections; disable
+    // peer verification here so in-cluster traffic can complete the TLS
+    // handshake. Production overlays MUST override this with a real CA-
+    // issued certificate or a mounted root CA bundle.
+    $config['imap_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
+      ],
+    ];
+    $config['smtp_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
+      ],
+    ];
+
+    // Trust the X-Forwarded-* headers — Roundcube sits behind nginx ingress
+    // in production. Local dev uses NodePort with no proxy.
+    $config['use_https'] = false;
+    $config['proxy_whitelist'] = [];
+
+    // Force-display the mailbox address in the top-right corner instead of
+    // the IMAP login string. The jwt_auth plugin already strips the
+    // %master suffix in the logged_in hook; this is a fallback.
+    $config['username_domain'] = '';
+
+    // Disable Roundcube's request-token / CSRF check for the login action.
+    // jwt_auth performs its own token verification (HS256 against an
+    // independent secret) BEFORE anything is written to $_POST or $_SESSION,
+    // so a successful JWT verify is a stronger guarantee than Roundcube's
+    // own session-scoped token. Keeping the CSRF check enabled breaks the
+    // SSO flow because there is no prior GET /?_task=login to seed the
+    // session token.
+    $config['request_check_tokens'] = false;

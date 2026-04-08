@@ -20,6 +20,10 @@ set -euo pipefail
 #   ./scripts/local.sh mail-status Show mail server pod/service state
 #   ./scripts/local.sh mail-logs   Tail Stalwart logs
 #   ./scripts/local.sh mail-test   Send + receive a test mail via swaks
+#   ./scripts/local.sh webmail-up     Deploy Roundcube webmail to local k3s
+#   ./scripts/local.sh webmail-down   Remove Roundcube from local k3s
+#   ./scripts/local.sh webmail-status Show Roundcube pod state
+#   ./scripts/local.sh webmail-logs   Tail Roundcube logs
 #   ./scripts/local.sh help        Show this help
 #
 # Environment:
@@ -65,9 +69,11 @@ PORT_MAIL_IMAP="${PORT_MAIL_IMAP:-2143}"
 PORT_MAIL_IMAPS="${PORT_MAIL_IMAPS:-2993}"
 PORT_MAIL_POP3="${PORT_MAIL_POP3:-2110}"
 PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2995}"
+PORT_WEBMAIL="${PORT_WEBMAIL:-2017}"
 
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 MAIL_OVERLAY_DIR="k8s/overlays/dev/stalwart"
+WEBMAIL_OVERLAY_DIR="k8s/overlays/dev/roundcube"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -415,6 +421,67 @@ cmd_mail_logs() {
   _mail_k3s_exec kubectl logs -n mail -l app=stalwart-mail --tail=100 -f
 }
 
+# ─── Webmail commands (Phase 2b — Roundcube) ─────────────────────────────────
+
+cmd_webmail_up() {
+  echo "Deploying Roundcube webmail to local k3s..."
+  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
+    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
+    return 1
+  fi
+  _repair_kubeconfig || true
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/roundcube"
+  echo ""
+  echo "Waiting for Roundcube pod to be ready (up to 3 minutes)..."
+  _mail_k3s_exec kubectl wait --for=condition=Ready pod -l app=roundcube -n mail --timeout=180s || {
+    echo ""
+    echo "Roundcube did not become ready. Recent events:"
+    _mail_k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
+    echo ""
+    echo "Pod logs:"
+    _mail_k3s_exec kubectl logs -l app=roundcube -n mail --tail=30 || true
+    return 1
+  }
+  echo ""
+  cmd_webmail_status
+}
+
+cmd_webmail_down() {
+  echo "Removing Roundcube webmail from local k3s..."
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl delete -k "/tmp/mail-k8s-sync/overlays/dev/roundcube" --ignore-not-found=true
+}
+
+cmd_webmail_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  Roundcube Webmail — Local Dev"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  if ! _mail_k3s_exec kubectl get ns mail >/dev/null 2>&1; then
+    echo "  Mail namespace not found. Run: ./scripts/local.sh mail-up first"
+    return
+  fi
+  echo "  Pod:"
+  _mail_k3s_exec kubectl get pods -n mail -l app=roundcube -o wide 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Service:"
+  _mail_k3s_exec kubectl get svc roundcube -n mail 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Host endpoint:"
+  echo "    http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}/"
+  echo ""
+  echo "  Test SSO flow (after running mail-up + mail-test for the test mailbox):"
+  echo "    1) curl http://${DOCKER_HOST_NAME}:${PORT_API}/api/v1/email/webmail-token"
+  echo "       (with admin token + mailbox_id) to get a JWT"
+  echo "    2) Open the returned webmailUrl in a browser"
+  echo "════════════════════════════════════════════════"
+}
+
+cmd_webmail_logs() {
+  _mail_k3s_exec kubectl logs -n mail -l app=roundcube --tail=100 -f
+}
+
 cmd_mail_test() {
   local recipient="${1:-testuser@mail.dind.local}"
   echo "Running mail send + retrieve cycle against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
@@ -454,11 +521,15 @@ case "${1:-help}" in
   k3s-reset)   cmd_k3s_reset ;;
   k3s-status)  cmd_k3s_status ;;
   k3s-shell)   cmd_k3s_shell ;;
-  mail-up)     cmd_mail_up ;;
-  mail-down)   cmd_mail_down ;;
-  mail-status) cmd_mail_status ;;
-  mail-logs)   cmd_mail_logs ;;
-  mail-test)   shift; cmd_mail_test "$@" ;;
-  help|-h)     cmd_help ;;
+  mail-up)        cmd_mail_up ;;
+  mail-down)      cmd_mail_down ;;
+  mail-status)    cmd_mail_status ;;
+  mail-logs)      cmd_mail_logs ;;
+  mail-test)      shift; cmd_mail_test "$@" ;;
+  webmail-up)     cmd_webmail_up ;;
+  webmail-down)   cmd_webmail_down ;;
+  webmail-status) cmd_webmail_status ;;
+  webmail-logs)   cmd_webmail_logs ;;
+  help|-h)        cmd_help ;;
   *)           echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

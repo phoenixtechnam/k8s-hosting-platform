@@ -1,0 +1,18 @@
+#
+# Dev patch: convert ClusterIP → NodePort 30017.
+# docker-compose.local.yml maps host port 2017 → k3s-server 30017 →
+# this service → Roundcube pod port 80.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: roundcube
+  namespace: mail
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30017
+      protocol: TCP

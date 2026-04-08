@@ -96,7 +96,9 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
   const handleOpenWebmail = async (mailboxId: string) => {
     try {
       const result = await webmailToken.mutateAsync(mailboxId);
-      window.open(`${result.data.webmailUrl}/sso.php?token=${result.data.token}`, '_blank');
+      // Phase 2b: backend returns a ready-to-open URL with the SSO token
+      // already embedded as ?_jwt=… for the jwt_auth Roundcube plugin.
+      window.open(result.data.webmailUrl, '_blank', 'noopener,noreferrer');
     } catch { /* will show error */ }
   };
 

@@ -479,6 +479,137 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
   fi
 fi
 
+# ─── Webmail SSO E2E (Phase 2b) ──────────────────────────────────────────────
+#
+# Exercises the full webmail SSO chain:
+#   1. Create a client + domain + email domain + mailbox + client_user
+#   2. Grant the user mailbox access
+#   3. Log in as the client user
+#   4. POST /api/v1/email/webmail-token → verify response shape
+#   5. Decode the JWT, assert mailbox claim + 30s exp
+#   6. (If webmail container is reachable) GET the returned webmailUrl and
+#      verify the response redirects to /?_task=mail (authenticated)
+#
+# Enable with:  WEBMAIL_E2E=1 ./scripts/smoke-test.sh
+# Requires:  Stalwart + Roundcube running (see local.sh mail-up + webmail-up).
+
+WEBMAIL_E2E="${WEBMAIL_E2E:-0}"
+WEBMAIL_HOST="${WEBMAIL_HOST:-http://dind.local:2017}"
+
+if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
+  log "── Webmail SSO E2E (Phase 2b) ──"
+  WM_SFX="$(date +%s)"
+  WM_CLIENT_NAME="wm-e2e-${WM_SFX}"
+  WM_DOMAIN_NAME="wme2e${WM_SFX}.wmtest.local"
+
+  WM_PLAN_ID=$(curl -sS "${API_URL}/api/v1/plans" | jq -r '.data[0].id // empty')
+  WM_REGION_ID=$(curl -sS "${API_URL}/api/v1/regions" | jq -r '.data[0].id // empty')
+
+  if [[ -z "$WM_PLAN_ID" || -z "$WM_REGION_ID" ]]; then
+    fail "Webmail E2E prereqs" "no plan or region seeded"
+  else
+    WM_CLIENT_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+      -d "{\"company_name\":\"${WM_CLIENT_NAME}\",\"company_email\":\"wm@test.local\",\"plan_id\":\"${WM_PLAN_ID}\",\"region_id\":\"${WM_REGION_ID}\"}" \
+      "${API_URL}/api/v1/clients" | jq -r '.data.id // empty')
+
+    if [[ -z "$WM_CLIENT_ID" ]]; then
+      fail "Webmail E2E create client" ""
+    else
+      WM_DOMAIN_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+        -d "{\"domain_name\":\"${WM_DOMAIN_NAME}\"}" \
+        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/domains" | jq -r '.data.id // empty')
+
+      WM_EDOMAIN_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" -d '{}' \
+        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/enable" | jq -r '.data.id // empty')
+
+      WM_MB_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+        -d "{\"local_part\":\"alice\",\"password\":\"WmE2E-${WM_SFX}\",\"quota_mb\":50}" \
+        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_EDOMAIN_ID}/mailboxes" | jq -r '.data.id // empty')
+
+      WM_USER_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"full_name\":\"WM Client User\",\"password\":\"WmCu-${WM_SFX}\"}" \
+        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/users")
+      WM_USER_ID=$(echo "$WM_USER_RESP" | jq -r '.data.id // empty')
+
+      curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+        -d "{\"user_id\":\"${WM_USER_ID}\"}" \
+        "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}/access" >/dev/null
+
+      WM_CU_TOKEN=$(curl -sS "${API_URL}/api/v1/auth/login" -H "Content-Type: application/json" \
+        -d "{\"email\":\"wmcu${WM_SFX}@test.local\",\"password\":\"WmCu-${WM_SFX}\"}" | jq -r '.data.token // empty')
+
+      if [[ -z "$WM_MB_ID" || -z "$WM_USER_ID" || -z "$WM_CU_TOKEN" ]]; then
+        fail "Webmail E2E setup" "mb=${WM_MB_ID:0:8} user=${WM_USER_ID:0:8} tok=${WM_CU_TOKEN:0:8}"
+      else
+        WM_RESP=$(curl -sS -X POST -H "Authorization: Bearer ${WM_CU_TOKEN}" -H "Content-Type: application/json" \
+          -d "{\"mailbox_id\":\"${WM_MB_ID}\"}" "${API_URL}/api/v1/email/webmail-token")
+        WM_JWT=$(echo "$WM_RESP" | jq -r '.data.token // empty')
+        WM_URL=$(echo "$WM_RESP" | jq -r '.data.webmailUrl // empty')
+
+        if [[ -z "$WM_JWT" || -z "$WM_URL" ]]; then
+          fail "Webmail token" "${WM_RESP:0:200}"
+        else
+          pass "POST /email/webmail-token returns token + URL"
+
+          # URL must contain the _task=login and _jwt= params
+          if [[ "$WM_URL" == *"_task=login"* && "$WM_URL" == *"_jwt="* ]]; then
+            pass "webmailUrl contains _task=login&_jwt=…"
+          else
+            fail "webmailUrl shape" "$WM_URL"
+          fi
+
+          # JWT has 3 parts and the payload contains mailbox + iat + exp
+          WM_PARTS=$(awk -F. '{print NF}' <<<"$WM_JWT")
+          if [[ "$WM_PARTS" == "3" ]]; then
+            pass "JWT has 3 segments (HS256)"
+          else
+            fail "JWT structure" "parts=$WM_PARTS"
+          fi
+
+          WM_PAYLOAD_CLAIM=$(echo "$WM_JWT" | awk -F. '{print $2}' | tr '_-' '/+' | python3 -c "
+import sys, base64, json
+s = sys.stdin.read().strip()
+s += '=' * ((4 - len(s) % 4) % 4)
+p = json.loads(base64.b64decode(s))
+print(p.get('mailbox','') + '|' + str(p.get('exp',0) - p.get('iat',0)))
+" 2>/dev/null)
+
+          if [[ "$WM_PAYLOAD_CLAIM" == "alice@${WM_DOMAIN_NAME}|30" ]]; then
+            pass "JWT payload has correct mailbox + 30s lifetime"
+          else
+            fail "JWT payload" "$WM_PAYLOAD_CLAIM"
+          fi
+
+          # Hit the Roundcube SSO URL (replace the default host with the
+          # configured WEBMAIL_HOST so we can point at the local NodePort).
+          WM_TEST_URL="${WEBMAIL_HOST}/?_task=login&_jwt=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote('$WM_JWT'))")"
+          WM_FLOW=$(curl -sS -c /tmp/wm-cookies.txt -b /tmp/wm-cookies.txt -L \
+            -o /tmp/wm-body.html -w "%{http_code}|%{url_effective}" "$WM_TEST_URL" 2>&1)
+
+          WM_CODE="${WM_FLOW%%|*}"
+          WM_FINAL_URL="${WM_FLOW##*|}"
+
+          if [[ "$WM_CODE" == "200" && "$WM_FINAL_URL" == *"_task=mail"* ]]; then
+            pass "Roundcube SSO: JWT → /?_task=mail (authenticated)"
+          elif [[ "$WM_CODE" == "000" ]]; then
+            # Webmail container not reachable — skip, don't fail.
+            echo "  ⊘ Webmail container not reachable at ${WEBMAIL_HOST}, skipping flow test"
+          else
+            fail "Roundcube SSO flow" "code=$WM_CODE final=$WM_FINAL_URL"
+          fi
+          rm -f /tmp/wm-cookies.txt /tmp/wm-body.html
+        fi
+      fi
+
+      # Cleanup
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/mailboxes/${WM_MB_ID}" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/email/domains/${WM_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}/domains/${WM_DOMAIN_ID}" >/dev/null 2>&1 || true
+      curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 # ─── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""

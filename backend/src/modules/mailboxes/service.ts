@@ -364,19 +364,81 @@ export async function generateWebmailToken(
     );
   }
 
-  // Sign a short-lived JWT for webmail SSO
-  // Cast needed: webmail token uses a custom payload shape, not the standard JwtPayload
-  const signFn = app.jwt.sign as unknown as (payload: Record<string, unknown>, options?: { expiresIn: number }) => string;
-  const token = signFn(
-    { mailbox: mailbox.fullAddress },
-    { expiresIn: 30 },
-  );
+  // Sign a short-lived JWT for webmail SSO. Phase 2b: 30s expiry — long
+  // enough for the redirect chain, short enough to minimise risk if the URL
+  // leaks via logs, browser history, or Referer headers.
+  //
+  // We sign this with a DEDICATED secret (WEBMAIL_JWT_SECRET) that is
+  // independent of the API JWT secret, so a leak of one secret cannot forge
+  // the other class of token. Falls back to the API JWT_SECRET when the
+  // dedicated secret is not configured, which matches current dev overlays;
+  // production overlays MUST set both to independent random values.
+  const webmailSecret = process.env.WEBMAIL_JWT_SECRET ?? process.env.JWT_SECRET;
+  if (!webmailSecret || webmailSecret.length < 16) {
+    app.log?.error?.('Webmail JWT signing secret is not configured');
+    throw new ApiError(
+      'INTERNAL_ERROR',
+      'Webmail JWT signing secret is not configured',
+      500,
+    );
+  }
+  if (!process.env.WEBMAIL_JWT_SECRET) {
+    app.log?.warn?.(
+      'WEBMAIL_JWT_SECRET not set — falling back to JWT_SECRET. '
+      + 'For production, set WEBMAIL_JWT_SECRET to an independent random value.',
+    );
+  }
+  const token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
 
-  const webmailUrl = process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
+  // Resolve the webmail base URL: if the client has an ACTIVE custom webmail
+  // hostname, use that. Otherwise fall back to the platform default.
+  // Lazy import to avoid a circular dep with webmail-domains/service.ts.
+  const { getWebmailDomainForClient } = await import('../webmail-domains/service.js');
+  const customDomain = await getWebmailDomainForClient(db, user.clientId);
+  const baseUrl = customDomain
+    ? `https://${customDomain.hostname}`
+    : (process.env.WEBMAIL_URL ?? 'https://webmail.example.com');
+
+  // Phase 2b: the SSO URL points at Roundcube's login action with the JWT
+  // as a query parameter. The jwt_auth plugin's `startup` hook intercepts
+  // it before the login form renders.
+  const webmailUrl = `${baseUrl}/?_task=login&_jwt=${encodeURIComponent(token)}`;
 
   return {
     token,
     mailbox: mailbox.fullAddress,
     webmailUrl,
   };
+}
+
+/**
+ * Sign a minimal HS256 JWT without pulling in @fastify/jwt (which is bound
+ * to the API secret at plugin registration time). Only used by webmail SSO.
+ *
+ * Exported for unit tests.
+ */
+export function signWebmailJwt(
+  payload: Record<string, unknown>,
+  secret: string,
+  expiresInSeconds: number,
+): string {
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload = {
+    ...payload,
+    iat: now,
+    exp: now + expiresInSeconds,
+  };
+  const headerB64 = base64urlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payloadB64 = base64urlEncode(JSON.stringify(fullPayload));
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest();
+  const sigB64 = base64urlEncode(signature);
+  return `${headerB64}.${payloadB64}.${sigB64}`;
+}
+
+function base64urlEncode(input: string | Buffer): string {
+  const buf = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }

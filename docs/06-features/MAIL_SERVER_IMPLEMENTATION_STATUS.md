@@ -192,11 +192,55 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - `VRFY` cross-client address enumeration is possible via the unscoped `verify` query — to be scoped/disabled in Phase 3 outbound hardening.
 - `expand` query has a hardcoded `LIMIT 50` that silently truncates large mailing lists.
 
-### Phase 2b — Webmail SSO + Custom Webmail Domains
-1. Deploy Roundcube with Stalwart master user
-2. Custom Roundcube `jwt_auth` plugin consuming `generateWebmailToken`
-3. `webmail_domains` table + per-client Ingress + cert-manager Certificate
-4. Admin UI: configure custom webmail URL
+### Phase 2b — Webmail SSO + Custom Webmail Domains ✅ *Complete (2026-04-08)*
+**Goal:** Click "Open webmail" on any mailbox in the client panel → land inside Roundcube authenticated as that mailbox, with no password prompt, using either the shared platform webmail hostname or a per-client custom hostname.
+
+**Delivered:**
+- `k8s/base/roundcube/` — standalone Roundcube deployment in the `mail` namespace: Deployment, Service, PVC (1Gi RWO for SQLite sessions), ConfigMap for extra config, ConfigMap-from-file for the jwt_auth plugin source, secret.example.yaml template. Uses the official `roundcube/roundcubemail:1.6.10-apache` image; the plugin is copied into the install dir asynchronously by a wrapper script, and the startupProbe blocks Pod Ready until `/var/www/html/plugins/jwt_auth/jwt_auth.php` exists (closes the emptyDir race).
+- `k8s/base/roundcube/jwt_auth.php` — custom Roundcube plugin (~200 LOC PHP) implementing JWT SSO:
+  - HS256 verification with constant-time `hash_equals`, `alg` checked BEFORE HMAC, `exp` required unconditionally, `iat` future-skew check (60s tolerance)
+  - On valid JWT, calls `$rcmail->login($mailbox%master, $master_pw, $host)` directly (NOT a POST-form redirect — Roundcube's session layer rejects writes to `$_SESSION['temp']` from startup hooks)
+  - Mirrors index.php's post-login sequence: `session->remove('temp')`, `regenerate_id(false)`, `set_auth_cookie()`, `log_login()`, `login_after` hook, then 302 → `/?_task=mail`
+  - Displays the clean mailbox address in the Roundcube UI via `on_logged_in` hook (strips the `%master` Stalwart suffix)
+- `k8s/overlays/dev/roundcube/` — standalone dev overlay (independent of the auto-generated dev overlay): NodePort patch 30017, plaintext dev secrets matching the backend `JWT_SECRET` and Stalwart master password.
+- `backend/src/db/migrations/0005_webmail_domains.sql` + `backend/src/db/schema.ts` — `webmail_domains` table with unique indexes on `client_id` and `hostname`, tracking Ingress + Certificate provisioning state.
+- `backend/src/modules/webmail-domains/` — CRUD service + routes:
+  - Provisions a k8s Ingress + cert-manager Certificate pointing at the shared Roundcube Service when a client adds a custom webmail hostname
+  - Deletes Ingress + Certificate + TLS secret on removal, attempts all three teardown steps even if one fails (so operators aren't left with orphans)
+  - Collision-resistant resource naming: `webmail-<41-char slug>-<8-char sha256>` so two long hostnames with an identical 41-char prefix get distinct Ingress/Cert/Secret names (eliminates the silent-overwrite risk)
+  - Friendly 409 on unique-violation races (catches Postgres `23505` and rewrites to `DUPLICATE_ENTRY`)
+  - Graceful no-k8s mode (leaves rows in `pending`, not `failed`, when `KUBECONFIG_PATH` is unreachable)
+  - k8s client created once at plugin registration, not per-request; logs a warning if kubeconfig can't be loaded
+- `packages/api-contracts/src/webmail-domains.ts` — Zod schemas with RFC 1123 hostname validation **and** a reserved-TLD denylist (`.local`, `.localhost`, `.internal`, `.intranet`, `.lan`, `.corp`, `.home`, `.invalid`, `.test`, `.example`, `.localdomain`) — prevents the "row stuck in `active` with `certificate_provisioned=0`" footgun where a user adds a hostname that cert-manager can never issue a public ACME cert for.
+- `backend/src/modules/mailboxes/service.ts` — `generateWebmailToken` rewritten:
+  - Signs with a dedicated `WEBMAIL_JWT_SECRET` (falls back to `JWT_SECRET` for dev), **independent** of the fastify-jwt API secret — a leak of either secret cannot forge the other class of token
+  - Custom ~15-line HS256 signer via `crypto.createHmac` (avoids coupling to fastify-jwt's secret binding)
+  - 30s token lifetime (was 120s) — minimises risk from logs/history/Referer headers
+  - Resolves the SSO URL: if the client has an `active` row in `webmail_domains`, uses `https://<hostname>`; otherwise falls back to `WEBMAIL_URL` env or the hardcoded platform default
+  - Returns a full URL (`…/?_task=login&_jwt=…`) so the frontend can open it directly
+- `backend/src/modules/webmail-domains/service.test.ts` — 34 unit tests covering CRUD happy paths, race conditions (pg 23505), ingress 409 replace, cert failure non-fatal, no-k8s mode, rollback errors, delete partial-failure, hostname validation (including reserved-TLD rejection)
+- `backend/src/modules/mailboxes/service.test.ts` — extended with 8 new `generateWebmailToken` tests covering URL construction, dedicated secret precedence, token structure, missing-secret error, and unauthorized access
+- `docker-compose.local.yml` — host port 2017 → k3s NodePort 30017
+- `scripts/local.sh` — `webmail-up`, `webmail-down`, `webmail-status`, `webmail-logs` commands
+- `scripts/smoke-test.sh` — new `WEBMAIL_E2E=1` block that provisions a client/user/mailbox chain, exercises `POST /email/webmail-token`, verifies the JWT shape and 30s lifetime, then hits the real Roundcube container through its NodePort to confirm the SSO flow ends on `/?_task=mail`
+- `frontend/client-panel/src/pages/Email.tsx` — fixed the stale `${webmailUrl}/sso.php?token=...` format (no such endpoint); now opens `result.data.webmailUrl` directly with `noopener,noreferrer`
+
+**Verification:**
+- **1016 backend unit tests pass** (108 files) including 34 new webmail-domains tests and 8 extended generateWebmailToken tests
+- **Full backend + client-panel + admin-panel typecheck clean**
+- **38 smoke tests pass** against live local stack with `MAIL_E2E_SQL=1 WEBMAIL_E2E=1` — the 5 new webmail assertions prove end-to-end: `POST /email/webmail-token` returns a well-formed URL, the JWT decodes with correct claims and 30s lifetime, and a GET to the Roundcube NodePort authenticates via the jwt_auth plugin and lands on `/?_task=mail` with `roundcube_sessid` + `roundcube_sessauth` cookies set
+- Manually verified via curl: a client_user with mailbox access → webmail-token → Roundcube SSO → authenticated mail UI (title `Roundcube Webmail :: Inbox`, 36 KB HTML with `compose`, `logout`, `inbox` markers)
+
+**Deferred to Phase 2c / production hardening:**
+- **Admin UI for managing custom webmail domains** — backend CRUD API is live at `/api/v1/clients/:clientId/webmail-domains` but no frontend consumer yet
+- **Admin UI for configuring the default webmail URL** — currently driven by the `WEBMAIL_URL` env var on the backend container; Phase 2c will expose this as a setting in `tls-settings` or a new `webmail-settings` module
+- **TLS trust store for in-cluster IMAP** — the dev overlay disables `verify_peer` in `imap_conn_options` / `smtp_conn_options` because Stalwart's dev cert is self-signed. Production overlays MUST either mount a CA bundle and re-enable verification, or configure Stalwart to serve a cert signed by the platform cluster-issuer.
+- **`use_https = true` + `proxy_whitelist` in the production overlay** — dev is HTTP-only over NodePort; production must trust `X-Forwarded-Proto` from the nginx ingress so session cookies get the `Secure` flag.
+- **Split JWT secrets in the production k8s Secret** — dev overlay still uses the shared `JWT_SECRET` value for `JWT_AUTH_SECRET`; production **must** generate an independent `WEBMAIL_JWT_SECRET` and set both on the backend container and the Roundcube secret.
+- **Per-endpoint rate limit on `POST /email/webmail-token`** — currently only covered by the global 100/min per-user limit; Phase 2c will add a tighter 5/min per-user limit to reduce token farming risk after credential compromise.
+- **Retry / force-delete endpoint for `failed` or `deleting` webmail_domains rows** — currently operators must resolve k8s issues manually then call DELETE again; a `POST /webmail-domains/:id/retry` would close this gap.
+- **Pinned image digest + minimal-caps securityContext** — currently pulls `roundcube/roundcubemail:1.6.10-apache` (mutable tag) and runs with default capabilities because the apache prefork MPM needs setgid/setuid; Phase 2c should rebuild the image from a pre-baked Dockerfile that runs fully as `www-data` so all capabilities can be dropped.
+- **SQLite RWO session backend** — Roundcube stores sessions in a 1Gi RWO PVC, so the Deployment uses `strategy: Recreate` which causes hard downtime on every rollout and invalidates all active sessions. Phase 2c could migrate sessions to a shared Postgres DSN.
 
 ### Phase 3 — Outbound Hardening
 1. Stalwart `[queue.outbound]` rendered from `smtp_relay_configs`

@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - pvc.yaml
+  - configmap-config.yaml
+  - deployment.yaml
+  - service.yaml
+  # secret.example.yaml is NOT included — operators provide the real
+  # Secret per environment via kubectl / sealed-secrets / SOPS.
+
+# Generate the jwt_auth plugin ConfigMap from the PHP source file.
+# Kustomize tracks the file content; any change to jwt_auth.php produces
+# a new ConfigMap hash, which triggers a Roundcube pod restart on apply.
+configMapGenerator:
+  - name: roundcube-jwt-plugin
+    files:
+      - jwt_auth.php
+
+# Disable name suffix hashing for the plugin configmap so the deployment
+# can reference it by stable name.
+generatorOptions:
+  disableNameSuffixHash: true
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: webmail

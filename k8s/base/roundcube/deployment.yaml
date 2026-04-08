@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roundcube
+  namespace: mail
+  labels:
+    app: roundcube
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # SQLite DB is on a RWO PVC; no rolling
+  selector:
+    matchLabels:
+      app: roundcube
+  template:
+    metadata:
+      labels:
+        app: roundcube
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: webmail
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: roundcube
+          image: roundcube/roundcubemail:1.6.10-apache
+          # IfNotPresent on a mutable tag means security patches published
+          # under the same tag won't be re-pulled. Pin by digest in a
+          # production overlay once a known-good digest is captured.
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The official roundcube image runs apache as root (needed for
+            # chown of /var/www/html and prefork setuid/setgid to www-data).
+            # We leave default capabilities — dropping them all breaks
+            # setuid/setgid in prefork MPM. Phase 2c: switch to a pre-baked
+            # image that runs entirely as www-data so we can drop caps.
+          # Custom command: run the original entrypoint, then asynchronously
+          # install the jwt_auth plugin once /var/www/html is populated. The
+          # plugin must exist before any request hits the login form.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              (
+                while [ ! -f /var/www/html/index.php ]; do sleep 0.5; done
+                mkdir -p /var/www/html/plugins/jwt_auth
+                cp -f /jwt-plugin/jwt_auth.php /var/www/html/plugins/jwt_auth/jwt_auth.php
+                chown -R www-data:www-data /var/www/html/plugins/jwt_auth 2>/dev/null || true
+                echo "[jwt_auth] plugin installed"
+              ) &
+              exec /docker-entrypoint.sh apache2-foreground
+          env:
+            # Stalwart connection details (IMAPS and submission, both go to
+            # the same in-cluster service in the mail namespace)
+            - name: ROUNDCUBEMAIL_DEFAULT_HOST
+              value: "ssl://stalwart-mail.mail.svc.cluster.local"
+            - name: ROUNDCUBEMAIL_DEFAULT_PORT
+              value: "993"
+            - name: ROUNDCUBEMAIL_SMTP_SERVER
+              value: "ssl://stalwart-mail.mail.svc.cluster.local"
+            - name: ROUNDCUBEMAIL_SMTP_PORT
+              value: "465"
+            # SQLite for sessions / contacts / identities
+            - name: ROUNDCUBEMAIL_DB_TYPE
+              value: "sqlite"
+            - name: ROUNDCUBEMAIL_DB_DIR
+              value: "/var/roundcube/db"
+            - name: ROUNDCUBEMAIL_DB_NAME
+              value: "roundcube"
+            # Plugins to enable (comma-separated). jwt_auth is what makes SSO work.
+            - name: ROUNDCUBEMAIL_PLUGINS
+              value: "archive,zipdownload,jwt_auth"
+            - name: ROUNDCUBEMAIL_SKIN
+              value: "elastic"
+            # Cosmetic
+            - name: ROUNDCUBEMAIL_USERNAME_DOMAIN
+              value: ""
+            # JWT plugin secrets
+            - name: JWT_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: JWT_AUTH_SECRET
+            - name: STALWART_MASTER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: STALWART_MASTER_USER
+            - name: STALWART_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: STALWART_MASTER_PASSWORD
+            # Roundcube session/cred encryption key
+            - name: ROUNDCUBEMAIL_DES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DES_KEY
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          volumeMounts:
+            # Roundcube install dir — emptyDir, repopulated by the entrypoint
+            # on every boot from /usr/src/roundcubemail/. The plugin gets
+            # injected by our wrapper script.
+            - name: install
+              mountPath: /var/www/html
+            # PVC for the SQLite DB and any persistent state
+            - name: data
+              mountPath: /var/roundcube
+            # Mount the plugin source as a read-only file (the wrapper script
+            # copies it to the install dir at startup)
+            - name: jwt-plugin
+              mountPath: /jwt-plugin
+              readOnly: true
+            # Extra config files (entrypoint includes anything matching
+            # /var/roundcube/config/*.php). We use a subPath mount so other
+            # writable files in /var/roundcube/config/ aren't shadowed.
+            - name: config-extra
+              mountPath: /var/roundcube/config/jwt_auth.inc.php
+              subPath: jwt_auth.inc.php
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          # startupProbe uses exec to wait for both Roundcube's files to be
+          # populated in /var/www/html AND our jwt_auth plugin to be copied
+          # into place by the wrapper script. This closes the race where
+          # Apache could answer /?_jwt=... before the background copy
+          # finished. Once startupProbe passes, the readinessProbe below
+          # takes over and handles HTTP health. Note: the roundcube image
+          # does not ship wget or curl, so we can only use file tests here.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  test -f /var/www/html/index.php \
+                    && test -f /var/www/html/plugins/jwt_auth/jwt_auth.php
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: install
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: roundcube-data
+        - name: jwt-plugin
+          configMap:
+            name: roundcube-jwt-plugin
+            items:
+              - key: jwt_auth.php
+                path: jwt_auth.php
+        - name: config-extra
+          configMap:
+            name: roundcube-config-extra
+            items:
+              - key: jwt_auth.inc.php
+                path: jwt_auth.inc.php

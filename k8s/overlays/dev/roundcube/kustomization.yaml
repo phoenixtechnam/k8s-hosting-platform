@@ -1,0 +1,30 @@
+#
+# Dev overlay for Roundcube.
+#
+# Standalone kustomization — deploy independently of the main dev overlay
+# so the bootstrap.sh auto-regenerated dev/kustomization.yaml never touches it.
+#
+# Deploy:
+#   ./scripts/local.sh webmail-up
+#   # equivalent to: kubectl apply -k k8s/overlays/dev/roundcube/
+#
+# Differences from base:
+#   1. Service type ClusterIP → NodePort 30017 (mapped to host 2017
+#      by docker-compose.local.yml)
+#   2. Plaintext dev secrets matching .env.local JWT_SECRET and the
+#      Stalwart dev master credentials
+#
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/roundcube
+  - secret.yaml
+
+patches:
+  - path: service-nodeport-patch.yaml
+    target:
+      kind: Service
+      name: roundcube

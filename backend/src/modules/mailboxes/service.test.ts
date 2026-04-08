@@ -275,49 +275,191 @@ describe('getAccessibleMailboxes', () => {
 });
 
 describe('generateWebmailToken', () => {
-  it('should generate a token for an authorized user', async () => {
-    const user = { clientId: 'c1' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
-    const allMailboxes = [
-      { id: 'mb1', fullAddress: 'info@example.com' },
-    ];
+  const TEST_SECRET = 'test-webmail-secret-at-least-16-chars-long';
+  const ORIGINAL_ENV = { ...process.env };
 
-    // 1) user clientId lookup, 2) getAccessibleMailboxes -> user role, 3) mailboxes
-    selectResults = [[user], [userRole], allMailboxes];
-    const db = createMockDb();
-
-    const mockApp = {
-      jwt: {
-        sign: vi.fn().mockReturnValue('jwt-token-123'),
+  // Mock app includes a pino-compatible logger surface used by the new
+  // warn/error call sites.
+  function makeMockApp() {
+    return {
+      log: {
+        warn: vi.fn(),
+        error: vi.fn(),
       },
     } as unknown as Parameters<typeof generateWebmailToken>[0];
+  }
 
-    const result = await generateWebmailToken(mockApp, db as never, 'u1', 'mb1');
-    expect(result.token).toBe('jwt-token-123');
+  beforeEach(() => {
+    selectCallIndex = 0;
+    process.env = { ...ORIGINAL_ENV };
+    process.env.JWT_SECRET = TEST_SECRET;
+    delete process.env.WEBMAIL_JWT_SECRET;
+    delete process.env.WEBMAIL_URL;
+  });
+
+  function decodeJwtPayload(token: string): Record<string, unknown> {
+    const [, payloadB64] = token.split('.');
+    const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4);
+    const json = Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    return JSON.parse(json);
+  }
+
+  it('should generate a signed JWT with embedded URL for authorized user (no custom domain)', async () => {
+    const user = { clientId: 'c1' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    // getWebmailDomainForClient → empty (no custom domain)
+    const noCustomDomain: unknown[] = [];
+
+    // 1) user lookup, 2) getAccessibleMailboxes role, 3) mailboxes, 4) custom domain
+    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    const db = createMockDb();
+
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+
+    // Token is a real HS256 JWT, not a mock string
+    expect(result.token.split('.')).toHaveLength(3);
     expect(result.mailbox).toBe('info@example.com');
-    expect(result.webmailUrl).toBeDefined();
+
+    // Payload contains mailbox claim, iat, and 30s exp
+    const payload = decodeJwtPayload(result.token);
+    expect(payload.mailbox).toBe('info@example.com');
+    expect(typeof payload.iat).toBe('number');
+    expect(typeof payload.exp).toBe('number');
+    expect((payload.exp as number) - (payload.iat as number)).toBe(30);
+
+    // URL contains the embedded token as ?_jwt= and the default fallback host
+    expect(result.webmailUrl).toContain('/?_task=login&_jwt=');
+    expect(result.webmailUrl).toContain(encodeURIComponent(result.token));
+    expect(result.webmailUrl).toContain('webmail.example.com');
+  });
+
+  it('should use an active custom webmail domain when one exists', async () => {
+    const user = { clientId: 'c1' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    // Active custom domain
+    const activeDomain = {
+      id: 'wd1',
+      clientId: 'c1',
+      hostname: 'webmail.client-a.com',
+      status: 'active',
+    };
+
+    selectResults = [[user], [userRole], allMailboxes, [activeDomain]];
+    const db = createMockDb();
+
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+    expect(result.webmailUrl).toMatch(/^https:\/\/webmail\.client-a\.com\/\?_task=login&_jwt=/);
+  });
+
+  it('should fall back to WEBMAIL_URL env when set and no custom domain', async () => {
+    process.env.WEBMAIL_URL = 'https://webmail.platform.test';
+    const user = { clientId: 'c1' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const noCustomDomain: unknown[] = [];
+
+    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    const db = createMockDb();
+
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+    expect(result.webmailUrl).toMatch(/^https:\/\/webmail\.platform\.test\/\?_task=login&_jwt=/);
+  });
+
+  it('should prefer WEBMAIL_JWT_SECRET over JWT_SECRET when both are set', async () => {
+    const webmailSecret = 'independent-webmail-secret-value';
+    process.env.WEBMAIL_JWT_SECRET = webmailSecret;
+    const user = { clientId: 'c1' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const noCustomDomain: unknown[] = [];
+
+    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    const db = createMockDb();
+
+    const { signWebmailJwt } = await import('./service.js');
+    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
+
+    // The token must verify against the dedicated secret, NOT the API secret.
+    const expected = signWebmailJwt(
+      { mailbox: 'info@example.com' },
+      webmailSecret,
+      30,
+    );
+    // Both tokens share the same iat/exp window (generated ~at the same time),
+    // so compare the header (first segment) and payload prefix instead of
+    // an exact match — only the signature can reliably diverge from key.
+    expect(result.token.split('.')[0]).toBe(expected.split('.')[0]);
+  });
+
+  it('should throw INTERNAL_ERROR when neither JWT secret is set', async () => {
+    delete process.env.JWT_SECRET;
+    delete process.env.WEBMAIL_JWT_SECRET;
+
+    const user = { clientId: 'c1' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    selectResults = [[user], [userRole], allMailboxes, []];
+    const db = createMockDb();
+
+    await expect(
+      generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
+    ).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR',
+      status: 500,
+    });
   });
 
   it('should reject token generation for unauthorized user', async () => {
     const user = { clientId: 'c1' };
     const userRole = { roleName: 'client_user', clientId: 'c1' };
-    // client_user has no access rows -> empty result
     const noMailboxes: unknown[] = [];
 
     selectResults = [[user], [userRole], noMailboxes];
     const db = createMockDb();
 
-    const mockApp = {
-      jwt: {
-        sign: vi.fn(),
-      },
-    } as unknown as Parameters<typeof generateWebmailToken>[0];
-
     await expect(
-      generateWebmailToken(mockApp, db as never, 'u1', 'mb1'),
+      generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
     ).rejects.toMatchObject({
       code: 'MAILBOX_ACCESS_DENIED',
       status: 403,
     });
+  });
+});
+
+describe('signWebmailJwt', () => {
+  it('should produce a three-part HS256 JWT with embedded iat and exp', async () => {
+    const { signWebmailJwt } = await import('./service.js');
+    const token = signWebmailJwt(
+      { mailbox: 'alice@example.com' },
+      'secret-at-least-16-chars',
+      30,
+    );
+    const parts = token.split('.');
+    expect(parts).toHaveLength(3);
+
+    const header = JSON.parse(
+      Buffer.from(parts[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    );
+    expect(header.alg).toBe('HS256');
+    expect(header.typ).toBe('JWT');
+
+    const padded = parts[1] + '='.repeat((4 - (parts[1].length % 4)) % 4);
+    const payload = JSON.parse(
+      Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    );
+    expect(payload.mailbox).toBe('alice@example.com');
+    expect(typeof payload.iat).toBe('number');
+    expect(typeof payload.exp).toBe('number');
+    expect(payload.exp - payload.iat).toBe(30);
+  });
+
+  it('should produce different signatures for different secrets', async () => {
+    const { signWebmailJwt } = await import('./service.js');
+    const a = signWebmailJwt({ mailbox: 'a@x.com' }, 'secret-one-at-least-16', 30);
+    const b = signWebmailJwt({ mailbox: 'a@x.com' }, 'secret-two-at-least-16', 30);
+    // Third segment is the signature, which MUST differ
+    expect(a.split('.')[2]).not.toBe(b.split('.')[2]);
   });
 });

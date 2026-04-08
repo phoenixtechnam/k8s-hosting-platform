@@ -1,0 +1,28 @@
+#
+# Roundcube Service.
+#
+# Production: ClusterIP, fronted by an Ingress (the default per-platform
+# webmail hostname like webmail.platform.com PLUS any per-client custom
+# hostnames provisioned via the webmail_domains backend module).
+#
+# Dev overlay: patched to NodePort 30017 so docker-compose can map host
+# port 2017 → 30017 → pod 80 for local testing.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: roundcube
+  namespace: mail
+  labels:
+    app: roundcube
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+spec:
+  type: ClusterIP
+  selector:
+    app: roundcube
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
