@@ -390,18 +390,17 @@ export async function generateWebmailToken(
   }
   const token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
 
-  // Resolve the webmail base URL: if the client has an ACTIVE custom webmail
-  // hostname, use that. Otherwise fall back to the platform default.
-  // Lazy import to avoid a circular dep with webmail-domains/service.ts.
-  const { getWebmailDomainForClient } = await import('../webmail-domains/service.js');
-  const customDomain = await getWebmailDomainForClient(db, user.clientId);
-  const baseUrl = customDomain
-    ? `https://${customDomain.hostname}`
-    : (process.env.WEBMAIL_URL ?? 'https://webmail.example.com');
+  // Resolve the webmail base URL. Phase 2c simplified this: there is no
+  // per-client custom webmail domain layer anymore. Phase 2c part 3 will
+  // add a `webmail-settings.default_webmail_url` setting and a derived
+  // webmail Ingress for every enabled email domain; until that lands,
+  // read WEBMAIL_URL from the environment, or fall back to the hardcoded
+  // platform default.
+  const baseUrl = process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
 
-  // Phase 2b: the SSO URL points at Roundcube's login action with the JWT
-  // as a query parameter. The jwt_auth plugin's `startup` hook intercepts
-  // it before the login form renders.
+  // The SSO URL points at Roundcube's login action with the JWT as a
+  // query parameter. The jwt_auth plugin's `startup` hook intercepts it
+  // before the login form renders.
   const webmailUrl = `${baseUrl}/?_task=login&_jwt=${encodeURIComponent(token)}`;
 
   return {

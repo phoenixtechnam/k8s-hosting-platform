@@ -304,15 +304,13 @@ describe('generateWebmailToken', () => {
     return JSON.parse(json);
   }
 
-  it('should generate a signed JWT with embedded URL for authorized user (no custom domain)', async () => {
+  it('should generate a signed JWT with embedded URL using the default fallback host', async () => {
     const user = { clientId: 'c1' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    // getWebmailDomainForClient → empty (no custom domain)
-    const noCustomDomain: unknown[] = [];
 
-    // 1) user lookup, 2) getAccessibleMailboxes role, 3) mailboxes, 4) custom domain
-    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    // 1) user lookup, 2) getAccessibleMailboxes role, 3) mailboxes
+    selectResults = [[user], [userRole], allMailboxes];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -328,39 +326,20 @@ describe('generateWebmailToken', () => {
     expect(typeof payload.exp).toBe('number');
     expect((payload.exp as number) - (payload.iat as number)).toBe(30);
 
-    // URL contains the embedded token as ?_jwt= and the default fallback host
+    // URL contains the embedded token as ?_jwt= and the hardcoded fallback host
+    // (WEBMAIL_URL env and the Phase 2c webmail-settings default are both unset)
     expect(result.webmailUrl).toContain('/?_task=login&_jwt=');
     expect(result.webmailUrl).toContain(encodeURIComponent(result.token));
     expect(result.webmailUrl).toContain('webmail.example.com');
   });
 
-  it('should use an active custom webmail domain when one exists', async () => {
-    const user = { clientId: 'c1' };
-    const userRole = { roleName: 'client_admin', clientId: 'c1' };
-    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    // Active custom domain
-    const activeDomain = {
-      id: 'wd1',
-      clientId: 'c1',
-      hostname: 'webmail.client-a.com',
-      status: 'active',
-    };
-
-    selectResults = [[user], [userRole], allMailboxes, [activeDomain]];
-    const db = createMockDb();
-
-    const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
-    expect(result.webmailUrl).toMatch(/^https:\/\/webmail\.client-a\.com\/\?_task=login&_jwt=/);
-  });
-
-  it('should fall back to WEBMAIL_URL env when set and no custom domain', async () => {
+  it('should use WEBMAIL_URL env when set', async () => {
     process.env.WEBMAIL_URL = 'https://webmail.platform.test';
     const user = { clientId: 'c1' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    const noCustomDomain: unknown[] = [];
 
-    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    selectResults = [[user], [userRole], allMailboxes];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -373,9 +352,8 @@ describe('generateWebmailToken', () => {
     const user = { clientId: 'c1' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    const noCustomDomain: unknown[] = [];
 
-    selectResults = [[user], [userRole], allMailboxes, noCustomDomain];
+    selectResults = [[user], [userRole], allMailboxes];
     const db = createMockDb();
 
     const { signWebmailJwt } = await import('./service.js');
@@ -400,7 +378,7 @@ describe('generateWebmailToken', () => {
     const user = { clientId: 'c1' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    selectResults = [[user], [userRole], allMailboxes, []];
+    selectResults = [[user], [userRole], allMailboxes];
     const db = createMockDb();
 
     await expect(

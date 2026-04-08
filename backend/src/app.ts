@@ -43,7 +43,6 @@ import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
-import { webmailDomainRoutes } from './modules/webmail-domains/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
 import { sslCertRoutes } from './modules/ssl-certs/routes.js';
 import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
@@ -232,7 +231,6 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
-  await app.register(webmailDomainRoutes, { prefix: '/api/v1' });
   await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
   await app.register(sslCertRoutes, { prefix: '/api/v1' });
   await app.register(eolScannerRoutes, { prefix: '/api/v1' });

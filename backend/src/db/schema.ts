@@ -692,24 +692,10 @@ export const emailAliases = pgTable('email_aliases', {
   index('email_aliases_domain_idx').on(table.emailDomainId),
 ]);
 
-// ─── Webmail Domains (Phase 2b) ───
-// Per-client custom hostname for Roundcube (e.g. webmail.client-a.com).
-// Backend creates a k8s Ingress + cert-manager Certificate when a row is
-// inserted, deletes them when removed. Single hostname per client for MVP
-// (unique constraint on client_id); Phase 2c can widen this.
-export const webmailDomains = pgTable('webmail_domains', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
-  hostname: varchar('hostname', { length: 255 }).notNull(),
-  status: varchar('status', { length: 32 }).notNull().default('pending'),
-  ingressProvisioned: integer('ingress_provisioned').notNull().default(0),
-  certificateProvisioned: integer('certificate_provisioned').notNull().default(0),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-}, (table) => [
-  uniqueIndex('webmail_domains_client_unique').on(table.clientId),
-  uniqueIndex('webmail_domains_hostname_unique').on(table.hostname),
-]);
+// Phase 2b shipped a per-client custom webmail_domains table + CRUD. Phase
+// 2c reverted it in favour of a derived convention: every enabled email
+// domain gets webmail.<domain> automatically. See migration 0006 and
+// docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md (Phase 2c section).
 
 export const smtpRelayConfigs = pgTable('smtp_relay_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -847,8 +833,6 @@ export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
 export type EmailAlias = typeof emailAliases.$inferSelect;
 export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
-export type WebmailDomain = typeof webmailDomains.$inferSelect;
-export type NewWebmailDomain = typeof webmailDomains.$inferInsert;
 export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
 export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
 export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;
