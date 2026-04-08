@@ -606,7 +606,7 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
               WM_SAFE_NAME=$(echo "webmail.${WM_DOMAIN_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-50)
               WM_ING_NAME="${WM_SAFE_NAME}-ingress"
               WM_ING_CHECK="MISSING"
-              for i in 1 2 3 4 5; do
+              for _ in 1 2 3 4 5; do
                 WM_ING_CHECK=$(docker exec "$K3S_CONTAINER" kubectl get ingress "${WM_ING_NAME}" -n "${WM_NS}" -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "MISSING")
                 if [[ "$WM_ING_CHECK" == "webmail.${WM_DOMAIN_NAME}" ]]; then break; fi
                 sleep 1

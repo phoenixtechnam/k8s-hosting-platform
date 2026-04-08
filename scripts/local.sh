@@ -72,8 +72,6 @@ PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2995}"
 PORT_WEBMAIL="${PORT_WEBMAIL:-2017}"
 
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
-MAIL_OVERLAY_DIR="k8s/overlays/dev/stalwart"
-WEBMAIL_OVERLAY_DIR="k8s/overlays/dev/roundcube"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
@@ -313,11 +311,10 @@ _patch_postgres_bridge() {
   fi
   echo "  Patching platform-postgres Endpoints → $pg_ip"
   local patch_err
-  patch_err=$(_mail_k3s_exec kubectl patch endpoints platform-postgres -n mail \
-    --type=json \
-    -p="[{\"op\":\"replace\",\"path\":\"/subsets/0/addresses/0/ip\",\"value\":\"$pg_ip\"}]" \
-    2>&1)
-  if [[ $? -ne 0 ]]; then
+  if ! patch_err=$(_mail_k3s_exec kubectl patch endpoints platform-postgres -n mail \
+      --type=json \
+      -p="[{\"op\":\"replace\",\"path\":\"/subsets/0/addresses/0/ip\",\"value\":\"$pg_ip\"}]" \
+      2>&1); then
     echo "  ⚠  kubectl patch failed: $patch_err"
     return 1
   fi
@@ -483,7 +480,11 @@ cmd_webmail_logs() {
 }
 
 cmd_mail_test() {
-  local recipient="${1:-testuser@mail.dind.local}"
+  # Recipient is currently hard-coded inside the swaks call below;
+  # this argument is reserved for the future when the test allows
+  # an override. Keep it as a positional but don't bind it to a
+  # local — shellcheck would otherwise flag SC2034.
+  : "${1:-testuser@mail.dind.local}"
   echo "Running mail send + retrieve cycle against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
   echo ""
   echo "NOTE: This test first creates the test account via stalwart-cli, then"
@@ -497,7 +498,7 @@ cmd_mail_test() {
   echo "TCP probes:"
   for port_var in PORT_MAIL_SMTP PORT_MAIL_SUBMISSION PORT_MAIL_IMAP PORT_MAIL_IMAPS; do
     local port="${!port_var}"
-    if (echo > /dev/tcp/${DOCKER_HOST_NAME}/${port}) >/dev/null 2>&1; then
+    if (echo > "/dev/tcp/${DOCKER_HOST_NAME}/${port}") >/dev/null 2>&1; then
       echo "  ✓ ${DOCKER_HOST_NAME}:${port} reachable"
     else
       echo "  ✗ ${DOCKER_HOST_NAME}:${port} NOT reachable"
