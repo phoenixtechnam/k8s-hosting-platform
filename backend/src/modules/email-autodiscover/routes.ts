@@ -128,9 +128,24 @@ export async function emailAutodiscoverRoutes(app: FastifyInstance): Promise<voi
 
   // ─── MTA-STS policy ───────────────────────────────────────────────
   // GET /.well-known/mta-sts.txt
-  // (Served from the mail server hostname's _mta-sts.<domain> CNAME
-  // target in production; in dev we just serve it from the platform.)
-
+  //
+  // Per RFC 8461, each customer domain needs an MTA-STS policy. In a
+  // multi-tenant platform with a single shared Stalwart instance, all
+  // customer domains route mail through the same MX
+  // (mail.<platform-hostname>) and present the same TLS certificate.
+  // The policy content is therefore identical across all customer
+  // domains, so a single platform-wide endpoint is correct:
+  //
+  //   1. Customer domain `acme.com` CNAMEs `mta-sts.acme.com` to
+  //      `mta-sts.<platform-hostname>` (auto-provisioned by
+  //      dns-provisioning.ts).
+  //   2. Senders fetch `https://mta-sts.acme.com/.well-known/mta-sts.txt`
+  //      which resolves through the CNAME to this endpoint.
+  //   3. The policy says `mx: mail.<platform-hostname>`, which is the
+  //      actual Stalwart MX for ALL customer mail.
+  //
+  // This is NOT a bug — per-domain customization would only matter if
+  // each customer ran their own MX, which they don't on this platform.
   app.get('/.well-known/mta-sts.txt', async (_request, reply) => {
     const host = await getMailServerHostname(app.db);
     const text = renderMtaStsPolicyText({

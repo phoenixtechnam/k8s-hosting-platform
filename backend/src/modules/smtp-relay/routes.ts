@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { createSmtpRelaySchema, updateSmtpRelaySchema } from '@k8s-hosting/api-contracts';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
+import { getEffectiveRateLimit } from '../email-outbound/rate-limit.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -30,6 +31,9 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
+  // The /admin/* routes below require admin. The /clients/:cid/mail/...
+  // routes are registered separately at the bottom with their own
+  // role + client-access guards.
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
@@ -106,6 +110,44 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     const result = await reconcileOutboundConfig(app.db, k8s, app.log);
+    return success(result);
+  });
+
+  // GET /api/v1/admin/clients/:clientId/mail/rate-limit
+  //
+  // Phase 3 (post-Phase-3) G5: read the effective email send rate
+  // limit for a client. Mirrors the same calculation that the
+  // [queue.throttle] reconciler uses, so admins can verify what's
+  // actually configured without having to read the rendered
+  // ConfigMap. Returns the source (override / platform_default /
+  // hardcoded_default / suspended) so callers know WHY the value is
+  // what it is.
+  //
+  // This route inherits the admin-only guard from the addHook above.
+  app.get('/admin/clients/:clientId/mail/rate-limit', async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const result = await getEffectiveRateLimit(app.db, clientId);
+    return success(result);
+  });
+}
+
+// ─── Client-scoped rate limit ─────────────────────────────────────────────
+//
+// Registered as a SEPARATE plugin so the parent's admin-only
+// authenticate+requireRole hooks don't apply. This route lets a
+// client_admin read their OWN rate limit from the client panel; an
+// admin can also call it via the same path because requireRole
+// includes 'super_admin' | 'admin'.
+export async function smtpRelayClientRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/clients/:clientId/mail/rate-limit', {
+    onRequest: [
+      authenticate,
+      requireRole('super_admin', 'admin', 'support', 'client_admin'),
+      requireClientAccess(),
+    ],
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const result = await getEffectiveRateLimit(app.db, clientId);
     return success(result);
   });
 }

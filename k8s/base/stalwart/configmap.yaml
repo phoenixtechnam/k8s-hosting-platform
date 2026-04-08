@@ -146,6 +146,46 @@ data:
     user = "master"
     secret = "%{env:MASTER_SECRET}%"
 
+    # ─── Spam scoring ──────────────────────────────────────────────────────
+    # Phase 3 (post-Phase-3 hardening): inbound spam scoring policy.
+    #
+    # We rely on Stalwart's built-in spam classifier (Bayesian filter
+    # + heuristics + reputation) with its default thresholds. We
+    # explicitly do NOT enable any public DNSBL lookup. The risk
+    # register (docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md
+    # §5) documents the reason: Spamhaus public DNSBL queries return
+    # errors from Hetzner IP space (since 2025-02-19), which would
+    # mark every inbound message as "DNS error" rather than
+    # spam-or-ham.
+    #
+    # Note: spam-filter.score.* values are DB-managed in Stalwart's
+    # internal config store, not local-file-overridable. Setting them
+    # in this configmap produces a warning AND has no effect at
+    # runtime (Stalwart picks the DB value). Operators who want
+    # different thresholds must use the WebAdmin UI on port 8080 or
+    # call stalwart-cli config set.
+    #
+    # Upgrade paths for operators who want stronger spam filtering:
+    #
+    #   A. Spamhaus Data Query Service (DQS, paid):
+    #      via WebAdmin → spam-filter → DNSBL → add
+    #      ${MY_KEY}.zen.dq.spamhaus.net
+    #
+    #   B. SURBL Multi (free, narrower coverage):
+    #      via WebAdmin → spam-filter → DNSBL → add multi.surbl.org
+    #
+    #   C. Manual score tweaks:
+    #      stalwart-cli config set spam-filter.score.spam 4.5
+    #
+    # Per-domain overrides
+    # (email_domains.spam_threshold_junk / spam_threshold_reject) are
+    # already wired into the SQL directory and applied per-recipient.
+    #
+    # Stalwart's spam-filter is enabled by default in the DB-managed
+    # config store; no explicit `[spam-filter] enable = true` is needed
+    # in this file (and adding one would produce a "local config
+    # overriding database key" warning at startup).
+
     # ─── Telemetry ─────────────────────────────────────────────────────────
     [tracer.stdout]
     type = "stdout"
