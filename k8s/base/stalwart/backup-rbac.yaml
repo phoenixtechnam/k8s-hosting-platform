@@ -1,0 +1,53 @@
+# Phase 3 T3.4: RBAC for the Stalwart backup CronJob.
+#
+# The CronJob runs `kubectl exec stalwart-mail-0 ...` so it needs
+# permission to create exec subresources on Pods in the `mail`
+# namespace. Scoped tightly: no list/watch on other resources, no
+# write access outside the namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stalwart-backup
+  namespace: mail
+  labels:
+    app: stalwart-backup
+    app.kubernetes.io/part-of: hosting-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stalwart-backup
+  namespace: mail
+  labels:
+    app: stalwart-backup
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  # Required to look up the stalwart-mail-0 pod before exec'ing
+  # into it. `get` is sufficient — kubectl exec resolves the pod
+  # name from the StatefulSet pod spec directly.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # The exec call against `pods/exec` is what actually runs the
+  # backup. K8s gates this on the `create` verb against the
+  # subresource.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stalwart-backup
+  namespace: mail
+  labels:
+    app: stalwart-backup
+    app.kubernetes.io/part-of: hosting-platform
+subjects:
+  - kind: ServiceAccount
+    name: stalwart-backup
+    namespace: mail
+roleRef:
+  kind: Role
+  name: stalwart-backup
+  apiGroup: rbac.authorization.k8s.io

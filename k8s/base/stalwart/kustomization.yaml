@@ -9,6 +9,11 @@ resources:
   - statefulset.yaml
   - service.yaml
   - networkpolicy.yaml
+  # Phase 3 T3.4: backup CronJob + RBAC. The CronJob exec's into
+  # stalwart-mail-0 to run `stalwart-cli server backup`, so no
+  # second PVC mount is required.
+  - backup-rbac.yaml
+  - backup-cronjob.yaml
   # secret.example.yaml is NOT included — operators provide the real Secret
   # per environment via kubectl / sealed-secrets / SOPS.
 

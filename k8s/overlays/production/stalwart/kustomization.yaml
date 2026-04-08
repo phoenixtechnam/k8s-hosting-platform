@@ -44,6 +44,10 @@ namespace: mail
 
 resources:
   - ../../../base/stalwart
+  # Phase 3 T3.1: Certificate CR for the platform-postgres TLS
+  # connection. cert-manager produces the `platform-postgres-tls`
+  # Secret which Stalwart mounts (CA bundle only) for verification.
+  - platform-postgres-tls-certificate.yaml
 
 patches:
   - path: statefulset-cert-mount.yaml

@@ -7,6 +7,13 @@
 # POST /api/v1/admin/mail/certificate/ensure (see kustomization.yaml
 # for the bootstrap steps).
 #
+# Phase 3 T3.1: ALSO mount the platform-postgres CA bundle at
+# /etc/stalwart/pg-tls/ca.crt so Stalwart can verify the Postgres
+# server cert end-to-end. The Secret `platform-postgres-ca` is
+# expected to be created by cert-manager (see the production
+# overlay's platform-postgres-tls Certificate CR) and contains a
+# single key `ca.crt` with the PEM-encoded issuer chain.
+#
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -21,6 +28,9 @@ spec:
             - name: tls-cert
               mountPath: /etc/stalwart/tls
               readOnly: true
+            - name: pg-ca
+              mountPath: /etc/stalwart/pg-tls
+              readOnly: true
       volumes:
         - name: tls-cert
           secret:
@@ -28,3 +38,10 @@ spec:
             # Optional at kustomize merge time, but cert-manager should
             # have already populated it per the bootstrap procedure.
             optional: false
+        - name: pg-ca
+          secret:
+            secretName: platform-postgres-ca
+            optional: false
+            items:
+              - key: ca.crt
+                path: ca.crt

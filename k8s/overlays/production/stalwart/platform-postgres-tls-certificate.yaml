@@ -1,0 +1,68 @@
+# Phase 3 T3.1: cert-manager Certificate CR for the
+# platform-postgres → Stalwart connection.
+#
+# This Certificate is consumed by the Stalwart pod (which mounts
+# both the server cert AND the CA bundle for verification) and by
+# the in-cluster Postgres StatefulSet (which uses tls.crt + tls.key
+# for its server-side TLS).
+#
+# The issuer `platform-internal-ca` is expected to be a
+# ClusterIssuer / Issuer that signs internal-only platform
+# certificates. Operators MUST create this issuer separately —
+# typical setups:
+#
+#   - cert-manager + a self-signed CA (simplest)
+#   - cert-manager + an existing org PKI (intermediate cert in the
+#     `tls.crt` of the issuer Secret)
+#   - cert-manager + Vault PKI (most flexible)
+#
+# The `secretName: platform-postgres-tls` produces a Secret with:
+#
+#   tls.crt — server cert
+#   tls.key — server key
+#   ca.crt  — issuer chain
+#
+# Stalwart's StatefulSet patch (statefulset-cert-mount.yaml) mounts
+# `ca.crt` from the SAME Secret aliased as `platform-postgres-ca`.
+# A second Secret with just the CA is more conventional but the
+# single-Secret approach keeps the Certificate CR count low.
+#
+# After cert-manager creates the Secret, also create a copy named
+# `platform-postgres-ca` containing only the ca.crt key:
+#
+#   kubectl -n mail create secret generic platform-postgres-ca \
+#     --from-literal=ca.crt="$(kubectl -n mail get secret platform-postgres-tls -o jsonpath='{.data.ca\.crt}' | base64 -d)"
+#
+# OR use a kustomize secretGenerator with a literal file populated
+# by an external script. A future improvement would be a
+# trust-manager Bundle that automates this copy.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-postgres-tls
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-postgres-tls
+spec:
+  secretName: platform-postgres-tls
+  duration: 8760h     # 1 year
+  renewBefore: 720h   # renew 30 days before expiry
+  subject:
+    organizations:
+      - hosting-platform
+  commonName: platform-postgres.mail.svc.cluster.local
+  dnsNames:
+    - platform-postgres.mail.svc.cluster.local
+    - platform-postgres.mail.svc
+    - platform-postgres
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  issuerRef:
+    # Operators MUST provision this Issuer / ClusterIssuer
+    # separately. See the comment block above for options.
+    name: platform-internal-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

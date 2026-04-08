@@ -94,16 +94,28 @@ timeout = "15s"
 [store.pg.tls]
 enable = true
 allow-invalid-certs = false
+# Phase 3 T3.1: pin the CA bundle that signs the platform-postgres
+# server certificate. The Secret `platform-postgres-ca` is mounted
+# read-only at /etc/stalwart/pg-tls/ca.crt by the cert-mount
+# StatefulSet patch in this overlay. cert-manager populates the
+# Secret from the platform-internal Issuer.
+root-cert = "file:///etc/stalwart/pg-tls/ca.crt"
 
 [store.pg.pool]
 max-connections = 10
 
+# Phase 3 T3.2 / T5.3: privacy-hardened query set. Mirrors the base
+# configmap (k8s/base/stalwart/configmap.yaml) one-for-one. Keep in
+# sync with base — diverging here is the most common production
+# regression. The `verify` query intentionally returns no rows so
+# anonymous SMTP clients cannot enumerate addresses across all
+# clients on the platform (RFC 5321 §3.5.2: "252 Cannot VRFY user").
 [store.pg.query]
 name       = "SELECT name, type, secret, description, quota FROM stalwart.principals WHERE name = $1"
 members    = "SELECT $1::text AS member_of WHERE false"
 recipients = "SELECT name FROM stalwart.emails WHERE address = $1"
 emails     = "SELECT address FROM stalwart.emails WHERE name = $1 ORDER BY type DESC, address ASC"
-verify     = "SELECT address FROM stalwart.emails WHERE address LIKE '%' || $1 || '%' ORDER BY address LIMIT 5"
+verify     = "SELECT address FROM stalwart.emails WHERE false AND $1::text IS NOT NULL"
 expand     = "SELECT member_address AS address FROM stalwart.alias_expansion WHERE list_address = $1 ORDER BY member_address LIMIT 50"
 domains    = "SELECT 1 FROM stalwart.domains WHERE name = $1 LIMIT 1"
 

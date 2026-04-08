@@ -710,6 +710,21 @@ export const emailAliases = pgTable('email_aliases', {
 
 // Phase 3 T1.1 (B.2): DKIM key rotation with grace period.
 // Status lifecycle: pending → active → retired → (deleted)
+// Phase 3 T5.3 — per-mailbox quota threshold tracking. One row
+// per (mailbox, threshold) so notifications fire exactly once per
+// crossing rather than every reconciler cycle.
+export const mailboxQuotaEvents = pgTable('mailbox_quota_events', {
+  mailboxId: varchar('mailbox_id', { length: 36 })
+    .notNull()
+    .references(() => mailboxes.id, { onDelete: 'cascade' }),
+  threshold: integer('threshold').notNull(),
+  firstSeenAt: timestamp('first_seen_at').notNull().defaultNow(),
+  clearedAt: timestamp('cleared_at'),
+  notificationId: varchar('notification_id', { length: 36 }),
+}, (table) => [
+  index('mailbox_quota_events_open_idx').on(table.mailboxId),
+]);
+
 // Phase 3 T2.1 — IMAPSync job runner. Tracks one-shot Kubernetes
 // Jobs that migrate mail from an external IMAP server into a
 // platform mailbox. Source password encrypted at rest with the
@@ -925,6 +940,8 @@ export type MailSubmitCredential = typeof mailSubmitCredentials.$inferSelect;
 export type NewMailSubmitCredential = typeof mailSubmitCredentials.$inferInsert;
 export type ImapSyncJob = typeof imapSyncJobs.$inferSelect;
 export type NewImapSyncJob = typeof imapSyncJobs.$inferInsert;
+export type MailboxQuotaEvent = typeof mailboxQuotaEvents.$inferSelect;
+export type NewMailboxQuotaEvent = typeof mailboxQuotaEvents.$inferInsert;
 export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
 export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
 export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;

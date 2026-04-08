@@ -1,0 +1,107 @@
+# Phase 3 T3.4: Stalwart backup CronJob.
+#
+# Strategy: exec into the running stalwart-mail-0 pod and call
+# `stalwart-cli server backup` which writes a consistent RocksDB
+# snapshot + blob archive to /opt/stalwart/backups/<date>.tar
+# inside the pod's existing PVC. No second mount of the RWO PVC
+# required, so this works on both local-path (dev) and
+# hcloud-volumes / NFS / S3-CSI in production.
+#
+# A second container (or follow-up CronJob) is responsible for
+# moving the resulting tarball off the PVC to long-term storage
+# (S3, restic repo, etc). For dev we leave it on the PVC and
+# rotate via stalwart-cli's own retention.
+#
+# This base spec is dev-friendly: it runs every 6 hours and keeps
+# the last 7 backups. Production overlays can:
+#   - bump schedule to 03:15 daily
+#   - patch in S3 / restic upload sidecar
+#   - extend retention to 14+ days
+#
+# The CronJob's ServiceAccount needs permission to exec into pods
+# in the `mail` namespace — granted by backup-rbac.yaml.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stalwart-backup
+  namespace: mail
+  labels:
+    app: stalwart-backup
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-backup
+spec:
+  schedule: "15 */6 * * *"  # every 6 hours at :15
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: stalwart-backup
+        spec:
+          serviceAccountName: stalwart-backup
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                # IMPORTANT: the inner sh -c uses SINGLE quotes so
+                # ${ADMIN_SECRET} is expanded by the shell INSIDE
+                # the stalwart-mail-0 pod (where the env var is
+                # already populated from stalwart-secrets), NOT by
+                # the CronJob pod. This keeps the cleartext secret
+                # out of /proc/<pid>/cmdline of the kubectl exec
+                # process, out of the K8s audit log of the exec
+                # call, and out of the visible exec arguments.
+                #
+                # The backup CronJob's pod itself does NOT need
+                # ADMIN_SECRET in its environment for this reason.
+                - |
+                  set -eu
+                  TS=$(date -u +%Y%m%d-%H%M%S)
+                  echo "[stalwart-backup] starting backup TS=$TS"
+
+                  kubectl -n mail exec stalwart-mail-0 -- sh -c '
+                    set -eu
+                    mkdir -p /opt/stalwart/backups
+                    stalwart-cli --url http://127.0.0.1:8080 \
+                      --credentials "admin:${ADMIN_SECRET}" \
+                      server backup /opt/stalwart/backups/'"${TS}"'.tar
+                  ' || {
+                    echo "[stalwart-backup] backup command failed" >&2
+                    exit 1
+                  }
+
+                  # Verify the file exists and has non-zero size.
+                  SIZE=$(kubectl -n mail exec stalwart-mail-0 -- stat -c '%s' "/opt/stalwart/backups/${TS}.tar" 2>/dev/null || echo 0)
+                  if [ "$SIZE" -lt 1024 ]; then
+                    echo "[stalwart-backup] backup file too small (${SIZE} bytes), aborting" >&2
+                    exit 1
+                  fi
+                  echo "[stalwart-backup] backup OK: /opt/stalwart/backups/${TS}.tar (${SIZE} bytes)"
+
+                  # Retention: keep newest 7 archives, delete the rest.
+                  kubectl -n mail exec stalwart-mail-0 -- sh -c '
+                    cd /opt/stalwart/backups
+                    ls -1t *.tar 2>/dev/null | tail -n +8 | xargs -r rm -f
+                  '
+                  echo "[stalwart-backup] retention prune complete"
+              # No env: ADMIN_SECRET is referenced from inside the
+              # stalwart-mail-0 pod's own environment (single-quoted
+              # shell expansion above), so the backup pod itself
+              # doesn't need the secret at all.
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi

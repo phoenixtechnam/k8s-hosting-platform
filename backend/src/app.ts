@@ -58,7 +58,7 @@ import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
-import { startMailStatsScheduler } from './modules/mail-stats/scheduler.js';
+import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
@@ -283,7 +283,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // configurable via platform_settings key
       // `mailbox_usage_sync_interval_minutes`)
       const mailStatsTimer = startMailStatsScheduler(app.db);
-      app.addHook('onClose', () => clearInterval(mailStatsTimer));
+      // Phase 3 T5.3: stop function halts the self-rescheduling
+      // chain — plain clearInterval is not enough because the
+      // chain re-arms itself.
+      app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
 
       // Phase 3 T1.1: DKIM rotation scheduler. Auto-rotates primary-mode
       // email domains, retires old keys after the grace period, and
