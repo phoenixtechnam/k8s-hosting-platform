@@ -20,7 +20,7 @@ rules:
     verbs: ["*"]
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates", "issuers", "clusterissuers"]
-    verbs: ["get", "list", "watch", "create", "update"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 # ClusterRole: platform-api — for the management API service account
 apiVersion: rbac.authorization.k8s.io/v1
@@ -45,6 +45,17 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["*"]
+  # Phase 2c: the backend `certificates` module creates and manages
+  # cert-manager Certificate CRs in customer namespaces. Issuers and
+  # ClusterIssuers are read-only (operators provision them via
+  # k8s/base/cert-manager/) so the backend can validate the selected
+  # issuer exists, but cannot modify them.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["issuers", "clusterissuers"]
+    verbs: ["get", "list", "watch"]
 ---
 # ServiceAccount for the management API
 apiVersion: v1

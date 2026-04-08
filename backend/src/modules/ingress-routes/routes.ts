@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { clients, domains } from '../../db/schema.js';
+import { clients } from '../../db/schema.js';
 import {
   createRoute,
   updateRoute,
@@ -13,8 +13,7 @@ import {
   updateIngressSettings,
 } from './service.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
-import { provisionCertificate } from '../ssl-certs/cert-manager.js';
-import { isAutoTlsEnabled } from '../tls-settings/service.js';
+import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { createIngressRouteSchema, updateIngressRouteSchema } from '@k8s-hosting/api-contracts';
 
@@ -75,26 +74,19 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const route = await createRoute(app.db, domainId, clientId, parsed.data.hostname, parsed.data.deployment_id);
     await triggerReconcile(clientId);
 
-    // Provision TLS certificate if auto-TLS enabled and workload assigned
+    // Phase 2c: delegate cert provisioning to the central certificates
+    // module. It picks the right ClusterIssuer based on the domain's
+    // dnsMode + DNS provider, issues a wildcard when possible, and
+    // writes a single Certificate CR per domain (not per-route).
     if (parsed.data.deployment_id) {
       const k8s = getK8s();
       if (k8s) {
         try {
-          const autoTls = await isAutoTlsEnabled(app.db);
-          if (autoTls) {
-            const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
-            const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
-            if (domain && client?.kubernetesNamespace) {
-              await provisionCertificate(app.db, k8s, {
-                domainName: parsed.data.hostname,
-                namespace: client.kubernetesNamespace,
-                dnsMode: domain.dnsMode,
-                hasDnsServer: domain.dnsMode === 'primary',
-              });
-            }
-          }
-        } catch {
-          // Cert provisioning failure is non-blocking — cert-manager annotation fallback
+          await ensureDomainCertificate(app.db, k8s, domainId, app.log);
+        } catch (err) {
+          // Non-blocking — cert-manager may still issue via Ingress annotation fallback,
+          // and the error is already logged in the certificates service.
+          app.log.warn({ err, domainId }, 'ingress-routes: ensureDomainCertificate failed (non-blocking)');
         }
       }
     }

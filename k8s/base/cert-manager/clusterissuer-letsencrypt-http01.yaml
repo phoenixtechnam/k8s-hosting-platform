@@ -1,0 +1,36 @@
+#
+# Let's Encrypt production issuer — HTTP-01 challenge via nginx ingress.
+#
+# This is the default issuer for customer domains in dnsMode=cname and
+# dnsMode=secondary (and for dnsMode=primary when the DNS provider does
+# not support the DNS-01 solver in a way cert-manager can talk to).
+#
+# Requirements:
+#   - The customer's hostname must resolve to the platform ingress IP
+#     (A/AAAA or CNAME chain), so the ACME server can reach
+#     http://<hostname>/.well-known/acme-challenge/<token>
+#   - The nginx ingress controller must be installed and configured to
+#     serve challenges on port 80 (the default when nginx is installed
+#     via the standard chart).
+#
+# Certificates issued with this ClusterIssuer cover a single hostname
+# each. Wildcard issuance is not possible with HTTP-01 — if you need a
+# wildcard cert, use `letsencrypt-prod-dns01-powerdns` instead.
+#
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-http01
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Operators MUST override this via an overlay patch or post-install
+    # kubectl apply so renewal / rate-limit notifications reach a real
+    # inbox. Let's Encrypt rejects empty / example.com emails.
+    email: operator@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-http01-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

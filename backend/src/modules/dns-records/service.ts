@@ -2,6 +2,7 @@ import { eq, and } from 'drizzle-orm';
 import { dnsRecords, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
+import { canManageDnsZone } from '../dns-servers/authority.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
@@ -16,11 +17,57 @@ export async function syncRecordToProviders(
   domainId?: string,
 ) {
   try {
-    // Use domain-scoped servers when domainId is available, otherwise fall back to all active servers
-    const servers = domainId
-      ? await getActiveServersForDomain(db, domainId)
-      : await getActiveServers(db);
+    // Phase 2c: gate record writes on DNS authority. Previously this function
+    // happily iterated all servers and logged warnings when writes silently
+    // failed (typically because the domain was in cname mode and the platform
+    // had no authority over the zone). That produced confusing logs and made
+    // it look like there was a transient provider error. Now we short-circuit
+    // for non-authoritative domains with a single log line.
+    if (domainId) {
+      const [domain] = await db
+        .select({ dnsMode: domains.dnsMode })
+        .from(domains)
+        .where(eq(domains.id, domainId));
+      if (domain) {
+        const servers = await getActiveServersForDomain(db, domainId);
+        const canManage = canManageDnsZone({
+          dnsMode: domain.dnsMode as 'primary' | 'cname' | 'secondary',
+          activeServers: servers.map((s) => ({
+            id: s.id,
+            providerType: s.providerType,
+            enabled: s.enabled,
+            role: s.role,
+          })),
+        });
+        if (!canManage) {
+          // Not an error — dnsMode=cname is the default for customer-managed
+          // domains, and record writes simply don't apply.
+          console.info(
+            `[dns-sync] Skipping ${action} on '${domainName}' — platform is not authoritative for this zone (dnsMode=${domain.dnsMode})`,
+          );
+          return;
+        }
 
+        for (const server of servers) {
+          try {
+            const provider = getProviderForServer(server, encryptionKey());
+            if (action === 'create' || action === 'update') {
+              await provider.createRecord(domainName, { type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 3600, priority: record.priority ?? undefined });
+            } else if (action === 'delete' && record.id) {
+              await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
+            }
+          } catch (err) {
+            console.warn(`[dns-sync] Failed to ${action} record on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+        return;
+      }
+    }
+
+    // Backwards-compat fallback: no domainId → push to all active servers.
+    // Callers that hit this path haven't migrated to the domain-scoped API
+    // yet; they get the old silent-failure behaviour until they do.
+    const servers = await getActiveServers(db);
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey());

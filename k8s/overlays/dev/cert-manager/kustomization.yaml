@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Dev overlay — provides a self-signed local CA ClusterIssuer so the
+# backend `certificates` module can provision certs without reaching
+# the real Let's Encrypt ACME servers.
+#
+# This overlay intentionally does NOT import k8s/base/cert-manager/
+# because the base set references real Let's Encrypt endpoints and
+# RFC2136 PowerDNS, neither of which is reachable from local DinD.
+#
+# Deploy (local dev):
+#   kubectl apply -k k8s/overlays/dev/cert-manager/
+#
+# docker-compose.local.yml's k3s-init step currently creates an
+# equivalent self-signed CA issuer inline. Once production rollout
+# is set up, that inline block can be removed in favour of
+# `kubectl apply -k k8s/overlays/dev/cert-manager/`.
+
+namespace: cert-manager
+
+resources:
+  - selfsigned-bootstrap.yaml
+  - local-ca-certificate.yaml
+  - local-ca-issuer.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: cert-manager-dev

@@ -6,6 +6,7 @@ import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
 import { reconcileIngress } from './k8s-ingress.js';
+import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
@@ -281,6 +282,18 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
     }
   }
 
+  // Phase 2c: if dnsMode changed, the cert strategy may have changed
+  // too (e.g. primary → cname flips a wildcard DNS-01 cert back to a
+  // per-hostname HTTP-01 cert). Re-run the domain cert ensurer so the
+  // new issuer is picked up on the next reconcile.
+  if (k8s && input.dns_mode !== undefined) {
+    try {
+      await ensureDomainCertificate(db, k8s, domainId);
+    } catch {
+      // Non-blocking — logged inside the cert module
+    }
+  }
+
   return getDomainById(db, clientId, domainId);
 }
 
@@ -293,6 +306,16 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
   try {
     dnsServersToClean = await getActiveServersForDomain(db, domainId);
   } catch { /* no servers */ }
+
+  // Phase 2c: delete TLS cert before the domain row — deleteDomainCertificate
+  // reads the domain to resolve the client namespace and cert name.
+  if (k8s) {
+    try {
+      await deleteDomainCertificate(db, k8s, domainId);
+    } catch {
+      // Non-blocking — logged inside the cert module
+    }
+  }
 
   // Delete domain from DB
   await db.delete(domains).where(eq(domains.id, domainId));

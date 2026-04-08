@@ -1,6 +1,7 @@
-import { eq, and } from 'drizzle-orm';
-import { dnsRecords, emailDomains } from '../../db/schema.js';
-import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
+import { eq } from 'drizzle-orm';
+import { dnsRecords, emailDomains, domains } from '../../db/schema.js';
+import { getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
+import { canManageDnsZone } from '../dns-servers/authority.js';
 import { formatDkimDnsValue } from './dkim.js';
 import type { Database } from '../../db/index.js';
 
@@ -8,13 +9,40 @@ const MAIL_SERVER_IP = () => process.env.MAIL_SERVER_IP ?? '127.0.0.1';
 
 async function syncRecordToProviders(
   db: Database,
+  domainId: string,
   domainName: string,
   action: 'create' | 'delete',
   record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string },
   encryptionKey: string,
 ) {
   try {
-    const servers = await getActiveServers(db);
+    // Phase 2c: only push records when the platform has authority over the
+    // zone. Previously this silently tried to write and swallowed errors,
+    // which made debugging cname-mode domains confusing (the email provider
+    // row was marked provisioned=1 even though nothing hit DNS).
+    const [domain] = await db
+      .select({ dnsMode: domains.dnsMode })
+      .from(domains)
+      .where(eq(domains.id, domainId));
+    if (!domain) return;
+
+    const servers = await getActiveServersForDomain(db, domainId);
+    const canManage = canManageDnsZone({
+      dnsMode: domain.dnsMode as 'primary' | 'cname' | 'secondary',
+      activeServers: servers.map((s) => ({
+        id: s.id,
+        providerType: s.providerType,
+        enabled: s.enabled,
+        role: s.role,
+      })),
+    });
+    if (!canManage) {
+      console.info(
+        `[email-dns] Skipping ${action} of ${record.type} '${record.name}' — platform is not authoritative for '${domainName}' (dnsMode=${domain.dnsMode})`,
+      );
+      return;
+    }
+
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
@@ -108,7 +136,7 @@ export async function provisionEmailDns(
       priority: rec.priority,
     });
 
-    await syncRecordToProviders(db, domainName, 'create', {
+    await syncRecordToProviders(db, domainId, domainName, 'create', {
       type: rec.recordType,
       name: rec.recordName,
       content: rec.recordValue,

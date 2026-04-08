@@ -1,35 +1,20 @@
 /**
- * cert-manager integration service.
+ * cert-manager + TLS Secret helpers for CUSTOM UPLOADED certs.
  *
- * Creates Certificate CRDs and TLS Secrets in client namespaces.
- * Uses DNS-01 when domain has full DNS control + a configured DNS server,
- * otherwise falls back to HTTP-01.
+ * Phase 2c: automatic Certificate CR provisioning was moved to
+ * `backend/src/modules/certificates/`. This file now handles only:
+ *   - The naming helper `domainToSecretName` (shared with k8s-manifests
+ *     generator and tests)
+ *   - Manual TLS Secret upload path (`syncCertToK8sSecret`,
+ *     `deleteK8sSecret`) for when an admin uploads their own cert + key
+ *     via the ssl-certs module.
+ *
+ * `determineChallengeType` is kept for backwards compat with existing
+ * tests but is no longer called by application code — the certificates
+ * module has its own selector logic. New code should NOT use it.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { Database } from '../../db/index.js';
-import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
-
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-export interface CertProvisionInput {
-  readonly domainName: string;
-  readonly namespace: string;
-  readonly dnsMode: string;
-  readonly hasDnsServer: boolean;
-}
-
-export interface CertProvisionResult {
-  readonly secretName: string;
-  readonly issuerName: string;
-  readonly challengeType: 'dns01' | 'http01';
-}
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
-const CERT_MANAGER_GROUP = 'cert-manager.io';
-const CERT_MANAGER_VERSION = 'v1';
-const CERT_MANAGER_PLURAL = 'certificates';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -48,6 +33,14 @@ function isK8s409(err: unknown): boolean {
 /**
  * Generate a stable, DNS-safe secret name from a domain.
  * e.g., "example.com" -> "example-com-tls"
+ *
+ * Still used by:
+ *   - k8s-manifests/generator.ts (for workload TLS secret resolution)
+ *   - ssl-certs/service.ts (custom cert upload)
+ *   - existing tests
+ *
+ * New code in the certificates module has its own naming via
+ * `certificateNameFor` / `tlsSecretNameFor` that supports wildcards.
  */
 export function domainToSecretName(domainName: string): string {
   return domainName
@@ -59,9 +52,11 @@ export function domainToSecretName(domainName: string): string {
 }
 
 /**
- * Determine challenge type based on domain configuration.
- * DNS-01 when the domain uses primary/secondary DNS mode and has a real DNS server.
- * HTTP-01 otherwise (CNAME mode, no DNS server).
+ * Legacy challenge-type hint. DEPRECATED in Phase 2c — use
+ * `certificates/issuer-selector.ts selectIssuerForDomain` instead,
+ * which takes the full DNS provider state into account.
+ *
+ * Kept for backwards compat with the cert-manager.test.ts test file.
  */
 export function determineChallengeType(
   dnsMode: string,
@@ -71,97 +66,6 @@ export function determineChallengeType(
     return 'dns01';
   }
   return 'http01';
-}
-
-// ─── Certificate CRD Management ─────────────────────────────────────────────
-
-/**
- * Create or update a cert-manager Certificate CRD for a domain.
- */
-export async function provisionCertificate(
-  db: Database,
-  k8s: K8sClients,
-  input: CertProvisionInput,
-): Promise<CertProvisionResult> {
-  const autoTls = await isAutoTlsEnabled(db);
-  if (!autoTls) {
-    throw new Error('Automatic TLS is disabled');
-  }
-
-  const issuerName = await getClusterIssuerName(db);
-  const secretName = domainToSecretName(input.domainName);
-  const challengeType = determineChallengeType(input.dnsMode, input.hasDnsServer);
-  const certName = secretName.replace(/-tls$/, '-cert');
-
-  const certBody = {
-    apiVersion: `${CERT_MANAGER_GROUP}/${CERT_MANAGER_VERSION}`,
-    kind: 'Certificate',
-    metadata: {
-      name: certName,
-      namespace: input.namespace,
-    },
-    spec: {
-      secretName,
-      issuerRef: {
-        name: issuerName,
-        kind: 'ClusterIssuer',
-      },
-      dnsNames: [input.domainName],
-      duration: '2160h', // 90 days
-      renewBefore: '360h', // 15 days before expiry
-    },
-  };
-
-  try {
-    await k8s.custom.createNamespacedCustomObject({
-      group: CERT_MANAGER_GROUP,
-      version: CERT_MANAGER_VERSION,
-      namespace: input.namespace,
-      plural: CERT_MANAGER_PLURAL,
-      body: certBody,
-    });
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      // Already exists — update it
-      await k8s.custom.replaceNamespacedCustomObject({
-        group: CERT_MANAGER_GROUP,
-        version: CERT_MANAGER_VERSION,
-        namespace: input.namespace,
-        plural: CERT_MANAGER_PLURAL,
-        name: certName,
-        body: certBody,
-      });
-    } else {
-      throw err;
-    }
-  }
-
-  return { secretName, issuerName, challengeType };
-}
-
-/**
- * Delete a cert-manager Certificate CRD for a domain.
- */
-export async function deleteCertificate(
-  k8s: K8sClients,
-  namespace: string,
-  domainName: string,
-): Promise<void> {
-  const secretName = domainToSecretName(domainName);
-  const certName = secretName.replace(/-tls$/, '-cert');
-
-  try {
-    await k8s.custom.deleteNamespacedCustomObject({
-      group: CERT_MANAGER_GROUP,
-      version: CERT_MANAGER_VERSION,
-      namespace,
-      plural: CERT_MANAGER_PLURAL,
-      name: certName,
-    });
-  } catch (err: unknown) {
-    if (!isK8s404(err)) throw err;
-    // Already gone — fine
-  }
 }
 
 // ─── TLS Secret Management (for custom uploaded certs) ──────────────────────

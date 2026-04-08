@@ -1,0 +1,17 @@
+#
+# Dev-only CA issuer — issues all dev certs, signed by the local CA
+# certificate above. This is the ClusterIssuer the backend picks for
+# dev (controlled by env var CLUSTER_ISSUER_NAME=local-ca-issuer).
+#
+# Certs issued by this issuer are not trusted by browsers or clients
+# unless you manually import /etc/cert-manager/local-ca-secret into
+# your trust store. That's fine for automated E2E tests that set
+# verify_peer = false explicitly.
+#
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: local-ca-issuer
+spec:
+  ca:
+    secretName: local-ca-secret

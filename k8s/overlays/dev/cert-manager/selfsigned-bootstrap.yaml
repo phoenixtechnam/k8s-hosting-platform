@@ -1,0 +1,11 @@
+#
+# Dev-only bootstrap issuer — signs the local CA certificate below.
+# Not directly used by application code; `local-ca-issuer` is what
+# the backend selects.
+#
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-bootstrap
+spec:
+  selfSigned: {}

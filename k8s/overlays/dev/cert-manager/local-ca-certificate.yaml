@@ -1,0 +1,18 @@
+#
+# Dev-only local CA certificate — self-signed 10 year CA, stored as
+# a Secret in the cert-manager namespace, used by the CA issuer below
+# to sign all dev certs.
+#
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: local-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: local-dev-ca
+  secretName: local-ca-secret
+  duration: 87600h
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: ClusterIssuer

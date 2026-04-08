@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ClusterIssuers used by the backend `certificates` module to provision
+# cert-manager Certificate CRs for customer domains, webmail, and the
+# platform itself.
+#
+# Environment overlays (dev, staging, production) pick the subset that
+# applies:
+#
+#   - dev overlay uses `local-ca-issuer` for a self-signed local CA
+#     (see k8s/overlays/dev/cert-manager/)
+#   - staging overlay uses `letsencrypt-staging-http01`
+#   - production overlay uses `letsencrypt-prod-http01` and (if a
+#     PowerDNS API Secret is available) `letsencrypt-prod-dns01-powerdns`
+#     for wildcard issuance on customer domains the platform is
+#     authoritative for.
+#
+# The backend chooses which ClusterIssuer to use per-Certificate based on
+# the domain's (dnsMode, dns_provider_type, wildcardRequested) tuple.
+# See `backend/src/modules/certificates/issuer-selector.ts` for the
+# selection logic.
+
+resources:
+  - clusterissuer-letsencrypt-http01.yaml
+  - clusterissuer-letsencrypt-staging-http01.yaml
+  - clusterissuer-letsencrypt-dns01-powerdns.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform
+      app.kubernetes.io/component: cert-manager

@@ -3,13 +3,23 @@
  *
  * Builds Ingress resources from ingress_routes table.
  * Each route with an assigned deployment becomes an Ingress rule.
- * Applies cert-manager TLS annotations when auto-TLS is enabled.
+ *
+ * Phase 2c: TLS secret names are resolved via the central certificates
+ * module (ensureRouteCertificate), which:
+ *   - Creates/updates a cert-manager Certificate CR per domain (or
+ *     per hostname for non-wildcard cases)
+ *   - Returns the correct secret name to put in the Ingress TLS section
+ *   - Handles wildcard cert reuse when dnsMode=primary + PowerDNS
+ *
+ * This replaces the old "cert-manager.io/cluster-issuer" Ingress
+ * annotation approach, which was ambiguous (the annotation triggered
+ * implicit Certificate creation that conflicted with explicit ones).
  */
 
 import { eq } from 'drizzle-orm';
 import { ingressRoutes, deployments, domains } from '../../db/schema.js';
-import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
-import { domainToSecretName } from '../ssl-certs/cert-manager.js';
+import { isAutoTlsEnabled } from '../tls-settings/service.js';
+import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
@@ -97,31 +107,48 @@ export async function reconcileIngress(
     deploymentMap.set(d.id, d.name);
   }
 
-  // Build rules from ingress_routes (single source of truth)
-  const rules = updatedRoutes
-    .map(route => {
+  // Build rules from ingress_routes (single source of truth), tracking
+  // each rule's (hostname, domainId) so we can resolve TLS secret names
+  // below via the certificates module.
+  interface RuleWithDomain {
+    rule: {
+      host: string;
+      http: {
+        paths: Array<{
+          path: string;
+          pathType: 'Prefix';
+          backend: { service: { name: string; port: { number: number } } };
+        }>;
+      };
+    };
+    domainId: string;
+    hostname: string;
+  }
+
+  const rulesWithDomain: RuleWithDomain[] = updatedRoutes
+    .map((route): RuleWithDomain | null => {
       const serviceName = deploymentMap.get(route.deploymentId!);
       if (!serviceName) return null;
-
       return {
-        host: route.hostname,
-        http: {
-          paths: [{
-            path: '/',
-            pathType: 'Prefix',
-            backend: {
-              service: {
-                name: serviceName,
-                port: { number: 80 },
+        rule: {
+          host: route.hostname,
+          http: {
+            paths: [{
+              path: '/',
+              pathType: 'Prefix',
+              backend: {
+                service: { name: serviceName, port: { number: 80 } },
               },
-            },
-          }],
+            }],
+          },
         },
+        domainId: route.domainId,
+        hostname: route.hostname,
       };
     })
-    .filter((r): r is NonNullable<typeof r> => r !== null);
+    .filter((r): r is RuleWithDomain => r !== null);
 
-  if (rules.length === 0) {
+  if (rulesWithDomain.length === 0) {
     try {
       await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
     } catch (err: unknown) {
@@ -130,32 +157,48 @@ export async function reconcileIngress(
     return;
   }
 
-  // Build annotations
-  const annotations: Record<string, string> = {};
-  const autoTls = await isAutoTlsEnabled(db);
-  if (autoTls) {
-    annotations['cert-manager.io/cluster-issuer'] = await getClusterIssuerName(db);
-  }
+  const rules = rulesWithDomain.map((r) => r.rule);
 
-  // Build TLS section from all routed hostnames
-  const routedHostnames = rules.map(r => (r as { host: string }).host);
-  const tls = autoTls
-    ? routedHostnames.map(h => ({
-        hosts: [h],
-        secretName: domainToSecretName(h),
-      }))
-    : undefined;
+  // Phase 2c: resolve TLS secret names via the certificates module.
+  // No more cert-manager.io/cluster-issuer annotation — the Certificate
+  // CRs are explicit and the Ingress just references the resulting
+  // secret names.
+  const autoTls = await isAutoTlsEnabled(db);
+  const tlsEntries: Array<{ hosts: string[]; secretName: string }> = [];
+  if (autoTls) {
+    // Deduplicate secrets so a wildcard cert shared by many hostnames
+    // only produces one TLS entry (with all covered hostnames listed).
+    const secretMap = new Map<string, Set<string>>();
+    for (const r of rulesWithDomain) {
+      try {
+        const cert = await ensureRouteCertificate(db, k8s, r.domainId, r.hostname);
+        if (cert.skipped || !cert.secretName) continue;
+        if (!secretMap.has(cert.secretName)) {
+          secretMap.set(cert.secretName, new Set());
+        }
+        secretMap.get(cert.secretName)!.add(r.hostname);
+      } catch {
+        // Cert provisioning failure is non-blocking — the Ingress still
+        // exists without TLS for this hostname and the operator can
+        // investigate the logged error. cert-manager will retry
+        // independently if the Certificate CR was created.
+      }
+    }
+    for (const [secretName, hosts] of secretMap) {
+      tlsEntries.push({ secretName, hosts: Array.from(hosts) });
+    }
+  }
 
   const ingressBody = {
     metadata: {
       name: ingressName,
       namespace,
-      annotations,
+      annotations: {} as Record<string, string>,
     },
     spec: {
       ingressClassName: 'nginx',
       rules,
-      ...(tls ? { tls } : {}),
+      ...(tlsEntries.length > 0 ? { tls: tlsEntries } : {}),
     },
   };
 
