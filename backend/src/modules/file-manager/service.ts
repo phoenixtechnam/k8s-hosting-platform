@@ -63,6 +63,11 @@ export async function proxyToFileManager(
     body?: string | Buffer;
     contentType?: string;
     query?: Record<string, string>;
+    // Phase 3 T5.1: set to true when the platform backend needs to
+    // read/write paths hidden from the customer file manager (e.g.
+    // .platform/sendmail-auth). The sidecar gates hidden paths
+    // behind the `X-Platform-Internal: 1` header.
+    platformInternal?: boolean;
   } = {},
 ): Promise<ProxyResult> {
   const kc = loadKubeConfig(kubeconfigPath);
@@ -81,6 +86,19 @@ export async function proxyToFileManager(
 
   const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
+  if (options.platformInternal) {
+    // The sidecar compares this with PLATFORM_INTERNAL_SECRET using
+    // constant-time equality. If the env var is unset on either
+    // side, the sidecar fails closed — hidden paths become
+    // unreachable until an operator injects the secret.
+    const secret = process.env.PLATFORM_INTERNAL_SECRET;
+    if (!secret) {
+      throw new Error(
+        'PLATFORM_INTERNAL_SECRET is required for platform-internal file-manager requests',
+      );
+    }
+    headers['X-Platform-Internal'] = secret;
+  }
 
   // Set Content-Length for bodies to avoid chunked encoding issues
   if (options.body) {
@@ -257,6 +275,7 @@ export async function fileManagerRequest(
     body?: string | Buffer;
     contentType?: string;
     query?: Record<string, string>;
+    platformInternal?: boolean;
   } = {},
 ): Promise<ProxyResult> {
   // Ensure deployed

@@ -710,6 +710,26 @@ export const emailAliases = pgTable('email_aliases', {
 
 // Phase 3 T1.1 (B.2): DKIM key rotation with grace period.
 // Status lifecycle: pending → active → retired → (deleted)
+// Phase 3 T5.1 — per-client SMTP submission credentials used by
+// sendmail-compatible wrappers in workload pods. Stored twice:
+// encrypted (for writing to the customer PVC) + bcrypt hash (for
+// Stalwart to verify via the directory view).
+export const mailSubmitCredentials = pgTable('mail_submit_credentials', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  username: varchar('username', { length: 128 }).notNull(),
+  passwordEncrypted: text('password_encrypted').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  note: varchar('note', { length: 255 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  revokedAt: timestamp('revoked_at'),
+  lastUsedAt: timestamp('last_used_at'),
+}, (table) => [
+  index('mail_submit_credentials_client_idx').on(table.clientId),
+]);
+
 export const emailDkimKeys = pgTable('email_dkim_keys', {
   id: varchar('id', { length: 36 }).primaryKey(),
   emailDomainId: varchar('email_domain_id', { length: 36 })
@@ -868,6 +888,8 @@ export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
 export type EmailDkimKey = typeof emailDkimKeys.$inferSelect;
 export type NewEmailDkimKey = typeof emailDkimKeys.$inferInsert;
+export type MailSubmitCredential = typeof mailSubmitCredentials.$inferSelect;
+export type NewMailSubmitCredential = typeof mailSubmitCredentials.$inferInsert;
 export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
 export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
 export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;

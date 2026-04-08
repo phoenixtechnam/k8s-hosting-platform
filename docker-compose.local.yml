@@ -59,6 +59,13 @@ services:
       ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
       CORS_ORIGINS: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMIN:-2010},http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
       OIDC_ENCRYPTION_KEY: ${OIDC_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      # Phase 3 T5.1: shared secret for the file-manager sidecar's
+      # platform-internal bypass header (used to read/write .platform/
+      # hidden paths like sendmail-auth). The backend injects this
+      # into each sidecar pod at creation time. Production deployments
+      # should generate a fresh random value and store it in a
+      # platform-level Kubernetes Secret instead of env.
+      PLATFORM_INTERNAL_SECRET: ${PLATFORM_INTERNAL_SECRET:-local-dev-platform-internal-secret-please-rotate}
       DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
       CLUSTER_ISSUER_NAME: ${CLUSTER_ISSUER_NAME:-local-ca-issuer}
       INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}

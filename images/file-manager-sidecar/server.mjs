@@ -15,16 +15,87 @@ const execFileAsync = promisify(execFile);
 const PORT = 8111;
 const BASE = '/data';
 
+// ─── Hidden platform paths ───────────────────────────────────────────────────
+// Files and directories that must never be visible through the file manager.
+// The backend uses a separate internal path (X-Platform-Internal header) to
+// read/write these. Everything under `.platform/` is platform-managed
+// (sendmail submission credentials, scheduled-task queue files, etc.) — if a
+// customer sees or modifies them they can break outbound mail or run
+// unapproved cron jobs.
+//
+// Matching is by normalized, relative-to-BASE path. We match both the path
+// itself ("foo/.platform") and any descendant ("foo/.platform/sendmail").
+// Every file in the root "." that starts with `.platform` is also hidden so
+// browsing `/` doesn't leak the folder.
+
+const HIDDEN_PREFIXES = ['.platform'];
+
+function relToBase(absPath) {
+  // Strip BASE prefix to produce a relative POSIX-style path used by
+  // the HIDDEN_PREFIXES check. Paths equal to BASE itself become '.'.
+  if (absPath === BASE) return '.';
+  return absPath.startsWith(BASE + '/') ? absPath.slice(BASE.length + 1) : absPath;
+}
+
+function isHidden(relPath) {
+  // Normalize: strip trailing slashes, collapse any leading ./
+  const norm = relPath.replace(/^\.\/+/, '').replace(/\/+$/, '');
+  for (const prefix of HIDDEN_PREFIXES) {
+    if (norm === prefix) return true;
+    if (norm.startsWith(prefix + '/')) return true;
+    // Also hide any path that contains the prefix as a path segment
+    // (e.g. "nested/dir/.platform/foo"). Defense-in-depth so a customer
+    // can't stash data under a nested .platform directory they create.
+    if (norm.split('/').includes(prefix)) return true;
+  }
+  return false;
+}
+
 // ─── Security: path traversal prevention ─────────────────────────────────────
 
-function safePath(userPath) {
+function safePath(userPath, opts = {}) {
   // Strip leading slash — user paths are relative to BASE
   const cleaned = (userPath || '.').replace(/^\/+/, '') || '.';
   const resolved = resolve(BASE, cleaned);
   if (!resolved.startsWith(BASE)) {
     return null; // Traversal attempt
   }
+  // Hidden-path enforcement. The platform-internal bypass header lets
+  // the platform backend read/write these paths while keeping them
+  // invisible to the customer's UI.
+  if (!opts.allowHidden) {
+    const rel = relToBase(resolved);
+    if (isHidden(rel)) return null;
+  }
   return resolved;
+}
+
+// Shared-secret gate for the platform-internal bypass. The backend
+// injects this secret via the file-manager Secret at pod creation
+// time. If unset, we fail closed and never allow the bypass — this
+// means a dev cluster without the secret simply cannot access
+// hidden paths via the sidecar, forcing direct kubectl exec.
+//
+// Constant-time comparison prevents timing attacks against the
+// secret value.
+const PLATFORM_INTERNAL_SECRET = process.env.PLATFORM_INTERNAL_SECRET || '';
+
+function constantTimeEquals(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function isPlatformBypass(req) {
+  // Fail closed if the sidecar was started without a secret.
+  if (!PLATFORM_INTERNAL_SECRET) return false;
+  const provided = req.headers['x-platform-internal'];
+  if (typeof provided !== 'string' || provided.length === 0) return false;
+  return constantTimeEquals(provided, PLATFORM_INTERNAL_SECRET);
 }
 
 function sendJson(res, status, data) {
@@ -90,12 +161,23 @@ async function parseMultipart(req) {
 
 async function handleLs(req, res) {
   const { path: p = '/' } = getQuery(req.url);
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const full = safePath(p, { allowHidden: bypass });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     const entries = await readdir(full, { withFileTypes: true });
-    const items = await Promise.all(entries.map(async (e) => {
+    // Filter out hidden platform paths unless the caller is the
+    // platform backend with the bypass header. We pre-compute the
+    // parent's path relative to BASE so each entry can be checked.
+    const parentRel = relToBase(full);
+    const visibleEntries = bypass
+      ? entries
+      : entries.filter((e) => {
+          const childRel = parentRel === '.' ? e.name : `${parentRel}/${e.name}`;
+          return !isHidden(childRel);
+        });
+    const items = await Promise.all(visibleEntries.map(async (e) => {
       const entryPath = join(full, e.name);
       try {
         const s = await stat(entryPath);
@@ -126,8 +208,8 @@ async function handleLs(req, res) {
 async function handleRead(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'File not found');
 
   try {
     const s = await stat(full);
@@ -145,8 +227,8 @@ async function handleRead(req, res) {
 async function handleDownload(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'File not found');
 
   try {
     const s = await stat(full);
@@ -170,8 +252,8 @@ async function handleMkdir(req, res) {
   const body = await readBody(req);
   const { path: p } = body;
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     await mkdir(full, { recursive: true });
@@ -183,8 +265,9 @@ async function handleMkdir(req, res) {
 
 async function handleUpload(req, res) {
   const { path: targetDir = '/' } = getQuery(req.url);
-  const full = safePath(targetDir);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const full = safePath(targetDir, { allowHidden: bypass });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     const parts = await parseMultipart(req);
@@ -192,8 +275,8 @@ async function handleUpload(req, res) {
     if (!filePart) return sendError(res, 400, 'No file in upload');
 
     const destPath = join(full, filePart.filename);
-    const destSafe = safePath(join(targetDir, filePart.filename));
-    if (!destSafe) return sendError(res, 403, 'Access denied');
+    const destSafe = safePath(join(targetDir, filePart.filename), { allowHidden: bypass });
+    if (!destSafe) return sendError(res, 404, 'Not found');
 
     await mkdir(full, { recursive: true });
     await writeFile(destSafe, filePart.data);
@@ -208,8 +291,8 @@ async function handleWrite(req, res) {
   const { path: p, content } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (content === undefined) return sendError(res, 400, 'content required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     await writeFile(full, content, 'utf-8');
@@ -224,9 +307,10 @@ async function handleRename(req, res) {
   const body = await readBody(req);
   const { oldPath, newPath } = body;
   if (!oldPath || !newPath) return sendError(res, 400, 'oldPath and newPath required');
-  const fullOld = safePath(oldPath);
-  const fullNew = safePath(newPath);
-  if (!fullOld || !fullNew) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const fullOld = safePath(oldPath, { allowHidden: bypass });
+  const fullNew = safePath(newPath, { allowHidden: bypass });
+  if (!fullOld || !fullNew) return sendError(res, 404, 'Not found');
 
   try {
     await rename(fullOld, fullNew);
@@ -242,8 +326,8 @@ async function handleRm(req, res) {
   const { path: p } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (p === '/' || p === '.') return sendError(res, 403, 'Cannot delete root');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Not found');
   if (full === BASE) return sendError(res, 403, 'Cannot delete root');
 
   try {
@@ -259,9 +343,10 @@ async function handleCopy(req, res) {
   const body = await readBody(req);
   const { sourcePath, destPath } = body;
   if (!sourcePath || !destPath) return sendError(res, 400, 'sourcePath and destPath required');
-  const fullSrc = safePath(sourcePath);
-  const fullDest = safePath(destPath);
-  if (!fullSrc || !fullDest) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const fullSrc = safePath(sourcePath, { allowHidden: bypass });
+  const fullDest = safePath(destPath, { allowHidden: bypass });
+  if (!fullSrc || !fullDest) return sendError(res, 404, 'Not found');
 
   try {
     // Ensure parent directory exists
@@ -280,14 +365,17 @@ async function handleArchive(req, res) {
   if (!paths || !Array.isArray(paths) || paths.length === 0) return sendError(res, 400, 'paths array required');
   if (!destPath) return sendError(res, 400, 'destPath required');
 
-  const fullDest = safePath(destPath);
-  if (!fullDest) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const fullDest = safePath(destPath, { allowHidden: bypass });
+  if (!fullDest) return sendError(res, 404, 'Not found');
 
-  // Validate all source paths
+  // Validate all source paths. Archiving a hidden path would let a
+  // customer exfiltrate it in compressed form, so hidden paths stay
+  // invisible unless the platform backend is the caller.
   const safePaths = [];
   for (const p of paths) {
-    const full = safePath(p);
-    if (!full) return sendError(res, 403, `Access denied: ${p}`);
+    const full = safePath(p, { allowHidden: bypass });
+    if (!full) return sendError(res, 404, `Not found: ${p}`);
     safePaths.push(full);
   }
 
@@ -320,9 +408,10 @@ async function handleExtract(req, res) {
   const { path: archivePath, destPath = '/' } = body;
   if (!archivePath) return sendError(res, 400, 'path required');
 
-  const fullArchive = safePath(archivePath);
-  const fullDest = safePath(destPath);
-  if (!fullArchive || !fullDest) return sendError(res, 403, 'Access denied');
+  const bypass = isPlatformBypass(req);
+  const fullArchive = safePath(archivePath, { allowHidden: bypass });
+  const fullDest = safePath(destPath, { allowHidden: bypass });
+  if (!fullArchive || !fullDest) return sendError(res, 404, 'Not found');
 
   try {
     await mkdir(fullDest, { recursive: true });
@@ -348,8 +437,8 @@ async function handleExtract(req, res) {
 async function handleWriteRaw(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     const dir = dirname(full);
@@ -391,8 +480,8 @@ async function handleGitClone(req, res) {
     return sendError(res, 400, 'Only http, https, and git protocol URLs are allowed');
   }
 
-  const fullDest = safePath(destPath);
-  if (!fullDest) return sendError(res, 403, 'Access denied');
+  const fullDest = safePath(destPath, { allowHidden: isPlatformBypass(req) });
+  if (!fullDest) return sendError(res, 404, 'Not found');
 
   try {
     await mkdir(dirname(fullDest), { recursive: true });
@@ -445,8 +534,8 @@ async function handleDiskUsage(req, res) {
 async function handleFolderSize(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
-  const full = safePath(p);
-  if (!full) return sendError(res, 403, 'Access denied');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Not found');
 
   try {
     const s = await stat(full);

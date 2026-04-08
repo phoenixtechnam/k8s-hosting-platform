@@ -54,6 +54,18 @@ export async function ensureFileManagerRunning(
                 image,
                 imagePullPolicy: 'IfNotPresent',
                 ports: [{ containerPort: FM_PORT }],
+                env: [
+                  // Phase 3 T5.1: shared secret for the platform
+                  // bypass header. Passed through from the backend's
+                  // own env. If unset, the sidecar fails closed and
+                  // hidden paths become unreachable via HTTP.
+                  ...(process.env.PLATFORM_INTERNAL_SECRET
+                    ? [{
+                        name: 'PLATFORM_INTERNAL_SECRET',
+                        value: process.env.PLATFORM_INTERNAL_SECRET,
+                      }]
+                    : []),
+                ],
                 resources: {
                   requests: { cpu: '25m', memory: '32Mi' },
                   limits: { cpu: '100m', memory: '128Mi' },
