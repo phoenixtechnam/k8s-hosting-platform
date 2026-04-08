@@ -74,8 +74,10 @@ function buildEmailDnsRecords(
   domainName: string,
   dkimSelector: string,
   dkimPublicKey: string,
+  mailServerHostname: string,
 ): readonly DnsRecordSpec[] {
   return [
+    // ─── Core receiving records ────────────────────────────
     {
       recordType: 'MX',
       recordName: domainName,
@@ -90,6 +92,7 @@ function buildEmailDnsRecords(
       ttl: 3600,
       priority: null,
     },
+    // ─── SPF / DKIM / DMARC ────────────────────────────────
     {
       recordType: 'TXT',
       recordName: domainName,
@@ -111,6 +114,76 @@ function buildEmailDnsRecords(
       ttl: 3600,
       priority: null,
     },
+    // ─── Phase 3.C.2: SRV records for mail client autodiscovery ─────
+    // Thunderbird and Apple Mail probe SRV records before resorting
+    // to guesses. Port + priority + weight per RFC 6186.
+    {
+      recordType: 'SRV',
+      recordName: `_imaps._tcp.${domainName}`,
+      recordValue: `0 1 993 ${mailServerHostname}`,
+      ttl: 3600,
+      priority: 0,
+    },
+    {
+      recordType: 'SRV',
+      recordName: `_imap._tcp.${domainName}`,
+      recordValue: `10 1 143 ${mailServerHostname}`,
+      ttl: 3600,
+      priority: 10,
+    },
+    {
+      recordType: 'SRV',
+      recordName: `_submissions._tcp.${domainName}`,
+      recordValue: `0 1 465 ${mailServerHostname}`,
+      ttl: 3600,
+      priority: 0,
+    },
+    {
+      recordType: 'SRV',
+      recordName: `_submission._tcp.${domainName}`,
+      recordValue: `10 1 587 ${mailServerHostname}`,
+      ttl: 3600,
+      priority: 10,
+    },
+    // ─── Phase 3.C.2: autoconfig / autodiscover CNAME records ───────
+    // Thunderbird tries https://autoconfig.<domain>/mail/config-v1.1.xml
+    // Outlook tries https://autodiscover.<domain>/Autodiscover/Autodiscover.xml
+    // Both CNAME to the platform's mail hostname, which runs the
+    // public email-autodiscover routes from Phase 3.C.1.
+    {
+      recordType: 'CNAME',
+      recordName: `autoconfig.${domainName}`,
+      recordValue: mailServerHostname,
+      ttl: 3600,
+      priority: null,
+    },
+    {
+      recordType: 'CNAME',
+      recordName: `autodiscover.${domainName}`,
+      recordValue: mailServerHostname,
+      ttl: 3600,
+      priority: null,
+    },
+    // ─── Phase 3.C.2: MTA-STS policy discovery ──────────────────────
+    // Mail servers look up _mta-sts.<domain> TXT for the policy ID,
+    // then fetch https://mta-sts.<domain>/.well-known/mta-sts.txt
+    // for the actual policy. We CNAME mta-sts.<domain> to the
+    // platform autodiscover host so the policy file is served from
+    // the email-autodiscover routes.
+    {
+      recordType: 'TXT',
+      recordName: `_mta-sts.${domainName}`,
+      recordValue: `v=STSv1; id=${Date.now()}`,
+      ttl: 3600,
+      priority: null,
+    },
+    {
+      recordType: 'CNAME',
+      recordName: `mta-sts.${domainName}`,
+      recordValue: mailServerHostname,
+      ttl: 3600,
+      priority: null,
+    },
   ];
 }
 
@@ -121,8 +194,9 @@ export async function provisionEmailDns(
   dkimSelector: string,
   dkimPublicKey: string,
   encryptionKey: string,
+  mailServerHostname: string,
 ): Promise<void> {
-  const records = buildEmailDnsRecords(domainName, dkimSelector, dkimPublicKey);
+  const records = buildEmailDnsRecords(domainName, dkimSelector, dkimPublicKey, mailServerHostname);
 
   for (const rec of records) {
     const id = crypto.randomUUID();

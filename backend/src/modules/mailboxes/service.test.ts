@@ -306,11 +306,13 @@ describe('generateWebmailToken', () => {
 
   it('should generate a signed JWT with embedded URL using the default fallback host', async () => {
     const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
 
-    // 1) user lookup, 2) getAccessibleMailboxes role, 3) mailboxes
-    selectResults = [[user], [userRole], allMailboxes];
+    // 1) user lookup, 2) client status, 3) role, 4) mailboxes, 5) mb status
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -336,10 +338,12 @@ describe('generateWebmailToken', () => {
   it('should use WEBMAIL_URL env when set', async () => {
     process.env.WEBMAIL_URL = 'https://webmail.platform.test';
     const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
 
-    selectResults = [[user], [userRole], allMailboxes];
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const result = await generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1');
@@ -350,10 +354,12 @@ describe('generateWebmailToken', () => {
     const webmailSecret = 'independent-webmail-secret-value';
     process.env.WEBMAIL_JWT_SECRET = webmailSecret;
     const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const mbStatus = { status: 'active' };
 
-    selectResults = [[user], [userRole], allMailboxes];
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     const { signWebmailJwt } = await import('./service.js');
@@ -376,9 +382,11 @@ describe('generateWebmailToken', () => {
     delete process.env.WEBMAIL_JWT_SECRET;
 
     const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
     const userRole = { roleName: 'client_admin', clientId: 'c1' };
     const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
-    selectResults = [[user], [userRole], allMailboxes];
+    const mbStatus = { status: 'active' };
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [mbStatus]];
     const db = createMockDb();
 
     await expect(
@@ -391,16 +399,69 @@ describe('generateWebmailToken', () => {
 
   it('should reject token generation for unauthorized user', async () => {
     const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
     const userRole = { roleName: 'client_user', clientId: 'c1' };
     const noMailboxes: unknown[] = [];
 
-    selectResults = [[user], [userRole], noMailboxes];
+    // No mailbox row is reached because the user has no access
+    selectResults = [[user], [activeClient], [userRole], noMailboxes];
     const db = createMockDb();
 
     await expect(
       generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
     ).rejects.toMatchObject({
       code: 'MAILBOX_ACCESS_DENIED',
+      status: 403,
+    });
+  });
+
+  // Phase 3.C.3: new suspend enforcement tests
+
+  it('should reject webmail token for suspended client', async () => {
+    const user = { clientId: 'c1' };
+    const suspendedClient = { status: 'suspended' };
+
+    // user lookup, client status lookup → throws before getAccessibleMailboxes
+    selectResults = [[user], [suspendedClient]];
+    const db = createMockDb();
+
+    await expect(
+      generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
+    ).rejects.toMatchObject({
+      code: 'CLIENT_SUSPENDED',
+      status: 403,
+    });
+  });
+
+  it('should reject webmail token for cancelled client', async () => {
+    const user = { clientId: 'c1' };
+    const cancelledClient = { status: 'cancelled' };
+
+    selectResults = [[user], [cancelledClient]];
+    const db = createMockDb();
+
+    await expect(
+      generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
+    ).rejects.toMatchObject({
+      code: 'CLIENT_SUSPENDED',
+      status: 403,
+    });
+  });
+
+  it('should reject webmail token for suspended mailbox (active client)', async () => {
+    const user = { clientId: 'c1' };
+    const activeClient = { status: 'active' };
+    const userRole = { roleName: 'client_admin', clientId: 'c1' };
+    const allMailboxes = [{ id: 'mb1', fullAddress: 'info@example.com' }];
+    const suspendedMailbox = { status: 'suspended' };
+
+    selectResults = [[user], [activeClient], [userRole], allMailboxes, [suspendedMailbox]];
+    const db = createMockDb();
+
+    await expect(
+      generateWebmailToken(makeMockApp(), db as never, 'u1', 'mb1'),
+    ).rejects.toMatchObject({
+      code: 'MAILBOX_SUSPENDED',
       status: 403,
     });
   });

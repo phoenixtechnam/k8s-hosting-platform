@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { eq, and, sql } from 'drizzle-orm';
-import { mailboxes, mailboxAccess, emailDomains, domains, users } from '../../db/schema.js';
+import { mailboxes, mailboxAccess, emailDomains, domains, users, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateMailboxInput, UpdateMailboxInput } from '@k8s-hosting/api-contracts';
@@ -350,6 +350,24 @@ export async function generateWebmailToken(
     throw new ApiError('USER_NOT_FOUND', 'User not found or has no client', 404);
   }
 
+  // Phase 3.C.3: suspended clients cannot access webmail at all,
+  // even if individual mailboxes are still marked active. The data
+  // is retained but all access paths (IMAP / POP / SMTP-auth /
+  // webmail SSO / inbound SMTP delivery) are blocked.
+  const [client] = await db
+    .select({ status: clients.status })
+    .from(clients)
+    .where(eq(clients.id, user.clientId));
+  if (!client || client.status !== 'active') {
+    throw new ApiError(
+      'CLIENT_SUSPENDED',
+      'This client account is suspended — webmail access is blocked',
+      403,
+      { client_id: user.clientId, status: client?.status ?? 'unknown' },
+      'Contact your administrator to restore access',
+    );
+  }
+
   // Verify user has access to this mailbox
   const accessible = await getAccessibleMailboxes(db, userId, user.clientId);
   const mailbox = accessible.find((m) => m.id === mailboxId);
@@ -361,6 +379,22 @@ export async function generateWebmailToken(
       403,
       { mailbox_id: mailboxId },
       'Request access from your administrator',
+    );
+  }
+
+  // Phase 3.C.3: also check the individual mailbox status. Accessing a
+  // mailbox's webmail when the mailbox is suspended is blocked even if
+  // the owning client is active.
+  const [mbRow] = await db
+    .select({ status: mailboxes.status })
+    .from(mailboxes)
+    .where(eq(mailboxes.id, mailboxId));
+  if (mbRow && mbRow.status !== 'active') {
+    throw new ApiError(
+      'MAILBOX_SUSPENDED',
+      'This mailbox is suspended',
+      403,
+      { mailbox_id: mailboxId, status: mbRow.status },
     );
   }
 

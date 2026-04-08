@@ -4,6 +4,7 @@ import { ApiError } from '../../shared/errors.js';
 import { generateDkimKeyPair } from './dkim.js';
 import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
+import { getMailServerHostname } from '../webmail-settings/service.js';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -59,8 +60,11 @@ export async function enableEmailForDomain(
     catchAllAddress: input.catch_all_address ?? null,
   });
 
-  // Provision DNS records
-  await provisionEmailDns(db, domainId, domain.domainName, dkimSelector, publicKey, encryptionKey);
+  // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
+  // MTA-STS records; the mail server hostname comes from the platform
+  // setting mail_server_hostname).
+  const mailServerHostname = await getMailServerHostname(db);
+  await provisionEmailDns(db, domainId, domain.domainName, dkimSelector, publicKey, encryptionKey, mailServerHostname);
 
   const [created] = await db
     .select()

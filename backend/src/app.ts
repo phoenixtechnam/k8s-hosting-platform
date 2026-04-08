@@ -40,6 +40,7 @@ import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
+import { emailAutodiscoverRoutes } from './modules/email-autodiscover/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes } from './modules/smtp-relay/routes.js';
@@ -229,6 +230,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
+  // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
+  // Email clients hit these BEFORE auth, at well-known paths on
+  // the platform base URL (or at autoconfig.<domain> / autodiscover.<domain>
+  // CNAMEs that resolve to the platform ingress).
+  await app.register(emailAutodiscoverRoutes);
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
