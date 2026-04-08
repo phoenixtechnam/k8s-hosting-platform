@@ -12,7 +12,7 @@ import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { usePlans } from '@/hooks/use-plans';
-import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, type MailSubmitRotateResult } from '@/hooks/use-email';
+import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type MailSubmitRotateResult, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
@@ -495,6 +495,9 @@ function EmailTab({ emailDomains, mailboxes, clientId, isLoading, error }: Email
       </div>
 
       {clientId && <MailSubmitCredentialPanel clientId={clientId} />}
+      {clientId && mboxes.length > 0 && (
+        <ImapSyncPanel clientId={clientId} mailboxes={mboxes.map(m => ({ id: m.id, fullAddress: m.fullAddress }))} />
+      )}
 
       {mboxes.length > 0 && (
         <div>
@@ -633,6 +636,196 @@ function MailSubmitCredentialPanel({ clientId }: { readonly clientId: string }) 
       )}
     </div>
   );
+}
+
+// ─── IMAPSync Panel (one-shot mailbox migration) ───────────────────────
+
+function ImapSyncPanel({
+  clientId,
+  mailboxes,
+}: {
+  readonly clientId: string;
+  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string }[];
+}) {
+  const { data: jobsRes, isLoading } = useImapSyncJobs(clientId);
+  const create = useCreateImapSyncJob(clientId);
+  const cancel = useCancelImapSyncJob(clientId);
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const jobs = jobsRes?.data ?? [];
+
+  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setFormError(null);
+    const fd = new FormData(e.currentTarget);
+    try {
+      await create.mutateAsync({
+        mailbox_id: String(fd.get('mailbox_id') ?? ''),
+        source_host: String(fd.get('source_host') ?? ''),
+        source_port: parseInt(String(fd.get('source_port') ?? '993'), 10),
+        source_username: String(fd.get('source_username') ?? ''),
+        source_password: String(fd.get('source_password') ?? ''),
+        source_ssl: fd.get('source_ssl') === 'on',
+        options: {
+          automap: fd.get('automap') === 'on',
+          dryRun: fd.get('dry_run') === 'on',
+        },
+      });
+      setShowForm(false);
+      (e.currentTarget as HTMLFormElement).reset();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4" data-testid="imapsync-panel">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Mail size={16} className="text-brand-500" />
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">IMAP migration jobs</h3>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowForm(s => !s)}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+          data-testid="imapsync-toggle-form"
+        >
+          {showForm ? 'Cancel' : 'Migrate from external IMAP…'}
+        </button>
+      </div>
+
+      <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+        Run a one-shot migration from an external IMAP server (Gmail, Outlook, legacy hosting) into one of this client&apos;s mailboxes. The destination uses Stalwart master SSO so no per-mailbox password is needed.
+      </p>
+
+      {showForm && (
+        <form onSubmit={onSubmit} className="mb-4 space-y-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Destination mailbox</span>
+              <select name="mailbox_id" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1">
+                {mailboxes.map(m => <option key={m.id} value={m.id}>{m.fullAddress}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source host</span>
+              <input name="source_host" required placeholder="imap.gmail.com" className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source port</span>
+              <input name="source_port" type="number" defaultValue={993} required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source username</span>
+              <input name="source_username" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
+            </label>
+            <label className="col-span-2 space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source password</span>
+              <input name="source_password" type="password" required className="w-full rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1" />
+            </label>
+          </div>
+          <div className="flex items-center gap-4 pt-1">
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="source_ssl" defaultChecked /> SSL
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="automap" defaultChecked /> Automap folders
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="dry_run" /> Dry run
+            </label>
+          </div>
+          {formError && <p className="text-red-600 dark:text-red-400">{formError}</p>}
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={create.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="imapsync-submit"
+            >
+              {create.isPending && <Loader2 size={12} className="animate-spin" />}
+              Start sync
+            </button>
+          </div>
+        </form>
+      )}
+
+      {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+
+      {!isLoading && jobs.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-gray-400 italic">No IMAPSync jobs yet.</p>
+      )}
+
+      {jobs.length > 0 && (
+        <div className="space-y-2">
+          {jobs.map(j => (
+            <ImapSyncJobRow key={j.id} job={j} onCancel={() => cancel.mutate(j.id)} cancelPending={cancel.isPending} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImapSyncJobRow({ job, onCancel, cancelPending }: { readonly job: ImapSyncJob; readonly onCancel: () => void; readonly cancelPending: boolean }) {
+  const [showLog, setShowLog] = useState(false);
+  const isActive = job.status === 'pending' || job.status === 'running';
+  return (
+    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
+          <span className="text-gray-400">→</span>
+          <code className="font-mono text-gray-900 dark:text-gray-100">{job.mailboxId.slice(0, 8)}</code>
+          <ImapSyncStatusBadge status={job.status} />
+        </div>
+        {isActive && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelPending}
+            className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      <div className="mt-1 text-gray-500 dark:text-gray-400">
+        Started {job.startedAt ? new Date(job.startedAt).toLocaleString() : '—'}
+        {job.finishedAt && ` · Finished ${new Date(job.finishedAt).toLocaleString()}`}
+      </div>
+      {job.errorMessage && (
+        <p className="mt-1 text-red-600 dark:text-red-400">{job.errorMessage}</p>
+      )}
+      {job.logTail && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowLog(s => !s)}
+            className="text-brand-600 dark:text-brand-400 hover:underline"
+          >
+            {showLog ? 'Hide log' : 'Show log'}
+          </button>
+          {showLog && (
+            <pre className="mt-1 max-h-48 overflow-auto rounded bg-gray-900 p-2 font-mono text-[11px] text-gray-100">{job.logTail}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'] }) {
+  const styles = {
+    pending: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+    running: 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400',
+    succeeded: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
+    failed: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
+    cancelled: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
+  } as const;
+  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>{status}</span>;
 }
 
 function DeploymentsTab({ data, isLoading, error }: TabContentProps<Deployment>) {

@@ -368,3 +368,83 @@ export function useRotateMailSubmitCredential(clientId: string) {
     },
   });
 }
+
+// ─── Phase 3 T2.1 — IMAPSync job runner ───
+
+export type ImapSyncJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface ImapSyncJob {
+  readonly id: string;
+  readonly clientId: string;
+  readonly mailboxId: string;
+  readonly sourceHost: string;
+  readonly sourcePort: number;
+  readonly sourceUsername: string;
+  readonly sourceSsl: boolean;
+  readonly options: Record<string, unknown>;
+  readonly status: ImapSyncJobStatus;
+  readonly k8sJobName: string | null;
+  readonly k8sNamespace: string;
+  readonly logTail: string | null;
+  readonly errorMessage: string | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CreateImapSyncJobInput {
+  readonly mailbox_id: string;
+  readonly source_host: string;
+  readonly source_port: number;
+  readonly source_username: string;
+  readonly source_password: string;
+  readonly source_ssl: boolean;
+  readonly options?: {
+    readonly automap?: boolean;
+    readonly noFolderSizes?: boolean;
+    readonly dryRun?: boolean;
+    readonly excludeFolders?: readonly string[];
+  };
+}
+
+export function useImapSyncJobs(clientId?: string) {
+  return useQuery({
+    queryKey: ['imapsync-jobs', clientId],
+    queryFn: () =>
+      apiFetch<{ data: readonly ImapSyncJob[] }>(`/api/v1/clients/${clientId}/mail/imapsync`),
+    enabled: !!clientId,
+    // Poll while running so the UI shows progress without manual refresh.
+    refetchInterval: (query) => {
+      const data = query.state.data as { data?: readonly ImapSyncJob[] } | undefined;
+      const hasRunning = data?.data?.some(
+        (j) => j.status === 'running' || j.status === 'pending',
+      );
+      return hasRunning ? 5000 : false;
+    },
+  });
+}
+
+export function useCreateImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateImapSyncJobInput) =>
+      apiFetch<{ data: ImapSyncJob }>(`/api/v1/clients/${clientId}/mail/imapsync`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+export function useCancelImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) =>
+      apiFetch<{ data: { id: string; status: string } }>(
+        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}

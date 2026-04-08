@@ -710,6 +710,39 @@ export const emailAliases = pgTable('email_aliases', {
 
 // Phase 3 T1.1 (B.2): DKIM key rotation with grace period.
 // Status lifecycle: pending → active → retired → (deleted)
+// Phase 3 T2.1 — IMAPSync job runner. Tracks one-shot Kubernetes
+// Jobs that migrate mail from an external IMAP server into a
+// platform mailbox. Source password encrypted at rest with the
+// OIDC encryption key; destination uses Stalwart `master` SSO so
+// no mailbox cleartext password is required.
+export const imapSyncJobs = pgTable('imap_sync_jobs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  mailboxId: varchar('mailbox_id', { length: 36 })
+    .notNull()
+    .references(() => mailboxes.id, { onDelete: 'cascade' }),
+  sourceHost: varchar('source_host', { length: 255 }).notNull(),
+  sourcePort: integer('source_port').notNull().default(993),
+  sourceUsername: varchar('source_username', { length: 255 }).notNull(),
+  sourcePasswordEncrypted: text('source_password_encrypted').notNull(),
+  sourceSsl: integer('source_ssl').notNull().default(1),
+  options: jsonb('options').notNull().default({}),
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  k8sJobName: varchar('k8s_job_name', { length: 253 }),
+  k8sNamespace: varchar('k8s_namespace', { length: 63 }).notNull().default('mail'),
+  logTail: text('log_tail'),
+  errorMessage: text('error_message'),
+  startedAt: timestamp('started_at'),
+  finishedAt: timestamp('finished_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('imap_sync_jobs_client_idx').on(table.clientId),
+  index('imap_sync_jobs_mailbox_idx').on(table.mailboxId),
+]);
+
 // Phase 3 T5.1 — per-client SMTP submission credentials used by
 // sendmail-compatible wrappers in workload pods. Stored twice:
 // encrypted (for writing to the customer PVC) + bcrypt hash (for
@@ -890,6 +923,8 @@ export type EmailDkimKey = typeof emailDkimKeys.$inferSelect;
 export type NewEmailDkimKey = typeof emailDkimKeys.$inferInsert;
 export type MailSubmitCredential = typeof mailSubmitCredentials.$inferSelect;
 export type NewMailSubmitCredential = typeof mailSubmitCredentials.$inferInsert;
+export type ImapSyncJob = typeof imapSyncJobs.$inferSelect;
+export type NewImapSyncJob = typeof imapSyncJobs.$inferInsert;
 export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
 export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
 export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;

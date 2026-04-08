@@ -1,0 +1,221 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ─── Mock DB ────────────────────────────────────────────────────────────────
+
+let selectResults: unknown[][];
+let selectCallIndex: number;
+let updateCalls: Record<string, unknown>[];
+let deleteCalls: number;
+
+function createMockDb() {
+  selectCallIndex = 0;
+  updateCalls = [];
+  deleteCalls = 0;
+
+  const whereFn = vi.fn().mockImplementation(() => {
+    const result = selectResults[selectCallIndex] ?? [];
+    selectCallIndex += 1;
+    return Promise.resolve(result);
+  });
+  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+  const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+  const updateWhere = vi.fn().mockResolvedValue(undefined);
+  const updateSet = vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+    updateCalls.push(vals);
+    return { where: updateWhere };
+  });
+  const updateFn = vi.fn().mockReturnValue({ set: updateSet });
+
+  const deleteWhere = vi.fn().mockImplementation(() => {
+    deleteCalls += 1;
+    return Promise.resolve();
+  });
+  const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+
+  return {
+    select: selectFn,
+    update: updateFn,
+    delete: deleteFn,
+  } as unknown as ReturnType<typeof createMockDb>;
+}
+
+// ─── Mock K8s clients ───────────────────────────────────────────────────────
+
+let mockJobStatus: { active?: number; succeeded?: number; failed?: number } | null = null;
+let mockJobNotFound = false;
+let mockPodList: { items: { metadata?: { name?: string } }[] } = { items: [] };
+let mockPodLog = '';
+let deletedJobs: string[] = [];
+let deletedSecrets: string[] = [];
+
+function createMockK8s() {
+  return {
+    batch: {
+      readNamespacedJob: vi.fn().mockImplementation(async () => {
+        if (mockJobNotFound) {
+          const err = new Error('not found') as Error & { statusCode?: number };
+          err.statusCode = 404;
+          throw err;
+        }
+        return { status: mockJobStatus };
+      }),
+      deleteNamespacedJob: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
+        deletedJobs.push(name);
+      }),
+    },
+    core: {
+      listNamespacedPod: vi.fn().mockResolvedValue(mockPodList),
+      readNamespacedPodLog: vi.fn().mockResolvedValue(mockPodLog),
+      deleteNamespacedSecret: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
+        deletedSecrets.push(name);
+      }),
+    },
+  };
+}
+
+const reconciler = await import('./reconciler.js');
+
+beforeEach(() => {
+  selectResults = [];
+  selectCallIndex = 0;
+  updateCalls = [];
+  deleteCalls = 0;
+  mockJobStatus = null;
+  mockJobNotFound = false;
+  mockPodList = { items: [] };
+  mockPodLog = '';
+  deletedJobs = [];
+  deletedSecrets = [];
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('reconcileImapSyncJobs', () => {
+  it('marks a Job that has succeeded as succeeded and captures the log tail', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-1',
+          k8sJobName: 'imapsync-job-1',
+          k8sNamespace: 'mail',
+          status: 'running',
+        },
+      ],
+    ];
+    mockJobStatus = { succeeded: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-1-xyz' } }] };
+    mockPodLog = 'transferred 200 messages\nDone.\n';
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    // Should have updated the row to 'succeeded' with finishedAt + log tail
+    const succeededUpdate = updateCalls.find((u) => u.status === 'succeeded');
+    expect(succeededUpdate).toBeDefined();
+    expect(succeededUpdate?.finishedAt).toBeInstanceOf(Date);
+    expect(succeededUpdate?.logTail).toContain('Done.');
+    // Should have triggered cleanup of Job + Secret
+    expect(deletedJobs).toContain('imapsync-job-1');
+    expect(deletedSecrets).toContain('imapsync-job-1');
+  });
+
+  it('marks a Job that has failed as failed with the captured error log', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-2',
+          k8sJobName: 'imapsync-job-2',
+          k8sNamespace: 'mail',
+          status: 'running',
+        },
+      ],
+    ];
+    mockJobStatus = { failed: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-2-abc' } }] };
+    mockPodLog = 'imapsync: authentication failed for alice@gmail.com\n';
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    const failedUpdate = updateCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate?.errorMessage).toBeTruthy();
+    expect(failedUpdate?.logTail).toContain('authentication failed');
+    expect(deletedJobs).toContain('imapsync-job-2');
+  });
+
+  it('leaves a Job that is still running as running (no DB update)', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-3',
+          k8sJobName: 'imapsync-job-3',
+          k8sNamespace: 'mail',
+          status: 'running',
+        },
+      ],
+    ];
+    mockJobStatus = { active: 1 };
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    expect(updateCalls).toEqual([]);
+    expect(deletedJobs).toEqual([]);
+  });
+
+  it('marks a job as failed when the K8s Job has disappeared (404)', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-4',
+          k8sJobName: 'imapsync-job-4',
+          k8sNamespace: 'mail',
+          status: 'running',
+        },
+      ],
+    ];
+    mockJobNotFound = true;
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    const failedUpdate = updateCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate?.errorMessage).toContain('disappeared');
+  });
+
+  it('truncates very long log tails to the configured max', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-5',
+          k8sJobName: 'imapsync-job-5',
+          k8sNamespace: 'mail',
+          status: 'running',
+        },
+      ],
+    ];
+    mockJobStatus = { succeeded: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-5-pod' } }] };
+    mockPodLog = 'X'.repeat(100_000);
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    const u = updateCalls.find((c) => c.status === 'succeeded');
+    expect(u).toBeDefined();
+    expect((u?.logTail as string).length).toBeLessThanOrEqual(32 * 1024);
+  });
+});

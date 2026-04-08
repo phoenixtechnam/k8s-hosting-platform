@@ -87,10 +87,7 @@ own writes.
 ## Workload manifest changes required
 
 The application catalog repo
-(`https://github.com/phoenixtechnam/hosting-platform-application-catalog`)
-and the workload catalog repo
-(`https://github.com/phoenixtechnam/hosting-platform-workload-catalog`)
-need to be updated so that every workload pod:
+(`https://github.com/phoenixtechnam/k8s-application-catalog`)
 
 ### 1. Mounts the `.platform` subPath
 

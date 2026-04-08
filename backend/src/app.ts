@@ -42,6 +42,7 @@ import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimRoutes } from './modules/email-dkim/routes.js';
 import { mailSubmitRoutes } from './modules/mail-submit/routes.js';
+import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { emailAutodiscoverRoutes } from './modules/email-autodiscover/routes.js';
 import { mailStatsRoutes } from './modules/mail-stats/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
@@ -59,6 +60,7 @@ import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
+import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
@@ -237,6 +239,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimRoutes, { prefix: '/api/v1' });
   await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
+  await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
   // Email clients hit these BEFORE auth, at well-known paths on
   // the platform base URL (or at autoconfig.<domain> / autodiscover.<domain>
@@ -288,6 +291,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const dkimEncKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
       const dkimTimer = startDkimScheduler(app.db, dkimEncKey);
       app.addHook('onClose', () => clearInterval(dkimTimer));
+
+      // Phase 3 T2.1: IMAPSync reconciler. Polls active K8s Jobs
+      // and writes terminal status + log tail back to the DB.
+      try {
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        const k8sForImapsync = createK8sClients(kubePath);
+        const imapsyncTimer = startImapSyncReconciler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => clearInterval(imapsyncTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
+      }
 
       // Periodic deployment status reconciler — detects crashes, OOM, CrashLoopBackOff
       const reconcileInterval = setInterval(async () => {

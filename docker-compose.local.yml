@@ -66,6 +66,13 @@ services:
       # should generate a fresh random value and store it in a
       # platform-level Kubernetes Secret instead of env.
       PLATFORM_INTERNAL_SECRET: ${PLATFORM_INTERNAL_SECRET:-local-dev-platform-internal-secret-please-rotate}
+      # Phase 3 T2.1: Stalwart master SSO password (cleartext). Used by
+      # the IMAPSync job runner to authenticate as `<mailbox>%master`
+      # on the destination side. Must match the cleartext whose bcrypt
+      # hash lives in k8s/overlays/dev/stalwart/secret.yaml MASTER_SECRET.
+      STALWART_MASTER_SECRET: ${STALWART_MASTER_SECRET:-stalwart-dev-master}
+      STALWART_IMAP_HOST: ${STALWART_IMAP_HOST:-stalwart-mail.mail.svc.cluster.local}
+      STALWART_IMAP_PORT: ${STALWART_IMAP_PORT:-143}
       DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
       CLUSTER_ISSUER_NAME: ${CLUSTER_ISSUER_NAME:-local-ca-issuer}
       INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}
