@@ -141,6 +141,34 @@ MAIL_E2E=1 bash scripts/smoke-test.sh      # includes end-to-end send+receive
 - `admin` / `stalwart-dev-admin` — WebAdmin UI + admin API
 - `master` / `stalwart-dev-master` — Roundcube SSO master (Phase 2)
 
+### 3.1b Bootstrapping the `stalwart_reader` PostgreSQL role (Phase 2a)
+
+The Drizzle migration `0004_stalwart_directory.sql` creates the `stalwart_reader` role with `NOLOGIN` and **no password**. A committed password in a SQL migration would reach production environments via the standard migration runner, so the login step is deliberately separated.
+
+**Local dev:** `scripts/local.sh mail-up` calls `_bootstrap_stalwart_reader` automatically, which sets the LOGIN + dev password (`stalwart-dev-reader-pw`) that matches `k8s/overlays/dev/stalwart/secret.yaml`.
+
+**Production:** run once, after migrations:
+
+```bash
+# 1) Pick a strong password and store it in your secret manager
+PG_STALWART_PW="$(openssl rand -base64 32)"
+
+# 2) Set the password in Postgres
+kubectl exec -n platform statefulset/platform-postgres -- \
+  psql -U platform -d hosting_platform -c \
+  "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD '$PG_STALWART_PW';"
+
+# 3) Store the same value in the Stalwart secret
+kubectl patch secret stalwart-secrets -n mail \
+  --type=merge \
+  -p="{\"stringData\":{\"STALWART_DB_PASSWORD\":\"$PG_STALWART_PW\"}}"
+
+# 4) Roll the Stalwart StatefulSet so it re-reads the secret
+kubectl rollout restart statefulset/stalwart-mail -n mail
+```
+
+Rotate the password by repeating steps 1–4.
+
 ### 3.2 Production (Hetzner k3s)
 
 1. Complete §2 (Hetzner prerequisites) first
@@ -427,4 +455,6 @@ Stalwart only offers PLAIN/LOGIN auth **after** STARTTLS has been negotiated (or
 | DKIM key rotation | Phase 3 | Currently single key per domain, no rotation |
 | DNS SRV / autodiscover | Phase 4 | `dns-provisioning.ts` does not yet emit SRV records |
 | Website sendmail from workload pods | Phase 4 | Requires per-pod auth + audit log |
-| SQL directory integration (real mailboxes from platform DB) | Phase 2 | Currently using Stalwart internal directory |
+| SQL directory integration (real mailboxes from platform DB) | ✅ Shipped (Phase 2a, 2026-04-08) | `stalwart` schema in platform DB; `stalwart_reader` NOLOGIN role; Endpoints bridge for local dev |
+| TLS between Stalwart and platform Postgres | **Production hardening required** | Base ConfigMap has `enable = false`; production overlay must set `enable = true` + strict cert verification |
+| VRFY / EXPN cross-client enumeration | Phase 3 | `verify` query is currently unscoped; consider disabling VRFY at Stalwart config level |

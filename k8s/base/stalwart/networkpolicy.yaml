@@ -72,8 +72,16 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # PostgreSQL — future SQL directory integration
-    - to: []
+    # PostgreSQL — Phase 2a SQL directory backend.
+    # Scoped to anything in the `mail` namespace only, so only the
+    # `platform-postgres` Service (Service-with-Endpoints bridge in dev,
+    # real Service in prod) can receive 5432 traffic from Stalwart.
+    # NOT open to arbitrary hosts on 5432 (lateral movement surface from
+    # untrusted SMTP content).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
       ports:
         - protocol: TCP
           port: 5432

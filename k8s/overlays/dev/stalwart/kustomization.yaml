@@ -24,6 +24,7 @@ namespace: mail
 resources:
   - ../../../base/stalwart
   - secret.yaml
+  - platform-postgres.yaml
 
 patches:
   - path: service-nodeport-patch.yaml

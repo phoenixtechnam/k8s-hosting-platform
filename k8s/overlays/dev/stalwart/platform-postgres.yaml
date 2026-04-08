@@ -1,0 +1,56 @@
+#
+# Dev-only bridge: a k8s Service + Endpoints in the `mail` namespace
+# that points at the docker-compose `postgres` container. Docker assigns
+# a new IP to the container on every restart, so the Endpoints resource
+# is created here with a placeholder IP and then patched at deploy time
+# by `scripts/local.sh mail-up` via `_patch_postgres_bridge`.
+#
+# Stalwart pods resolve `platform-postgres.mail.svc.cluster.local` via
+# k3s DNS, which returns the endpoints IP, and then k3s routes the packet
+# to the docker bridge network where the postgres container is listening.
+#
+# In production, this manifest is replaced by a real Service pointing at
+# the platform postgres deployment — same DNS name, different target.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-postgres
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: platform-db-bridge
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless — endpoints drive the DNS response
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: platform-postgres
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: platform-db-bridge
+subsets:
+  - addresses:
+      # Placeholder — overwritten at deploy time by `./scripts/local.sh mail-up`
+      # which discovers the live postgres container IP via
+      # `docker inspect hosting-platform-postgres-1` and patches this field.
+      # The k8s API server rejects `0.0.0.0` (unspecified) and anything in
+      # 127.0.0.0/8 (loopback). We use 192.0.2.1 from RFC 5737 TEST-NET-1,
+      # which is a reserved documentation prefix guaranteed to never route
+      # to anything real — so if the patch step fails to run, Stalwart
+      # gets a clean "connection timeout" that's easy to diagnose.
+      - ip: 192.0.2.1
+    ports:
+      - name: postgres
+        port: 5432
+        protocol: TCP

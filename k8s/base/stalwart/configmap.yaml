@@ -55,7 +55,10 @@ data:
 
     # ─── Storage ───────────────────────────────────────────────────────────
     # Phase 1: RocksDB for metadata/FTS/lookup; filesystem for blobs.
-    # All data lives on the local PVC under /opt/stalwart.
+    # All mail data lives on the local PVC under /opt/stalwart.
+    # Phase 2a: account directory now reads from the platform's PostgreSQL
+    # via read-only views in the `stalwart` schema (see
+    # backend/src/db/migrations/0004_stalwart_directory.sql).
     # Migration targets (zero code change, see docs/04-deployment/MAIL_SERVER_OPERATIONS.md):
     #   - hcloud-volumes  → change PVC storageClassName
     #   - NFS             → change PVC storageClassName
@@ -65,7 +68,7 @@ data:
     fts = "rocksdb"
     lookup = "rocksdb"
     blob = "fs-blob"
-    directory = "internal"
+    directory = "sql"
 
     [store.rocksdb]
     type = "rocksdb"
@@ -77,10 +80,52 @@ data:
     path = "/opt/stalwart/blobs"
     depth = 2
 
-    # ─── Directory (internal by default; prod overlay switches to SQL) ────
-    [directory.internal]
-    type = "internal"
-    store = "rocksdb"
+    # ─── PostgreSQL data store (account directory source) ─────────────────
+    # Reads the platform DB via the stalwart_reader role, which has SELECT
+    # on the stalwart schema only. The `platform-postgres` service name is
+    # provided by each environment's overlay (dev: k8s Endpoints pointing at
+    # the docker-compose postgres IP; prod: real platform DB service).
+    [store.pg]
+    type = "postgresql"
+    host = "%{env:STALWART_DB_HOST}%"
+    port = 5432
+    database = "%{env:STALWART_DB_NAME}%"
+    user = "%{env:STALWART_DB_USER}%"
+    password = "%{env:STALWART_DB_PASSWORD}%"
+    timeout = "15s"
+
+    [store.pg.tls]
+    enable = false
+    allow-invalid-certs = true
+
+    [store.pg.pool]
+    max-connections = 10
+
+    # All queries take exactly one parameter ($1), which Stalwart binds to
+    # the account name / email address / domain. Even queries that don't
+    # semantically need the parameter must still consume it — otherwise
+    # rust-postgres returns "expected 0 parameters but got 1".
+    [store.pg.query]
+    name       = "SELECT name, type, secret, description, quota FROM stalwart.principals WHERE name = $1"
+    members    = "SELECT $1::text AS member_of WHERE false"
+    recipients = "SELECT name FROM stalwart.emails WHERE address = $1"
+    emails     = "SELECT address FROM stalwart.emails WHERE name = $1 ORDER BY type DESC, address ASC"
+    verify     = "SELECT address FROM stalwart.emails WHERE address LIKE '%' || $1 || '%' ORDER BY address LIMIT 5"
+    expand     = "SELECT member_address AS address FROM stalwart.alias_expansion WHERE list_address = $1 ORDER BY member_address LIMIT 50"
+    domains    = "SELECT 1 FROM stalwart.domains WHERE name = $1 LIMIT 1"
+
+    # ─── SQL directory bound to the PostgreSQL store ──────────────────────
+    [directory.sql]
+    type = "sql"
+    store = "pg"
+
+    [directory.sql.columns]
+    name = "name"
+    description = "description"
+    secret = "secret"
+    email = "address"
+    quota = "quota"
+    class = "type"
 
     # ─── Authentication ────────────────────────────────────────────────────
     # Fallback admin: emergency access to WebAdmin (port 8080).

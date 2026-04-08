@@ -301,20 +301,31 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   fi
 fi
 
-# ─── Mail Server E2E (opt-in via MAIL_E2E=1) ─────────────────────────────────
+# ─── Mail Server E2E (opt-in via MAIL_E2E=1 / MAIL_E2E_SQL=1) ────────────────
 #
-# Sends a test message via SMTPS (port 465) and retrieves it via IMAPS
-# (port 993) using a disposable curl pod inside the cluster. Requires a test
-# principal `alice@${MAIL_E2E_DOMAIN}` to already exist in Stalwart. The
-# bootstrap call creates it idempotently.
+# Two independent E2E modes:
+#
+#   MAIL_E2E=1
+#     Uses Stalwart's internal directory with a bootstrapped test principal
+#     created directly via the Stalwart admin API. Exercises protocol
+#     functionality only. No platform DB involvement.
+#     NOTE: automatically skipped if MAIL_E2E_SQL=1 is also set, because
+#     Stalwart's directory is read from the platform DB in that mode and
+#     the admin-API principal creation does not flow to the SQL backend.
+#
+#   MAIL_E2E_SQL=1  (Phase 2a — canonical)
+#     Uses the backend's real APIs to provision a client → domain → email
+#     domain → mailbox, then authenticates to Stalwart using those
+#     credentials. Proves the SQL directory sees platform-provisioned users.
 #
 MAIL_E2E="${MAIL_E2E:-0}"
+MAIL_E2E_SQL="${MAIL_E2E_SQL:-0}"
 MAIL_E2E_DOMAIN="${MAIL_E2E_DOMAIN:-mail.dind.local}"
 MAIL_E2E_USER="${MAIL_E2E_USER:-alice@${MAIL_E2E_DOMAIN}}"
 MAIL_E2E_PASS="${MAIL_E2E_PASS:-alicepassword}"
 MAIL_ADMIN_AUTH="${MAIL_ADMIN_AUTH:-admin:stalwart-dev-admin}"
 
-if [[ "$MAIL_E2E" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
+if [[ "$MAIL_E2E" == "1" && "$MAIL_TESTS_ENABLED" == "1" && "$MAIL_E2E_SQL" != "1" ]]; then
   log "── Mail Server E2E (send + retrieve) ──"
 
   # Bootstrap: ensure domain and alice principal exist (idempotent; ignore 'already exists')
@@ -359,6 +370,112 @@ if [[ "$MAIL_E2E" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
     pass "E2E SMTPS send + IMAPS retrieve (user: $MAIL_E2E_USER)"
   else
     fail "E2E SMTPS send + IMAPS retrieve" "${E2E_OUTPUT:0:400}"
+  fi
+fi
+
+# ─── Mail Server E2E — SQL directory (Phase 2a) ──────────────────────────────
+if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
+  log "── Mail Server E2E — SQL Directory (Phase 2a) ──"
+
+  # We reuse $TOKEN from the Auth section at the top of this script.
+  if [[ -z "${TOKEN:-}" ]]; then
+    fail "SQL E2E bootstrap" "no admin token — cannot provision test data"
+  else
+    # Unique suffix so re-runs don't conflict. Capture once so the domain,
+    # client, and password all share the same epoch.
+    SQL_E2E_SUFFIX="$(date +%s)"
+    SQL_E2E_CLIENT_NAME="sql-e2e-${SQL_E2E_SUFFIX}"
+    SQL_E2E_DOMAIN_NAME="sqltest${SQL_E2E_SUFFIX}.mail.local"
+    SQL_E2E_LOCAL_PART="bob"
+    SQL_E2E_FULL_ADDR="${SQL_E2E_LOCAL_PART}@${SQL_E2E_DOMAIN_NAME}"
+    # No shell-special chars in the password — curl/kubectl run doesn't
+    # deal well with `!` (history expansion) or `$` (variable expansion).
+    SQL_E2E_PASSWORD="SqlTest-${SQL_E2E_SUFFIX}"
+
+    # Discover plan + region (already present in smoke test above)
+    SQL_PLAN_ID=$(curl -sS "${API_URL}/api/v1/plans" | jq -r '.data[0].id // empty')
+    SQL_REGION_ID=$(curl -sS "${API_URL}/api/v1/regions" | jq -r '.data[0].id // empty')
+
+    if [[ -z "$SQL_PLAN_ID" || -z "$SQL_REGION_ID" ]]; then
+      fail "SQL E2E prereqs" "no plan or region seeded"
+    else
+      # 1) Create client
+      CLIENT_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+        -d "{\"company_name\":\"${SQL_E2E_CLIENT_NAME}\",\"company_email\":\"sqltest@test.local\",\"plan_id\":\"${SQL_PLAN_ID}\",\"region_id\":\"${SQL_REGION_ID}\"}" \
+        "${API_URL}/api/v1/clients")
+      SQL_E2E_CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
+
+      if [[ -z "$SQL_E2E_CLIENT_ID" ]]; then
+        fail "SQL E2E create client" "${CLIENT_RESP:0:200}"
+      else
+        # 2) Create domain under that client
+        DOMAIN_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+          -d "{\"domain_name\":\"${SQL_E2E_DOMAIN_NAME}\"}" \
+          "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/domains")
+        SQL_E2E_DOMAIN_ID=$(echo "$DOMAIN_RESP" | jq -r '.data.id // empty')
+
+        if [[ -z "$SQL_E2E_DOMAIN_ID" ]]; then
+          fail "SQL E2E create domain" "${DOMAIN_RESP:0:200}"
+        else
+          # 3) Enable email on the domain
+          ED_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+            -d '{}' \
+            "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/enable")
+          SQL_E2E_EMAIL_DOMAIN_ID=$(echo "$ED_RESP" | jq -r '.data.id // empty')
+
+          if [[ -z "$SQL_E2E_EMAIL_DOMAIN_ID" ]]; then
+            fail "SQL E2E enable email" "${ED_RESP:0:200}"
+          else
+            # 4) Create a mailbox with a known password
+            MB_RESP=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+              -d "{\"local_part\":\"${SQL_E2E_LOCAL_PART}\",\"password\":\"${SQL_E2E_PASSWORD}\",\"display_name\":\"SQL E2E Bob\",\"quota_mb\":100}" \
+              "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_EMAIL_DOMAIN_ID}/mailboxes")
+            SQL_E2E_MAILBOX_ID=$(echo "$MB_RESP" | jq -r '.data.id // empty')
+
+            if [[ -z "$SQL_E2E_MAILBOX_ID" ]]; then
+              fail "SQL E2E create mailbox" "${MB_RESP:0:200}"
+            else
+              pass "SQL E2E platform provisioning ($SQL_E2E_FULL_ADDR)"
+
+              # 5) Exercise Stalwart with the real credentials
+              SQL_E2E_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run sql-e2e --rm -i \
+                --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+                /bin/sh -c "
+                  printf 'From: ${SQL_E2E_FULL_ADDR}\r\nTo: ${SQL_E2E_FULL_ADDR}\r\nSubject: SQL directory E2E\r\n\r\nPhase 2a test\r\n' > /tmp/msg.txt
+                  curl -sS -k --url smtps://stalwart-mail.mail.svc.cluster.local:465 \
+                    --mail-from '${SQL_E2E_FULL_ADDR}' --mail-rcpt '${SQL_E2E_FULL_ADDR}' \
+                    --user '${SQL_E2E_FULL_ADDR}:${SQL_E2E_PASSWORD}' \
+                    --upload-file /tmp/msg.txt >/dev/null 2>&1
+                  SEND=\$?
+                  sleep 1
+                  curl -sS -k --url imaps://stalwart-mail.mail.svc.cluster.local:993/INBOX \
+                    --user '${SQL_E2E_FULL_ADDR}:${SQL_E2E_PASSWORD}' 2>&1
+                  echo
+                  echo SEND_EXIT=\$SEND
+                " 2>&1)
+
+              if [[ "$SQL_E2E_OUTPUT" == *'LIST ()'*'INBOX'* && "$SQL_E2E_OUTPUT" == *'SEND_EXIT=0'* ]]; then
+                pass "SQL E2E SMTPS submit + IMAPS retrieve (platform-provisioned user)"
+              else
+                fail "SQL E2E SMTPS+IMAPS" "${SQL_E2E_OUTPUT:0:500}"
+              fi
+            fi
+          fi
+
+          # Cleanup in reverse order (best effort, ignore failures).
+          # Mailbox first (child of email_domain), then disable email on
+          # the domain (removes email_domains), then the domain itself.
+          if [[ -n "${SQL_E2E_MAILBOX_ID:-}" ]]; then
+            curl -sS -X DELETE -H "$AUTH_HEADER" \
+              "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/mailboxes/${SQL_E2E_MAILBOX_ID}" >/dev/null 2>&1 || true
+          fi
+          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/email/domains/${SQL_E2E_DOMAIN_ID}/disable" >/dev/null 2>&1 || true
+          curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}/domains/${SQL_E2E_DOMAIN_ID}" >/dev/null 2>&1 || true
+        fi
+
+        curl -sS -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 fi
 

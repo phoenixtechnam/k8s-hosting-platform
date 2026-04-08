@@ -170,7 +170,29 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - Network policies (dev has none; production manifests include a NetworkPolicy but it's untested)
 - Hetzner port-25 unblock follow-through
 
-### Phase 2 — Webmail SSO + Custom Webmail Domains
+### Phase 2a — SQL Directory Integration ✅ *Complete (2026-04-08)*
+**Goal:** Make mailboxes created via the backend CRUD APIs immediately usable by Stalwart without any manual admin-API provisioning.
+
+**Delivered:**
+- `backend/src/db/migrations/0004_stalwart_directory.sql` — `stalwart` Postgres schema with 4 views (principals, emails, domains, alias_expansion) projected from `mailboxes` / `email_domains` / `email_aliases`. Plus a dedicated read-only `stalwart_reader` role created as `NOLOGIN` with `search_path` pinned to `stalwart` and `REVOKE ALL ON SCHEMA public` for defense-in-depth.
+- `k8s/base/stalwart/configmap.yaml` — `[store.pg]` PostgreSQL data store with `$1` query placeholders; `[directory.sql]` bound to it; `[storage] directory = "sql"`. Query trick: the `members` query must still consume `$1` even though it returns no rows (Stalwart passes the parameter regardless).
+- `k8s/overlays/dev/stalwart/platform-postgres.yaml` — `Service` + `Endpoints` bridge that lets k3s pods reach the docker-compose postgres container. The Endpoints IP is patched dynamically at deploy time by `scripts/local.sh _patch_postgres_bridge`, which looks up the postgres container's current IP on the project's docker network.
+- `scripts/local.sh` — `_patch_postgres_bridge` (runtime IP discovery + kubectl patch) and `_bootstrap_stalwart_reader` (sets the dev-only LOGIN password after migrations, since the migration creates the role NOLOGIN so dev secrets cannot reach production via the SQL migration runner).
+- `scripts/smoke-test.sh` — new `MAIL_E2E_SQL=1` block that uses the real backend API to provision a client → domain → email-domain → mailbox chain, then authenticates to Stalwart with those credentials and completes an SMTPS submit + IMAPS fetch round-trip. Auto-skips the legacy `MAIL_E2E=1` (internal-directory) path since it's incompatible with SQL directory mode.
+- `k8s/base/stalwart/networkpolicy.yaml` — egress to 5432 tightened from `to: []` (anywhere) to `namespaceSelector: mail` only.
+
+**Verification:**
+- 33 of 33 smoke tests pass with `MAIL_E2E_SQL=1`
+- End-to-end proven: platform API creates mailbox → Stalwart reads it via SQL directory → SMTPS auth succeeds → IMAPS fetch retrieves the delivered message
+- Suspended/deleted domains excluded from the `stalwart.domains` view so mail for quarantined clients is rejected at the edge
+- `stalwart_reader` denied access to all non-`stalwart` tables (verified via `SELECT FROM users` → "permission denied")
+
+**Deferred to Phase 2b/production hardening:**
+- TLS between Stalwart and Postgres is disabled in the base ConfigMap (dev runs unencrypted). Production overlay must flip `[store.pg.tls] enable = true` and remove `allow-invalid-certs`.
+- `VRFY` cross-client address enumeration is possible via the unscoped `verify` query — to be scoped/disabled in Phase 3 outbound hardening.
+- `expand` query has a hardcoded `LIMIT 50` that silently truncates large mailing lists.
+
+### Phase 2b — Webmail SSO + Custom Webmail Domains
 1. Deploy Roundcube with Stalwart master user
 2. Custom Roundcube `jwt_auth` plugin consuming `generateWebmailToken`
 3. `webmail_domains` table + per-client Ingress + cert-manager Certificate
@@ -252,3 +274,4 @@ These decisions were made during Phase 1 planning. Future engineers should under
 |---|---|
 | 2026-04-07 | Initial document — captured current state, gap analysis, roadmap, Stalwart v0.15.5 + Hetzner research findings |
 | 2026-04-07 | **Phase 1 complete.** Stalwart deployed to local DinD k3s; TCP + E2E SMTP→IMAP round-trip tests green (32/32 in smoke test with `MAIL_E2E=1`). All 12 decisions finalized. Operations runbook written (`docs/04-deployment/MAIL_SERVER_OPERATIONS.md`). Hetzner port 25 unblock request filed. |
+| 2026-04-08 | **Phase 2a complete.** Stalwart now reads its account directory from platform PostgreSQL via read-only views (`stalwart` schema). Backend-created mailboxes authenticate in Stalwart without any admin-API provisioning step. Smoke test adds `MAIL_E2E_SQL=1` path exercising the full backend→Stalwart flow (33/33 pass). Critical security fixes applied: `stalwart_reader` role created `NOLOGIN` with explicit `REVOKE ALL ON SCHEMA public` + `search_path = stalwart` pin. NetworkPolicy egress on 5432 scoped to the `mail` namespace. |

@@ -272,7 +272,75 @@ _mail_k3s_exec() {
 
 _mail_sync_manifests() {
   # Copy current k8s manifests into the k3s-server container at a stable path.
+  # docker cp semantics: when the destination exists as a directory, the
+  # source is placed INSIDE it. Remove the stale target first so the copy
+  # always produces a fresh `/tmp/mail-k8s-sync` whose layout matches the
+  # project's k8s/ directory (overlays/, base/, ...).
+  docker exec "$K3S_CONTAINER" rm -rf /tmp/mail-k8s-sync >/dev/null 2>&1 || true
   docker cp "${PROJECT_DIR}/k8s" "${K3S_CONTAINER}:/tmp/mail-k8s-sync" >/dev/null
+}
+
+_patch_postgres_bridge() {
+  # Phase 2a bridge: the `platform-postgres` Service in the `mail` namespace
+  # is backed by a manual Endpoints resource that must point at the docker
+  # IP of the postgres container. Docker reassigns IPs whenever the container
+  # is recreated, so patch it at every mail-up.
+  local pg_name pg_ip network_name
+  pg_name=$(docker ps --filter "name=hosting-platform-postgres" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [[ -z "$pg_name" ]]; then
+    echo "  (platform-postgres bridge: postgres container not running — skipping)"
+    return 0
+  fi
+  # Extract the IP on the specific project network. Using `{{range}}` with
+  # `{{.IPAddress}}` concatenates addresses from multi-homed containers
+  # into a single string that is not a valid IP. Targeting the named
+  # project network guarantees we get exactly one valid address.
+  network_name="${COMPOSE_PROJECT_NAME:-hosting-platform}_default"
+  pg_ip=$(docker inspect "$pg_name" \
+    --format "{{with index .NetworkSettings.Networks \"${network_name}\"}}{{.IPAddress}}{{end}}" \
+    2>/dev/null)
+  # Validate it looks like an IPv4 address before patching — anything else
+  # means we looked at the wrong network or the container is not attached.
+  if ! [[ "$pg_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "  ⚠  (platform-postgres bridge: no valid IP for $pg_name on $network_name; got '$pg_ip')"
+    return 1
+  fi
+  echo "  Patching platform-postgres Endpoints → $pg_ip"
+  local patch_err
+  patch_err=$(_mail_k3s_exec kubectl patch endpoints platform-postgres -n mail \
+    --type=json \
+    -p="[{\"op\":\"replace\",\"path\":\"/subsets/0/addresses/0/ip\",\"value\":\"$pg_ip\"}]" \
+    2>&1)
+  if [[ $? -ne 0 ]]; then
+    echo "  ⚠  kubectl patch failed: $patch_err"
+    return 1
+  fi
+  # Bootstrap the stalwart_reader role password (migration now creates
+  # the role NOLOGIN; we need to grant login + a dev password).
+  _bootstrap_stalwart_reader || true
+  # Restart Stalwart pod so it picks up the new endpoint (kube-dns
+  # already has it, but a fresh pod makes debugging clearer)
+  _mail_k3s_exec kubectl rollout restart statefulset/stalwart-mail -n mail >/dev/null 2>&1 || true
+  return 0
+}
+
+_bootstrap_stalwart_reader() {
+  # Phase 2a: the Drizzle migration creates `stalwart_reader` as NOLOGIN
+  # with no password — committing one to SQL would leak into production.
+  # This helper sets the dev password so Stalwart can authenticate.
+  # The password MUST match the STALWART_DB_PASSWORD value in
+  # k8s/overlays/dev/stalwart/secret.yaml.
+  local pg_name dev_password
+  pg_name=$(docker ps --filter "name=hosting-platform-postgres" --format '{{.Names}}' 2>/dev/null | head -1)
+  [[ -z "$pg_name" ]] && return 0
+  dev_password="stalwart-dev-reader-pw"
+  docker exec "$pg_name" psql -U "${DB_USER:-platform}" -d "${DB_NAME:-hosting_platform}" \
+    -c "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD '$dev_password';" >/dev/null 2>&1 || {
+      echo "  ⚠  Failed to bootstrap stalwart_reader password"
+      return 1
+    }
+  echo "  Bootstrapped stalwart_reader LOGIN password"
+  return 0
 }
 
 cmd_mail_up() {
@@ -286,6 +354,9 @@ cmd_mail_up() {
   _repair_kubeconfig || true
   _mail_sync_manifests
   _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/stalwart"
+  # Phase 2a: patch the platform-postgres Endpoints with the live postgres
+  # container IP so Stalwart's SQL directory can reach the platform DB.
+  _patch_postgres_bridge
   echo ""
   echo "Waiting for Stalwart pod to be ready (up to 2 minutes)..."
   _mail_k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-mail -n mail --timeout=120s || {
