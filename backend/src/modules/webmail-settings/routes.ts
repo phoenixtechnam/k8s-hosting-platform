@@ -2,10 +2,24 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { getWebmailSettings, updateWebmailSettings } from './service.js';
+import { getWebmailSettings, updateWebmailSettings, getMailServerHostname } from './service.js';
 import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
+import { ensureMailServerCertificate } from '../certificates/service.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void> {
+  // Phase 3.A.1: k8s client for cert provisioning. Created once at
+  // plugin registration, not per-request.
+  let k8s: K8sClients | undefined;
+  try {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    k8s = createK8sClients(kubeconfigPath);
+  } catch (err) {
+    app.log.warn({ err }, 'webmail-settings: k8s client unavailable — mail cert provisioning disabled');
+    k8s = undefined;
+  }
+
   // GET /api/v1/admin/webmail-settings
   app.get('/admin/webmail-settings', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
@@ -39,6 +53,53 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       );
     }
     const settings = await updateWebmailSettings(app.db, parsed.data);
+
+    // Phase 3.A.1: if the mail hostname was changed, re-issue the
+    // Stalwart TLS cert to match. Non-blocking on failure — admin can
+    // retry via POST /admin/mail/certificate/ensure.
+    if (k8s && parsed.data.mailServerHostname) {
+      try {
+        await ensureMailServerCertificate(
+          app.db,
+          k8s,
+          parsed.data.mailServerHostname,
+          app.log,
+        );
+      } catch (err) {
+        app.log.warn(
+          { err, hostname: parsed.data.mailServerHostname },
+          'webmail-settings: mail cert ensure failed (non-blocking)',
+        );
+      }
+    }
+
     return success(settings);
+  });
+
+  // POST /api/v1/admin/mail/certificate/ensure
+  // Phase 3.A.1: manually trigger (or re-trigger) Stalwart mail server
+  // certificate provisioning. Useful when:
+  //   - operator is bootstrapping the production mail stack
+  //   - the previous issuance failed and they want to retry
+  //   - the ClusterIssuer has been changed via /admin/tls-settings
+  //     and they want a fresh cert signed by the new issuer
+  app.post('/admin/mail/certificate/ensure', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Webmail Settings'],
+      summary: 'Ensure the Stalwart mail server TLS certificate exists',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    if (!k8s) {
+      throw new ApiError(
+        'K8S_UNAVAILABLE',
+        'Kubernetes client is not configured — cannot provision mail server certificate',
+        503,
+      );
+    }
+    const hostname = await getMailServerHostname(app.db);
+    const result = await ensureMailServerCertificate(app.db, k8s, hostname, app.log);
+    return success(result);
   });
 }

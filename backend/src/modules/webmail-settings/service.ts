@@ -1,16 +1,13 @@
 /**
- * Webmail platform settings.
+ * Platform mail / webmail settings.
  *
- * Stores the operator-configurable default webmail URL that's used
- * when a mailbox's domain doesn't have its own derived webmail Ingress
- * yet (e.g. because webmail_enabled=false on the email_domain, or the
- * email_domain doesn't exist because the mailbox is on the shared
- * platform domain). Phase 2c.5 adds per-email-domain webmail Ingresses,
- * but the default still exists as a fallback.
+ * Phase 2c.5 introduced this module for a single setting —
+ * `default_webmail_url`. Phase 3.A.1 extends it with the mail server
+ * hostname setting that drives Stalwart's certificate provisioning
+ * and the Stalwart TOML config's `hostname = ...` line.
  *
- * Single setting today; structured as a module to make room for future
- * settings (e.g. webmail theme, default plugins, disable list) without
- * more schema churn.
+ * Both settings live in the key-value `platform_settings` table. No
+ * schema changes required for new keys — they're just rows.
  */
 
 import { eq } from 'drizzle-orm';
@@ -39,19 +36,28 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
     .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
+function defaultMailHostnameFromEnv(): string {
+  return process.env.STALWART_HOSTNAME ?? process.env.MAIL_SERVER_HOSTNAME ?? 'mail.example.com';
+}
+
 export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrl = await getSetting(db, 'default_webmail_url');
+  const mailServerHostname = await getSetting(db, 'mail_server_hostname');
   return {
     defaultWebmailUrl: defaultWebmailUrl ?? defaultUrlFromEnv(),
+    mailServerHostname: mailServerHostname ?? defaultMailHostnameFromEnv(),
   };
 }
 
 export async function updateWebmailSettings(
   db: Database,
-  input: { defaultWebmailUrl?: string },
+  input: { defaultWebmailUrl?: string; mailServerHostname?: string },
 ) {
   if (input.defaultWebmailUrl !== undefined) {
     await setSetting(db, 'default_webmail_url', input.defaultWebmailUrl);
+  }
+  if (input.mailServerHostname !== undefined) {
+    await setSetting(db, 'mail_server_hostname', input.mailServerHostname);
   }
   return getWebmailSettings(db);
 }
@@ -59,4 +65,9 @@ export async function updateWebmailSettings(
 export async function getDefaultWebmailUrl(db: Database): Promise<string> {
   const settings = await getWebmailSettings(db);
   return settings.defaultWebmailUrl;
+}
+
+export async function getMailServerHostname(db: Database): Promise<string> {
+  const settings = await getWebmailSettings(db);
+  return settings.mailServerHostname;
 }

@@ -11,8 +11,15 @@ services:
       POSTGRES_DB: ${DB_NAME:-hosting_platform}
       POSTGRES_USER: ${DB_USER:-platform}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-local-dev-password}
+      # Phase 3.A.5: Roundcube session DB, created by initdb script on
+      # first container start. These are passed through to the initdb
+      # shell script via the Postgres container's env.
+      ROUNDCUBE_DB_NAME: ${ROUNDCUBE_DB_NAME:-roundcube}
+      ROUNDCUBE_DB_USER: ${ROUNDCUBE_DB_USER:-roundcube}
+      ROUNDCUBE_DB_PASSWORD: ${ROUNDCUBE_DB_PASSWORD:-roundcube-local-dev-password}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./scripts/postgres-initdb:/docker-entrypoint-initdb.d:ro
     # Note: k3s pods reach postgres via a k8s Service + Endpoints resource
     # in the `mail` namespace that is dynamically populated with whatever
     # IP docker assigns to this container on each boot. The `mail-up`

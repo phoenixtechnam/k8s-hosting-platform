@@ -1,0 +1,28 @@
+# Phase 3.A.2 — production Roundcube overlay.
+#
+# Re-enables TLS peer verification on the Roundcube → Stalwart IMAP /
+# SMTP connections. In dev we disable it because Stalwart uses a
+# self-signed cert (see k8s/base/roundcube/configmap-config.yaml and
+# docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md Phase 2c
+# deferred items).
+#
+# Prerequisite: Stalwart must be serving a real CA-issued cert via
+# k8s/overlays/production/stalwart/. See that overlay's README for the
+# cert bootstrap procedure.
+#
+# This overlay merges a replacement `jwt_auth.inc.php` into the
+# roundcube-config-extra ConfigMap with verify_peer=true.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/roundcube
+
+configMapGenerator:
+  - name: roundcube-config-extra
+    behavior: merge
+    files:
+      - jwt_auth.inc.php=jwt_auth-prod.inc.php

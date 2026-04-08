@@ -1,0 +1,140 @@
+# Production config overlay — adds the [certificate.default] block
+# referencing the cert-manager-mounted Secret. This file REPLACES the
+# base configmap via Kustomize configMapGenerator merge behavior.
+#
+# NOTE: This file is the full config (not a patch) because
+# configMapGenerator merge replaces entire file keys. If you're
+# looking for the base config, see k8s/base/stalwart/configmap.yaml.
+# Any changes to the base also need to be mirrored here — a future
+# improvement would be to use a JSON patch instead of file override.
+
+# ─── Server identity ───────────────────────────────────────────────────
+[server]
+hostname = "%{env:STALWART_HOSTNAME}%"
+
+# ─── TLS certificates ─────────────────────────────────────────────────
+# Mounted by the cert-mount StatefulSet patch in this same overlay.
+# cert-manager writes the renewed cert into the Secret; restart the
+# pod or run `stalwart-cli server reload-certificates` to pick it up.
+[certificate.default]
+cert = "file:///etc/stalwart/tls/tls.crt"
+private-key = "file:///etc/stalwart/tls/tls.key"
+default = true
+
+# ─── Listeners ─────────────────────────────────────────────────────────
+
+[server.listener.smtp]
+bind = "[::]:25"
+protocol = "smtp"
+
+[server.listener.submission]
+bind = "[::]:587"
+protocol = "smtp"
+
+[server.listener.submissions]
+bind = "[::]:465"
+protocol = "smtp"
+tls.implicit = true
+
+[server.listener.imap]
+bind = "[::]:143"
+protocol = "imap"
+
+[server.listener.imaptls]
+bind = "[::]:993"
+protocol = "imap"
+tls.implicit = true
+
+[server.listener.pop3]
+bind = "[::]:110"
+protocol = "pop3"
+
+[server.listener.pop3s]
+bind = "[::]:995"
+protocol = "pop3"
+tls.implicit = true
+
+[server.listener.sieve]
+bind = "[::]:4190"
+protocol = "managesieve"
+
+[server.listener.http]
+protocol = "http"
+bind = "[::]:8080"
+
+# ─── Storage ───────────────────────────────────────────────────────────
+[storage]
+data = "rocksdb"
+fts = "rocksdb"
+lookup = "rocksdb"
+blob = "fs-blob"
+directory = "sql"
+
+[store.rocksdb]
+type = "rocksdb"
+path = "/opt/stalwart/data"
+compression = "lz4"
+
+[store.fs-blob]
+type = "fs"
+path = "/opt/stalwart/blobs"
+depth = 2
+
+# ─── PostgreSQL data store ────────────────────────────────────────────
+# Production overlay MUST enable TLS between Stalwart and Postgres.
+[store.pg]
+type = "postgresql"
+host = "%{env:STALWART_DB_HOST}%"
+port = 5432
+database = "%{env:STALWART_DB_NAME}%"
+user = "%{env:STALWART_DB_USER}%"
+password = "%{env:STALWART_DB_PASSWORD}%"
+timeout = "15s"
+
+[store.pg.tls]
+enable = true
+allow-invalid-certs = false
+
+[store.pg.pool]
+max-connections = 10
+
+[store.pg.query]
+name       = "SELECT name, type, secret, description, quota FROM stalwart.principals WHERE name = $1"
+members    = "SELECT $1::text AS member_of WHERE false"
+recipients = "SELECT name FROM stalwart.emails WHERE address = $1"
+emails     = "SELECT address FROM stalwart.emails WHERE name = $1 ORDER BY type DESC, address ASC"
+verify     = "SELECT address FROM stalwart.emails WHERE address LIKE '%' || $1 || '%' ORDER BY address LIMIT 5"
+expand     = "SELECT member_address AS address FROM stalwart.alias_expansion WHERE list_address = $1 ORDER BY member_address LIMIT 50"
+domains    = "SELECT 1 FROM stalwart.domains WHERE name = $1 LIMIT 1"
+
+# ─── SQL directory bound to the PostgreSQL store ──────────────────────
+[directory.sql]
+type = "sql"
+store = "pg"
+
+[directory.sql.columns]
+name = "name"
+description = "description"
+secret = "secret"
+email = "address"
+quota = "quota"
+class = "type"
+
+# ─── Authentication ────────────────────────────────────────────────────
+[authentication.fallback-admin]
+user = "admin"
+secret = "%{env:ADMIN_SECRET}%"
+
+[authentication.master]
+user = "master"
+secret = "%{env:MASTER_SECRET}%"
+
+# ─── Telemetry ─────────────────────────────────────────────────────────
+[tracer.stdout]
+type = "stdout"
+level = "info"
+ansi = false
+enable = true
+
+[metrics.prometheus]
+enable = true

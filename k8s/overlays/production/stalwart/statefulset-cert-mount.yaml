@@ -1,0 +1,30 @@
+#
+# Patch: mount the cert-manager-managed `stalwart-tls` Secret read-only
+# at /etc/stalwart/tls/. The Stalwart TOML [certificate.default] block
+# in the overlay ConfigMap references these files.
+#
+# The Secret is provisioned by the backend certificates module via
+# POST /api/v1/admin/mail/certificate/ensure (see kustomization.yaml
+# for the bootstrap steps).
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stalwart-mail
+  namespace: mail
+spec:
+  template:
+    spec:
+      containers:
+        - name: stalwart
+          volumeMounts:
+            - name: tls-cert
+              mountPath: /etc/stalwart/tls
+              readOnly: true
+      volumes:
+        - name: tls-cert
+          secret:
+            secretName: stalwart-tls
+            # Optional at kustomize merge time, but cert-manager should
+            # have already populated it per the bootstrap procedure.
+            optional: false

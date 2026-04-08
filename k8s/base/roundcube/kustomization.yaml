@@ -4,7 +4,9 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - pvc.yaml
+  # Phase 3.A.5: pvc.yaml removed — Roundcube now uses Postgres for
+  # session / contacts / identities and no longer needs a RWO PVC.
+  # The /var/roundcube scratch dir is an emptyDir in the deployment.
   - configmap-config.yaml
   - deployment.yaml
   - service.yaml

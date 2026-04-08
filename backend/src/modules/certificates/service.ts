@@ -437,6 +437,188 @@ export async function recomputeAllCertificatesForClient(
   }
 }
 
+// ─── Mail server certificate ──────────────────────────────────────────────
+
+const MAIL_NAMESPACE = 'mail';
+const STALWART_CERT_NAME = 'stalwart-mail-cert';
+const STALWART_SECRET_NAME = 'stalwart-tls';
+
+// Basic hostname validation — no trailing/leading dots, no empty labels.
+// We keep it permissive because the mail hostname can include local
+// development values like `mail.dind.local`, which the webmail-domains
+// reserved-TLD denylist does NOT apply to (this is a PLATFORM setting
+// not a user-picked domain).
+function validateMailHostname(hostname: string): void {
+  const trimmed = hostname.trim();
+  if (!trimmed) {
+    throw new ApiError('INVALID_FIELD_VALUE', 'mail hostname is empty', 400);
+  }
+  if (trimmed.startsWith('.') || trimmed.endsWith('.')) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'mail hostname must not start or end with a dot',
+      400,
+      { hostname: trimmed },
+    );
+  }
+  if (trimmed.includes('..')) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'mail hostname contains empty label',
+      400,
+      { hostname: trimmed },
+    );
+  }
+  // No whitespace anywhere
+  if (/\s/.test(trimmed)) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'mail hostname contains whitespace',
+      400,
+      { hostname: trimmed },
+    );
+  }
+}
+
+export interface EnsureMailServerCertificateResult {
+  readonly skipped: boolean;
+  readonly reason?: string;
+  readonly namespace?: string;
+  readonly certificateName?: string;
+  readonly secretName?: string;
+  readonly issuerName?: string;
+  readonly dnsNames?: readonly string[];
+}
+
+/**
+ * Ensure a cert-manager Certificate exists for the platform's Stalwart
+ * mail server hostname, in the shared `mail` namespace.
+ *
+ * Unlike `ensureDomainCertificate` (which is per-customer-domain), this
+ * is a single platform-wide cert for the global mail hostname (e.g.
+ * `mail.platform.net`). Customer-specific `mail.<customer>.com`
+ * hostnames CNAME to this global hostname and clients accept the cert
+ * because the CNAME chain is transparent at the TLS layer.
+ *
+ * Selection:
+ *   - dev → local-ca-issuer
+ *   - staging → letsencrypt-staging-http01
+ *   - production → letsencrypt-prod-http01 (the mail hostname is a
+ *     platform-owned, ICANN-routable name, so HTTP-01 works fine; we
+ *     don't need DNS-01 here because we're not issuing wildcards)
+ *
+ * Secret name is fixed at `stalwart-tls` (in the `mail` namespace) so
+ * operators know exactly which Secret to mount into the Stalwart
+ * StatefulSet via their production overlay. See
+ * `k8s/overlays/production/stalwart/` for the overlay patch pattern
+ * and `docs/04-deployment/MAIL_SERVER_OPERATIONS.md` for the manual
+ * bootstrap steps.
+ */
+export async function ensureMailServerCertificate(
+  db: Database,
+  k8s: K8sClients | undefined,
+  hostname: string,
+  logger: CertLogger = noopLogger,
+): Promise<EnsureMailServerCertificateResult> {
+  validateMailHostname(hostname);
+  const cleanHostname = hostname.trim().toLowerCase();
+
+  if (!(await isAutoTlsEnabled(db))) {
+    logger.info(
+      { hostname: cleanHostname },
+      'ensureMailServerCertificate: auto-TLS disabled, skipping',
+    );
+    return { skipped: true, reason: 'auto-TLS disabled' };
+  }
+
+  if (!k8s) {
+    logger.warn(
+      { hostname: cleanHostname },
+      'ensureMailServerCertificate: no k8s client, skipping',
+    );
+    return { skipped: true, reason: 'no k8s client' };
+  }
+
+  const environment = getEnvironment();
+  const issuers = getConfiguredIssuers();
+  // Mail server is never in cname/secondary mode — it's a platform
+  // hostname under a domain we control. HTTP-01 is fine; no wildcard.
+  const selection = selectIssuerForDomain({
+    dnsMode: 'primary',
+    activeServers: [],
+    wildcardRequested: false,
+    environment,
+    issuers,
+  });
+
+  const body = buildCertificateResource({
+    name: STALWART_CERT_NAME,
+    namespace: MAIL_NAMESPACE,
+    secretName: STALWART_SECRET_NAME,
+    dnsNames: [cleanHostname],
+    issuerName: selection.issuerName,
+  });
+
+  try {
+    await k8s.custom.createNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace: MAIL_NAMESPACE,
+      plural: 'certificates',
+      body,
+    });
+  } catch (err) {
+    if (isK8s409(err)) {
+      try {
+        await k8s.custom.replaceNamespacedCustomObject({
+          group: 'cert-manager.io',
+          version: 'v1',
+          namespace: MAIL_NAMESPACE,
+          plural: 'certificates',
+          name: STALWART_CERT_NAME,
+          body,
+        });
+      } catch (replaceErr) {
+        logger.error(
+          { replaceErr, hostname: cleanHostname },
+          'ensureMailServerCertificate: replace failed',
+        );
+        throw new ApiError(
+          'CERT_PROVISIONING_FAILED',
+          `Failed to replace mail server Certificate for '${cleanHostname}': ${(replaceErr as Error).message}`,
+          502,
+          { hostname: cleanHostname },
+        );
+      }
+    } else {
+      logger.error(
+        { err, hostname: cleanHostname },
+        'ensureMailServerCertificate: create failed',
+      );
+      throw new ApiError(
+        'CERT_PROVISIONING_FAILED',
+        `Failed to create mail server Certificate for '${cleanHostname}': ${(err as Error).message}`,
+        502,
+        { hostname: cleanHostname },
+      );
+    }
+  }
+
+  logger.info(
+    { hostname: cleanHostname, issuer: selection.issuerName },
+    'ensureMailServerCertificate: Certificate ensured',
+  );
+
+  return {
+    skipped: false,
+    namespace: MAIL_NAMESPACE,
+    certificateName: STALWART_CERT_NAME,
+    secretName: STALWART_SECRET_NAME,
+    issuerName: selection.issuerName,
+    dnsNames: [cleanHostname],
+  };
+}
+
 // ─── Per-hostname certificate provisioning ───────────────────────────────
 
 /**

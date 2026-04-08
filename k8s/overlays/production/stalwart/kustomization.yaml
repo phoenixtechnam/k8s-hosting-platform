@@ -1,0 +1,58 @@
+# Phase 3.A.1 — production Stalwart overlay.
+#
+# Mounts the cert-manager-managed `stalwart-tls` Secret into the
+# StatefulSet and patches the ConfigMap to reference the mounted
+# cert files via a [certificate.default] TOML block.
+#
+# Prerequisite (one-time bootstrap):
+#
+#   1. Set the mail hostname in the platform admin UI or via
+#      PATCH /api/v1/admin/webmail-settings
+#      {"mailServerHostname": "mail.your-platform.com"}
+#
+#   2. Trigger cert provisioning once:
+#      POST /api/v1/admin/mail/certificate/ensure
+#      (or wait for the PATCH above to do it automatically)
+#
+#   3. cert-manager creates a Secret named `stalwart-tls` in the
+#      `mail` namespace. Confirm with:
+#      kubectl -n mail get secret stalwart-tls
+#
+#   4. Apply this overlay:
+#      kubectl apply -k k8s/overlays/production/stalwart/
+#
+#   5. Stalwart will pick up the new cert on next restart, or call:
+#      kubectl -n mail exec stalwart-mail-0 -- \
+#        stalwart-cli -u http://127.0.0.1:8080 \
+#        --credentials "admin:$ADMIN_PASSWORD" \
+#        server reload-certificates
+#
+# When cert-manager rotates the cert (default: 15 days before expiry),
+# the mounted file changes but Stalwart doesn't automatically re-read
+# it. Operators should either:
+#
+#   a. Restart the pod (kubectl rollout restart statefulset/stalwart-mail -n mail)
+#   b. Run the stalwart-cli reload command above
+#
+# A future ServiceMonitor-like periodic reload job could automate this,
+# tracked in docs/04-deployment/MAIL_SERVER_OPERATIONS.md.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart
+
+patches:
+  - path: statefulset-cert-mount.yaml
+    target:
+      kind: StatefulSet
+      name: stalwart-mail
+
+configMapGenerator:
+  - name: stalwart-config
+    behavior: merge
+    files:
+      - config.toml=stalwart-config-cert.toml

@@ -348,3 +348,140 @@ describe('cert naming', () => {
     expect(result.endsWith('-cert')).toBe(true);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ensureMailServerCertificate
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('ensureMailServerCertificate', () => {
+  const MAIL_NAMESPACE = 'mail';
+
+  it('creates a Certificate CR in the mail namespace for the given hostname', async () => {
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      k8s,
+      'mail.platform.com',
+      makeLogger(),
+    );
+
+    expect(result.skipped).toBe(false);
+    expect(result.namespace).toBe(MAIL_NAMESPACE);
+    expect(result.secretName).toBe('stalwart-tls');
+
+    const call = k8s._createCustom.mock.calls[0][0];
+    expect(call.namespace).toBe(MAIL_NAMESPACE);
+    expect(call.body.metadata.name).toBe('stalwart-mail-cert');
+    expect(call.body.spec.secretName).toBe('stalwart-tls');
+    expect(call.body.spec.dnsNames).toEqual(['mail.platform.com']);
+  });
+
+  it('uses the HTTP-01 issuer in production environment (mail hostname is public, not customer)', async () => {
+    process.env.CERT_ENVIRONMENT = 'production';
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      k8s,
+      'mail.platform.com',
+      makeLogger(),
+    );
+    expect(result.issuerName).toBe('letsencrypt-prod-http01');
+    const call = k8s._createCustom.mock.calls[0][0];
+    expect(call.body.spec.issuerRef.name).toBe('letsencrypt-prod-http01');
+  });
+
+  it('uses local-ca-issuer in development environment', async () => {
+    process.env.CERT_ENVIRONMENT = 'development';
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      k8s,
+      'mail.dind.local',
+      makeLogger(),
+    );
+    expect(result.issuerName).toBe('local-ca-issuer');
+  });
+
+  it('replaces an existing Certificate on 409', async () => {
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      k8s,
+      'mail.platform.com',
+      makeLogger(),
+    );
+    expect(result.skipped).toBe(false);
+    expect(k8s._replaceCustom).toHaveBeenCalledOnce();
+  });
+
+  it('skips and returns reason when auto-TLS is disabled', async () => {
+    vi.mocked(tlsSettings.isAutoTlsEnabled).mockResolvedValue(false);
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      k8s,
+      'mail.platform.com',
+      makeLogger(),
+    );
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toContain('auto-TLS disabled');
+    expect(k8s._createCustom).not.toHaveBeenCalled();
+  });
+
+  it('skips when no k8s client is available', async () => {
+    const db = createMockDb();
+    const result = await service.ensureMailServerCertificate(
+      db as never,
+      undefined,
+      'mail.platform.com',
+      makeLogger(),
+    );
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toContain('no k8s client');
+  });
+
+  it('throws CERT_PROVISIONING_FAILED on non-409 errors', async () => {
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Forbidden'), { statusCode: 403 }),
+    );
+
+    await expect(
+      service.ensureMailServerCertificate(
+        db as never,
+        k8s,
+        'mail.platform.com',
+        makeLogger(),
+      ),
+    ).rejects.toMatchObject({ code: 'CERT_PROVISIONING_FAILED' });
+  });
+
+  it('rejects invalid hostnames (empty, whitespace, starts with dot)', async () => {
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    for (const invalid of ['', '   ', '.mail.example.com', 'mail..com']) {
+      await expect(
+        service.ensureMailServerCertificate(
+          db as never,
+          k8s,
+          invalid,
+          makeLogger(),
+        ),
+      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+    }
+  });
+});

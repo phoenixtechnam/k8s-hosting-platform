@@ -10,7 +10,12 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate  # SQLite DB is on a RWO PVC; no rolling
+    # Phase 3.A.5: RollingUpdate is now safe because session state
+    # lives in the shared Postgres database, not on a RWO PVC.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: roundcube
@@ -24,18 +29,34 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: roundcube
-          image: roundcube/roundcubemail:1.6.10-apache
-          # IfNotPresent on a mutable tag means security patches published
-          # under the same tag won't be re-pulled. Pin by digest in a
-          # production overlay once a known-good digest is captured.
+          # Phase 3.A.4: pinned by sha256 digest so security patches
+          # published under the same mutable tag don't silently change
+          # the running image. Bump this when:
+          #   1. An upstream release fixes a CVE we care about
+          #   2. We want a new feature
+          # Get the current digest:
+          #   docker pull roundcube/roundcubemail:1.6.10-apache
+          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.6.10-apache
+          image: roundcube/roundcubemail@sha256:6e98656e6a6f27ab827a727b68010622186d369f4527186a06f306136c924bdb
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
-            # The official roundcube image runs apache as root (needed for
-            # chown of /var/www/html and prefork setuid/setgid to www-data).
-            # We leave default capabilities — dropping them all breaks
-            # setuid/setgid in prefork MPM. Phase 2c: switch to a pre-baked
-            # image that runs entirely as www-data so we can drop caps.
+            # The official roundcube image's apache prefork MPM needs
+            # SETUID + SETGID to drop privileges from root to www-data
+            # after binding port 80 (NET_BIND_SERVICE). Dropping ALL
+            # caps breaks the pod (setgid fails, error spam in logs).
+            # We drop the rest but keep the three apache needs.
+            # Phase 4+: pre-bake an image that runs fully as www-data
+            # so we can drop these too.
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+                - SETUID
+                - SETGID
+                - CHOWN
+                - DAC_OVERRIDE
           # Custom command: run the original entrypoint, then asynchronously
           # install the jwt_auth plugin once /var/www/html is populated. The
           # plugin must exist before any request hits the login form.
@@ -63,13 +84,39 @@ spec:
               value: "ssl://stalwart-mail.mail.svc.cluster.local"
             - name: ROUNDCUBEMAIL_SMTP_PORT
               value: "465"
-            # SQLite for sessions / contacts / identities
+            # Phase 3.A.5: Postgres backend for Roundcube session /
+            # contacts / identities / cache. Replaces the old SQLite
+            # on RWO PVC, which blocked RollingUpdate deploys.
+            # The `roundcube` database and user are created by the
+            # postgres initdb script in scripts/postgres-initdb/
+            # (dev) or by operator bootstrap (prod).
             - name: ROUNDCUBEMAIL_DB_TYPE
-              value: "sqlite"
-            - name: ROUNDCUBEMAIL_DB_DIR
-              value: "/var/roundcube/db"
+              value: "pgsql"
+            - name: ROUNDCUBEMAIL_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DB_HOST
+            - name: ROUNDCUBEMAIL_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DB_PORT
             - name: ROUNDCUBEMAIL_DB_NAME
-              value: "roundcube"
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DB_NAME
+            - name: ROUNDCUBEMAIL_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DB_USER
+            - name: ROUNDCUBEMAIL_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: roundcube-secrets
+                  key: ROUNDCUBEMAIL_DB_PASSWORD
             # Plugins to enable (comma-separated). jwt_auth is what makes SSO work.
             - name: ROUNDCUBEMAIL_PLUGINS
               value: "archive,zipdownload,jwt_auth"
@@ -110,7 +157,10 @@ spec:
             # injected by our wrapper script.
             - name: install
               mountPath: /var/www/html
-            # PVC for the SQLite DB and any persistent state
+            # Phase 3.A.5: ephemeral scratch dir where the Roundcube
+            # entrypoint writes its config files. Previously a RWO PVC
+            # holding SQLite; now an emptyDir since session state lives
+            # in Postgres. This unblocks RollingUpdate deploys.
             - name: data
               mountPath: /var/roundcube
             # Mount the plugin source as a read-only file (the wrapper script
@@ -165,8 +215,7 @@ spec:
         - name: install
           emptyDir: {}
         - name: data
-          persistentVolumeClaim:
-            claimName: roundcube-data
+          emptyDir: {}
         - name: jwt-plugin
           configMap:
             name: roundcube-jwt-plugin

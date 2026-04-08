@@ -137,7 +137,20 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
     webmailScope.addHook('onRequest', authenticate);
 
     // POST /api/v1/email/webmail-token
-    webmailScope.post('/email/webmail-token', async (request) => {
+    //
+    // Phase 3.A.3: tighter per-route rate limit. The global limit is
+    // 100/min per user; here we cap at 5/min because each token grants
+    // full IMAP read/write access to the mailbox. This limits the
+    // blast radius if an authenticated session is compromised and an
+    // attacker tries to farm tokens for persistence.
+    webmailScope.post('/email/webmail-token', {
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: '1 minute',
+        },
+      },
+    }, async (request) => {
       const user = request.user as JwtPayload;
       const body = request.body as { mailbox_id?: string };
 
