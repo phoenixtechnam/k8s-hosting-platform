@@ -708,6 +708,28 @@ export const emailAliases = pgTable('email_aliases', {
 // domain gets webmail.<domain> automatically. See migration 0006 and
 // docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md (Phase 2c section).
 
+// Phase 3 T1.1 (B.2): DKIM key rotation with grace period.
+// Status lifecycle: pending → active → retired → (deleted)
+export const emailDkimKeys = pgTable('email_dkim_keys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  selector: varchar('selector', { length: 63 }).notNull(),
+  privateKeyEncrypted: text('private_key_encrypted').notNull(),
+  publicKey: text('public_key').notNull(),
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  dnsVerifiedAt: timestamp('dns_verified_at'),
+  activatedAt: timestamp('activated_at'),
+  retiredAt: timestamp('retired_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('email_dkim_keys_domain_idx').on(table.emailDomainId),
+  index('email_dkim_keys_status_idx').on(table.status),
+  uniqueIndex('email_dkim_keys_domain_selector_unique').on(table.emailDomainId, table.selector),
+]);
+
 export const smtpRelayConfigs = pgTable('smtp_relay_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   name: varchar('name', { length: 255 }).notNull(),
@@ -844,6 +866,8 @@ export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
 export type EmailAlias = typeof emailAliases.$inferSelect;
 export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
+export type EmailDkimKey = typeof emailDkimKeys.$inferSelect;
+export type NewEmailDkimKey = typeof emailDkimKeys.$inferInsert;
 export type CatalogEntryVersion = typeof catalogEntryVersions.$inferSelect;
 export type NewCatalogEntryVersion = typeof catalogEntryVersions.$inferInsert;
 export type DeploymentUpgrade = typeof deploymentUpgrades.$inferSelect;
