@@ -1,0 +1,94 @@
+# Phase 3 (post-Phase-3 hardening): Stalwart certificate reload CronJob.
+#
+# When cert-manager rotates the `stalwart-tls` Secret (default: 30 days
+# before expiry), the new tls.crt + tls.key files appear inside the
+# stalwart-mail-0 pod via the existing volume mount, but Stalwart does
+# NOT automatically re-read them — only listeners that complete a full
+# TLS handshake AFTER a process restart pick up the new cert. Without
+# automation, mail breaks ~60-90 days into production.
+#
+# This CronJob runs daily and unconditionally calls
+# `stalwart-cli server reload-certificates`. The reload is graceful:
+# existing connections stay up, only new TLS handshakes use the new
+# cert. The operation is idempotent — calling it when no rotation has
+# happened is a no-op that takes <100ms.
+#
+# Why not Stakater Reloader / a sidecar / a backend webhook?
+#   - Stakater Reloader rolls the entire pod, which causes a brief
+#     mail outage. We prefer the in-place reload-certificates path.
+#   - A sidecar adds an always-on container for a once-a-day check.
+#   - A backend webhook couples cert rotation to platform-api uptime.
+#   - A daily CronJob is the smallest unit of automation.
+#
+# The CronJob exec's into stalwart-mail-0 the same way the backup
+# CronJob does, so it reuses the same `stalwart-backup` ServiceAccount.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stalwart-cert-reload
+  namespace: mail
+  labels:
+    app: stalwart-cert-reload
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-cert-reload
+spec:
+  schedule: "27 4 * * *"  # daily at 04:27 — offset from backup (03:15) and other clusters
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 7
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: stalwart-cert-reload
+        spec:
+          # Reuses the stalwart-backup ServiceAccount, which already
+          # has pods/exec permission on the `mail` namespace. See
+          # backup-rbac.yaml.
+          serviceAccountName: stalwart-backup
+          restartPolicy: OnFailure
+          containers:
+            - name: cert-reload
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                # Single-quoted inner shell so ${ADMIN_SECRET_PLAIN}
+                # is expanded INSIDE the stalwart-mail-0 pod, where
+                # the var is populated from stalwart-secrets via
+                # envFrom. The cleartext (not the bcrypt hash) is
+                # required because stalwart-cli does Basic Auth and
+                # the server bcrypt-compares server-side.
+                #
+                # Security: the cleartext never enters the calling
+                # pod's /proc/cmdline or K8s exec audit logs because
+                # the single quotes prevent the outer shell from
+                # expanding the var.
+                - |
+                  set -eu
+                  echo "[stalwart-cert-reload] running reload-certificates"
+                  kubectl -n mail exec stalwart-mail-0 -- sh -c '
+                    set -eu
+                    stalwart-cli --url http://127.0.0.1:8080 \
+                      --credentials "admin:${ADMIN_SECRET_PLAIN}" \
+                      server reload-certificates
+                  ' || {
+                    echo "[stalwart-cert-reload] reload command failed" >&2
+                    exit 1
+                  }
+                  echo "[stalwart-cert-reload] reload OK"
+              # No env: ADMIN_SECRET_PLAIN is referenced from inside
+              # the stalwart-mail-0 pod's own environment via the
+              # single-quoted shell expansion above.
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

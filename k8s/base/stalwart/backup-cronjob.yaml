@@ -54,16 +54,19 @@ spec:
                 - /bin/sh
                 - -c
                 # IMPORTANT: the inner sh -c uses SINGLE quotes so
-                # ${ADMIN_SECRET} is expanded by the shell INSIDE
-                # the stalwart-mail-0 pod (where the env var is
-                # already populated from stalwart-secrets), NOT by
-                # the CronJob pod. This keeps the cleartext secret
+                # ${ADMIN_SECRET_PLAIN} is expanded by the shell
+                # INSIDE the stalwart-mail-0 pod (where the env var
+                # is populated from stalwart-secrets via envFrom),
+                # NOT by the CronJob pod. This keeps the cleartext
                 # out of /proc/<pid>/cmdline of the kubectl exec
                 # process, out of the K8s audit log of the exec
                 # call, and out of the visible exec arguments.
                 #
-                # The backup CronJob's pod itself does NOT need
-                # ADMIN_SECRET in its environment for this reason.
+                # The cleartext (not the bcrypt hash ADMIN_SECRET)
+                # is required because stalwart-cli does Basic Auth.
+                #
+                # The backup CronJob's pod itself does NOT need any
+                # secret in its own environment.
                 - |
                   set -eu
                   TS=$(date -u +%Y%m%d-%H%M%S)
@@ -73,7 +76,7 @@ spec:
                     set -eu
                     mkdir -p /opt/stalwart/backups
                     stalwart-cli --url http://127.0.0.1:8080 \
-                      --credentials "admin:${ADMIN_SECRET}" \
+                      --credentials "admin:${ADMIN_SECRET_PLAIN}" \
                       server backup /opt/stalwart/backups/'"${TS}"'.tar
                   ' || {
                     echo "[stalwart-backup] backup command failed" >&2

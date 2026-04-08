@@ -14,6 +14,10 @@ resources:
   # second PVC mount is required.
   - backup-rbac.yaml
   - backup-cronjob.yaml
+  # Cert reload CronJob — calls `stalwart-cli reload-certificates`
+  # daily so cert-manager renewals take effect without manual
+  # intervention. Reuses the stalwart-backup ServiceAccount.
+  - cert-reload-cronjob.yaml
   # secret.example.yaml is NOT included — operators provide the real Secret
   # per environment via kubectl / sealed-secrets / SOPS.
 

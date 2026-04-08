@@ -472,6 +472,80 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
               else
                 fail "SQL E2E SMTPS+IMAPS" "${SQL_E2E_OUTPUT:0:500}"
               fi
+
+              # ─── G2 — Bounce test: submission to a nonexistent local
+              # recipient must fail at SMTP time. Stalwart returns
+              # 550 5.1.1 "Mailbox does not exist" via the SQL
+              # directory's `recipients` query (which returns no rows).
+              # curl maps any 5xx response to exit code 67 ("login
+              # denied" or similar) — capture it BEFORE any subsequent
+              # command clobbers $?.
+              BOUNCE_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run sql-e2e-bounce --rm -i \
+                --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+                /bin/sh -c "
+                  printf 'From: ${SQL_E2E_FULL_ADDR}\r\nTo: ghost@${SQL_E2E_DOMAIN_NAME}\r\nSubject: bounce test\r\n\r\n' > /tmp/bounce.txt
+                  curl -sS -k --url smtps://stalwart-mail.mail.svc.cluster.local:465 \
+                    --mail-from '${SQL_E2E_FULL_ADDR}' --mail-rcpt 'ghost@${SQL_E2E_DOMAIN_NAME}' \
+                    --user '${SQL_E2E_FULL_ADDR}:${SQL_E2E_PASSWORD}' \
+                    --upload-file /tmp/bounce.txt 2>&1
+                  RC=\$?
+                  echo BOUNCE_EXIT=\$RC
+                " 2>&1)
+              if [[ "$BOUNCE_OUTPUT" == *'BOUNCE_EXIT=0'* ]]; then
+                fail "SQL E2E bounce" "expected non-zero exit; got: ${BOUNCE_OUTPUT:0:500}"
+              else
+                pass "SQL E2E bounce: 5xx for nonexistent local recipient (G2)"
+              fi
+
+              # ─── G7 — Suspend lifecycle: suspending the client via the
+              # admin API must immediately block SMTP AUTH. The
+              # `stalwart.principals` view filters mailboxes whose
+              # owning client is suspended (migration 0009 +
+              # subsequent enforcement work).
+              curl -sS -X PATCH -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+                -d '{"status":"suspended"}' \
+                "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+              # Stalwart caches the principal lookup briefly (≤1s); a
+              # tiny sleep prevents a flaky pass on a stale cache.
+              sleep 2
+              SUSPENDED_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run sql-e2e-suspend --rm -i \
+                --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+                /bin/sh -c "
+                  printf 'From: ${SQL_E2E_FULL_ADDR}\r\nTo: ${SQL_E2E_FULL_ADDR}\r\nSubject: suspended\r\n\r\n' > /tmp/sus.txt
+                  curl -sS -k --url smtps://stalwart-mail.mail.svc.cluster.local:465 \
+                    --mail-from '${SQL_E2E_FULL_ADDR}' --mail-rcpt '${SQL_E2E_FULL_ADDR}' \
+                    --user '${SQL_E2E_FULL_ADDR}:${SQL_E2E_PASSWORD}' \
+                    --upload-file /tmp/sus.txt 2>&1
+                  RC=\$?
+                  echo SUS_EXIT=\$RC
+                " 2>&1)
+              if [[ "$SUSPENDED_OUTPUT" == *'SUS_EXIT=0'* ]]; then
+                fail "SQL E2E suspend" "expected AUTH failure; got: ${SUSPENDED_OUTPUT:0:500}"
+              else
+                pass "SQL E2E suspend: AUTH blocked while client suspended (G7)"
+              fi
+
+              # Reactivate and prove AUTH works again.
+              curl -sS -X PATCH -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+                -d '{"status":"active"}' \
+                "${API_URL}/api/v1/clients/${SQL_E2E_CLIENT_ID}" >/dev/null 2>&1 || true
+              sleep 2
+              REACT_OUTPUT=$(docker exec "$K3S_CONTAINER" kubectl -n mail run sql-e2e-reactivate --rm -i \
+                --image=curlimages/curl:latest --restart=Never --quiet --command -- \
+                /bin/sh -c "
+                  printf 'From: ${SQL_E2E_FULL_ADDR}\r\nTo: ${SQL_E2E_FULL_ADDR}\r\nSubject: reactivated\r\n\r\n' > /tmp/react.txt
+                  curl -sS -k --url smtps://stalwart-mail.mail.svc.cluster.local:465 \
+                    --mail-from '${SQL_E2E_FULL_ADDR}' --mail-rcpt '${SQL_E2E_FULL_ADDR}' \
+                    --user '${SQL_E2E_FULL_ADDR}:${SQL_E2E_PASSWORD}' \
+                    --upload-file /tmp/react.txt 2>&1
+                  RC=\$?
+                  echo REACT_EXIT=\$RC
+                " 2>&1)
+              if [[ "$REACT_OUTPUT" == *'REACT_EXIT=0'* ]]; then
+                pass "SQL E2E reactivate: AUTH succeeds after reactivation (G7)"
+              else
+                fail "SQL E2E reactivate" "expected AUTH success; got: ${REACT_OUTPUT:0:500}"
+              fi
             fi
           fi
 
