@@ -231,16 +231,128 @@ All four modules are wired into `backend/src/app.ts` under `/api/v1/`.
 - **38 smoke tests pass** against live local stack with `MAIL_E2E_SQL=1 WEBMAIL_E2E=1` — the 5 new webmail assertions prove end-to-end: `POST /email/webmail-token` returns a well-formed URL, the JWT decodes with correct claims and 30s lifetime, and a GET to the Roundcube NodePort authenticates via the jwt_auth plugin and lands on `/?_task=mail` with `roundcube_sessid` + `roundcube_sessauth` cookies set
 - Manually verified via curl: a client_user with mailbox access → webmail-token → Roundcube SSO → authenticated mail UI (title `Roundcube Webmail :: Inbox`, 36 KB HTML with `compose`, `logout`, `inbox` markers)
 
-**Deferred to Phase 2c / production hardening:**
-- **Admin UI for managing custom webmail domains** — backend CRUD API is live at `/api/v1/clients/:clientId/webmail-domains` but no frontend consumer yet
-- **Admin UI for configuring the default webmail URL** — currently driven by the `WEBMAIL_URL` env var on the backend container; Phase 2c will expose this as a setting in `tls-settings` or a new `webmail-settings` module
-- **TLS trust store for in-cluster IMAP** — the dev overlay disables `verify_peer` in `imap_conn_options` / `smtp_conn_options` because Stalwart's dev cert is self-signed. Production overlays MUST either mount a CA bundle and re-enable verification, or configure Stalwart to serve a cert signed by the platform cluster-issuer.
-- **`use_https = true` + `proxy_whitelist` in the production overlay** — dev is HTTP-only over NodePort; production must trust `X-Forwarded-Proto` from the nginx ingress so session cookies get the `Secure` flag.
-- **Split JWT secrets in the production k8s Secret** — dev overlay still uses the shared `JWT_SECRET` value for `JWT_AUTH_SECRET`; production **must** generate an independent `WEBMAIL_JWT_SECRET` and set both on the backend container and the Roundcube secret.
-- **Per-endpoint rate limit on `POST /email/webmail-token`** — currently only covered by the global 100/min per-user limit; Phase 2c will add a tighter 5/min per-user limit to reduce token farming risk after credential compromise.
-- **Retry / force-delete endpoint for `failed` or `deleting` webmail_domains rows** — currently operators must resolve k8s issues manually then call DELETE again; a `POST /webmail-domains/:id/retry` would close this gap.
-- **Pinned image digest + minimal-caps securityContext** — currently pulls `roundcube/roundcubemail:1.6.10-apache` (mutable tag) and runs with default capabilities because the apache prefork MPM needs setgid/setuid; Phase 2c should rebuild the image from a pre-baked Dockerfile that runs fully as `www-data` so all capabilities can be dropped.
-- **SQLite RWO session backend** — Roundcube stores sessions in a 1Gi RWO PVC, so the Deployment uses `strategy: Recreate` which causes hard downtime on every rollout and invalidates all active sessions. Phase 2c could migrate sessions to a shared Postgres DSN.
+### Phase 2c — Unified certificate strategy + derived webmail ✅ *Complete (2026-04-08)*
+
+**Architectural pivot.** Phase 2b introduced a per-client custom
+`webmail_domains` CRUD (users pick an arbitrary hostname like
+`webmail.acme-corp.com`). On reflection this was the wrong abstraction
+for the project's scale: it added hostname validation, CRUD state
+machines, naming collisions, silent-overwrite risks, stuck rows,
+ongoing operational burden — all for a feature that 50-100 small
+hosting clients rarely ask for.
+
+Phase 2c replaced it with two changes:
+
+1. **Unified certificate strategy** covering hosted apps, webmail,
+   and (eventually) Stalwart mail hostnames. See
+   `docs/06-features/TLS_CERTIFICATE_STRATEGY.md` for the full
+   write-up.
+2. **Derived webmail** — every email domain automatically gets
+   `webmail.<domain>` served by the shared Roundcube Service. No user
+   input, no CRUD, nothing to misconfigure.
+
+**Delivered:**
+
+*Phase 2c.1 — revert Phase 2b webmail_domains CRUD* (commit 21359c1)
+- Migration 0006 drops the `webmail_domains` table
+- Deletes `backend/src/modules/webmail-domains/` and the api-contract
+- Removes the `getWebmailDomainForClient` lazy import from
+  `generateWebmailToken`
+- All Roundcube k8s manifests, the jwt_auth plugin, the
+  webmail-token endpoint, the frontend "Open webmail" button, the
+  local.sh webmail commands, and the `WEBMAIL_E2E=1` smoke block stay
+  intact — the revert is scoped to the CRUD layer only.
+- −1290 LOC.
+
+*Phase 2c.2–2c.6 — unified certificates module* (commit 9a58728)
+- New `backend/src/modules/certificates/` module:
+  `issuer-selector.ts` (pure function), `service.ts`
+  (ensureDomainCertificate / ensureRouteCertificate /
+  deleteDomainCertificate / recomputeAllCertificatesForClient /
+  hostnameIsCoveredByDomainCert)
+- New `backend/src/modules/dns-servers/authority.ts`:
+  canManageDnsZone() and canIssueWildcardCert() helpers, pure
+  functions. Gates record writes so cname-mode domains no longer
+  silently fail.
+- Fixed silent-failure bug in `dns-records/service.ts` and
+  `email-domains/dns-provisioning.ts` — writes are short-circuited
+  with a single info line when the platform isn't authoritative
+- Refactored `ingress-routes/routes.ts` and
+  `domains/k8s-ingress.ts` to route all cert provisioning through
+  the new module. Removed the `cert-manager.io/cluster-issuer`
+  Ingress annotation path (was racing with the explicit Certificate
+  CR path).
+- Removed the orphaned `provisionCertificate` and `deleteCertificate`
+  from `ssl-certs/cert-manager.ts`; kept `domainToSecretName`,
+  `determineChallengeType` (deprecated), and the manual upload helpers.
+- New ClusterIssuer manifests in `k8s/base/cert-manager/`:
+  letsencrypt-prod-http01, letsencrypt-staging-http01,
+  letsencrypt-prod-dns01-powerdns. Dev overlay
+  `k8s/overlays/dev/cert-manager/` moves the previously inline
+  self-signed CA chain into version-controlled YAML.
+- **RBAC fix:** `k8s/base/rbac.yaml` platform-api ClusterRole now
+  has `cert-manager.io/certificates` verbs. This was missing in
+  Phase 2b, so every `k8s.custom.createNamespacedCustomObject`
+  would have failed in production. Closed.
+- 45 new unit tests: 16 for authority helpers + 29 for certificates
+  module (issuer-selector + service + naming + wildcard subdomain
+  matching)
+
+*Phase 2c.5 — derived webmail Ingress + webmail-settings* (commit …)
+- Migration 0007 adds `webmail_enabled boolean default true` to
+  `email_domains`
+- New `backend/src/modules/webmail-settings/` module with a single
+  setting: `default_webmail_url`. Admin-editable via
+  `PATCH /api/v1/admin/webmail-settings`
+- New `backend/src/modules/email-domains/service.ts` functions:
+  `getDerivedWebmailUrlForMailbox`, `ensureWebmailIngress`,
+  `removeWebmailIngress`
+- `enableEmailForDomain` provisions the webmail Ingress automatically
+  (cross-namespace via ExternalName Service pointing at
+  `roundcube.mail.svc.cluster.local`)
+- `disableEmailForDomain` removes it
+- `updateEmailDomain` handles the `webmail_enabled` toggle — ensure
+  or remove the Ingress accordingly
+- `mailboxes/service.ts generateWebmailToken` now resolves the
+  webmail base URL via this lookup order:
+  1. `webmail.<domain>` if the mailbox's email_domain has
+     `webmail_enabled=true`
+  2. `webmail-settings.default_webmail_url`
+  3. `WEBMAIL_URL` env var
+  4. Hardcoded `https://webmail.example.com`
+- Admin panel: new Webmail settings card on the TLS/Settings page
+  (default webmail URL), plus a per-email-domain webmail toggle
+  column in Email Management
+- Updated `packages/api-contracts/src/email-domains.ts` to include
+  `webmail_enabled` in the update schema and `webmailEnabled` in the
+  response
+
+**Verification:**
+- 1026 backend tests pass (110 files)
+- Admin panel typecheck clean, 250 admin tests pass
+- Client panel typecheck clean, 166 client tests pass
+- `MAIL_E2E_SQL=1 WEBMAIL_E2E=1` smoke tests pass (see Phase 2c.7 below)
+
+**Still deferred to Phase 3 (production hardening):**
+- **Stalwart cert mount** — the shared wildcard secret should be
+  mounted into Stalwart for `mail.<domain>` IMAPS/SMTPS. Needs
+  a `[certificate.*]` block in the Stalwart TOML and a volume mount
+  in the StatefulSet.
+- **TLS trust in Roundcube** — Roundcube's `imap_conn_options` still
+  has `verify_peer: false` for dev. Production overlay must mount a
+  CA bundle and flip it.
+- **`use_https = true` + `proxy_whitelist`** in the production
+  Roundcube overlay for secure session cookies behind nginx ingress.
+- **Split JWT secrets in the production k8s Secret** — the split is
+  already supported by the backend (`WEBMAIL_JWT_SECRET` env takes
+  precedence), dev still uses the shared secret.
+- **Per-endpoint rate limit on `POST /email/webmail-token`** — still
+  only the global 100/min limit.
+- **Pinned Roundcube image digest + minimal-caps securityContext** —
+  still pulls a mutable tag and runs with default capabilities.
+- **SQLite RWO session backend** — Roundcube still uses a 1Gi RWO
+  PVC with `strategy: Recreate`. Production should migrate sessions
+  to a shared Postgres DSN.
 
 ### Phase 3 — Outbound Hardening
 1. Stalwart `[queue.outbound]` rendered from `smtp_relay_configs`

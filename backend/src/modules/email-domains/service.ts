@@ -1,11 +1,12 @@
 import { eq, and, sql } from 'drizzle-orm';
-import { emailDomains, domains, mailboxes } from '../../db/schema.js';
+import { emailDomains, domains, mailboxes, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { generateDkimKeyPair } from './dkim.js';
 import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 async function verifyDomainOwnership(db: Database, clientId: string, domainId: string) {
   const [domain] = await db
@@ -103,6 +104,7 @@ export async function getEmailDomain(
       clientId: emailDomains.clientId,
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
+      webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
       maxMailboxes: emailDomains.maxMailboxes,
@@ -145,6 +147,7 @@ export async function listEmailDomains(
       clientId: emailDomains.clientId,
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
+      webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
       maxMailboxes: emailDomains.maxMailboxes,
@@ -175,6 +178,7 @@ export async function listAllEmailDomains(db: Database) {
       clientId: emailDomains.clientId,
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
+      webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
       maxMailboxes: emailDomains.maxMailboxes,
@@ -215,6 +219,7 @@ export async function updateEmailDomain(
 
   const updateValues: Record<string, unknown> = {};
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
+  if (input.webmail_enabled !== undefined) updateValues.webmailEnabled = input.webmail_enabled ? 1 : 0;
   if (input.max_mailboxes !== undefined) updateValues.maxMailboxes = input.max_mailboxes;
   if (input.max_quota_mb !== undefined) updateValues.maxQuotaMb = input.max_quota_mb;
   if (input.catch_all_address !== undefined) updateValues.catchAllAddress = input.catch_all_address;
@@ -234,4 +239,221 @@ export async function updateEmailDomain(
     .where(eq(emailDomains.id, existing.id));
 
   return updated;
+}
+
+// ─── Phase 2c.5: Derived webmail URL + Ingress provisioning ─────────────
+
+/**
+ * Resolve the webmail base URL for a mailbox via its email domain.
+ *
+ * Returns `https://webmail.<domain>` when:
+ *   - The mailbox exists and belongs to an email domain
+ *   - That email domain has webmail_enabled=1
+ *   - The underlying domain row resolves
+ *
+ * Returns undefined otherwise, letting the caller fall back to the
+ * platform default (webmail-settings.default_webmail_url) or the
+ * WEBMAIL_URL env var.
+ */
+export async function getDerivedWebmailUrlForMailbox(
+  db: Database,
+  mailboxId: string,
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({
+      webmailEnabled: emailDomains.webmailEnabled,
+      domainName: domains.domainName,
+    })
+    .from(mailboxes)
+    .innerJoin(emailDomains, eq(mailboxes.emailDomainId, emailDomains.id))
+    .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .where(eq(mailboxes.id, mailboxId));
+
+  if (!row || row.webmailEnabled !== 1 || !row.domainName) {
+    return undefined;
+  }
+  return `https://webmail.${row.domainName}`;
+}
+
+/**
+ * Ensure a webmail.<domain> Ingress + ExternalName Service exist in
+ * the client's namespace, pointing at the shared Roundcube Service in
+ * the `mail` namespace.
+ *
+ * Called by enableEmailForDomain and updateEmailDomain (when
+ * webmail_enabled is toggled on). Idempotent on 409 (replace).
+ */
+export async function ensureWebmailIngress(
+  db: Database,
+  k8s: K8sClients | undefined,
+  emailDomainId: string,
+): Promise<{ ingressCreated: boolean; reason?: string }> {
+  if (!k8s) return { ingressCreated: false, reason: 'no k8s client' };
+
+  const [row] = await db
+    .select({
+      emailDomainId: emailDomains.id,
+      domainId: emailDomains.domainId,
+      clientId: emailDomains.clientId,
+      webmailEnabled: emailDomains.webmailEnabled,
+      domainName: domains.domainName,
+    })
+    .from(emailDomains)
+    .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .where(eq(emailDomains.id, emailDomainId));
+
+  if (!row) return { ingressCreated: false, reason: 'email_domain not found' };
+  if (row.webmailEnabled !== 1) {
+    return { ingressCreated: false, reason: 'webmail_enabled=false' };
+  }
+
+  const [client] = await db.select().from(clients).where(eq(clients.id, row.clientId));
+  if (!client) return { ingressCreated: false, reason: 'client not found' };
+  const namespace = client.kubernetesNamespace;
+  const hostname = `webmail.${row.domainName}`;
+
+  // Ingress name: stable per hostname, sanitized for DNS-1123
+  const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
+  const ingressName = `${safeName}-ingress`;
+  const externalSvcName = `${safeName}-upstream`;
+
+  // Step 1: ensure the ExternalName service that points at the shared
+  // Roundcube service in the mail namespace
+  const externalSvcBody = {
+    metadata: {
+      name: externalSvcName,
+      namespace,
+      labels: {
+        'app.kubernetes.io/part-of': 'hosting-platform',
+        'app.kubernetes.io/component': 'webmail-upstream',
+        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+      },
+    },
+    spec: {
+      type: 'ExternalName',
+      externalName: 'roundcube.mail.svc.cluster.local',
+      ports: [{ port: 80, targetPort: 80, protocol: 'TCP', name: 'http' }],
+    },
+  };
+
+  try {
+    await k8s.core.createNamespacedService({ namespace, body: externalSvcBody });
+  } catch (err: unknown) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode !== 409) throw err;
+    await k8s.core.replaceNamespacedService({
+      name: externalSvcName,
+      namespace,
+      body: externalSvcBody,
+    });
+  }
+
+  // Step 2: ensure the Ingress rule for webmail.<domain>
+  //
+  // Cert secret name is resolved by the certificates module inside
+  // domains/k8s-ingress.ts during its reconcile pass — we don't
+  // duplicate that logic here. For the webmail Ingress we create a
+  // dedicated Ingress separate from the platform's {namespace}-ingress
+  // because webmail lives on a different hostname pattern and we want
+  // it reconciled independently.
+  //
+  // Use ensureRouteCertificate to get the right secret name.
+  const { ensureRouteCertificate } = await import('../certificates/service.js');
+  const certResult = await ensureRouteCertificate(db, k8s, row.domainId, hostname).catch(() => null);
+
+  const tls = certResult && !certResult.skipped && certResult.secretName
+    ? [{ hosts: [hostname], secretName: certResult.secretName }]
+    : undefined;
+
+  const ingressBody = {
+    metadata: {
+      name: ingressName,
+      namespace,
+      labels: {
+        'app.kubernetes.io/part-of': 'hosting-platform',
+        'app.kubernetes.io/component': 'webmail',
+        'app.kubernetes.io/managed-by': 'k8s-hosting-platform',
+      },
+    },
+    spec: {
+      ingressClassName: 'nginx',
+      rules: [
+        {
+          host: hostname,
+          http: {
+            paths: [
+              {
+                path: '/',
+                pathType: 'Prefix' as const,
+                backend: {
+                  service: { name: externalSvcName, port: { number: 80 } },
+                },
+              },
+            ],
+          },
+        },
+      ],
+      ...(tls ? { tls } : {}),
+    },
+  };
+
+  try {
+    await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
+  } catch (err: unknown) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode !== 409) throw err;
+    await k8s.networking.replaceNamespacedIngress({
+      name: ingressName,
+      namespace,
+      body: ingressBody,
+    });
+  }
+
+  return { ingressCreated: true };
+}
+
+/**
+ * Delete the webmail Ingress + ExternalName Service for an email domain.
+ * Called when webmail_enabled flips false or the email domain is
+ * disabled entirely. Idempotent on 404.
+ */
+export async function removeWebmailIngress(
+  db: Database,
+  k8s: K8sClients | undefined,
+  emailDomainId: string,
+): Promise<void> {
+  if (!k8s) return;
+
+  const [row] = await db
+    .select({
+      clientId: emailDomains.clientId,
+      domainName: domains.domainName,
+    })
+    .from(emailDomains)
+    .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .where(eq(emailDomains.id, emailDomainId));
+
+  if (!row) return;
+
+  const [client] = await db.select().from(clients).where(eq(clients.id, row.clientId));
+  if (!client) return;
+  const namespace = client.kubernetesNamespace;
+  const hostname = `webmail.${row.domainName}`;
+  const safeName = hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50);
+  const ingressName = `${safeName}-ingress`;
+  const externalSvcName = `${safeName}-upstream`;
+
+  try {
+    await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+  } catch (err: unknown) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode !== 404) throw err;
+  }
+
+  try {
+    await k8s.core.deleteNamespacedService({ name: externalSvcName, namespace });
+  } catch (err: unknown) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode !== 404) throw err;
+  }
 }

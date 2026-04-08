@@ -623,6 +623,12 @@ export const emailDomains = pgTable('email_domains', {
   domainId: varchar('domain_id', { length: 36 }).notNull(),
   clientId: varchar('client_id', { length: 36 }).notNull(),
   enabled: integer('enabled').notNull().default(1),
+  // Phase 2c: when true, the backend creates an Ingress for
+  // webmail.<domain> in the client's namespace pointing at the shared
+  // Roundcube Service via an ExternalName service (roundcube.mail).
+  // Default true — every email domain gets webmail access out of the
+  // box; operators or client_admins can toggle it off per domain.
+  webmailEnabled: integer('webmail_enabled').notNull().default(1),
   dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
   dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
   dkimPublicKey: text('dkim_public_key'),

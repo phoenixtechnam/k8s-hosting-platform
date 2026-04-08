@@ -390,13 +390,34 @@ export async function generateWebmailToken(
   }
   const token = signWebmailJwt({ mailbox: mailbox.fullAddress }, webmailSecret, 30);
 
-  // Resolve the webmail base URL. Phase 2c simplified this: there is no
-  // per-client custom webmail domain layer anymore. Phase 2c part 3 will
-  // add a `webmail-settings.default_webmail_url` setting and a derived
-  // webmail Ingress for every enabled email domain; until that lands,
-  // read WEBMAIL_URL from the environment, or fall back to the hardcoded
-  // platform default.
-  const baseUrl = process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
+  // Resolve the webmail base URL. Phase 2c.5 introduced derived
+  // webmail Ingresses: every email_domain with webmail_enabled=true
+  // gets a webmail.<domain> Ingress in the client's namespace. So the
+  // lookup order is:
+  //
+  //   1. mailbox → email_domain → domain → if webmail_enabled, use
+  //      `https://webmail.<domain.domainName>`
+  //   2. webmail-settings `default_webmail_url` (admin-configured)
+  //   3. WEBMAIL_URL env var (legacy / container-env override)
+  //   4. Hardcoded fallback `https://webmail.example.com`
+  //
+  // Lazy imports to avoid circular dependencies.
+  let baseUrl: string | undefined;
+  try {
+    const { getDerivedWebmailUrlForMailbox } = await import('../email-domains/service.js');
+    baseUrl = await getDerivedWebmailUrlForMailbox(db, mailbox.id);
+  } catch {
+    // Email domain lookup failure is non-fatal — fall through to defaults
+  }
+  if (!baseUrl) {
+    try {
+      const { getDefaultWebmailUrl } = await import('../webmail-settings/service.js');
+      baseUrl = await getDefaultWebmailUrl(db);
+    } catch {
+      baseUrl = undefined;
+    }
+  }
+  baseUrl = baseUrl ?? process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
 
   // The SSO URL points at Roundcube's login action with the JWT as a
   // query parameter. The jwt_auth plugin's `startup` hook intercepts it

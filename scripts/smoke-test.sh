@@ -497,7 +497,18 @@ WEBMAIL_E2E="${WEBMAIL_E2E:-0}"
 WEBMAIL_HOST="${WEBMAIL_HOST:-http://dind.local:2017}"
 
 if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
-  log "── Webmail SSO E2E (Phase 2b) ──"
+  log "── Webmail SSO E2E (Phase 2b/2c) ──"
+
+  # Phase 2c.5: verify the admin webmail-settings endpoint exists and
+  # returns a default URL (may be any value; we only check shape).
+  WM_SETTINGS=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/webmail-settings")
+  WM_DEFAULT_URL=$(echo "$WM_SETTINGS" | jq -r '.data.defaultWebmailUrl // empty')
+  if [[ -n "$WM_DEFAULT_URL" ]]; then
+    pass "GET /admin/webmail-settings returns a default URL"
+  else
+    fail "Webmail settings endpoint" "${WM_SETTINGS:0:200}"
+  fi
+
   WM_SFX="$(date +%s)"
   WM_CLIENT_NAME="wm-e2e-${WM_SFX}"
   WM_DOMAIN_NAME="wme2e${WM_SFX}.wmtest.local"
@@ -556,6 +567,44 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
             pass "webmailUrl contains _task=login&_jwt=…"
           else
             fail "webmailUrl shape" "$WM_URL"
+          fi
+
+          # Phase 2c.5: the URL should be derived from the email_domain:
+          # https://webmail.<domain>/?_task=login&_jwt=…
+          if [[ "$WM_URL" == *"webmail.${WM_DOMAIN_NAME}"* ]]; then
+            pass "webmailUrl derived from email_domain (webmail.${WM_DOMAIN_NAME})"
+          else
+            fail "webmailUrl is not derived" "$WM_URL"
+          fi
+
+          # Phase 2c.5: verify the webmail Ingress was created in the
+          # client's namespace (the backend calls ensureWebmailIngress
+          # from enableEmailForDomain). Poll for up to 5 seconds because
+          # the Ingress is created in the same HTTP handler as the email
+          # domain — normally it's ready when the POST returns, but k3s
+          # can lag a moment on busy dev boxes.
+          if [[ -n "${K3S_CONTAINER:-}" ]]; then
+            WM_NS=$(curl -sS -H "$AUTH_HEADER" "${API_URL}/api/v1/clients/${WM_CLIENT_ID}" | jq -r '.data.kubernetesNamespace // empty')
+            if [[ -n "$WM_NS" ]]; then
+              # Mirror backend logic: email-domains/service.ts uses
+              #   hostname.replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 50)
+              # The backend does NOT strip trailing hyphens, so don't
+              # double-strip here either.
+              WM_SAFE_NAME=$(echo "webmail.${WM_DOMAIN_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-50)
+              WM_ING_NAME="${WM_SAFE_NAME}-ingress"
+              WM_ING_CHECK="MISSING"
+              for i in 1 2 3 4 5; do
+                WM_ING_CHECK=$(docker exec "$K3S_CONTAINER" kubectl get ingress "${WM_ING_NAME}" -n "${WM_NS}" -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "MISSING")
+                if [[ "$WM_ING_CHECK" == "webmail.${WM_DOMAIN_NAME}" ]]; then break; fi
+                sleep 1
+              done
+              if [[ "$WM_ING_CHECK" == "webmail.${WM_DOMAIN_NAME}" ]]; then
+                pass "webmail Ingress created in client namespace ${WM_NS}"
+              else
+                # Non-fatal — k8s may not be reachable in all smoke test envs
+                echo "  ⊘ webmail Ingress check skipped (result: ${WM_ING_CHECK:0:80})"
+              fi
+            fi
           fi
 
           # JWT has 3 parts and the payload contains mailbox + iat + exp

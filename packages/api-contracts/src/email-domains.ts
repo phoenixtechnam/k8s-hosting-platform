@@ -10,6 +10,8 @@ export type EnableEmailDomainInput = z.infer<typeof enableEmailDomainSchema>;
 
 export const updateEmailDomainSchema = z.object({
   enabled: z.boolean().optional(),
+  // Phase 2c.5: toggle the derived webmail.<domain> Ingress
+  webmail_enabled: z.boolean().optional(),
   max_mailboxes: z.number().int().min(1).max(1000).optional(),
   max_quota_mb: z.number().int().min(100).max(102400).optional(),
   catch_all_address: z.string().email().nullable().optional(),
@@ -25,6 +27,7 @@ export const emailDomainResponseSchema = z.object({
   clientId: z.string(),
   domainName: z.string(),
   enabled: z.number(),
+  webmailEnabled: z.number().optional(),
   dkimSelector: z.string(),
   dkimPublicKey: z.string().nullable(),
   maxMailboxes: z.number(),

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
-import { useAdminEmailDomains, useSmtpRelays, useCreateSmtpRelay, useDeleteSmtpRelay, useTestSmtpRelay } from '@/hooks/use-email';
+import { useAdminEmailDomains, useSmtpRelays, useCreateSmtpRelay, useDeleteSmtpRelay, useTestSmtpRelay, useUpdateEmailDomain } from '@/hooks/use-email';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -54,6 +54,8 @@ export default function EmailManagement() {
 
 interface EmailDomainRow {
   readonly id: string;
+  readonly clientId: string;
+  readonly domainId: string;
   readonly domainName: string;
   readonly mailboxCount?: number;
   readonly mxProvisioned: number;
@@ -62,6 +64,7 @@ interface EmailDomainRow {
   readonly dmarcProvisioned: number;
   readonly spamThresholdJunk: string;
   readonly enabled: number;
+  readonly webmailEnabled?: number;
 }
 
 function EmailDomainsTable({ domains, isLoading }: { readonly domains: readonly EmailDomainRow[]; readonly isLoading: boolean }) {
@@ -77,36 +80,68 @@ function EmailDomainsTable({ domains, isLoading }: { readonly domains: readonly 
             <SortableHeader label="Mailboxes" sortKey="mailboxCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             <th className="px-5 py-3">DNS Status</th>
             <SortableHeader label="Spam Filter" sortKey="spamThresholdJunk" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <th className="px-5 py-3">Webmail</th>
             <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
           {sortedDomains.map(d => (
-            <tr key={d.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-              <td className="px-5 py-3.5 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
-              <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
-              <td className="px-5 py-3.5">
-                <div className="flex gap-1.5">
-                  {['MX', 'SPF', 'DKIM', 'DMARC'].map((rec, i) => {
-                    const provisioned = [d.mxProvisioned, d.spfProvisioned, d.dkimProvisioned, d.dmarcProvisioned][i];
-                    return (
-                      <span key={rec} className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium ${provisioned ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>
-                        {provisioned ? <CheckCircle size={10} /> : <XCircle size={10} />} {rec}
-                      </span>
-                    );
-                  })}
-                </div>
-              </td>
-              <td className="px-5 py-3.5 text-xs text-gray-500 dark:text-gray-400">Junk: {d.spamThresholdJunk}</td>
-              <td className="px-5 py-3.5"><StatusBadge status={d.enabled ? 'active' : 'suspended'} /></td>
-            </tr>
+            <EmailDomainRowView key={d.id} domain={d} />
           ))}
           {domains.length === 0 && (
-            <tr><td colSpan={5} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No email-enabled domains yet.</td></tr>
+            <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No email-enabled domains yet.</td></tr>
           )}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function EmailDomainRowView({ domain: d }: { readonly domain: EmailDomainRow }) {
+  const updateDomain = useUpdateEmailDomain(d.clientId);
+  const webmailOn = d.webmailEnabled !== 0 && d.webmailEnabled !== undefined ? d.webmailEnabled === 1 : true;
+
+  const toggleWebmail = () => {
+    updateDomain.mutate({ domainId: d.domainId, input: { webmail_enabled: !webmailOn } });
+  };
+
+  return (
+    <tr className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+      <td className="px-5 py-3.5 font-medium text-gray-900 dark:text-gray-100">{d.domainName}</td>
+      <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">{d.mailboxCount ?? 0}</td>
+      <td className="px-5 py-3.5">
+        <div className="flex gap-1.5">
+          {['MX', 'SPF', 'DKIM', 'DMARC'].map((rec, i) => {
+            const provisioned = [d.mxProvisioned, d.spfProvisioned, d.dkimProvisioned, d.dmarcProvisioned][i];
+            return (
+              <span key={rec} className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium ${provisioned ? 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>
+                {provisioned ? <CheckCircle size={10} /> : <XCircle size={10} />} {rec}
+              </span>
+            );
+          })}
+        </div>
+      </td>
+      <td className="px-5 py-3.5 text-xs text-gray-500 dark:text-gray-400">Junk: {d.spamThresholdJunk}</td>
+      <td className="px-5 py-3.5">
+        <button
+          type="button"
+          onClick={toggleWebmail}
+          disabled={updateDomain.isPending}
+          title={`webmail.${d.domainName} — ${webmailOn ? 'enabled' : 'disabled'}`}
+          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50 ${
+            webmailOn ? 'bg-brand-500' : 'bg-gray-200 dark:bg-gray-600'
+          }`}
+          data-testid={`webmail-toggle-${d.id}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+              webmailOn ? 'translate-x-4' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </td>
+      <td className="px-5 py-3.5"><StatusBadge status={d.enabled ? 'active' : 'suspended'} /></td>
+    </tr>
   );
 }
 

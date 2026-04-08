@@ -15,8 +15,8 @@
 CREATE SCHEMA IF NOT EXISTS stalwart;
 
 -- Principals view: one row per active mailbox.
--- Stalwart's `name` query reads this; it expects columns: name, type, secret,
--- description, quota.
+-- Stalwart `name` query reads this. Expected columns are name, type,
+-- secret, description, quota.
 -- NOTE: the mailbox_type column in mailboxes is stored as camelCase
 -- `mailboxType` (Drizzle default), which requires double-quoting in SQL.
 CREATE OR REPLACE VIEW stalwart.principals AS
@@ -34,8 +34,8 @@ WHERE status = 'active';
 
 -- Emails view: one row per (account, address) pair.
 -- Stalwart's `emails`, `recipients`, `verify` queries read this.
--- For Phase 2a every mailbox has exactly one primary address (its
--- `full_address`); aliases are resolved separately in `expand`.
+-- For Phase 2a every mailbox has exactly one primary address
+-- (full_address). Aliases are resolved separately in `expand`.
 CREATE OR REPLACE VIEW stalwart.emails AS
 SELECT
   full_address AS address,
@@ -71,10 +71,11 @@ WHERE enabled = 1;
 -- Read-only role for Stalwart.
 --
 -- The role is created with NO password and NOLOGIN. A deployment-specific
--- step (local dev: scripts/local.sh _bootstrap_stalwart_reader; production:
--- the bootstrap job documented in docs/04-deployment/MAIL_SERVER_OPERATIONS.md §3.2)
--- must run `ALTER ROLE stalwart_reader WITH LOGIN PASSWORD '<secret>'`
--- before Stalwart can authenticate to the platform DB.
+-- step must set the LOGIN password at deploy time:
+--   local dev: scripts/local.sh _bootstrap_stalwart_reader
+--   production: the bootstrap job in docs/04-deployment/MAIL_SERVER_OPERATIONS.md §3.2
+-- Both run `ALTER ROLE stalwart_reader WITH LOGIN PASSWORD ...` before
+-- Stalwart can authenticate to the platform DB.
 --
 -- Rationale: committing a dev password to a SQL migration would let it
 -- reach production environments via the normal migration runner.

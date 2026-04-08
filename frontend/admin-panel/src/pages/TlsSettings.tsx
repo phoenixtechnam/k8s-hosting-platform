@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Shield, Loader2, AlertCircle, Save, CheckCircle, Network } from 'lucide-react';
+import { Shield, Loader2, AlertCircle, Save, CheckCircle, Network, Mail } from 'lucide-react';
 import { useTlsSettings, useUpdateTlsSettings } from '@/hooks/use-tls-settings';
 import { useIngressSettings, useUpdateIngressSettings } from '@/hooks/use-ingress-settings';
+import { useWebmailSettings, useUpdateWebmailSettings } from '@/hooks/use-webmail-settings';
 
 const inputClass = 'w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 px-3 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -134,6 +135,97 @@ export default function TlsSettings() {
       )}
 
       <IngressSettingsCard />
+      <WebmailSettingsCard />
+    </div>
+  );
+}
+
+// ─── Webmail Settings Card ──────────────────────────────────────────────────
+
+function WebmailSettingsCard() {
+  const { data: response, isLoading } = useWebmailSettings();
+  const updateSettings = useUpdateWebmailSettings();
+  const settings = response?.data;
+  const [defaultWebmailUrl, setDefaultWebmailUrl] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (settings) setDefaultWebmailUrl(settings.defaultWebmailUrl);
+  }, [settings]);
+
+  const handleSave = () => {
+    setSaved(false);
+    updateSettings.mutate(
+      { defaultWebmailUrl },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 3000);
+        },
+      },
+    );
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-4">
+        <Loader2 size={16} className="animate-spin text-brand-500" />
+        <span className="text-sm text-gray-500">Loading webmail settings...</span>
+      </div>
+    );
+  }
+  if (!settings) return null;
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm space-y-6" data-testid="webmail-settings-card">
+      <div className="flex items-center gap-2">
+        <Mail size={20} className="text-brand-500" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Webmail</h2>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Default Webmail URL
+        </label>
+        <input
+          type="url"
+          value={defaultWebmailUrl}
+          onChange={(e) => setDefaultWebmailUrl(e.target.value)}
+          className={inputClass}
+          placeholder="https://webmail.platform.example.com"
+          data-testid="default-webmail-url-input"
+        />
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          Fallback URL used by the &quot;Open webmail&quot; button when a mailbox&apos;s domain doesn&apos;t have its own derived webmail Ingress yet. Individual email domains get <code className="text-gray-700 dark:text-gray-300">https://webmail.&lt;domain&gt;</code> automatically when webmail is enabled — this setting only covers the fallback case.
+        </p>
+      </div>
+
+      <div className="rounded-lg bg-gray-50 dark:bg-gray-900 p-4 text-sm text-gray-600 dark:text-gray-400 space-y-1">
+        <p><strong>How the platform resolves the webmail URL for a mailbox:</strong></p>
+        <ol className="list-decimal list-inside space-y-0.5">
+          <li>If the mailbox&apos;s email domain has <code className="text-gray-700 dark:text-gray-300">webmail_enabled=true</code>, use <code className="text-gray-700 dark:text-gray-300">https://webmail.&lt;domain&gt;</code></li>
+          <li>Otherwise, use this default webmail URL</li>
+          <li>Otherwise, fall back to the <code className="text-gray-700 dark:text-gray-300">WEBMAIL_URL</code> env var or a hardcoded placeholder</li>
+        </ol>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+        {saved && (
+          <span className="flex items-center gap-1 text-sm text-green-600 dark:text-green-400">
+            <CheckCircle size={14} /> Saved
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={updateSettings.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="save-webmail-settings"
+        >
+          {updateSettings.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          Save Settings
+        </button>
+      </div>
     </div>
   );
 }
