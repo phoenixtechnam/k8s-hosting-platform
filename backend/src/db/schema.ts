@@ -156,6 +156,11 @@ export const clients = pgTable('clients', {
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
   maxSubUsersOverride: integer('max_sub_users_override'),
   monthlyPriceOverride: numeric('monthly_price_override', { precision: 10, scale: 2 }),
+  // Phase 3.B.3: per-customer email send rate limit (messages/hour).
+  // null = inherit the global default from platform_settings key
+  // `email_send_rate_limit_default`. Suspended clients are forced to
+  // rate=0 at the Stalwart level regardless of this value.
+  emailSendRateLimit: integer('email_send_rate_limit'),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
   createdBy: varchar('created_by', { length: 36 }),
   subscriptionExpiresAt: timestamp('subscription_expires_at'),

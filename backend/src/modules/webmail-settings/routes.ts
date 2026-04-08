@@ -5,6 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import { getWebmailSettings, updateWebmailSettings, getMailServerHostname } from './service.js';
 import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
 import { ensureMailServerCertificate } from '../certificates/service.js';
+import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -69,6 +70,19 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err, hostname: parsed.data.mailServerHostname },
           'webmail-settings: mail cert ensure failed (non-blocking)',
+        );
+      }
+    }
+
+    // Phase 3.B.3: if the global rate limit default was changed,
+    // reconcile the Stalwart outbound config.
+    if (k8s && parsed.data.emailSendRateLimitDefault !== undefined) {
+      try {
+        await reconcileOutboundConfig(app.db, k8s, app.log);
+      } catch (err) {
+        app.log.warn(
+          { err },
+          'webmail-settings: outbound reconcile failed (non-blocking)',
         );
       }
     }

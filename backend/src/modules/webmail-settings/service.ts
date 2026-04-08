@@ -43,21 +43,36 @@ function defaultMailHostnameFromEnv(): string {
 export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrl = await getSetting(db, 'default_webmail_url');
   const mailServerHostname = await getSetting(db, 'mail_server_hostname');
+  const rateLimitRaw = await getSetting(db, 'email_send_rate_limit_default');
+  const emailSendRateLimitDefault = rateLimitRaw ? parseInt(rateLimitRaw, 10) : null;
   return {
     defaultWebmailUrl: defaultWebmailUrl ?? defaultUrlFromEnv(),
     mailServerHostname: mailServerHostname ?? defaultMailHostnameFromEnv(),
+    emailSendRateLimitDefault: Number.isFinite(emailSendRateLimitDefault) ? emailSendRateLimitDefault : null,
   };
 }
 
 export async function updateWebmailSettings(
   db: Database,
-  input: { defaultWebmailUrl?: string; mailServerHostname?: string },
+  input: {
+    defaultWebmailUrl?: string;
+    mailServerHostname?: string;
+    emailSendRateLimitDefault?: number | null;
+  },
 ) {
   if (input.defaultWebmailUrl !== undefined) {
     await setSetting(db, 'default_webmail_url', input.defaultWebmailUrl);
   }
   if (input.mailServerHostname !== undefined) {
     await setSetting(db, 'mail_server_hostname', input.mailServerHostname);
+  }
+  if (input.emailSendRateLimitDefault !== undefined) {
+    if (input.emailSendRateLimitDefault === null) {
+      // Clear the setting (Stalwart will have no global throttle rule)
+      await setSetting(db, 'email_send_rate_limit_default', '');
+    } else {
+      await setSetting(db, 'email_send_rate_limit_default', String(input.emailSendRateLimitDefault));
+    }
   }
   return getWebmailSettings(db);
 }

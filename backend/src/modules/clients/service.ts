@@ -138,6 +138,7 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   if (input.storage_limit_override !== undefined) updateValues.storageLimitOverride = input.storage_limit_override === null ? null : String(input.storage_limit_override);
   if (input.max_sub_users_override !== undefined) updateValues.maxSubUsersOverride = input.max_sub_users_override;
   if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
+  if (input.email_send_rate_limit !== undefined) updateValues.emailSendRateLimit = input.email_send_rate_limit;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
@@ -166,6 +167,22 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     await db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, id));
     await db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, id));
     await db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, id));
+  }
+
+  // Phase 3.B.3: reconcile Stalwart outbound config when:
+  //   - client status changed (suspend → rate=0 in throttle)
+  //   - email send rate limit changed
+  // Non-blocking — throttle reconcile failures shouldn't fail the
+  // client update API call.
+  if (input.status !== undefined || input.email_send_rate_limit !== undefined) {
+    try {
+      const { reconcileOutboundConfig } = await import('../email-outbound/service.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+      await reconcileOutboundConfig(db, k8s);
+    } catch (err) {
+      console.warn('[clients] Failed to reconcile outbound config after status/rate change:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   return getClientById(db, id);

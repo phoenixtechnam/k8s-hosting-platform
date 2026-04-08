@@ -25,6 +25,9 @@ export const updateClientSchema = z.object({
   storage_limit_override: z.number().min(1).max(10000).nullable().optional(),
   max_sub_users_override: z.number().int().min(1).max(100).nullable().optional(),
   monthly_price_override: z.number().min(0).max(99999).nullable().optional(),
+  // Phase 3.B.3: per-customer email send rate limit (messages/hour).
+  // null = inherit the global default. 0 = blocked.
+  email_send_rate_limit: z.number().int().min(0).max(1000000).nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -44,6 +47,7 @@ export const clientResponseSchema = z.object({
   storageLimitOverride: z.string().nullable(),
   maxSubUsersOverride: z.number().nullable(),
   monthlyPriceOverride: z.string().nullable(),
+  emailSendRateLimit: z.number().nullable().optional(),
   createdBy: z.string().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),

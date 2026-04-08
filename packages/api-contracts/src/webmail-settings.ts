@@ -14,6 +14,10 @@ export const updateWebmailSettingsSchema = z.object({
     .max(253)
     .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i, 'Invalid hostname')
     .optional(),
+  // Phase 3.B.3: global default per-customer email send rate limit
+  // (messages per hour). null = no default (Stalwart uses its built-in
+  // defaults). 0 = all customers blocked unless an override allows.
+  emailSendRateLimitDefault: z.number().int().min(0).max(1000000).nullable().optional(),
 });
 
 export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSchema>;
@@ -21,6 +25,7 @@ export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSch
 export const webmailSettingsResponseSchema = z.object({
   defaultWebmailUrl: z.string(),
   mailServerHostname: z.string().optional(),
+  emailSendRateLimitDefault: z.number().nullable().optional(),
 });
 
 export type WebmailSettingsResponse = z.infer<typeof webmailSettingsResponseSchema>;
