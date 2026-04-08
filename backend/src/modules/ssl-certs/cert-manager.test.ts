@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { domainToSecretName, determineChallengeType } from './cert-manager.js';
+import { domainToSecretName } from './cert-manager.js';
 
 describe('cert-manager utilities', () => {
   describe('domainToSecretName', () => {
@@ -35,29 +35,8 @@ describe('cert-manager utilities', () => {
     });
   });
 
-  describe('determineChallengeType', () => {
-    it('should use dns01 for primary DNS mode with DNS server', () => {
-      expect(determineChallengeType('primary', true)).toBe('dns01');
-    });
-
-    it('should use dns01 for secondary DNS mode with DNS server', () => {
-      expect(determineChallengeType('secondary', true)).toBe('dns01');
-    });
-
-    it('should use http01 for primary DNS mode without DNS server', () => {
-      expect(determineChallengeType('primary', false)).toBe('http01');
-    });
-
-    it('should use http01 for cname DNS mode', () => {
-      expect(determineChallengeType('cname', true)).toBe('http01');
-    });
-
-    it('should use http01 for external DNS mode', () => {
-      expect(determineChallengeType('external', true)).toBe('http01');
-    });
-
-    it('should use http01 when no DNS server configured', () => {
-      expect(determineChallengeType('primary', false)).toBe('http01');
-    });
-  });
+  // `determineChallengeType` was removed in Phase 3 T4.3. The
+  // certificates module's `selectIssuerForDomain` replaces it with
+  // richer logic (environment + provider + wildcard support).
+  // See backend/src/modules/certificates/issuer-selector.ts.
 });

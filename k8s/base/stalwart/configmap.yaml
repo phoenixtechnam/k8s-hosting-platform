@@ -110,7 +110,14 @@ data:
     members    = "SELECT $1::text AS member_of WHERE false"
     recipients = "SELECT name FROM stalwart.emails WHERE address = $1"
     emails     = "SELECT address FROM stalwart.emails WHERE name = $1 ORDER BY type DESC, address ASC"
-    verify     = "SELECT address FROM stalwart.emails WHERE address LIKE '%' || $1 || '%' ORDER BY address LIMIT 5"
+    # Phase 3 T3.2: VRFY is disabled for privacy. A substring LIKE query
+    # across stalwart.emails would let any anonymous SMTP client
+    # enumerate addresses across all clients on the platform. Best
+    # practice per RFC 5321 §3.5.2 and most modern mail servers is
+    # to return "252 Cannot VRFY user". Stalwart does that when the
+    # query returns no rows. The parameter is still consumed because
+    # rust-postgres requires it.
+    verify     = "SELECT address FROM stalwart.emails WHERE false AND $1::text IS NOT NULL"
     expand     = "SELECT member_address AS address FROM stalwart.alias_expansion WHERE list_address = $1 ORDER BY member_address LIMIT 50"
     domains    = "SELECT 1 FROM stalwart.domains WHERE name = $1 LIMIT 1"
 

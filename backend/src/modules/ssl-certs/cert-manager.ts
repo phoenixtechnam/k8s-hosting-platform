@@ -1,17 +1,17 @@
 /**
  * cert-manager + TLS Secret helpers for CUSTOM UPLOADED certs.
  *
- * Phase 2c: automatic Certificate CR provisioning was moved to
+ * Phase 2c moved automatic Certificate CR provisioning to
  * `backend/src/modules/certificates/`. This file now handles only:
- *   - The naming helper `domainToSecretName` (shared with k8s-manifests
+ *   - `domainToSecretName` naming helper (shared with k8s-manifests
  *     generator and tests)
- *   - Manual TLS Secret upload path (`syncCertToK8sSecret`,
- *     `deleteK8sSecret`) for when an admin uploads their own cert + key
- *     via the ssl-certs module.
+ *   - `syncCertToK8sSecret` / `deleteK8sSecret` for the admin's manual
+ *     TLS cert upload path in ssl-certs/service.ts
  *
- * `determineChallengeType` is kept for backwards compat with existing
- * tests but is no longer called by application code — the certificates
- * module has its own selector logic. New code should NOT use it.
+ * Phase 3 T4.3: removed the deprecated `determineChallengeType` helper
+ * — it had no production callers, only test references, and kept
+ * appearing in grep results when I wasn't looking for it. The
+ * certificates module's `selectIssuerForDomain` has the real logic.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -49,23 +49,6 @@ export function domainToSecretName(domainName: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 50) + '-tls';
-}
-
-/**
- * Legacy challenge-type hint. DEPRECATED in Phase 2c — use
- * `certificates/issuer-selector.ts selectIssuerForDomain` instead,
- * which takes the full DNS provider state into account.
- *
- * Kept for backwards compat with the cert-manager.test.ts test file.
- */
-export function determineChallengeType(
-  dnsMode: string,
-  hasDnsServer: boolean,
-): 'dns01' | 'http01' {
-  if (hasDnsServer && (dnsMode === 'primary' || dnsMode === 'secondary')) {
-    return 'dns01';
-  }
-  return 'http01';
 }
 
 // ─── TLS Secret Management (for custom uploaded certs) ──────────────────────

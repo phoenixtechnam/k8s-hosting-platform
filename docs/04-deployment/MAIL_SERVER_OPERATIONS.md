@@ -34,8 +34,32 @@ These are **one-time account-level** actions that must be completed before a pro
 - File at: **Console → your Project → Limits → Request**. Describe the use case, expected volume, per-domain rate limits, and your abuse contact.
 - Scope: **per-account / per-project**, applies to all current and future servers.
 - Turnaround: hours → several business days, case-by-case.
-- **Fallback if denied:** configure a commercial SMTP relay (Mailgun/Postmark/SES) in `smtp_relay_configs` and flip `storage.outbound` to always route through it. Phase 3 wires this into Stalwart's `[queue.outbound]`.
 - Status tracking: note the request date in this runbook (or a Linear/Jira ticket) so you can escalate if it stalls.
+
+**Fallback if denied (or while waiting):** Phase 3.B.1 fully wires
+Stalwart's `[queue.outbound]` from the `smtp_relay_configs` table.
+Configure a commercial SMTP relay via the admin UI:
+
+1. **Admin panel → Email → SMTP Relays → Add SMTP Relay**
+2. Pick Mailgun (EU or US region), Postmark, or "Direct"
+3. Enter credentials — backend encrypts at rest via `OIDC_ENCRYPTION_KEY`
+4. Mark one relay as **Default**
+
+The backend immediately reconciles `stalwart-outbound-config`
+ConfigMap in the `mail` namespace with a `[remote.<key>]` block per
+relay and sets `[queue.outbound] next-hop` to the default. See
+§7.2 for the reconcile procedure and verification.
+
+**Recommended strategy:** start with Mailgun as the default relay
+for immediate mail delivery, then file the Hetzner unblock request
+in parallel. Once port 25 is unblocked, you can switch to direct
+delivery for cost savings by flipping the default relay to `direct`
+in the admin UI — no code changes, no Stalwart restart required.
+
+**Escalation:** if the unblock request is denied, Hetzner support
+typically accepts a second request after showing ~30 days of clean
+outbound traffic through the commercial relay. Document the clean
+sender history and re-file.
 
 ### 2.2 Set reverse DNS (PTR) records
 
