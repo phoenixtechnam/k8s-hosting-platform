@@ -107,6 +107,7 @@ export async function getEmailDomain(
       domainId: emailDomains.domainId,
       clientId: emailDomains.clientId,
       domainName: domains.domainName,
+      dnsMode: domains.dnsMode,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
@@ -138,6 +139,61 @@ export async function getEmailDomain(
     .where(eq(mailboxes.emailDomainId, emailDomain.id));
 
   return { ...emailDomain, mailboxCount: mailboxCount?.count ?? 0 };
+}
+
+/**
+ * Return the list of DNS records the operator should see for this
+ * email domain, using the SAME builder that the provisioning path
+ * uses — so there's zero drift between what gets written to DNS in
+ * primary mode and what's displayed in the UI for cname/secondary
+ * mode. The response includes a `manualRequired` flag so the UI
+ * knows whether to nag the operator to publish them manually.
+ */
+export async function getEmailDomainDnsRecords(
+  db: Database,
+  clientId: string,
+  domainId: string,
+): Promise<{
+  readonly dnsMode: string;
+  readonly manualRequired: boolean;
+  readonly mailServerHostname: string;
+  readonly records: readonly {
+    readonly type: string;
+    readonly name: string;
+    readonly value: string;
+    readonly ttl: number;
+    readonly priority: number | null;
+  }[];
+}> {
+  const ed = await getEmailDomain(db, clientId, domainId);
+
+  // Import lazily so dns-provisioning is only loaded when the route
+  // is actually hit — keeps the module's import cycle flat.
+  const { buildEmailDnsRecordsForDisplay } = await import('./dns-provisioning.js');
+  const mailServerHostname = await getMailServerHostname(db);
+
+  const specs = buildEmailDnsRecordsForDisplay(
+    ed.domainName,
+    ed.dkimSelector,
+    ed.dkimPublicKey ?? '',
+    mailServerHostname,
+  );
+
+  return {
+    dnsMode: (ed.dnsMode as string) ?? 'cname',
+    // primary mode: the platform writes DNS itself; UI shows records
+    // for reference but doesn't nag. cname/secondary: the operator
+    // MUST publish the records at their own DNS provider.
+    manualRequired: ed.dnsMode !== 'primary',
+    mailServerHostname,
+    records: specs.map((s) => ({
+      type: s.recordType,
+      name: s.recordName,
+      value: s.recordValue,
+      ttl: s.ttl,
+      priority: s.priority,
+    })),
+  };
 }
 
 export async function listEmailDomains(

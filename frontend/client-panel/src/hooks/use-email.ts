@@ -1,17 +1,39 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
-interface EmailDomain {
+export interface EmailDomain {
   readonly id: string;
   readonly domainId: string;
   readonly domainName: string;
   readonly enabled: number;
+  readonly webmailEnabled?: number;
   readonly maxMailboxes: number;
   readonly maxQuotaMb: number;
   readonly mailboxCount?: number;
+  readonly catchAllAddress?: string | null;
+  readonly spamThresholdJunk?: string;
+  readonly spamThresholdReject?: string;
+  readonly dnsMode?: string;
 }
 
-interface Mailbox {
+// ─── Email domain update (settings tab) ─────────────────────────────
+
+export interface DnsRecordDisplay {
+  readonly type: string;
+  readonly name: string;
+  readonly value: string;
+  readonly ttl: number;
+  readonly priority: number | null;
+}
+
+export interface DnsRecordsResponse {
+  readonly dnsMode: string;
+  readonly manualRequired: boolean;
+  readonly mailServerHostname: string;
+  readonly records: readonly DnsRecordDisplay[];
+}
+
+export interface Mailbox {
   readonly id: string;
   readonly localPart: string;
   readonly fullAddress: string;
@@ -21,6 +43,8 @@ interface Mailbox {
   readonly status: string;
   readonly mailboxType: string;
   readonly autoReply: number;
+  readonly autoReplySubject?: string | null;
+  readonly autoReplyBody?: string | null;
   readonly createdAt: string;
 }
 
@@ -52,6 +76,26 @@ export function useEnableEmailDomain(clientId: string) {
     mutationFn: ({ domainId, input }: { domainId: string; input: Record<string, unknown> }) =>
       apiFetch(`/api/v1/clients/${clientId}/email/domains/${domainId}/enable`, { method: 'POST', body: JSON.stringify(input) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['email-domains', clientId] }),
+  });
+}
+
+export function useUpdateEmailDomain(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ domainId, input }: { domainId: string; input: Record<string, unknown> }) =>
+      apiFetch(`/api/v1/clients/${clientId}/email/domains/${domainId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-domains', clientId] }),
+  });
+}
+
+export function useEmailDomainDnsRecords(clientId?: string, domainId?: string) {
+  return useQuery({
+    queryKey: ['email-domain-dns-records', clientId, domainId],
+    queryFn: () =>
+      apiFetch<{ data: DnsRecordsResponse }>(
+        `/api/v1/clients/${clientId}/email/domains/${domainId}/dns-records`,
+      ),
+    enabled: !!clientId && !!domainId,
   });
 }
 

@@ -62,12 +62,23 @@ async function syncRecordToProviders(
   } catch { /* no servers configured */ }
 }
 
-interface DnsRecordSpec {
+export interface DnsRecordSpec {
   readonly recordType: string;
   readonly recordName: string;
   readonly recordValue: string;
   readonly ttl: number;
   readonly priority: number | null;
+}
+
+// Exported so the read-only "view DNS records" endpoint can reuse
+// the exact same list the provisioning path writes — no drift.
+export function buildEmailDnsRecordsForDisplay(
+  domainName: string,
+  dkimSelector: string,
+  dkimPublicKey: string,
+  mailServerHostname: string,
+): readonly DnsRecordSpec[] {
+  return buildEmailDnsRecords(domainName, dkimSelector, dkimPublicKey, mailServerHostname);
 }
 
 function buildEmailDnsRecords(

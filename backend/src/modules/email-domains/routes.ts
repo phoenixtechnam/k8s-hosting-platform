@@ -104,6 +104,23 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
+  // GET /api/v1/clients/:clientId/email/domains/:domainId/dns-records
+  //
+  // Returns the canonical list of DNS records the operator should
+  // publish for this email domain. Uses the same builder the
+  // provisioning path uses, so there's zero drift. In primary mode
+  // these are already live in the platform-managed zone; in cname /
+  // secondary mode the operator must publish them manually at their
+  // own DNS provider. The `manualRequired` flag in the response
+  // tells the UI which banner to show.
+  app.get('/clients/:clientId/email/domains/:domainId/dns-records', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin'), requireClientAccess()],
+  }, async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const result = await service.getEmailDomainDnsRecords(app.db, clientId, domainId);
+    return success(result);
+  });
+
   // PATCH /api/v1/clients/:clientId/email/domains/:domainId
   app.patch('/clients/:clientId/email/domains/:domainId', {
     onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
