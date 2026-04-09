@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { Bell, Info, AlertTriangle, XCircle, CheckCircle, Check } from 'lucide-react';
 import {
   useNotifications,
@@ -124,6 +125,17 @@ export default function NotificationDropdown() {
                   </div>
                 );
               })}
+          </div>
+
+          <div className="border-t border-gray-100 dark:border-gray-700 px-4 py-2 text-center">
+            <Link
+              to="/notifications"
+              onClick={() => setOpen(false)}
+              className="text-xs font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+              data-testid="notification-view-all"
+            >
+              View all notifications
+            </Link>
           </div>
         </div>
       )}

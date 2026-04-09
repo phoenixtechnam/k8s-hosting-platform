@@ -80,4 +80,27 @@ describe('Client NotificationDropdown', () => {
     const redDot = container.querySelector('.bg-red-500');
     expect(redDot).not.toBeInTheDocument();
   });
+
+  it('renders the View all notifications footer link pointing at /notifications', async () => {
+    const user = userEvent.setup();
+    render(<NotificationDropdown />, { wrapper: createWrapper() });
+
+    await user.click(screen.getByTestId('notification-bell'));
+
+    const link = screen.getByTestId('notification-view-all');
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveTextContent('View all notifications');
+    expect(link).toHaveAttribute('href', '/notifications');
+  });
+
+  it('closes the dropdown when the View all link is clicked', async () => {
+    const user = userEvent.setup();
+    render(<NotificationDropdown />, { wrapper: createWrapper() });
+
+    await user.click(screen.getByTestId('notification-bell'));
+    expect(screen.getByTestId('notification-dropdown')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('notification-view-all'));
+    expect(screen.queryByTestId('notification-dropdown')).not.toBeInTheDocument();
+  });
 });

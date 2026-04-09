@@ -9,7 +9,12 @@ export interface NotificationEntry {
   readonly message: string;
   readonly resourceType: string | null;
   readonly resourceId: string | null;
-  readonly isRead: number;
+  /**
+   * Backend stores this as a tinyint (0 or 1). Compare explicitly with
+   * `=== 0` / `!== 0` to avoid silent breakage if the API ever returns
+   * other integers.
+   */
+  readonly isRead: 0 | 1;
   readonly readAt: string | null;
   readonly createdAt: string;
 }

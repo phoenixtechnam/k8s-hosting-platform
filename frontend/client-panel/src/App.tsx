@@ -17,6 +17,7 @@ import SubUsers from '@/pages/SubUsers';
 import DatabaseManager from '@/pages/DatabaseManager';
 import SshKeys from '@/pages/SshKeys';
 import ResourceUsage from '@/pages/ResourceUsage';
+import Notifications from '@/pages/Notifications';
 import Placeholder from '@/pages/Placeholder';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="settings" element={<Settings />} />
             <Route path="ssh-keys" element={<SshKeys />} />
             <Route path="resource-usage" element={<ResourceUsage />} />
+            <Route path="notifications" element={<Notifications />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="database-manager" element={<DatabaseManager />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
