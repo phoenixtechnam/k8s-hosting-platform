@@ -9,6 +9,7 @@ import {
   Mail,
   Archive,
   Users,
+  Key,
   Settings,
   X,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/email', icon: Mail, label: 'Email' },
   { to: '/backups', icon: Archive, label: 'Backups' },
   { to: '/users', icon: Users, label: 'Users' },
+  { to: '/ssh-keys', icon: Key, label: 'SSH Keys' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
 
