@@ -36,6 +36,12 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
   }, async (request, reply) => {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    // Phase 2 round-3: instrumentation. The client-panel was reporting
+    // "Unexpected end of JSON input" for this endpoint and we had no
+    // server-side trail. Logging entry/exit lets us prove the handler
+    // ran to completion and produced a body.
+    app.log.info({ clientId, domainId }, 'email-domains: enable request received');
+
     const parsed = enableEmailDomainSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       const firstError = parsed.error.errors[0];
@@ -48,6 +54,10 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const result = await service.enableEmailForDomain(app.db, clientId, domainId, parsed.data, encryptionKey());
+    app.log.info(
+      { clientId, domainId, emailDomainId: result.id },
+      'email-domains: enableEmailForDomain completed',
+    );
 
     // Phase 2c.5: provision webmail Ingress (webmail_enabled defaults
     // to true on new email domains). Non-blocking on failure — email
@@ -55,12 +65,15 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     if (k8s && result.id) {
       try {
         await service.ensureWebmailIngress(app.db, k8s, result.id);
+        app.log.info({ emailDomainId: result.id }, 'email-domains: ensureWebmailIngress ok');
       } catch (err) {
         app.log.warn({ err, emailDomainId: result.id }, 'email-domains: ensureWebmailIngress failed');
       }
     }
 
-    reply.status(201).send(success(result));
+    // IMPORTANT: return the reply so Fastify does not attempt a second
+    // implicit send with an undefined payload.
+    return reply.status(201).send(success(result));
   });
 
   // DELETE /api/v1/clients/:clientId/email/domains/:domainId/disable
@@ -137,7 +150,7 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const result = await service.updateEmailDomain(app.db, clientId, domainId, parsed.data);
+    const result = await service.updateEmailDomain(app.db, clientId, domainId, parsed.data, encryptionKey());
 
     // Phase 2c.5: if webmail_enabled was toggled, provision or remove
     // the webmail Ingress accordingly.

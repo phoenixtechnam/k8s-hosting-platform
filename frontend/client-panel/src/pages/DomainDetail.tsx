@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
 import {
@@ -41,6 +41,13 @@ export default function DomainDetail() {
   const migrateDns = useMigrateDomainDns(clientId ?? undefined);
   const { data: groupsData } = useDnsProviderGroups();
   const groups = groupsData?.data ?? [];
+  // Round-3: load the cascade preview only when the modal is open so
+  // the dashboard doesn't eagerly fetch it for every domain row.
+  const deletePreview = useDomainDeletePreview(
+    clientId ?? undefined,
+    domainId,
+    showDeleteModal,
+  );
 
   const { data: domainsData, isLoading } = useDomains(clientId ?? undefined);
   const domain = domainsData?.data?.find((d) => d.id === domainId);
@@ -152,12 +159,125 @@ export default function DomainDetail() {
       )}
 
       {showDeleteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="delete-domain-modal">
-          <div className="mx-4 w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="delete-domain-modal">
+          <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-semibold text-red-600 dark:text-red-400">Delete Domain</h3>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-              Are you sure you want to delete this domain? This will also remove all DNS records and the DNS zone from the server. This action cannot be undone.
+              This will permanently delete the following resources. This action cannot be undone.
             </p>
+
+            {/*
+              Round-3: dynamic cascade preview. The modal fetches the exact
+              list of resources that will be removed via
+              GET /api/v1/clients/:cid/domains/:did/delete-preview so clients
+              can see every DNS record, mailbox, alias, ingress route, and
+              webmail Ingress by name BEFORE they confirm.
+            */}
+            <div className="mt-4 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 p-4" data-testid="delete-preview-list">
+              {deletePreview.isLoading && (
+                <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading cascade list…
+                </div>
+              )}
+              {deletePreview.isError && (
+                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                  <AlertCircle size={14} />
+                  Failed to load cascade preview — delete anyway at your own risk.
+                </div>
+              )}
+              {deletePreview.data?.data && (
+                <div className="space-y-3 text-sm">
+                  <div className="font-medium text-amber-800 dark:text-amber-200">
+                    Cascade summary for {deletePreview.data.data.domainName}
+                  </div>
+
+                  {deletePreview.data.data.dnsRecords.length > 0 && (
+                    <div data-testid="delete-preview-dns">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {deletePreview.data.data.dnsRecords.length} DNS record(s):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {deletePreview.data.data.dnsRecords.slice(0, 20).map((r) => (
+                          <li key={r.id}>
+                            {r.type} {r.name ?? '(apex)'}
+                          </li>
+                        ))}
+                        {deletePreview.data.data.dnsRecords.length > 20 && (
+                          <li className="italic">
+                            …and {deletePreview.data.data.dnsRecords.length - 20} more
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  {deletePreview.data.data.emailDomain && (
+                    <div data-testid="delete-preview-email">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        Email hosting (DKIM keys + configuration)
+                      </div>
+                      {deletePreview.data.data.emailDomain.mailboxes.length > 0 && (
+                        <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                          <li className="font-medium">
+                            {deletePreview.data.data.emailDomain.mailboxes.length} mailbox(es):
+                          </li>
+                          {deletePreview.data.data.emailDomain.mailboxes.slice(0, 10).map((m) => (
+                            <li key={m.id} className="ml-4">{m.fullAddress}</li>
+                          ))}
+                          {deletePreview.data.data.emailDomain.mailboxes.length > 10 && (
+                            <li className="ml-4 italic">
+                              …and {deletePreview.data.data.emailDomain.mailboxes.length - 10} more
+                            </li>
+                          )}
+                        </ul>
+                      )}
+                      {deletePreview.data.data.emailDomain.aliases.length > 0 && (
+                        <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                          <li className="font-medium">
+                            {deletePreview.data.data.emailDomain.aliases.length} alias(es):
+                          </li>
+                          {deletePreview.data.data.emailDomain.aliases.slice(0, 10).map((a) => (
+                            <li key={a.id} className="ml-4">{a.sourceAddress}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  {deletePreview.data.data.ingressRoutes.length > 0 && (
+                    <div data-testid="delete-preview-routes">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {deletePreview.data.data.ingressRoutes.length} ingress route(s):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {deletePreview.data.data.ingressRoutes.slice(0, 10).map((r) => (
+                          <li key={r.id}>{r.hostname}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {deletePreview.data.data.webmailIngressHostname && (
+                    <div data-testid="delete-preview-webmail">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        Webmail site:
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        <li>{deletePreview.data.data.webmailIngressHostname}</li>
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="border-t border-amber-200 dark:border-amber-900/50 pt-2 text-xs text-amber-700 dark:text-amber-300">
+                    The DNS zone will also be removed from the authoritative DNS
+                    provider(s) and the TLS certificate will be deleted from the
+                    cluster.
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="mt-4">
               <label htmlFor="delete-confirm-input" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                 Type <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{domain.domainName}</span> to confirm

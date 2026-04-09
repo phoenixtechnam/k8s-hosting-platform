@@ -29,6 +29,9 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+# Linux FUSE temporary files (get created when an open file is unlinked)
+.fuse_hidden*
+
 # IDE
 .vscode/
 .idea/

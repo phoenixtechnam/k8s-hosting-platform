@@ -1,6 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
+import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
+
+// Re-export so existing imports from `use-domains.ts` keep working.
+export type { DomainDeletePreview };
 
 export function useDomains(clientId: string | undefined) {
   return useQuery({
@@ -54,7 +58,31 @@ export function useDeleteDomain(clientId: string | undefined) {
       apiFetch<void>(`/api/v1/clients/${clientId}/domains/${domainId}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] });
+      // Round-3: deleting a domain cascades to email_domains and
+      // mailboxes via migration 0020, so refresh those caches too.
+      queryClient.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['mailboxes', clientId] });
+      queryClient.invalidateQueries({ queryKey: ['mailbox-usage', clientId] });
     },
+  });
+}
+
+// Round-3: dynamic cascade preview for the delete confirmation dialog.
+// `enabled` is the caller's flag — typically only true when the modal
+// is open, to avoid hitting the API on every DomainDetail page load.
+export function useDomainDeletePreview(
+  clientId: string | undefined,
+  domainId: string | undefined,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ['domain-delete-preview', clientId, domainId],
+    queryFn: () =>
+      apiFetch<{ data: DomainDeletePreview }>(
+        `/api/v1/clients/${clientId}/domains/${domainId}/delete-preview`,
+      ),
+    enabled: enabled && Boolean(clientId && domainId),
+    staleTime: 0,
   });
 }
 

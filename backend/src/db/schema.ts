@@ -533,7 +533,12 @@ export const userRoles = pgTable('user_roles', {
 
 export const dnsRecords = pgTable('dns_records', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  // Migration 0020 added the FK + ON DELETE CASCADE. Mirror it here
+  // so Drizzle's type inference stays in sync and future db:generate
+  // runs do not regenerate a schema without the constraint.
+  domainId: varchar('domain_id', { length: 36 })
+    .notNull()
+    .references(() => domains.id, { onDelete: 'cascade' }),
   recordType: dnsRecordTypeEnum().notNull(),
   recordName: varchar('record_name', { length: 253 }),
   recordValue: varchar('record_value', { length: 1000 }),
@@ -551,7 +556,10 @@ export const dnsRecords = pgTable('dns_records', {
 
 export const ingressRoutes = pgTable('ingress_routes', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  // Migration 0020 — CASCADE deletes when the domain is removed.
+  domainId: varchar('domain_id', { length: 36 })
+    .notNull()
+    .references(() => domains.id, { onDelete: 'cascade' }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
   ingressCname: varchar('ingress_cname', { length: 255 }).notNull(),
@@ -633,8 +641,14 @@ export const resourceQuotas = pgTable('resource_quotas', {
 
 export const emailDomains = pgTable('email_domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  // Migration 0020 — FK + CASCADE from domains so email config is
+  // removed atomically when its parent domain is deleted.
+  domainId: varchar('domain_id', { length: 36 })
+    .notNull()
+    .references(() => domains.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   enabled: integer('enabled').notNull().default(1),
   // Phase 2c: when true, the backend creates an Ingress for
   // webmail.<domain> in the client's namespace pointing at the shared
@@ -664,8 +678,14 @@ export const emailDomains = pgTable('email_domains', {
 
 export const mailboxes = pgTable('mailboxes', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  emailDomainId: varchar('email_domain_id', { length: 36 }).notNull(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  // Migration 0020 — CASCADE from email_domains and clients so
+  // mailboxes disappear atomically with their parent.
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   localPart: varchar('local_part', { length: 64 }).notNull(),
   fullAddress: varchar('full_address', { length: 255 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
@@ -688,7 +708,12 @@ export const mailboxes = pgTable('mailboxes', {
 export const mailboxAccess = pgTable('mailbox_access', {
   id: varchar('id', { length: 36 }).primaryKey(),
   userId: varchar('user_id', { length: 36 }).notNull(),
-  mailboxId: varchar('mailbox_id', { length: 36 }).notNull(),
+  // Migration 0020 review round-3: cascade from mailboxes so access
+  // rows disappear when a mailbox is removed via the domain delete
+  // cascade chain.
+  mailboxId: varchar('mailbox_id', { length: 36 })
+    .notNull()
+    .references(() => mailboxes.id, { onDelete: 'cascade' }),
   accessLevel: accessLevelEnum().notNull().default('full'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
@@ -699,8 +724,13 @@ export const mailboxAccess = pgTable('mailbox_access', {
 
 export const emailAliases = pgTable('email_aliases', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  emailDomainId: varchar('email_domain_id', { length: 36 }).notNull(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  // Migration 0020 — CASCADE from email_domains and clients.
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   sourceAddress: varchar('source_address', { length: 255 }).notNull(),
   destinationAddresses: jsonb('destination_addresses').$type<string[]>().notNull(),
   enabled: integer('enabled').notNull().default(1),

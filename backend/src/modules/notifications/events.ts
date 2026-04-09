@@ -204,3 +204,40 @@ export async function notifyClientEmailBootstrapped(
     resourceId: payload.emailDomainId,
   });
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Webmail cert / provisioning failure
+// ──────────────────────────────────────────────────────────────────
+
+export interface WebmailCertFailedPayload {
+  readonly emailDomainId: string;
+  readonly hostname: string;
+  readonly errorMessage: string;
+}
+
+/**
+ * Fire when ensureWebmailIngress or ensureRouteCertificate fails
+ * while provisioning the per-domain webmail site. Error level —
+ * the DNS record may have been published but the site is not yet
+ * reachable. The client should verify DNS propagation and retry.
+ */
+export async function notifyClientWebmailCertFailed(
+  db: Database,
+  clientId: string,
+  payload: WebmailCertFailedPayload,
+): Promise<void> {
+  const recipients = await getClientNotificationRecipients(db, clientId);
+  if (recipients.length === 0) return;
+
+  await notifyUsers(db, recipients, {
+    type: 'error',
+    title: 'Webmail provisioning failed',
+    message:
+      `Failed to provision the webmail site at ${payload.hostname}. `
+      + `${payload.errorMessage} `
+      + 'The DNS record may have been published, but the site is not yet reachable. '
+      + 'Try again from the Email Settings tab after DNS propagation.',
+    resourceType: 'email_domain',
+    resourceId: payload.emailDomainId,
+  });
+}

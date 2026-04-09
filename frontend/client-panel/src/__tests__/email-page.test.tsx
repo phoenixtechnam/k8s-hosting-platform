@@ -64,11 +64,13 @@ vi.mock('../hooks/use-domains', () => ({
 }));
 
 import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords } from '../hooks/use-email';
+import { useDomains } from '../hooks/use-domains';
 
 const mockedUseEmailDomains = vi.mocked(useEmailDomains);
 const mockedUseMailboxes = vi.mocked(useMailboxes);
 const mockedUseUpdateMailbox = vi.mocked(useUpdateMailbox);
 const mockedUseEmailDomainDnsRecords = vi.mocked(useEmailDomainDnsRecords);
+const mockedUseDomains = vi.mocked(useDomains);
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -314,5 +316,59 @@ describe('Email Page', () => {
     expect(call.input.password).toBeUndefined();
     // Status unchanged → should NOT be sent
     expect(call.input.status).toBeUndefined();
+  });
+
+  // ── Phase 2 round 3: multi-domain Enable Email ─────────────────────
+
+  it('shows the Enable Email card alongside tabs when eligible domains remain', () => {
+    // One email-enabled domain and two total domains → one eligible.
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [{ id: 'ed-1', domainId: 'd1', domainName: 'first.com' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: {
+        data: [
+          { id: 'd1', domainName: 'first.com', dnsMode: 'primary' },
+          { id: 'd2', domainName: 'second.com', dnsMode: 'primary' },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+
+    renderWithProviders(<Email />);
+
+    // Both tabs AND enable card must be present
+    expect(screen.getByTestId('tab-mailboxes')).toBeInTheDocument();
+    expect(screen.getByTestId('email-enable-card')).toBeInTheDocument();
+    // Only the second (un-enabled) domain should have an Enable row
+    expect(screen.getByTestId('enable-email-row-d2')).toBeInTheDocument();
+    expect(screen.queryByTestId('enable-email-row-d1')).not.toBeInTheDocument();
+  });
+
+  it('hides the Enable Email card when all domains already have email enabled', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: {
+        data: [
+          { id: 'ed-1', domainId: 'd1', domainName: 'first.com' },
+          { id: 'ed-2', domainId: 'd2', domainName: 'second.com' },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseDomains.mockReturnValue({
+      data: {
+        data: [
+          { id: 'd1', domainName: 'first.com', dnsMode: 'primary' },
+          { id: 'd2', domainName: 'second.com', dnsMode: 'primary' },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useDomains>);
+
+    renderWithProviders(<Email />);
+
+    expect(screen.getByTestId('tab-mailboxes')).toBeInTheDocument();
+    expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
   });
 });

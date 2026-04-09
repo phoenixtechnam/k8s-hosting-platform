@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
-import { Loader2, RefreshCw, X, Cpu, MemoryStick, HardDrive } from 'lucide-react';
+import { Loader2, RefreshCw, X, Cpu, MemoryStick, HardDrive, Mail } from 'lucide-react';
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
+import { useMailboxUsage } from '@/hooks/use-email';
+import { useClientContext } from '@/hooks/use-client-context';
 
 interface ResourceMetricsModalProps {
   readonly open: boolean;
@@ -177,16 +179,19 @@ function ResourceSection({
 export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsModalProps) {
   const { data, isLoading } = useResourceMetrics();
   const refreshMetrics = useRefreshMetrics();
+  const { clientId } = useClientContext();
+  const { data: mailboxUsageData } = useMailboxUsage(clientId ?? undefined);
 
   useEffect(() => {
     if (open) {
       refreshMetrics.mutate();
     }
-  }, [open]); 
+  }, [open]);
 
   if (!open) return null;
 
   const metrics = data?.data;
+  const mailboxUsage = mailboxUsageData?.data;
 
   return (
     <div
@@ -264,6 +269,47 @@ export default function ResourceMetricsModal({ open, onClose }: ResourceMetricsM
               reservedLabel="PVC allocated capacity"
               availableLabel="subscription plan limit"
             />
+
+            {mailboxUsage && (
+              <>
+                <div className="border-t border-gray-100 dark:border-gray-700" />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Mail size={16} className="text-rose-500 dark:text-rose-400" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Mail accounts
+                      </span>
+                    </div>
+                    <span
+                      className="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                      data-testid="mail-accounts-count"
+                    >
+                      {mailboxUsage.current} / {mailboxUsage.limit}
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                    <div
+                      className={
+                        mailboxUsage.current >= mailboxUsage.limit
+                          ? 'h-2 rounded-full bg-red-500 dark:bg-red-400'
+                          : mailboxUsage.current / Math.max(1, mailboxUsage.limit) >= 0.8
+                            ? 'h-2 rounded-full bg-amber-500 dark:bg-amber-400'
+                            : 'h-2 rounded-full bg-rose-500 dark:bg-rose-400'
+                      }
+                      style={{
+                        width: `${Math.min(100, (mailboxUsage.current / Math.max(1, mailboxUsage.limit)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 pl-1">
+                    {mailboxUsage.source === 'client_override'
+                      ? 'Limit set by per-client override'
+                      : 'Limit from hosting plan'}
+                  </p>
+                </div>
+              </>
+            )}
 
             {(metrics.cpu.inUse === 0 && metrics.cpu.reserved > 0) || (metrics.memory.inUse === 0 && metrics.memory.reserved > 0) ? (
               <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2">

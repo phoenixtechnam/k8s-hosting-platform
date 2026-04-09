@@ -45,9 +45,30 @@ export async function apiFetch<T>(
     throw new ApiError(res.status, code, body.error?.message ?? res.statusText);
   }
 
+  // Empty-body handling. We used to only special-case 204, which meant any
+  // 2xx response with an empty body (e.g. 200/201 from a proxy that stripped
+  // the body, or a backend path that accidentally skipped .send()) would
+  // throw the browser-native "Failed to execute 'json' on 'Response':
+  // Unexpected end of JSON input" error far from the call site. Read the
+  // body as text first, and only attempt JSON.parse if there's actually
+  // something to parse.
   if (res.status === 204) return undefined as T;
 
-  return res.json();
+  const contentLength = res.headers.get('Content-Length');
+  if (contentLength === '0') return undefined as T;
+
+  const text = await res.text();
+  if (text.length === 0) return undefined as T;
+
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw new ApiError(
+      res.status,
+      'INVALID_JSON_RESPONSE',
+      `Failed to parse JSON response from ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 let tokenExpiredShown = false;

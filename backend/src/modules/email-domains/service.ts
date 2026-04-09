@@ -64,9 +64,20 @@ export async function enableEmailForDomain(
 
   // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
   // MTA-STS records; the mail server hostname comes from the platform
-  // setting mail_server_hostname).
+  // setting mail_server_hostname). Round-3: webmail_enabled defaults
+  // to 1 on new email domains, so we also publish the
+  // webmail.<domain> A record in the same batch.
   const mailServerHostname = await getMailServerHostname(db);
-  await provisionEmailDns(db, domainId, domain.domainName, dkimSelector, publicKey, encryptionKey, mailServerHostname);
+  await provisionEmailDns(
+    db,
+    domainId,
+    domain.domainName,
+    dkimSelector,
+    publicKey,
+    encryptionKey,
+    mailServerHostname,
+    { webmailEnabled: true },
+  );
 
   const [created] = await db
     .select()
@@ -170,6 +181,7 @@ export async function getEmailDomainDnsRecords(
     readonly value: string;
     readonly ttl: number;
     readonly priority: number | null;
+    readonly purpose: string;
   }[];
 }> {
   const ed = await getEmailDomain(db, clientId, domainId);
@@ -184,6 +196,7 @@ export async function getEmailDomainDnsRecords(
     ed.dkimSelector,
     ed.dkimPublicKey ?? '',
     mailServerHostname,
+    { webmailEnabled: ed.webmailEnabled === 1 },
   );
 
   return {
@@ -199,6 +212,7 @@ export async function getEmailDomainDnsRecords(
       value: s.recordValue,
       ttl: s.ttl,
       priority: s.priority,
+      purpose: s.purpose,
     })),
   };
 }
@@ -268,6 +282,10 @@ export async function updateEmailDomain(
   clientId: string,
   domainId: string,
   input: UpdateEmailDomainInput,
+  // Round-3 review HIGH-1: caller must supply the encryption key
+  // explicitly (same pattern as enableEmailForDomain). Falling back
+  // to process.env silently hides misconfigured test environments.
+  encryptionKey?: string,
 ) {
   await verifyDomainOwnership(db, clientId, domainId);
 
@@ -294,6 +312,39 @@ export async function updateEmailDomain(
       .update(emailDomains)
       .set(updateValues)
       .where(eq(emailDomains.id, existing.id));
+  }
+
+  // Round-3: if webmail_enabled flipped, publish or unpublish the
+  // webmail.<domain> DNS record alongside the ingress lifecycle.
+  // The k8s Ingress is handled by the route-layer caller (which has
+  // the k8s client handle) via ensureWebmailIngress /
+  // removeWebmailIngress. We only own the DNS record mutation here.
+  if (
+    input.webmail_enabled !== undefined
+    && Boolean(existing.webmailEnabled) !== Boolean(input.webmail_enabled)
+  ) {
+    try {
+      const [domainRow] = await db
+        .select({ domainName: domains.domainName })
+        .from(domains)
+        .where(eq(domains.id, existing.domainId));
+      if (domainRow) {
+        // Review HIGH-1: use the caller-supplied key. Fall back to
+        // the env var (with dev-only zero-key) so the route handler
+        // and tests that do not supply a key still behave.
+        const effectiveKey = encryptionKey ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+        const { publishWebmailDnsRecord, unpublishWebmailDnsRecord } = await import('./dns-provisioning.js');
+        if (input.webmail_enabled) {
+          await publishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);
+        } else {
+          await unpublishWebmailDnsRecord(db, existing.domainId, domainRow.domainName, effectiveKey);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[email-domains] webmail DNS sync failed for ${domainId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   const [updated] = await db
@@ -420,9 +471,33 @@ export async function ensureWebmailIngress(
   // because webmail lives on a different hostname pattern and we want
   // it reconciled independently.
   //
-  // Use ensureRouteCertificate to get the right secret name.
+  // Use ensureRouteCertificate to get the right secret name. Round-3:
+  // surface cert failures as a client-facing error notification so
+  // operators don't silently end up with a non-HTTPS webmail site.
   const { ensureRouteCertificate } = await import('../certificates/service.js');
-  const certResult = await ensureRouteCertificate(db, k8s, row.domainId, hostname).catch(() => null);
+  let certResult: Awaited<ReturnType<typeof ensureRouteCertificate>> | null = null;
+  let certError: string | null = null;
+  try {
+    certResult = await ensureRouteCertificate(db, k8s, row.domainId, hostname);
+  } catch (err) {
+    certError = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[email-domains] ensureRouteCertificate failed for ${hostname}: ${certError}`,
+    );
+  }
+
+  if (certError) {
+    try {
+      const { notifyClientWebmailCertFailed } = await import('../notifications/events.js');
+      await notifyClientWebmailCertFailed(db, row.clientId, {
+        emailDomainId: row.emailDomainId,
+        hostname,
+        errorMessage: certError,
+      });
+    } catch {
+      // Fire-and-forget
+    }
+  }
 
   const tls = certResult && !certResult.skipped && certResult.secretName
     ? [{ hosts: [hostname], secretName: certResult.secretName }]

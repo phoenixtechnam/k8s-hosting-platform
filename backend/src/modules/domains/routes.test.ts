@@ -20,7 +20,22 @@ vi.mock('./service.js', () => ({
     pagination: { cursor: null, has_more: false, page_size: 1, total_count: 1 },
   }),
   updateDomain: vi.fn().mockResolvedValue({ ...mockDomain, dnsMode: 'primary' }),
-  deleteDomain: vi.fn().mockResolvedValue(undefined),
+  deleteDomain: vi.fn().mockResolvedValue({
+    deleted: {
+      emailDomains: 0,
+      mailboxes: 0,
+      aliases: 0,
+      dnsRecords: 0,
+      ingressRoutes: 0,
+    },
+  }),
+  getDomainDeletePreview: vi.fn().mockResolvedValue({
+    domainName: 'example.com',
+    dnsRecords: [],
+    emailDomain: null,
+    ingressRoutes: [],
+    webmailIngressHostname: null,
+  }),
 }));
 
 const { domainRoutes } = await import('./routes.js');

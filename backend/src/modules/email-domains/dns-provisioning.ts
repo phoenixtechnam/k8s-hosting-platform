@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import crypto from 'crypto';
 import { dnsRecords, emailDomains, domains } from '../../db/schema.js';
 import { getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
@@ -6,6 +7,17 @@ import { formatDkimDnsValue } from './dkim.js';
 import type { Database } from '../../db/index.js';
 
 const MAIL_SERVER_IP = () => process.env.MAIL_SERVER_IP ?? '127.0.0.1';
+
+/**
+ * MEDIUM-2: deterministic MTA-STS policy ID derived from the domain
+ * name. Collisions across different domains are astronomically
+ * unlikely (16-hex-char hash prefix) and the result is 100%
+ * reproducible, so every call to buildBaseRecords returns the same
+ * value for the same domain.
+ */
+function mtaStsPolicyId(domainName: string): string {
+  return crypto.createHash('sha256').update(domainName).digest('hex').slice(0, 16);
+}
 
 async function syncRecordToProviders(
   db: Database,
@@ -62,12 +74,27 @@ async function syncRecordToProviders(
   } catch { /* no servers configured */ }
 }
 
+export type DnsRecordPurpose =
+  | 'mx'
+  | 'mail_host'
+  | 'spf'
+  | 'dkim'
+  | 'dmarc'
+  | 'srv'
+  | 'autoconfig'
+  | 'mta_sts'
+  | 'webmail';
+
 export interface DnsRecordSpec {
   readonly recordType: string;
   readonly recordName: string;
   readonly recordValue: string;
   readonly ttl: number;
   readonly priority: number | null;
+  // Round-3: purpose lets the UI group/label records and the
+  // update handler identify which record(s) correspond to a
+  // particular email-domain feature (e.g. webmail).
+  readonly purpose: DnsRecordPurpose;
 }
 
 // Exported so the read-only "view DNS records" endpoint can reuse
@@ -77,11 +104,45 @@ export function buildEmailDnsRecordsForDisplay(
   dkimSelector: string,
   dkimPublicKey: string,
   mailServerHostname: string,
+  options: { readonly webmailEnabled?: boolean } = {},
 ): readonly DnsRecordSpec[] {
-  return buildEmailDnsRecords(domainName, dkimSelector, dkimPublicKey, mailServerHostname);
+  return buildEmailDnsRecords(
+    domainName,
+    dkimSelector,
+    dkimPublicKey,
+    mailServerHostname,
+    options,
+  );
 }
 
 function buildEmailDnsRecords(
+  domainName: string,
+  dkimSelector: string,
+  dkimPublicKey: string,
+  mailServerHostname: string,
+  options: { readonly webmailEnabled?: boolean } = {},
+): readonly DnsRecordSpec[] {
+  const webmailRecord: DnsRecordSpec | null = options.webmailEnabled
+    ? {
+      recordType: 'A',
+      recordName: `webmail.${domainName}`,
+      recordValue: MAIL_SERVER_IP(),
+      ttl: 3600,
+      priority: null,
+      purpose: 'webmail',
+    }
+    : null;
+
+  const base: readonly DnsRecordSpec[] = buildBaseRecords(
+    domainName,
+    dkimSelector,
+    dkimPublicKey,
+    mailServerHostname,
+  );
+  return webmailRecord ? [...base, webmailRecord] : base;
+}
+
+function buildBaseRecords(
   domainName: string,
   dkimSelector: string,
   dkimPublicKey: string,
@@ -95,6 +156,7 @@ function buildEmailDnsRecords(
       recordValue: `mail.${domainName}`,
       ttl: 3600,
       priority: 10,
+      purpose: 'mx',
     },
     {
       recordType: 'A',
@@ -102,6 +164,7 @@ function buildEmailDnsRecords(
       recordValue: MAIL_SERVER_IP(),
       ttl: 3600,
       priority: null,
+      purpose: 'mail_host',
     },
     // ─── SPF / DKIM / DMARC ────────────────────────────────
     {
@@ -110,6 +173,7 @@ function buildEmailDnsRecords(
       recordValue: 'v=spf1 mx ~all',
       ttl: 3600,
       priority: null,
+      purpose: 'spf',
     },
     {
       recordType: 'TXT',
@@ -117,6 +181,7 @@ function buildEmailDnsRecords(
       recordValue: formatDkimDnsValue(dkimPublicKey),
       ttl: 3600,
       priority: null,
+      purpose: 'dkim',
     },
     {
       recordType: 'TXT',
@@ -124,6 +189,7 @@ function buildEmailDnsRecords(
       recordValue: `v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@${domainName}`,
       ttl: 3600,
       priority: null,
+      purpose: 'dmarc',
     },
     // ─── Phase 3.C.2: SRV records for mail client autodiscovery ─────
     // Thunderbird and Apple Mail probe SRV records before resorting
@@ -134,6 +200,7 @@ function buildEmailDnsRecords(
       recordValue: `0 1 993 ${mailServerHostname}`,
       ttl: 3600,
       priority: 0,
+      purpose: 'srv',
     },
     {
       recordType: 'SRV',
@@ -141,6 +208,7 @@ function buildEmailDnsRecords(
       recordValue: `10 1 143 ${mailServerHostname}`,
       ttl: 3600,
       priority: 10,
+      purpose: 'srv',
     },
     {
       recordType: 'SRV',
@@ -148,6 +216,7 @@ function buildEmailDnsRecords(
       recordValue: `0 1 465 ${mailServerHostname}`,
       ttl: 3600,
       priority: 0,
+      purpose: 'srv',
     },
     {
       recordType: 'SRV',
@@ -155,6 +224,7 @@ function buildEmailDnsRecords(
       recordValue: `10 1 587 ${mailServerHostname}`,
       ttl: 3600,
       priority: 10,
+      purpose: 'srv',
     },
     // ─── Phase 3.C.2: autoconfig / autodiscover CNAME records ───────
     // Thunderbird tries https://autoconfig.<domain>/mail/config-v1.1.xml
@@ -167,6 +237,7 @@ function buildEmailDnsRecords(
       recordValue: mailServerHostname,
       ttl: 3600,
       priority: null,
+      purpose: 'autoconfig',
     },
     {
       recordType: 'CNAME',
@@ -174,6 +245,7 @@ function buildEmailDnsRecords(
       recordValue: mailServerHostname,
       ttl: 3600,
       priority: null,
+      purpose: 'autoconfig',
     },
     // ─── Phase 3.C.2: MTA-STS policy discovery ──────────────────────
     // Mail servers look up _mta-sts.<domain> TXT for the policy ID,
@@ -184,9 +256,16 @@ function buildEmailDnsRecords(
     {
       recordType: 'TXT',
       recordName: `_mta-sts.${domainName}`,
-      recordValue: `v=STSv1; id=${Date.now()}`,
+      // Review round-3 MEDIUM-2: derive a stable policy ID from the
+      // domain name instead of Date.now(), so the value is the same
+      // on every call to this builder. MTA-STS clients treat a
+      // changed id= as a policy update and re-fetch; using a
+      // deterministic ID avoids spurious re-fetches and makes the
+      // DNS records view consistent with what was published.
+      recordValue: `v=STSv1; id=${mtaStsPolicyId(domainName)}`,
       ttl: 3600,
       priority: null,
+      purpose: 'mta_sts',
     },
     {
       recordType: 'CNAME',
@@ -194,6 +273,7 @@ function buildEmailDnsRecords(
       recordValue: mailServerHostname,
       ttl: 3600,
       priority: null,
+      purpose: 'mta_sts',
     },
   ];
 }
@@ -206,8 +286,15 @@ export async function provisionEmailDns(
   dkimPublicKey: string,
   encryptionKey: string,
   mailServerHostname: string,
+  options: { readonly webmailEnabled?: boolean } = {},
 ): Promise<void> {
-  const records = buildEmailDnsRecords(domainName, dkimSelector, dkimPublicKey, mailServerHostname);
+  const records = buildEmailDnsRecords(
+    domainName,
+    dkimSelector,
+    dkimPublicKey,
+    mailServerHostname,
+    options,
+  );
 
   for (const rec of records) {
     const id = crypto.randomUUID();
@@ -239,6 +326,87 @@ export async function provisionEmailDns(
       dmarcProvisioned: 1,
     })
     .where(eq(emailDomains.domainId, domainId));
+}
+
+// Round-3: idempotently publish / unpublish the webmail.<domain> A
+// record. Used by updateEmailDomain when webmail_enabled flips.
+// Returns true if a DB row was inserted/deleted.
+export async function publishWebmailDnsRecord(
+  db: Database,
+  domainId: string,
+  domainName: string,
+  encryptionKey: string,
+): Promise<boolean> {
+  const hostname = `webmail.${domainName}`;
+  const value = MAIL_SERVER_IP();
+
+  // Idempotent insert — if the record already exists, leave it.
+  const existing = await db
+    .select()
+    .from(dnsRecords)
+    .where(eq(dnsRecords.domainId, domainId));
+  const alreadyHasWebmail = existing.some(
+    (r) => r.recordType === 'A' && r.recordName === hostname,
+  );
+  if (alreadyHasWebmail) return false;
+
+  const id = crypto.randomUUID();
+  await db.insert(dnsRecords).values({
+    id,
+    domainId,
+    recordType: 'A',
+    recordName: hostname,
+    recordValue: value,
+    ttl: 3600,
+    priority: null,
+  });
+
+  await syncRecordToProviders(
+    db,
+    domainId,
+    domainName,
+    'create',
+    { type: 'A', name: hostname, content: value, ttl: 3600, priority: null },
+    encryptionKey,
+  );
+  return true;
+}
+
+export async function unpublishWebmailDnsRecord(
+  db: Database,
+  domainId: string,
+  domainName: string,
+  encryptionKey: string,
+): Promise<boolean> {
+  const hostname = `webmail.${domainName}`;
+  const rows = await db
+    .select()
+    .from(dnsRecords)
+    .where(eq(dnsRecords.domainId, domainId));
+  const matches = rows.filter(
+    (r) => r.recordType === 'A' && r.recordName === hostname,
+  );
+  if (matches.length === 0) return false;
+
+  for (const m of matches) {
+    await db.delete(dnsRecords).where(eq(dnsRecords.id, m.id));
+    await syncRecordToProviders(
+      db,
+      domainId,
+      domainName,
+      'delete',
+      {
+        type: 'A',
+        name: hostname,
+        content: m.recordValue ?? '',
+        ttl: 3600,
+        priority: null,
+        id: m.id,
+      },
+      encryptionKey,
+    );
+  }
+  return true;
 }
 
 export async function deprovisionEmailDns(

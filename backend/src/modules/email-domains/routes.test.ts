@@ -119,6 +119,38 @@ describe('email-domain routes', () => {
     expect(res.statusCode).toBe(201);
   });
 
+  // Phase 2 round-3 regression guard: the client-panel was throwing
+  // "Failed to execute 'json' on 'Response': Unexpected end of JSON input"
+  // for this endpoint. Confirm the response body is non-empty JSON that
+  // parses to the expected shape so that apiFetch's JSON.parse never
+  // sees an empty string.
+  it('POST enable should return a non-empty JSON body with the created email domain', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.length).toBeGreaterThan(0);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.data).toBeDefined();
+    expect(parsed.data.id).toBe('ed-1');
+  });
+
+  it('POST enable should emit a Content-Length header (non-empty body)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/clients/c1/email/domains/d1/enable',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {},
+    });
+    const contentLength = res.headers['content-length'];
+    expect(contentLength).toBeDefined();
+    expect(Number(contentLength)).toBeGreaterThan(0);
+  });
+
   it('POST enable should reject invalid catch_all_address', async () => {
     const res = await app.inject({
       method: 'POST',

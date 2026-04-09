@@ -69,10 +69,6 @@ export default function Email() {
 
       {domainsLoading && <div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}
 
-      {!domainsLoading && emailDomains.length === 0 && clientId && (
-        <EnableEmailCard clientId={clientId} />
-      )}
-
       {!domainsLoading && emailDomains.length > 0 && (
         <>
           <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
@@ -94,25 +90,54 @@ export default function Email() {
           {tab === 'settings' && <SettingsTab clientId={clientId!} emailDomains={emailDomains} />}
         </>
       )}
+
+      {/*
+        Phase 2 round-3: the Enable Email card is always available
+        when there are domains that have NOT yet been email-enabled.
+        Previously this block was mutually exclusive with the tabs,
+        so clients who added a second domain had no path to enable
+        email on it. The card filters out domains that already exist
+        in emailDomains, so it auto-hides once every domain has email.
+      */}
+      {!domainsLoading && clientId && (
+        <EnableEmailCard
+          clientId={clientId}
+          enabledDomainIds={emailDomains.map((ed) => ed.domainId)}
+        />
+      )}
     </div>
   );
 }
 
 // Phase 4 round-2: self-service Enable Email card.
 //
-// Shows the list of a client's domains with an "Enable Email" button
-// per row. Clicking it hits POST
-// /api/v1/clients/:clientId/email/domains/:domainId/enable, which
-// generates DKIM keys + provisions DNS records server-side. When
-// the mutation succeeds, the email domains query is invalidated and
-// the parent re-renders into the normal tabbed layout.
-function EnableEmailCard({ clientId }: { readonly clientId: string }) {
+// Shows the list of a client's domains that do NOT yet have email
+// enabled, with an "Enable Email" button per row. Clicking it hits
+// POST /api/v1/clients/:clientId/email/domains/:domainId/enable,
+// which generates DKIM keys + provisions DNS records server-side.
+//
+// Phase 2 round-3: the parent page always mounts this component so
+// newly-added domains can be enabled even after the client already
+// has at least one email-hosted domain. `enabledDomainIds` filters
+// out domains whose email_domains row already exists. When no
+// eligible domains remain the card renders nothing at all.
+function EnableEmailCard({
+  clientId,
+  enabledDomainIds = [],
+}: {
+  readonly clientId: string;
+  readonly enabledDomainIds?: readonly string[];
+}) {
   const { data: domainsRes, isLoading: domainsLoading } = useDomains(clientId);
   const enable = useEnableEmailDomain(clientId);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [errorId, setErrorId] = useState<string | null>(null);
 
-  const domains = domainsRes?.data ?? [];
+  const allDomains = domainsRes?.data ?? [];
+  // Filter out domains that already have an email_domains row. Use a
+  // Set for O(1) lookups even with hundreds of domains.
+  const enabledSet = new Set(enabledDomainIds);
+  const eligibleDomains = allDomains.filter((d) => !enabledSet.has(d.id));
 
   const handleEnable = async (domainId: string) => {
     setSubmittingId(domainId);
@@ -126,6 +151,19 @@ function EnableEmailCard({ clientId }: { readonly clientId: string }) {
     }
   };
 
+  // If the domains list is still loading AND the client has no
+  // email-enabled domains yet, show a spinner inside the card so the
+  // user sees "something is happening". If the client already has
+  // emailDomains, the tabs above are already visible — we can skip
+  // rendering anything until the domains list resolves.
+  if (domainsLoading && enabledDomainIds.length > 0) return null;
+
+  // Nothing to enable — do not render the card at all. This is the
+  // multi-domain case where every domain already has email enabled.
+  if (!domainsLoading && eligibleDomains.length === 0 && allDomains.length > 0) {
+    return null;
+  }
+
   return (
     <div
       className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-8 shadow-sm"
@@ -137,7 +175,7 @@ function EnableEmailCard({ clientId }: { readonly clientId: string }) {
         </div>
         <div className="flex-1">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Enable Email Hosting
+            {enabledDomainIds.length > 0 ? 'Enable Email for another domain' : 'Enable Email Hosting'}
           </h2>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Turn on email for one of your domains to start creating mailboxes. The
@@ -152,14 +190,14 @@ function EnableEmailCard({ clientId }: { readonly clientId: string }) {
             <Loader2 size={18} className="animate-spin text-brand-500" />
           </div>
         )}
-        {!domainsLoading && domains.length === 0 && (
+        {!domainsLoading && allDomains.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
             You don't have any domains yet. Add a domain from the Domains page, then come
             back here to enable email for it.
           </div>
         )}
         {!domainsLoading
-          && domains.map((d) => (
+          && eligibleDomains.map((d) => (
             <div
               key={d.id}
               className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3"
@@ -990,6 +1028,29 @@ function DnsRecordsCard({
   );
 }
 
+function purposeBadgeStyle(purpose: string | undefined): { label: string; cls: string } | null {
+  if (!purpose) return null;
+  switch (purpose) {
+    case 'mx':
+    case 'mail_host':
+      return { label: 'mail', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' };
+    case 'spf':
+    case 'dkim':
+    case 'dmarc':
+      return { label: purpose.toUpperCase(), cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' };
+    case 'srv':
+      return { label: 'srv', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' };
+    case 'autoconfig':
+      return { label: 'autoconfig', cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300' };
+    case 'mta_sts':
+      return { label: 'mta-sts', cls: 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300' };
+    case 'webmail':
+      return { label: 'webmail', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300' };
+    default:
+      return null;
+  }
+}
+
 function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
@@ -1001,9 +1062,19 @@ function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
       // clipboard unavailable — silently ignore
     }
   };
+  const badge = purposeBadgeStyle(record.purpose);
   return (
     <tr>
-      <td className="py-2 pr-3 font-mono text-gray-900 dark:text-gray-100">{record.type}</td>
+      <td className="py-2 pr-3 font-mono text-gray-900 dark:text-gray-100">
+        <div className="flex items-center gap-1">
+          <span>{record.type}</span>
+          {badge && (
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${badge.cls}`}>
+              {badge.label}
+            </span>
+          )}
+        </div>
+      </td>
       <td className="py-2 pr-3 font-mono text-gray-700 dark:text-gray-300 break-all">{record.name}</td>
       <td className="py-2 pr-3">
         <div className="flex items-start gap-1">

@@ -99,10 +99,31 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
+  // GET /api/v1/clients/:clientId/domains/:domainId/delete-preview
+  //
+  // Phase 3 round-3: dynamic cascade preview. Returns the exact list
+  // of resources that deleteDomain would remove (DNS records,
+  // email_domains + mailboxes + aliases, ingress routes, webmail
+  // Ingress hostname) so the client-panel confirm dialog can render
+  // a complete warning instead of a vague "this will remove stuff"
+  // message.
+  app.get('/clients/:clientId/domains/:domainId/delete-preview', async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const preview = await service.getDomainDeletePreview(app.db, clientId, domainId);
+    return success(preview);
+  });
+
   // DELETE /api/v1/clients/:clientId/domains/:domainId
   app.delete('/clients/:clientId/domains/:domainId', async (request, reply) => {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
-    await service.deleteDomain(app.db, clientId, domainId, getK8s());
+    const result = await service.deleteDomain(app.db, clientId, domainId, getK8s());
+    // Phase 3 round-3: log cascade counts for audit trail. The 204
+    // response body is still empty so clients that expect no body
+    // don't break.
+    app.log.info(
+      { clientId, domainId, deleted: result.deleted },
+      'domains: deleteDomain cascaded deletions',
+    );
     reply.status(204).send();
   });
 

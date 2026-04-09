@@ -33,6 +33,13 @@ vi.mock('../hooks/use-deployments', () => ({
   useDeployments: vi.fn(() => ({ data: { data: [] } })),
 }));
 
+vi.mock('../hooks/use-email', () => ({
+  useMailboxUsage: vi.fn(() => ({
+    data: { data: { limit: 50, current: 3, remaining: 47, source: 'plan' } },
+    isLoading: false,
+  })),
+}));
+
 import { useAuth } from '../hooks/use-auth';
 
 const mockedUseAuth = vi.mocked(useAuth);
@@ -67,17 +74,25 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('Here is an overview of your hosting account.')).toBeInTheDocument();
   });
 
-  it('renders quick stats grid with all four cards', () => {
+  it('renders quick stats grid with all five cards including Email accounts', () => {
     renderWithProviders(<Dashboard />);
     expect(screen.getByTestId('quick-stats')).toBeInTheDocument();
     expect(screen.getByText('Domains')).toBeInTheDocument();
     expect(screen.getByText('Applications')).toBeInTheDocument();
     expect(screen.getByText('Backups')).toBeInTheDocument();
     expect(screen.getByText('Deployments')).toBeInTheDocument();
+    expect(screen.getByText('Email accounts')).toBeInTheDocument();
   });
 
-  it('shows zero values in stats cards when no data', () => {
+  it('shows mailbox usage count in the Email accounts tile', () => {
     renderWithProviders(<Dashboard />);
+    expect(screen.getByTestId('stat-email accounts')).toHaveTextContent('3/50');
+  });
+
+  it('shows zero values in non-email stats cards when no data', () => {
+    renderWithProviders(<Dashboard />);
+    // Four stat cards (Domains, Applications, Backups, Deployments) default
+    // to 0; Email accounts is driven by useMailboxUsage mock.
     const zeros = screen.getAllByText('0');
     expect(zeros.length).toBe(4);
   });

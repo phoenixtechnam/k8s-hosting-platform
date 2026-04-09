@@ -58,8 +58,29 @@ function createWrapper() {
   };
 }
 
+const MOCK_DELETE_PREVIEW = {
+  domainName: 'example.com',
+  dnsRecords: [
+    { id: 'r1', type: 'A', name: '@' },
+    { id: 'r2', type: 'MX', name: null },
+  ],
+  emailDomain: {
+    id: 'ed1',
+    webmailEnabled: true,
+    mailboxes: [
+      { id: 'mb1', fullAddress: 'alice@example.com' },
+      { id: 'mb2', fullAddress: 'bob@example.com' },
+    ],
+    aliases: [{ id: 'a1', sourceAddress: 'info@example.com' }],
+  },
+  ingressRoutes: [{ id: 'ir1', hostname: 'example.com' }],
+  webmailIngressHostname: 'webmail.example.com',
+};
+
 function setupMocks() {
   mockApiFetch.mockImplementation((url: string) => {
+    if (url.includes('/delete-preview'))
+      return Promise.resolve({ data: MOCK_DELETE_PREVIEW });
     if (url.includes('/domains') && !url.includes('/dns-records') && !url.includes('/hosting-settings') && !url.includes('/protected-directories'))
       return Promise.resolve({ data: [MOCK_DOMAIN], pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
     if (url.includes('/dns-records')) return Promise.resolve({ data: MOCK_DNS });
@@ -88,6 +109,28 @@ describe('Client DomainDetail page', () => {
     });
     render(<DomainDetail />, { wrapper: createWrapper() });
     await waitFor(() => expect(screen.getByTestId('domain-not-found')).toBeInTheDocument());
+  });
+
+  it('delete modal renders the cascade preview with DNS records, mailboxes, aliases, ingress routes and webmail hostname', async () => {
+    setupMocks();
+    const user = userEvent.setup();
+    render(<DomainDetail />, { wrapper: createWrapper() });
+    await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toHaveTextContent('example.com'));
+
+    await user.click(screen.getByTestId('delete-domain-button'));
+
+    // The modal + preview list should render once the mocked preview
+    // resolves. Each section is marked with a distinct testid.
+    await waitFor(() => expect(screen.getByTestId('delete-preview-list')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('delete-preview-dns')).toBeInTheDocument());
+    expect(screen.getByTestId('delete-preview-email')).toBeInTheDocument();
+    expect(screen.getByTestId('delete-preview-routes')).toBeInTheDocument();
+    expect(screen.getByTestId('delete-preview-webmail')).toBeInTheDocument();
+    // Spot-check a few visible values from the mocked preview
+    expect(screen.getByText('alice@example.com')).toBeInTheDocument();
+    expect(screen.getByText('info@example.com')).toBeInTheDocument();
+    expect(screen.getByText('webmail.example.com')).toBeInTheDocument();
+    expect(screen.getByText(/2 DNS record\(s\)/)).toBeInTheDocument();
   });
 });
 

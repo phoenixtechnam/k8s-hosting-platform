@@ -1,5 +1,5 @@
-import { eq, and, like, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { domains, dnsRecords } from '../../db/schema.js';
+import { eq, and, like, desc, asc, lt, gt, sql, inArray } from 'drizzle-orm';
+import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRoutes } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -8,10 +8,12 @@ import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPr
 import { reconcileIngress } from './k8s-ingress.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
+import { removeWebmailIngress } from '../email-domains/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
 
 export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify client exists
@@ -297,7 +299,22 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
   return getDomainById(db, clientId, domainId);
 }
 
-export async function deleteDomain(db: Database, clientId: string, domainId: string, k8s?: K8sClients) {
+export interface DeleteDomainResult {
+  readonly deleted: {
+    readonly emailDomains: number;
+    readonly mailboxes: number;
+    readonly aliases: number;
+    readonly dnsRecords: number;
+    readonly ingressRoutes: number;
+  };
+}
+
+export async function deleteDomain(
+  db: Database,
+  clientId: string,
+  domainId: string,
+  k8s?: K8sClients,
+): Promise<DeleteDomainResult> {
   const domainRow = await getDomainById(db, clientId, domainId);
 
   // Resolve DNS servers BEFORE deleting the domain (need dnsGroupId which is on the domain row)
@@ -306,6 +323,62 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
   try {
     dnsServersToClean = await getActiveServersForDomain(db, domainId);
   } catch { /* no servers */ }
+
+  // Phase 3 round-3: capture cascade counts BEFORE the delete so we
+  // can return them to the caller for audit logging and UI feedback.
+  // The FK cascades from migration 0020 handle the actual row removal
+  // atomically when we delete the domains row below.
+  const edRows = await db
+    .select({ id: emailDomains.id })
+    .from(emailDomains)
+    .where(eq(emailDomains.domainId, domainId));
+  const edIds = edRows.map((r) => r.id);
+
+  const mailboxCount = edIds.length > 0
+    ? Number(
+      (await db
+        .select({ count: sql<number>`count(*)` })
+        .from(mailboxes)
+        .where(inArray(mailboxes.emailDomainId, edIds)))[0]?.count ?? 0,
+    )
+    : 0;
+  const aliasCount = edIds.length > 0
+    ? Number(
+      (await db
+        .select({ count: sql<number>`count(*)` })
+        .from(emailAliases)
+        .where(inArray(emailAliases.emailDomainId, edIds)))[0]?.count ?? 0,
+    )
+    : 0;
+  const dnsRecordCount = Number(
+    (await db
+      .select({ count: sql<number>`count(*)` })
+      .from(dnsRecords)
+      .where(eq(dnsRecords.domainId, domainId)))[0]?.count ?? 0,
+  );
+  const ingressRouteCount = Number(
+    (await db
+      .select({ count: sql<number>`count(*)` })
+      .from(ingressRoutes)
+      .where(eq(ingressRoutes.domainId, domainId)))[0]?.count ?? 0,
+  );
+
+  // Phase 3 round-3: tear down the per-email-domain webmail Ingress
+  // for every email_domains row BEFORE the FK cascade nukes the DB
+  // row. removeWebmailIngress reads the DB to resolve the hostname
+  // and namespace, so it must run while the rows still exist.
+  if (k8s) {
+    for (const edId of edIds) {
+      try {
+        await removeWebmailIngress(db, k8s, edId);
+      } catch (err) {
+        console.warn(
+          `[domains] removeWebmailIngress failed for ${edId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  }
 
   // Phase 2c: delete TLS cert before the domain row — deleteDomainCertificate
   // reads the domain to resolve the client namespace and cert name.
@@ -317,7 +390,9 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
     }
   }
 
-  // Delete domain from DB
+  // Delete domain from DB. Migration 0020 added ON DELETE CASCADE for
+  // email_domains, mailboxes, email_aliases, dns_records, and
+  // ingress_routes → domains, so all child rows disappear atomically.
   await db.delete(domains).where(eq(domains.id, domainId));
 
   // Delete zone from DNS servers
@@ -342,6 +417,84 @@ export async function deleteDomain(db: Database, clientId: string, domainId: str
       }
     }
   }
+
+  return {
+    deleted: {
+      emailDomains: edIds.length,
+      mailboxes: mailboxCount,
+      aliases: aliasCount,
+      dnsRecords: dnsRecordCount,
+      ingressRoutes: ingressRouteCount,
+    },
+  };
+}
+
+// Phase 3 round-3: dynamic delete preview. Returns the exact set of
+// resources that deleteDomain would remove, with enough detail for
+// the UI to list each one by name. Pure read — no side effects.
+// Review HIGH-3: the DomainDeletePreview type is the single source of
+// truth in @k8s-hosting/api-contracts; see packages/api-contracts/src/domains.ts.
+export async function getDomainDeletePreview(
+  db: Database,
+  clientId: string,
+  domainId: string,
+): Promise<DomainDeletePreview> {
+  const domainRow = await getDomainById(db, clientId, domainId);
+
+  // DNS records for this domain
+  const dnsRecordRows = await db
+    .select({
+      id: dnsRecords.id,
+      type: dnsRecords.recordType,
+      name: dnsRecords.recordName,
+    })
+    .from(dnsRecords)
+    .where(eq(dnsRecords.domainId, domainId));
+
+  // Email domain (0 or 1 due to unique index on domainId)
+  const [edRow] = await db
+    .select({
+      id: emailDomains.id,
+      webmailEnabled: emailDomains.webmailEnabled,
+    })
+    .from(emailDomains)
+    .where(eq(emailDomains.domainId, domainId));
+
+  let emailDomainInfo: DomainDeletePreview['emailDomain'] = null;
+  if (edRow) {
+    const mailboxRows = await db
+      .select({ id: mailboxes.id, fullAddress: mailboxes.fullAddress })
+      .from(mailboxes)
+      .where(eq(mailboxes.emailDomainId, edRow.id));
+    const aliasRows = await db
+      .select({ id: emailAliases.id, sourceAddress: emailAliases.sourceAddress })
+      .from(emailAliases)
+      .where(eq(emailAliases.emailDomainId, edRow.id));
+    emailDomainInfo = {
+      id: edRow.id,
+      webmailEnabled: Boolean(edRow.webmailEnabled),
+      mailboxes: mailboxRows,
+      aliases: aliasRows,
+    };
+  }
+
+  // Ingress routes for this domain
+  const routeRows = await db
+    .select({ id: ingressRoutes.id, hostname: ingressRoutes.hostname })
+    .from(ingressRoutes)
+    .where(eq(ingressRoutes.domainId, domainId));
+
+  const webmailIngressHostname = emailDomainInfo && emailDomainInfo.webmailEnabled
+    ? `webmail.${domainRow.domainName}`
+    : null;
+
+  return {
+    domainName: domainRow.domainName,
+    dnsRecords: dnsRecordRows,
+    emailDomain: emailDomainInfo,
+    ingressRoutes: routeRows,
+    webmailIngressHostname,
+  };
 }
 
 /**

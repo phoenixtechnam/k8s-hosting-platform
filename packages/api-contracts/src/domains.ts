@@ -66,12 +66,51 @@ export const domainResponseSchema = z.object({
 
 export const domainListResponseSchema = paginatedResponseSchema(domainResponseSchema);
 
+// ─── Delete preview (Phase 3 round-3) ────────────────────────────────────────
+
+export const domainDeletePreviewSchema = z.object({
+  domainName: z.string(),
+  dnsRecords: z.array(
+    z.object({
+      id: z.string(),
+      type: z.string(),
+      name: z.string().nullable(),
+    }),
+  ),
+  emailDomain: z
+    .object({
+      id: z.string(),
+      webmailEnabled: z.boolean(),
+      mailboxes: z.array(
+        z.object({
+          id: z.string(),
+          fullAddress: z.string(),
+        }),
+      ),
+      aliases: z.array(
+        z.object({
+          id: z.string(),
+          sourceAddress: z.string(),
+        }),
+      ),
+    })
+    .nullable(),
+  ingressRoutes: z.array(
+    z.object({
+      id: z.string(),
+      hostname: z.string(),
+    }),
+  ),
+  webmailIngressHostname: z.string().nullable(),
+});
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateDomainInput = z.infer<typeof createDomainSchema>;
 export type UpdateDomainInput = z.infer<typeof updateDomainSchema>;
 export type DomainResponse = z.infer<typeof domainResponseSchema>;
 export type DomainListResponse = z.infer<typeof domainListResponseSchema>;
+export type DomainDeletePreview = z.infer<typeof domainDeletePreviewSchema>;
 export type CreateDnsProviderGroupInput = z.infer<typeof createDnsProviderGroupSchema>;
 export type UpdateDnsProviderGroupInput = z.infer<typeof updateDnsProviderGroupSchema>;
 export type MigrateDnsInput = z.infer<typeof migrateDnsSchema>;

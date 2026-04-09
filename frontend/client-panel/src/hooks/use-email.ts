@@ -24,6 +24,10 @@ export interface DnsRecordDisplay {
   readonly value: string;
   readonly ttl: number;
   readonly priority: number | null;
+  // Round-3: `purpose` lets the UI distinguish webmail / dkim /
+  // dmarc / mta_sts / srv / autoconfig rows without string-matching
+  // on the record name.
+  readonly purpose?: string;
 }
 
 export interface DnsRecordsResponse {
@@ -75,7 +79,10 @@ export function useEnableEmailDomain(clientId: string) {
   return useMutation({
     mutationFn: ({ domainId, input }: { domainId: string; input: Record<string, unknown> }) =>
       apiFetch(`/api/v1/clients/${clientId}/email/domains/${domainId}/enable`, { method: 'POST', body: JSON.stringify(input) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-domains', clientId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      qc.invalidateQueries({ queryKey: ['mailbox-usage', clientId] });
+    },
   });
 }
 
@@ -112,7 +119,10 @@ export function useCreateMailbox(clientId: string, emailDomainId: string) {
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
       apiFetch<MailboxResponse>(`/api/v1/clients/${clientId}/email/domains/${emailDomainId}/mailboxes`, { method: 'POST', body: JSON.stringify(input) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', clientId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mailboxes', clientId] });
+      qc.invalidateQueries({ queryKey: ['mailbox-usage', clientId] });
+    },
   });
 }
 
@@ -129,7 +139,10 @@ export function useDeleteMailbox(clientId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiFetch<void>(`/api/v1/clients/${clientId}/mailboxes/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mailboxes', clientId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mailboxes', clientId] });
+      qc.invalidateQueries({ queryKey: ['mailbox-usage', clientId] });
+    },
   });
 }
 
