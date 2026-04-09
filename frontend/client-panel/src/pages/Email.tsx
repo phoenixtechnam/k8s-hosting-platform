@@ -1895,9 +1895,23 @@ function ImapSyncJobRow({
   readonly onResync: () => void;
   readonly resyncPending: boolean;
 }) {
+  // Round-4 Phase 3: Logs collapsed by default (per user request).
+  // Click "View logs" to expand the panel. Progress bar is shown
+  // outside the collapse for running jobs.
   const [showLog, setShowLog] = useState(false);
   const isActive = job.status === 'pending' || job.status === 'running';
   const isTerminal = job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled';
+
+  // Round-4 Phase 3: derived progress percent. When the parser has
+  // not yet reported a transferred count, we render an indeterminate
+  // bar instead of 0%.
+  const hasProgress = typeof job.messagesTransferred === 'number'
+    && typeof job.messagesTotal === 'number'
+    && job.messagesTotal > 0;
+  const progressPct = hasProgress
+    ? Math.min(100, ((job.messagesTransferred ?? 0) / (job.messagesTotal ?? 1)) * 100)
+    : 0;
+
   return (
     <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs" data-testid={`imapsync-job-${job.id}`}>
       <div className="flex items-center justify-between">
@@ -1945,14 +1959,75 @@ function ImapSyncJobRow({
         Started {job.startedAt ? new Date(job.startedAt).toLocaleString() : '—'}
         {job.finishedAt && ` · Finished ${new Date(job.finishedAt).toLocaleString()}`}
       </div>
+
+      {/*
+        Round-4 Phase 3: progress bar for running jobs. When the
+        parser has reported counts, render a determinate bar with
+        "N / total · folder". Otherwise show an indeterminate
+        "Starting…" hint so the user knows the job hasn't frozen.
+      */}
+      {isActive && (
+        <div className="mt-2" data-testid={`imapsync-progress-${job.id}`}>
+          {hasProgress ? (
+            <>
+              <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-300">
+                <span>
+                  {job.messagesTransferred} / {job.messagesTotal} messages
+                  {job.currentFolder && (
+                    <span className="ml-2 text-gray-400 dark:text-gray-500">· {job.currentFolder}</span>
+                  )}
+                </span>
+                <span className="font-medium">{progressPct.toFixed(0)}%</span>
+              </div>
+              <div
+                className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+                role="progressbar"
+                aria-valuenow={Math.round(progressPct)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={`IMAPSync migration progress: ${Math.round(progressPct)}%`}
+              >
+                <div
+                  className="h-1.5 rounded-full bg-brand-500 transition-all"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <Loader2 size={12} className="animate-spin" />
+              <span>
+                {job.status === 'pending'
+                  ? 'Waiting for the migration job to start…'
+                  : 'Discovering folders — progress will appear shortly'}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       {job.errorMessage && <p className="mt-1 text-red-600 dark:text-red-400">{job.errorMessage}</p>}
-      {job.logTail && (
+
+      {/*
+        Round-4 Phase 3: View Logs button instead of always-open
+        log panel. The button is always available (even for running
+        jobs that have only a partial logTail) so the user can peek
+        at imapsync's stdout on demand.
+      */}
+      {(job.logTail || isActive) && (
         <div className="mt-2">
-          <button type="button" onClick={() => setShowLog(s => !s)} className="text-brand-600 dark:text-brand-400 hover:underline" data-testid={`imapsync-log-toggle-${job.id}`}>
-            {showLog ? 'Hide log' : 'Show log'}
+          <button
+            type="button"
+            onClick={() => setShowLog((s) => !s)}
+            className="inline-flex items-center gap-1 rounded border border-gray-200 dark:border-gray-600 px-2 py-0.5 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            data-testid={`imapsync-log-toggle-${job.id}`}
+          >
+            {showLog ? 'Hide logs' : 'View logs'}
           </button>
           {showLog && (
-            <pre className="mt-1 max-h-48 overflow-auto rounded bg-gray-900 p-2 font-mono text-[11px] text-gray-100">{job.logTail}</pre>
+            <pre className="mt-2 max-h-48 overflow-auto rounded bg-gray-900 p-2 font-mono text-[11px] text-gray-100">
+              {job.logTail || '(no log output yet)'}
+            </pre>
           )}
         </div>
       )}

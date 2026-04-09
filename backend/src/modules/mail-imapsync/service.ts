@@ -197,6 +197,11 @@ function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
     k8sNamespace: row.k8sNamespace,
     logTail: row.logTail,
     errorMessage: row.errorMessage,
+    // Round-4 Phase 3: progress columns from migration 0022.
+    messagesTotal: row.messagesTotal ?? null,
+    messagesTransferred: row.messagesTransferred ?? null,
+    currentFolder: row.currentFolder ?? null,
+    lastProgressAt: row.lastProgressAt ? row.lastProgressAt.toISOString() : null,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),

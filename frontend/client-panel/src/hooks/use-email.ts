@@ -368,6 +368,13 @@ export interface ImapSyncJob {
   readonly k8sNamespace: string;
   readonly logTail: string | null;
   readonly errorMessage: string | null;
+  // Round-4 Phase 3: progress tracking columns. Reconciler updates
+  // these on every tick while a job is running. Required-nullable
+  // to match @k8s-hosting/api-contracts (review HIGH-1 fix).
+  readonly messagesTotal: number | null;
+  readonly messagesTransferred: number | null;
+  readonly currentFolder: string | null;
+  readonly lastProgressAt: string | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;

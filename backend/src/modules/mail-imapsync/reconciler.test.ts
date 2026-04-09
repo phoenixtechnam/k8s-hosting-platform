@@ -149,7 +149,11 @@ describe('reconcileImapSyncJobs', () => {
     expect(deletedJobs).toContain('imapsync-job-2');
   });
 
-  it('leaves a Job that is still running as running (no DB update)', async () => {
+  it('writes a progress tick (logTail + lastProgressAt) for a still-running job', async () => {
+    // Round-4 Phase 3: the reconciler now fetches a fresh log tail
+    // and updates progress columns for running jobs (throttled by
+    // PROGRESS_FETCH_INTERVAL_MS, but the mock row has lastProgressAt
+    // null so the throttle does not block).
     selectResults = [
       [
         {
@@ -157,6 +161,44 @@ describe('reconcileImapSyncJobs', () => {
           k8sJobName: 'imapsync-job-3',
           k8sNamespace: 'mail',
           status: 'running',
+          lastProgressAt: null,
+        },
+      ],
+    ];
+    mockJobStatus = { active: 1 };
+    mockPodList = { items: [{ metadata: { name: 'imapsync-job-3-pod' } }] };
+    mockPodLog = '+ Copying msg 50/200 [INBOX]\n';
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    // Status was NOT transitioned (still no terminal update).
+    expect(updateCalls.find((u) => u.status === 'failed' || u.status === 'succeeded')).toBeUndefined();
+    expect(deletedJobs).toEqual([]);
+    // ONE progress tick update should have happened with the log tail
+    // and the parsed progress values.
+    expect(updateCalls.length).toBe(1);
+    const progressUpdate = updateCalls[0];
+    expect(progressUpdate.logTail).toContain('Copying msg 50/200');
+    expect(progressUpdate.messagesTransferred).toBe(50);
+    expect(progressUpdate.messagesTotal).toBe(200);
+    expect(progressUpdate.currentFolder).toBe('INBOX');
+    expect(progressUpdate.lastProgressAt).toBeInstanceOf(Date);
+  });
+
+  it('throttles progress fetches — skips when lastProgressAt is recent', async () => {
+    // lastProgressAt = now → the throttle blocks the next fetch
+    // until PROGRESS_FETCH_INTERVAL_MS has elapsed.
+    selectResults = [
+      [
+        {
+          id: 'job-3b',
+          k8sJobName: 'imapsync-job-3b',
+          k8sNamespace: 'mail',
+          status: 'running',
+          lastProgressAt: new Date(),
         },
       ],
     ];

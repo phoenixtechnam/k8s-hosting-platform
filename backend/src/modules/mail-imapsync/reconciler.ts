@@ -13,8 +13,16 @@
 import { eq, inArray } from 'drizzle-orm';
 import { imapSyncJobs } from '../../db/schema.js';
 import { notifyClientImapsyncTerminal } from '../notifications/events.js';
+import { parseImapsyncProgress } from './progress-parser.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+// Round-4 Phase 3: minimum interval between log fetches for the
+// same running job. Caps the K8s API load when many jobs are
+// active concurrently. 10 seconds matches the typical reconciler
+// tick (which is set externally), so we usually do exactly one
+// fetch per cycle per job.
+const PROGRESS_FETCH_INTERVAL_MS = 10_000;
 
 // Maximum bytes of log tail to persist in the DB. Larger logs get
 // truncated from the front so we keep the most recent output.
@@ -179,7 +187,49 @@ export async function reconcileImapSyncJobs(
         continue;
       }
 
-      // Still active — leave the row alone.
+      // Round-4 Phase 3: still active — fetch a fresh log tail and
+      // parse out the latest progress markers (messages_total,
+      // messages_transferred, current_folder). Throttle so we
+      // don't hammer the K8s API: only fetch logs when at least
+      // PROGRESS_FETCH_INTERVAL_MS has elapsed since the last
+      // progress write for this row.
+      const lastProgress = row.lastProgressAt?.getTime() ?? 0;
+      const now = Date.now();
+      if (now - lastProgress >= PROGRESS_FETCH_INTERVAL_MS) {
+        try {
+          const log = await fetchPodLogs(k8s, row.k8sNamespace, row.k8sJobName);
+          const parsed = parseImapsyncProgress(log);
+          // Build a partial UPDATE — never overwrite existing
+          // columns with null/empty. The parser returns null for
+          // fields it couldn't extract from this batch, but older
+          // information from a previous tick may still be valid
+          // (imapsync only emits "From Folder" lines once at
+          // startup, for example).
+          //
+          // Review MEDIUM-1: don't overwrite logTail with an empty
+          // string. lastProgressAt always advances so the throttle
+          // works regardless.
+          const updates: Record<string, unknown> = {
+            lastProgressAt: new Date(),
+          };
+          if (log.length > 0) updates.logTail = truncateTail(log);
+          if (parsed.messagesTotal !== null) updates.messagesTotal = parsed.messagesTotal;
+          if (parsed.messagesTransferred !== null) updates.messagesTransferred = parsed.messagesTransferred;
+          if (parsed.currentFolder !== null) updates.currentFolder = parsed.currentFolder;
+          await db
+            .update(imapSyncJobs)
+            .set(updates)
+            .where(eq(imapSyncJobs.id, row.id));
+        } catch (logErr) {
+          // Non-fatal — log fetching failures should not break the
+          // status reconciliation loop.
+          logger.warn(
+            `[mail-imapsync] progress log fetch failed for ${row.id}: ${
+              logErr instanceof Error ? logErr.message : String(logErr)
+            }`,
+          );
+        }
+      }
     } catch (err) {
       if (isK8s404(err)) {
         // The K8s Job is gone but the DB row says it should be

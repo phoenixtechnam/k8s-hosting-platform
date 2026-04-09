@@ -794,6 +794,13 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   k8sNamespace: varchar('k8s_namespace', { length: 63 }).notNull().default('mail'),
   logTail: text('log_tail'),
   errorMessage: text('error_message'),
+  // Round-4 Phase 3: progress tracking columns. Updated by the
+  // reconciler on every tick while the job is running. See
+  // migration 0022 + parseImapsyncProgress.
+  messagesTotal: integer('messages_total'),
+  messagesTransferred: integer('messages_transferred'),
+  currentFolder: varchar('current_folder', { length: 255 }),
+  lastProgressAt: timestamp('last_progress_at'),
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

@@ -64,6 +64,14 @@ export interface ImapSyncJobResponse {
   readonly k8sNamespace: string;
   readonly logTail: string | null;
   readonly errorMessage: string | null;
+  // Round-4 Phase 3: progress tracking columns. Populated by the
+  // reconciler from imapsync stdout while the job is running.
+  // All four are nullable — they remain null until the reconciler
+  // sees its first log fetch with a parseable progress line.
+  readonly messagesTotal: number | null;
+  readonly messagesTransferred: number | null;
+  readonly currentFolder: string | null;
+  readonly lastProgressAt: string | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;
