@@ -24,6 +24,41 @@ vi.mock('../hooks/use-password', () => ({
   })),
 }));
 
+vi.mock('../hooks/use-client-context', () => ({
+  useClientContext: vi.fn(() => ({
+    clientId: 'client-1',
+    clientName: 'Test Company',
+    isLoading: false,
+  })),
+}));
+
+vi.mock('../hooks/use-subscription', () => ({
+  useSubscription: vi.fn(() => ({
+    data: {
+      data: {
+        client_id: 'client-1',
+        status: 'active',
+        subscription_expires_at: '2027-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        plan: {
+          id: 'plan-1',
+          code: 'starter',
+          name: 'Starter',
+          description: 'Starter plan',
+          cpuLimit: '1.00',
+          memoryLimit: '2.00',
+          storageLimit: '20.00',
+          monthlyPriceUsd: '10.00',
+          maxSubUsers: 3,
+          maxMailboxes: 50,
+          status: 'active',
+        },
+      },
+    },
+    isLoading: false,
+  })),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -44,12 +79,15 @@ describe('Client Settings page', () => {
     expect(screen.getByText('Account Settings')).toBeInTheDocument();
   });
 
-  it('shows Subscription section', () => {
+  it('shows Subscription section with plan details from useSubscription hook', () => {
     render(<Settings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('subscription-section')).toBeInTheDocument();
     expect(screen.getByText('Subscription')).toBeInTheDocument();
-    // Plan and status show "—" until client-facing subscription endpoint exists
-    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+    // Round-4 Phase C: real plan data now renders
+    expect(screen.getByTestId('subscription-details')).toBeInTheDocument();
+    expect(screen.getByTestId('subscription-plan-name')).toHaveTextContent('Starter');
+    expect(screen.getByTestId('subscription-status')).toHaveTextContent('active');
+    expect(screen.getByTestId('subscription-expires')).toBeInTheDocument();
   });
 
   it('shows Notification Preferences section', () => {

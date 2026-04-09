@@ -28,6 +28,8 @@ describe('subscription routes', () => {
   let adminToken: string;
   let billingToken: string;
   let readOnlyToken: string;
+  let clientAdminToken: string;
+  let otherClientToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -42,6 +44,22 @@ describe('subscription routes', () => {
     adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     billingToken = app.jwt.sign({ sub: 'billing-1', role: 'billing', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
     readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    // Round-4 Phase C: client_admin / client_user can now view their
+    // own subscription via the GET endpoint.
+    clientAdminToken = app.jwt.sign({
+      sub: 'cu-1',
+      role: 'client_admin',
+      panel: 'client',
+      clientId: 'c1',
+      iat: Math.floor(Date.now() / 1000),
+    });
+    otherClientToken = app.jwt.sign({
+      sub: 'cu-2',
+      role: 'client_admin',
+      panel: 'client',
+      clientId: 'c2',
+      iat: Math.floor(Date.now() / 1000),
+    });
   });
 
   afterAll(async () => {
@@ -58,6 +76,37 @@ describe('subscription routes', () => {
       method: 'GET',
       url: '/api/v1/clients/c1/subscription',
       headers: { authorization: `Bearer ${readOnlyToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // Round-4 Phase C: client_admin for its own client can read the
+  // subscription but cannot modify it via PATCH.
+  it('GET should allow client_admin for its own client', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/clients/c1/subscription',
+      headers: { authorization: `Bearer ${clientAdminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.client_id).toBe('c1');
+  });
+
+  it('GET should reject client_admin trying to read a different client', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/clients/c1/subscription',
+      headers: { authorization: `Bearer ${otherClientToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('PATCH should reject client_admin (admin/billing only)', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/clients/c1/subscription',
+      headers: { authorization: `Bearer ${clientAdminToken}` },
+      payload: { status: 'suspended' },
     });
     expect(res.statusCode).toBe(403);
   });
