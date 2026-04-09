@@ -164,3 +164,208 @@ export function useWebmailToken() {
       apiFetch<WebmailTokenResponse>('/api/v1/email/webmail-token', { method: 'POST', body: JSON.stringify({ mailbox_id: mailboxId }) }),
   });
 }
+
+// ─── Phase 3 T1.1 — DKIM key rotation ──────────────────────────────
+
+export interface DkimKey {
+  readonly id: string;
+  readonly emailDomainId: string;
+  readonly selector: string;
+  readonly status: 'pending' | 'active' | 'retired';
+  readonly dnsRecordValue: string;
+  readonly dnsVerifiedAt: string | null;
+  readonly activatedAt: string | null;
+  readonly retiredAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface DkimKeysResponse { readonly data: readonly DkimKey[] }
+
+export interface DkimRotateResult {
+  readonly keyId: string;
+  readonly newSelector: string;
+  readonly mode: 'primary' | 'cname' | 'secondary';
+  readonly status: 'pending' | 'active';
+  readonly manualDnsRequired: boolean;
+  readonly dnsRecordName: string;
+  readonly dnsRecordValue: string;
+}
+
+interface DkimRotateResponse { readonly data: DkimRotateResult }
+
+export function useDkimKeys(clientId?: string, domainId?: string) {
+  return useQuery({
+    queryKey: ['dkim-keys', clientId, domainId],
+    queryFn: () => apiFetch<DkimKeysResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys`),
+    enabled: !!clientId && !!domainId,
+  });
+}
+
+export function useRotateDkimKey(clientId: string, domainId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<DkimRotateResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/rotate`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+    },
+  });
+}
+
+export function useActivateDkimKey(clientId: string, domainId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) =>
+      apiFetch<{ data: { id: string; status: string } }>(
+        `/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/keys/${keyId}/activate`,
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+    },
+  });
+}
+
+// ─── Phase 3 T5.1 — Mail submit credentials (sendmail compat) ─────
+
+export interface MailSubmitCredentialInfo {
+  readonly exists: boolean;
+  readonly id?: string;
+  readonly username?: string;
+  readonly createdAt?: string;
+  readonly lastUsedAt?: string | null;
+}
+
+export interface MailSubmitRotateResult {
+  readonly id: string;
+  readonly username: string;
+  readonly password: string;
+  readonly pushedToPvc: boolean;
+  readonly pushError?: string;
+}
+
+export function useMailSubmitCredential(clientId?: string) {
+  return useQuery({
+    queryKey: ['mail-submit-credential', clientId],
+    queryFn: () =>
+      apiFetch<{ data: MailSubmitCredentialInfo }>(`/api/v1/clients/${clientId}/mail/submit-credential`),
+    enabled: !!clientId,
+  });
+}
+
+export function useRotateMailSubmitCredential(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { note?: string; pushToPvc?: boolean }) =>
+      apiFetch<{ data: MailSubmitRotateResult }>(
+        `/api/v1/clients/${clientId}/mail/submit-credential/rotate`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mail-submit-credential', clientId] });
+    },
+  });
+}
+
+// ─── Phase 3 T2.1 — IMAPSync job runner ───────────────────────────
+
+export type ImapSyncJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface ImapSyncJob {
+  readonly id: string;
+  readonly clientId: string;
+  readonly mailboxId: string;
+  readonly sourceHost: string;
+  readonly sourcePort: number;
+  readonly sourceUsername: string;
+  readonly sourceSsl: boolean;
+  readonly options: Record<string, unknown>;
+  readonly status: ImapSyncJobStatus;
+  readonly k8sJobName: string | null;
+  readonly k8sNamespace: string;
+  readonly logTail: string | null;
+  readonly errorMessage: string | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CreateImapSyncJobInput {
+  readonly mailbox_id: string;
+  readonly source_host: string;
+  readonly source_port: number;
+  readonly source_username: string;
+  readonly source_password: string;
+  readonly source_ssl: boolean;
+  readonly options?: {
+    readonly automap?: boolean;
+    readonly noFolderSizes?: boolean;
+    readonly dryRun?: boolean;
+    readonly excludeFolders?: readonly string[];
+  };
+}
+
+export function useImapSyncJobs(clientId?: string) {
+  return useQuery({
+    queryKey: ['imapsync-jobs', clientId],
+    queryFn: () =>
+      apiFetch<{ data: readonly ImapSyncJob[] }>(`/api/v1/clients/${clientId}/mail/imapsync`),
+    enabled: !!clientId,
+    // TanStack v5 infers the callback parameter as Query<TData,...>,
+    // so query.state.data is already typed as the queryFn return
+    // type. No cast needed — letting TypeScript keep the inference
+    // means a future envelope rename will be caught at compile time.
+    refetchInterval: (query) => {
+      const hasRunning = query.state.data?.data?.some(
+        (j) => j.status === 'running' || j.status === 'pending',
+      );
+      return hasRunning ? 5000 : false;
+    },
+  });
+}
+
+export function useCreateImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateImapSyncJobInput) =>
+      apiFetch<{ data: ImapSyncJob }>(`/api/v1/clients/${clientId}/mail/imapsync`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+export function useCancelImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) =>
+      apiFetch<{ data: { id: string; status: string } }>(
+        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+// ─── Rate limit inspection (Round B) ─────────────────────────────
+
+export interface RateLimitInfo {
+  readonly limitPerHour: number;
+  readonly source: 'client_override' | 'platform_default' | 'hardcoded_default' | 'suspended';
+  readonly suspended: boolean;
+}
+
+export function useMailRateLimit(clientId?: string) {
+  return useQuery({
+    queryKey: ['mail-rate-limit', clientId],
+    queryFn: () =>
+      apiFetch<{ data: RateLimitInfo }>(`/api/v1/clients/${clientId}/mail/rate-limit`),
+    enabled: !!clientId,
+  });
+}

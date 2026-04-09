@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield } from 'lucide-react';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSortable } from '@/hooks/use-sortable';
@@ -30,9 +30,22 @@ import {
   useEnableEmailDomain,
   useUpdateEmailDomain,
   useEmailDomainDnsRecords,
+  useDkimKeys,
+  useRotateDkimKey,
+  useActivateDkimKey,
+  useMailSubmitCredential,
+  useRotateMailSubmitCredential,
+  useImapSyncJobs,
+  useCreateImapSyncJob,
+  useCancelImapSyncJob,
+  useMailRateLimit,
   type Mailbox,
   type EmailDomain,
   type DnsRecordDisplay,
+  type DkimKey,
+  type DkimRotateResult,
+  type MailSubmitRotateResult,
+  type ImapSyncJob,
 } from '@/hooks/use-email';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -229,6 +242,13 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
             </tbody>
           </table>
         </div>
+      )}
+
+      {mailboxes.length > 0 && (
+        <ImapSyncPanel
+          clientId={clientId}
+          mailboxes={mailboxes.map(m => ({ id: m.id, fullAddress: m.fullAddress }))}
+        />
       )}
 
       {editingMailbox && (
@@ -578,6 +598,9 @@ function SettingsTab({
 
       <DomainSettingsCard clientId={clientId} domain={current} />
       <DnsRecordsCard clientId={clientId} domain={current} />
+      <DkimKeysCard clientId={clientId} domain={current} />
+      <SendmailCredentialCard clientId={clientId} />
+      <RateLimitCard clientId={clientId} />
     </div>
   );
 }
@@ -845,4 +868,479 @@ function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
       <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{record.ttl}</td>
     </tr>
   );
+}
+
+// ─── DKIM keys card (Phase 3) ──────────────────────────────────────────
+
+function DkimKeysCard({
+  clientId,
+  domain,
+}: {
+  readonly clientId: string;
+  readonly domain: EmailDomain;
+}) {
+  const { data: keysRes, isLoading } = useDkimKeys(clientId, domain.domainId);
+  const rotate = useRotateDkimKey(clientId, domain.domainId);
+  const activate = useActivateDkimKey(clientId, domain.domainId);
+  const [lastRotation, setLastRotation] = useState<DkimRotateResult | null>(null);
+  const keys = keysRes?.data ?? [];
+
+  const handleRotate = async () => {
+    setLastRotation(null);
+    try {
+      const res = await rotate.mutateAsync();
+      setLastRotation(res.data);
+    } catch {
+      // shown below
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="dkim-card">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Key size={16} className="text-amber-500" />
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            DKIM signing keys
+          </h3>
+        </div>
+        <button
+          type="button"
+          onClick={handleRotate}
+          disabled={rotate.isPending}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="dkim-rotate-button"
+        >
+          {rotate.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          Rotate key
+        </button>
+      </div>
+
+      {lastRotation && (
+        <div className={clsx(
+          'rounded-lg border p-3 text-xs',
+          lastRotation.manualDnsRequired
+            ? 'border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20'
+            : 'border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20',
+        )}>
+          <p className="font-medium text-gray-900 dark:text-gray-100">
+            {lastRotation.manualDnsRequired
+              ? `New key generated (${lastRotation.mode} mode). Publish the DNS record below at your DNS provider, then click Activate.`
+              : `New key rotated and DNS published automatically (${lastRotation.mode} mode).`}
+          </p>
+          <div className="mt-2 grid grid-cols-[80px_1fr] gap-1 font-mono">
+            <span className="text-gray-500 dark:text-gray-400">Type</span><span className="text-gray-900 dark:text-gray-100">TXT</span>
+            <span className="text-gray-500 dark:text-gray-400">Name</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.dnsRecordName}</code>
+            <span className="text-gray-500 dark:text-gray-400">Value</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.dnsRecordValue}</code>
+          </div>
+        </div>
+      )}
+
+      {rotate.error && (
+        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+          <AlertCircle size={14} />
+          {rotate.error instanceof Error ? rotate.error.message : 'Rotation failed'}
+        </div>
+      )}
+
+      {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+
+      {!isLoading && keys.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-gray-400 italic">No DKIM keys yet. Click Rotate to generate the first key.</p>
+      )}
+
+      {keys.map((k) => (
+        <DkimKeyRow key={k.id} dkimKey={k} onActivate={() => activate.mutate(k.id)} activatePending={activate.isPending} />
+      ))}
+    </div>
+  );
+}
+
+function DkimKeyRow({
+  dkimKey,
+  onActivate,
+  activatePending,
+}: {
+  readonly dkimKey: DkimKey;
+  readonly onActivate: () => void;
+  readonly activatePending: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-1.5 text-xs">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <code className="font-mono text-gray-900 dark:text-gray-100">{dkimKey.selector}</code>
+          <DkimStatusBadge status={dkimKey.status} />
+        </div>
+        {dkimKey.status === 'pending' && (
+          <button
+            type="button"
+            onClick={onActivate}
+            disabled={activatePending}
+            className="rounded-md border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20 px-2 py-0.5 text-xs text-green-700 dark:text-green-400 hover:bg-green-100 disabled:opacity-50"
+            data-testid={`dkim-activate-${dkimKey.id}`}
+          >
+            Activate
+          </button>
+        )}
+      </div>
+      <div className="text-gray-500 dark:text-gray-400">
+        Created {new Date(dkimKey.createdAt).toLocaleString()}
+        {dkimKey.activatedAt && ` · Activated ${new Date(dkimKey.activatedAt).toLocaleString()}`}
+      </div>
+    </div>
+  );
+}
+
+function DkimStatusBadge({ status }: { readonly status: 'pending' | 'active' | 'retired' }) {
+  const styles = {
+    active: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
+    pending: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
+    retired: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+  } as const;
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
+      {status}
+    </span>
+  );
+}
+
+// ─── Sendmail submission credential card (Phase 3) ────────────────────
+
+function SendmailCredentialCard({ clientId }: { readonly clientId: string }) {
+  const { data, isLoading } = useMailSubmitCredential(clientId);
+  const rotate = useRotateMailSubmitCredential(clientId);
+  const [latest, setLatest] = useState<MailSubmitRotateResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const cred = data?.data;
+
+  const handleRotate = async (pushToPvc: boolean) => {
+    setLatest(null);
+    try {
+      const res = await rotate.mutateAsync({ pushToPvc });
+      setLatest(res.data);
+    } catch {
+      // shown below
+    }
+  };
+
+  const copyPassword = async () => {
+    if (!latest?.password) return;
+    try {
+      await navigator.clipboard.writeText(latest.password);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard API unavailable
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3" data-testid="sendmail-card">
+      <div className="flex items-center gap-2">
+        <Mail size={16} className="text-brand-500" />
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sendmail compatibility credential</h3>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Per-customer SMTP credentials used by legacy apps (WordPress, PHP <code>mail()</code>) to relay mail
+        through the platform. The auth file is written to your workload PVC at <code>.platform/sendmail-auth</code>
+        and hidden from the file manager.
+      </p>
+
+      {isLoading && <div className="py-2 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+
+      {!isLoading && cred && cred.exists && (
+        <div className="grid grid-cols-[100px_1fr] gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs">
+          <span className="text-gray-500 dark:text-gray-400">Username</span>
+          <code className="font-mono text-gray-900 dark:text-gray-100">{cred.username}</code>
+          <span className="text-gray-500 dark:text-gray-400">Created</span>
+          <span className="text-gray-700 dark:text-gray-300">{cred.createdAt ? new Date(cred.createdAt).toLocaleString() : '—'}</span>
+          <span className="text-gray-500 dark:text-gray-400">Last used</span>
+          <span className="text-gray-700 dark:text-gray-300">{cred.lastUsedAt ? new Date(cred.lastUsedAt).toLocaleString() : 'never'}</span>
+        </div>
+      )}
+
+      {!isLoading && cred && !cred.exists && (
+        <p className="text-xs italic text-gray-500 dark:text-gray-400">No credentials provisioned yet.</p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => handleRotate(true)}
+          disabled={rotate.isPending}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="sendmail-rotate-push"
+        >
+          {rotate.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          Rotate &amp; push to PVC
+        </button>
+        <button
+          type="button"
+          onClick={() => handleRotate(false)}
+          disabled={rotate.isPending}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          Rotate only
+        </button>
+      </div>
+
+      {latest && (
+        <div className="rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs">
+          <p className="mb-2 font-medium text-amber-900 dark:text-amber-100">
+            New credential generated. The plain password is shown ONCE — copy it now if you need it for manual configuration.
+          </p>
+          <div className="grid grid-cols-[80px_1fr] gap-1 font-mono">
+            <span className="text-gray-500 dark:text-gray-400">Username</span>
+            <code className="break-all text-gray-900 dark:text-gray-100">{latest.username}</code>
+            <span className="text-gray-500 dark:text-gray-400">Password</span>
+            <div className="flex items-start gap-1">
+              <code className="flex-1 break-all text-gray-900 dark:text-gray-100">{latest.password}</code>
+              <button
+                type="button"
+                onClick={copyPassword}
+                className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
+                title="Copy password"
+                data-testid="sendmail-copy-password"
+              >
+                {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
+            {latest.pushedToPvc
+              ? '✓ Auth file written to your PVC. Workload pods will pick it up on next mail send.'
+              : `⚠ PVC write skipped or failed${latest.pushError ? `: ${latest.pushError}` : ''}.`}
+          </p>
+        </div>
+      )}
+
+      {rotate.error && !latest && (
+        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+          <AlertCircle size={14} />
+          {rotate.error instanceof Error ? rotate.error.message : 'Rotation failed'}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Rate limit card ──────────────────────────────────────────────────
+
+function RateLimitCard({ clientId }: { readonly clientId: string }) {
+  const { data, isLoading } = useMailRateLimit(clientId);
+  const info = data?.data;
+  const sourceLabels: Record<string, string> = {
+    client_override: 'Account-specific override',
+    platform_default: 'Platform default',
+    hardcoded_default: 'Default',
+    suspended: 'Suspended',
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3" data-testid="rate-limit-card">
+      <div className="flex items-center gap-2">
+        <Gauge size={16} className="text-brand-500" />
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Outbound send rate limit</h3>
+      </div>
+
+      {isLoading && <div className="py-2 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+
+      {info && (
+        <div className="grid grid-cols-[140px_1fr] gap-1 text-xs">
+          <span className="text-gray-500 dark:text-gray-400">Messages/hour</span>
+          <span className={clsx(
+            'font-semibold',
+            info.suspended ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
+          )}>
+            {info.limitPerHour}
+            {info.suspended && ' (account suspended)'}
+          </span>
+          <span className="text-gray-500 dark:text-gray-400">Source</span>
+          <span className="text-gray-700 dark:text-gray-300">{sourceLabels[info.source] ?? info.source}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── IMAPSync migration panel (Phase 3) ──────────────────────────────
+// Rendered inside the Mailboxes tab — migration IS a mailbox action.
+
+function ImapSyncPanel({
+  clientId,
+  mailboxes,
+}: {
+  readonly clientId: string;
+  readonly mailboxes: readonly { id: string; fullAddress: string }[];
+}) {
+  const { data: jobsRes, isLoading } = useImapSyncJobs(clientId);
+  const create = useCreateImapSyncJob(clientId);
+  const cancel = useCancelImapSyncJob(clientId);
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const jobs = jobsRes?.data ?? [];
+
+  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setFormError(null);
+    const fd = new FormData(e.currentTarget);
+    try {
+      await create.mutateAsync({
+        mailbox_id: String(fd.get('mailbox_id') ?? ''),
+        source_host: String(fd.get('source_host') ?? ''),
+        source_port: parseInt(String(fd.get('source_port') ?? '993'), 10),
+        source_username: String(fd.get('source_username') ?? ''),
+        source_password: String(fd.get('source_password') ?? ''),
+        source_ssl: fd.get('source_ssl') === 'on',
+        options: {
+          automap: fd.get('automap') === 'on',
+          dryRun: fd.get('dry_run') === 'on',
+        },
+      });
+      setShowForm(false);
+      (e.currentTarget as HTMLFormElement).reset();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to start sync');
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3" data-testid="imapsync-panel">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Download size={16} className="text-brand-500" />
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Migrate from external IMAP</h3>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowForm(s => !s)}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+          data-testid="imapsync-toggle-form"
+        >
+          {showForm ? 'Cancel' : 'New migration'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Run a one-shot migration from an external IMAP server (Gmail, Outlook, legacy hosting) into one of your mailboxes.
+      </p>
+
+      {showForm && (
+        <form onSubmit={onSubmit} className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 space-y-2 text-xs">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Destination mailbox</span>
+              <select name="mailbox_id" required className={INPUT_CLASS}>
+                {mailboxes.map(m => <option key={m.id} value={m.id}>{m.fullAddress}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source host</span>
+              <input name="source_host" required placeholder="imap.gmail.com" className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source port</span>
+              <input name="source_port" type="number" defaultValue={993} required className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source username</span>
+              <input name="source_username" required className={INPUT_CLASS} />
+            </label>
+            <label className="col-span-2 space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source password</span>
+              <input name="source_password" type="password" required className={INPUT_CLASS} autoComplete="new-password" />
+            </label>
+          </div>
+          <div className="flex items-center gap-4 pt-1">
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="source_ssl" defaultChecked /> SSL
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="automap" defaultChecked /> Automap folders
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="dry_run" /> Dry run
+            </label>
+          </div>
+          {formError && <p className="text-red-600 dark:text-red-400">{formError}</p>}
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={create.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="imapsync-submit"
+            >
+              {create.isPending && <Loader2 size={12} className="animate-spin" />}
+              Start migration
+            </button>
+          </div>
+        </form>
+      )}
+
+      {isLoading && <div className="py-2 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
+      {!isLoading && jobs.length === 0 && !showForm && (
+        <p className="text-xs italic text-gray-500 dark:text-gray-400">No migrations yet.</p>
+      )}
+      {jobs.map(j => <ImapSyncJobRow key={j.id} job={j} onCancel={() => cancel.mutate(j.id)} cancelPending={cancel.isPending} />)}
+    </div>
+  );
+}
+
+function ImapSyncJobRow({
+  job,
+  onCancel,
+  cancelPending,
+}: {
+  readonly job: ImapSyncJob;
+  readonly onCancel: () => void;
+  readonly cancelPending: boolean;
+}) {
+  const [showLog, setShowLog] = useState(false);
+  const isActive = job.status === 'pending' || job.status === 'running';
+  return (
+    <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs" data-testid={`imapsync-job-${job.id}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
+          <ImapSyncStatusBadge status={job.status} />
+        </div>
+        {isActive && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelPending}
+            className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      <div className="mt-1 text-gray-500 dark:text-gray-400">
+        Started {job.startedAt ? new Date(job.startedAt).toLocaleString() : '—'}
+        {job.finishedAt && ` · Finished ${new Date(job.finishedAt).toLocaleString()}`}
+      </div>
+      {job.errorMessage && <p className="mt-1 text-red-600 dark:text-red-400">{job.errorMessage}</p>}
+      {job.logTail && (
+        <div className="mt-2">
+          <button type="button" onClick={() => setShowLog(s => !s)} className="text-brand-600 dark:text-brand-400 hover:underline">
+            {showLog ? 'Hide log' : 'Show log'}
+          </button>
+          {showLog && (
+            <pre className="mt-1 max-h-48 overflow-auto rounded bg-gray-900 p-2 font-mono text-[11px] text-gray-100">{job.logTail}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'] }) {
+  const styles = {
+    pending: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+    running: 'bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400',
+    succeeded: 'bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-400',
+    failed: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-400',
+    cancelled: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
+  } as const;
+  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>{status}</span>;
 }

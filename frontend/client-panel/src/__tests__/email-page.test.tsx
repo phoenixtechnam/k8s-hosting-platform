@@ -38,6 +38,18 @@ vi.mock('../hooks/use-email', () => ({
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useDkimKeys: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useRotateDkimKey: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useActivateDkimKey: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMailSubmitCredential: vi.fn(() => ({ data: { data: { exists: false } }, isLoading: false })),
+  useRotateMailSubmitCredential: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useImapSyncJobs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateImapSyncJob: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useCancelImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMailRateLimit: vi.fn(() => ({
+    data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
+    isLoading: false,
+  })),
 }));
 
 import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords } from '../hooks/use-email';
