@@ -73,6 +73,12 @@ services:
       STALWART_MASTER_SECRET: ${STALWART_MASTER_SECRET:-stalwart-dev-master}
       STALWART_IMAP_HOST: ${STALWART_IMAP_HOST:-stalwart-mail.mail.svc.cluster.local}
       STALWART_IMAP_PORT: ${STALWART_IMAP_PORT:-143}
+      # Phase 3 (post-Phase-3) G8/G9: cleartext Stalwart admin password.
+      # Used by the mail-admin proxy routes (/admin/mail/metrics +
+      # /admin/mail/queue) to authenticate to Stalwart's admin HTTP
+      # API via Basic Auth. Must match the cleartext whose bcrypt
+      # hash is in k8s/overlays/dev/stalwart/secret.yaml ADMIN_SECRET.
+      STALWART_ADMIN_PASSWORD: ${STALWART_ADMIN_PASSWORD:-stalwart-dev-admin}
       DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
       CLUSTER_ISSUER_NAME: ${CLUSTER_ISSUER_NAME:-local-ca-issuer}
       INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}

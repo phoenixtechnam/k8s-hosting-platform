@@ -1,8 +1,8 @@
 # Mail Server Implementation — Status & Roadmap
 
-**Document Version:** 1.0
-**Last Updated:** 2026-04-07
-**Status:** ACTIVE — Phase 1 in preparation
+**Document Version:** 2.0
+**Last Updated:** 2026-04-09
+**Status:** ACTIVE — Phases 1 → 5 complete (backend); client-panel email UI is the next milestone
 **Audience:** Backend, frontend, and DevOps engineers working on the platform's email subsystem
 **Architecture reference:** [ADR-026 — Email System](../07-reference/ADR-026-EMAIL-SYSTEM.md)
 
@@ -354,27 +354,78 @@ Phase 2c replaced it with two changes:
   PVC with `strategy: Recreate`. Production should migrate sessions
   to a shared Postgres DSN.
 
-### Phase 3 — Outbound Hardening
-1. Stalwart `[queue.outbound]` rendered from `smtp_relay_configs`
-2. New `email_dkim_keys` table + rotation cron + grace period
-3. Stalwart `[queue.throttle]` rendered from per-mailbox / per-domain limits
-4. Bounce-at-SMTP test coverage
+### Phase 3 — Outbound Hardening ✅ *Complete (2026-04-08)*
+1. ✅ Stalwart `[queue.outbound]` rendered from `smtp_relay_configs`
+   (`backend/src/modules/email-outbound/`)
+2. ✅ New `email_dkim_keys` table + rotation cron + grace period
+   + mode-aware DNS publishing (`backend/src/modules/email-dkim/`)
+3. ✅ Stalwart `[queue.throttle]` rendered from per-customer rate
+   limits (per the user's "per-customer not per-mailbox" preference)
+4. ✅ Bounce-at-SMTP smoke test (`MAIL_E2E_SQL=1` G2 — submission to
+   nonexistent local recipient asserts 5xx + non-zero curl exit)
 
-### Phase 4 — Autodiscover, Sendmail, Lifecycle
-1. New backend module `email-autodiscover/`:
-   - `GET /.well-known/autoconfig.xml`
-   - `POST /Autodiscover/Autodiscover.xml`
-   - `GET /.well-known/mta-sts.txt`
-2. Extend `dns-provisioning.ts` with SRV and MTA-STS records
-3. Per-pod sendmail auth (msmtp/ssmtp injection) + `email_sendmail_audit_log`
-4. `email_service_config` table; SUSPEND/DELETE flows; admin and client APIs
+### Phase 4 — Autodiscover, Sendmail, Lifecycle ✅ *Complete (2026-04-08)*
+1. ✅ New backend module `email-autodiscover/`:
+   - `GET /.well-known/autoconfig.xml` (Mozilla Thunderbird)
+   - `POST /Autodiscover/Autodiscover.xml` (Outlook)
+   - `GET /.well-known/mta-sts.txt` (single platform-wide policy —
+     all customer domains CNAME `mta-sts.<their-domain>` to the
+     platform host since they all share the same Stalwart MX)
+2. ✅ Extended `dns-provisioning.ts` with SRV records for IMAPS / SMTPS
+   (Phase 3.C.2) plus autoconfig / autodiscover CNAME records
+3. ✅ Per-customer sendmail auth via PVC mount
+   (`backend/src/modules/mail-submit/`) — auth file at
+   `.platform/sendmail-auth` on the customer PVC, hidden from the
+   file-manager via constant-time-secret bypass header
+4. ⚠️ Service-level SUSPEND/DELETE: existing `clients.status` flag
+   already enforces suspend at the SQL view layer (migrations 0009,
+   0010, 0017). No separate `email_service_config` table — the
+   client status is the single source of truth. Smoke test G7
+   covers the suspend → AUTH-blocked → reactivate cycle.
 
-### Phase 5 — Observability, Quota Sync, Import/Export
-1. ServiceMonitor scraping `/metrics/prometheus`
-2. Grafana dashboard 23498 deployment
-3. `used_mb` reconciliation cron via Stalwart REST API
-4. IMAPSync job runner for migrations
-5. `MAIL_SERVER_OPERATIONS.md` runbook (Hetzner unblock, PTR, relay, DKIM rotation, blocklist remediation)
+### Phase 5 — Observability, Quota Sync, Import/Export ✅ *Complete (2026-04-09)*
+1. ✅ Lightweight metrics path: `GET /admin/mail/metrics` proxies
+   Stalwart's Prometheus output through the k8s service-proxy
+   (`stalwart-mail-mgmt:mgmt-http`), parses it into a JSON summary
+   for the admin UI cards. No prometheus-operator dependency. Full
+   ServiceMonitor + Grafana 23498 path documented as the upgrade
+   route in the runbook for operators who want long-term scraping.
+2. ✅ Stalwart queue inspection: `GET /admin/mail/queue` runs
+   `stalwart-cli queue list` inside the pod via kubectl exec (the
+   k8s service-proxy strips the Authorization header so the
+   metrics-style proxy can't carry Stalwart Basic Auth — exec
+   bypasses that constraint). Returns `{ output, errors, empty }`.
+3. ✅ `used_mb` reconciliation cron (`mail-stats/scheduler.ts`,
+   self-rescheduling so admins can change the interval without a
+   backend restart). Runs every 15 min by default, configurable via
+   `platform_settings.mailbox_usage_sync_interval_minutes`.
+4. ✅ Quota threshold notifications (`mail-stats/quota-notifications.ts`)
+   — fires at 80/90/100% with hysteresis re-arm via
+   `mailbox_quota_events` table.
+5. ✅ IMAPSync job runner (`backend/src/modules/mail-imapsync/`) —
+   one-shot Kubernetes Jobs that migrate from external IMAP via
+   the imapsync image, with per-job Secret + ownerReference GC.
+   Reconciler captures pod logs, transitions terminal state, cleans
+   up Job + Secret.
+6. ✅ Stalwart backup CronJob — daily `stalwart-cli server backup`
+   inside the pod (no second PVC mount required).
+7. ✅ Stalwart cert reload CronJob — daily `stalwart-cli server
+   reload-certificates` so cert-manager renewals take effect
+   without manual intervention.
+8. ✅ Postgres TLS for the Stalwart→platform-postgres connection
+   (production overlay only — `enable = true`,
+   `root-cert = file:///etc/stalwart/pg-tls/ca.crt` mounted from a
+   cert-manager-managed Secret).
+9. ✅ Stalwart admin password CleartextPlain (`ADMIN_SECRET_PLAIN`)
+   added to the dev Secret so the in-pod CronJobs (backup, cert
+   reload) can authenticate via `stalwart-cli`. Production
+   recommendation: mount the cleartext into the CronJob pods only
+   via a separate Secret + envFrom.
+10. ✅ `MAIL_SERVER_OPERATIONS.md` runbook (Hetzner unblock, PTR,
+    relay, DKIM rotation, blocklist remediation, backup/restore)
+11. ✅ Tighter `stalwart.principals` view (migration 0017): now
+    excludes mailboxes whose owning client is suspended, closing
+    the gap where a suspended client could still pass SMTP AUTH.
 
 ---
 
@@ -431,3 +482,7 @@ These decisions were made during Phase 1 planning. Future engineers should under
 | 2026-04-07 | Initial document — captured current state, gap analysis, roadmap, Stalwart v0.15.5 + Hetzner research findings |
 | 2026-04-07 | **Phase 1 complete.** Stalwart deployed to local DinD k3s; TCP + E2E SMTP→IMAP round-trip tests green (32/32 in smoke test with `MAIL_E2E=1`). All 12 decisions finalized. Operations runbook written (`docs/04-deployment/MAIL_SERVER_OPERATIONS.md`). Hetzner port 25 unblock request filed. |
 | 2026-04-08 | **Phase 2a complete.** Stalwart now reads its account directory from platform PostgreSQL via read-only views (`stalwart` schema). Backend-created mailboxes authenticate in Stalwart without any admin-API provisioning step. Smoke test adds `MAIL_E2E_SQL=1` path exercising the full backend→Stalwart flow (33/33 pass). Critical security fixes applied: `stalwart_reader` role created `NOLOGIN` with explicit `REVOKE ALL ON SCHEMA public` + `search_path = stalwart` pin. NetworkPolicy egress on 5432 scoped to the `mail` namespace. |
+| 2026-04-08 | **Phase 2b complete.** Webmail SSO via custom Roundcube `jwt_auth` plugin (HS256 + constant-time HMAC + dedicated `WEBMAIL_JWT_SECRET`). Custom webmail-domain CRUD shipped, then reverted in 2c.1 — see Phase 2c. |
+| 2026-04-08 | **Phase 2c complete.** Architectural pivot: webmail-domains CRUD removed in favor of derived `webmail.<domain>` Ingresses; unified certificates module routes all cert provisioning through one path; Phase 2b webmail_domains table dropped. |
+| 2026-04-08 | **Phase 3 complete.** Outbound hardening (`email-outbound` queue.outbound + queue.throttle reconciler), DKIM key rotation with mode-aware DNS publishing (`email-dkim`), per-customer sendmail compat via PVC mount (`mail-submit`), IMAPSync job runner (`mail-imapsync`), Stalwart backup CronJob, Postgres TLS production overlay, quota threshold notifications, autodiscover + MTA-STS endpoints, suspend enforcement (migrations 0009/0010/0017). |
+| 2026-04-09 | **Phase 5 (post-Phase-3 hardening) complete.** Stalwart cert reload CronJob — daily `stalwart-cli server reload-certificates` so cert-manager renewals don't break mail. `ADMIN_SECRET_PLAIN` added to the dev secret so in-pod CronJobs can authenticate. Bounce + suspend smoke tests added (G2/G7) — the suspend test caught a missing client-status filter in `stalwart.principals`, fixed via migration 0017. Effective rate-limit inspection endpoint (`GET /admin/clients/:id/mail/rate-limit` + client-scoped variant). Documented spam scoring choice (Stalwart built-in classifier, no public DNSBL — explicit fix for the Hetzner DNSBL risk in §5). Lightweight metrics proxy (`GET /admin/mail/metrics`) and queue inspection (`GET /admin/mail/queue` via `stalwart-cli queue list` exec — k8s service-proxy strips Authorization headers, so the metrics-style proxy can't carry Stalwart Basic Auth). Tighter `stalwart.principals` view via migration 0017 (suspended clients can no longer pass AUTH). 1103/1103 backend tests, 33/33 smoke with `MAIL_E2E_SQL=1`. |
