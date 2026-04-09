@@ -24,6 +24,7 @@ import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
 import TlsSettings from '@/pages/TlsSettings';
+import AuditLogs from '@/pages/AuditLogs';
 import Placeholder from '@/pages/Placeholder';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -70,6 +71,7 @@ export default function App() {
             <Route path="settings/users" element={<AdminUsers />} />
             <Route path="settings/export-import" element={<ExportImport />} />
             <Route path="monitoring/health" element={<HealthDashboard />} />
+            <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />

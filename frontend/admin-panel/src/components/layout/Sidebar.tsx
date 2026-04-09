@@ -8,6 +8,7 @@ import {
   Clock,
   Shield,
   Activity,
+  ScrollText,
   Settings,
   X,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ const navItems = [
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },
   { to: '/security', icon: Shield, label: 'Security' },
   { to: '/monitoring', icon: Activity, label: 'Monitoring' },
+  { to: '/monitoring/audit-logs', icon: ScrollText, label: 'Audit Logs' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
 
