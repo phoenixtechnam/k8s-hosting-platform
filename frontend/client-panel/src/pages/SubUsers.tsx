@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { Users, Plus, Loader2, AlertCircle, Trash2, X } from 'lucide-react';
+import { Users, Plus, Loader2, AlertCircle, Trash2, X, Info } from 'lucide-react';
+import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSubUsers, useCreateSubUser, useDeleteSubUser } from '@/hooks/use-sub-users';
 import { useSortable } from '@/hooks/use-sortable';
@@ -9,6 +10,11 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 
 export default function SubUsers() {
   const { clientId } = useClientContext();
+  const authUser = useAuth((s) => s.user);
+  // Phase 1: only client_admin (and impersonating staff) can mutate
+  // the team. client_user has READ access but should not see buttons
+  // that would 403 on click. Backend still enforces this.
+  const canManage = authUser?.role === 'client_admin';
   const { data: response, isLoading, isError } = useSubUsers(clientId);
   const createUser = useCreateSubUser(clientId);
   const deleteUser = useDeleteSubUser(clientId);
@@ -25,11 +31,22 @@ export default function SubUsers() {
       await createUser.mutateAsync(form);
       setForm({ email: '', full_name: '', password: '' });
       setShowForm(false);
-    } catch {}
+    } catch {
+      // Mutation error is surfaced via `createUser.error` in the form UI
+      // below — no need to re-throw, but never silently swallow without
+      // the error being visible somewhere.
+    }
   };
 
   const handleDelete = async (id: string) => {
-    try { await deleteUser.mutateAsync(id); setDeleteConfirmId(null); } catch {}
+    try {
+      await deleteUser.mutateAsync(id);
+      setDeleteConfirmId(null);
+    } catch {
+      // Mutation error surfaces via `deleteUser.error` (not rendered yet
+      // in the row; covered by Phase 6 polish sweep). Leaving the confirm
+      // open so the user can retry or cancel.
+    }
   };
 
   return (
@@ -42,12 +59,24 @@ export default function SubUsers() {
             <p className="text-sm text-gray-500 dark:text-gray-400">Manage users who can access your account.</p>
           </div>
         </div>
-        <button type="button" onClick={() => setShowForm((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700" data-testid="add-user-button">
-          {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add User'}
-        </button>
+        {canManage && (
+          <button type="button" onClick={() => setShowForm((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700" data-testid="add-user-button">
+            {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add User'}
+          </button>
+        )}
       </div>
 
-      {showForm && (
+      {!canManage && (
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-700 dark:text-blue-300" data-testid="read-only-notice">
+          <Info size={16} className="mt-0.5 shrink-0" />
+          <div>
+            You have read-only access to the team. Only administrators can add,
+            edit, or remove users. Ask a client admin to make changes.
+          </div>
+        </div>
+      )}
+
+      {canManage && showForm && (
         <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="create-user-form">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Full Name</label><input type="text" className={INPUT_CLASS + ' mt-1'} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} required data-testid="user-name-input" /></div>
@@ -76,7 +105,7 @@ export default function SubUsers() {
                 <SortableHeader label="Role" sortKey="roleName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
                 <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-6 font-medium text-gray-500 dark:text-gray-400" />
                 <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden px-6 font-medium text-gray-500 dark:text-gray-400 sm:table-cell" />
-                <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
+                {canManage && <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>}
               </tr></thead>
               <tbody>
                 {users.map((u) => (
@@ -86,16 +115,18 @@ export default function SubUsers() {
                     <td className="px-6 py-4"><span className="rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">{u.roleName}</span></td>
                     <td className="px-6 py-4"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${u.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-50 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>{u.status}</span></td>
                     <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 sm:table-cell">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : 'Never'}</td>
-                    <td className="px-6 py-4">
-                      {deleteConfirmId === u.id ? (
-                        <div className="inline-flex gap-1">
-                          <button type="button" onClick={() => handleDelete(u.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">Confirm</button>
-                          <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
-                        </div>
-                      ) : (
-                        <button type="button" onClick={() => setDeleteConfirmId(u.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-user-${u.id}`}><Trash2 size={12} /></button>
-                      )}
-                    </td>
+                    {canManage && (
+                      <td className="px-6 py-4">
+                        {deleteConfirmId === u.id ? (
+                          <div className="inline-flex gap-1">
+                            <button type="button" onClick={() => handleDelete(u.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">Confirm</button>
+                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+                          </div>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteConfirmId(u.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-user-${u.id}`}><Trash2 size={12} /></button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

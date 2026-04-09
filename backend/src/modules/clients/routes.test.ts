@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { errorHandler } from '../../middleware/error-handler.js';
@@ -24,6 +24,39 @@ vi.mock('./service.js', () => ({
   deleteClient: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Mock the sub-users-service so the routes layer can be tested
+// without a live database. The tests here are purely about
+// role-gating and request wiring; deeper behavior (plan limits,
+// last-admin guard, etc.) is covered in sub-users-service.test.ts.
+const listSubUsersMock = vi.fn().mockResolvedValue([
+  {
+    id: 'u1',
+    email: 'alice@c1.com',
+    fullName: 'Alice',
+    roleName: 'client_admin',
+    status: 'active',
+    createdAt: new Date('2026-01-01'),
+    lastLoginAt: null,
+  },
+]);
+const createSubUserMock = vi.fn().mockResolvedValue({
+  id: 'u-new',
+  email: 'bob@c1.com',
+  fullName: 'Bob',
+  roleName: 'client_user',
+  status: 'active',
+  createdAt: new Date('2026-01-02'),
+});
+const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('./sub-users-service.js', () => ({
+  listSubUsers: (...args: unknown[]) => listSubUsersMock(...args),
+  createSubUser: (...args: unknown[]) => createSubUserMock(...args),
+  deleteSubUser: (...args: unknown[]) => deleteSubUserMock(...args),
+  makeDrizzleSubUsersDb: vi.fn().mockReturnValue({}),
+  getEffectiveMaxSubUsers: vi.fn().mockResolvedValue(10),
+}));
+
 // Import routes AFTER mocking
 const { clientRoutes } = await import('./routes.js');
 
@@ -31,6 +64,11 @@ describe('client routes', () => {
   let app: FastifyInstance;
   let adminToken: string;
   let readOnlyToken: string;
+  let supportToken: string;
+  let clientAdminToken: string;
+  let clientAdminNoClientIdToken: string;
+  let clientUserToken: string;
+  let otherClientAdminToken: string;
 
   beforeAll(async () => {
     app = Fastify();
@@ -43,12 +81,36 @@ describe('client routes', () => {
     await app.register(clientRoutes, { prefix: '/api/v1' });
     await app.ready();
 
-    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
-    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const iat = Math.floor(Date.now() / 1000);
+    adminToken = app.jwt.sign({ sub: 'admin-1', role: 'super_admin', panel: 'admin', iat });
+    readOnlyToken = app.jwt.sign({ sub: 'reader-1', role: 'read_only', panel: 'admin', iat });
+    supportToken = app.jwt.sign({ sub: 'support-1', role: 'support', panel: 'admin', iat });
+    clientAdminToken = app.jwt.sign({
+      sub: 'ca-1', role: 'client_admin', panel: 'client', clientId: 'c1', iat,
+    });
+    clientAdminNoClientIdToken = app.jwt.sign({
+      // Phase 1 hardening: client-panel tokens without a clientId
+      // claim must be rejected by requireClientAccess(). The bug
+      // previously allowed them through whenever the URL-param
+      // clientId happened to be present.
+      sub: 'ca-broken', role: 'client_admin', panel: 'client', iat,
+    });
+    clientUserToken = app.jwt.sign({
+      sub: 'cu-1', role: 'client_user', panel: 'client', clientId: 'c1', iat,
+    });
+    otherClientAdminToken = app.jwt.sign({
+      sub: 'ca-2', role: 'client_admin', panel: 'client', clientId: 'c2', iat,
+    });
   });
 
   afterAll(async () => {
     await app.close();
+  });
+
+  beforeEach(() => {
+    listSubUsersMock.mockClear();
+    createSubUserMock.mockClear();
+    deleteSubUserMock.mockClear();
   });
 
   it('GET /api/v1/clients should require auth', async () => {
@@ -140,5 +202,203 @@ describe('client routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(204);
+  });
+
+  // ─── Sub-User Routes (Phase 1 regression coverage) ──────────────────────
+  //
+  // The previous version of clients/routes.ts installed
+  // `requireRole('super_admin','admin')` as a plugin-wide hook which
+  // rejected client_admin / client_user tokens before the permissive
+  // per-route hooks could run, producing 403 on GET /users. These
+  // tests lock in the per-route hook structure and the client_user
+  // read permission added alongside.
+
+  describe('GET /api/v1/clients/:clientId/users', () => {
+    it('returns 401 without auth', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/clients/c1/users' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('rejects read_only admin with 403', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${readOnlyToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('allows super_admin', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toHaveLength(1);
+      expect(listSubUsersMock).toHaveBeenCalledWith(expect.anything(), 'c1');
+    });
+
+    it('allows support role', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${supportToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows client_admin for their own client (regression: the plugin-wide hook bug)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows client_user read access for their own client', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('rejects client_admin from another client (cross-tenant)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${otherClientAdminToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CLIENT_ACCESS_DENIED');
+    });
+
+    it('rejects a client-panel token with no clientId claim (Phase 1 hardening)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminNoClientIdToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CLIENT_ACCESS_DENIED');
+    });
+  });
+
+  describe('POST /api/v1/clients/:clientId/users', () => {
+    const validBody = { email: 'new@c1.com', full_name: 'New User', password: 'password123' };
+
+    it('allows client_admin to create a sub-user in their own client', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(201);
+      expect(createSubUserMock).toHaveBeenCalled();
+    });
+
+    it('rejects client_user (read-only cannot create)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects support role (read-only staff cannot create)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${supportToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects client_admin from another client', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${otherClientAdminToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects a malformed email (Zod validation)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { email: 'notanemail', full_name: 'Bad', password: 'password123' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a password shorter than 8 characters', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { email: 'ok@c1.com', full_name: 'OK', password: 'short' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missing full_name', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { email: 'ok@c1.com', full_name: '', password: 'password123' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /api/v1/clients/:clientId/users/:userId', () => {
+    it('allows client_admin to delete a sub-user in their own client', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+      });
+      expect(res.statusCode).toBe(204);
+      expect(deleteSubUserMock).toHaveBeenCalledWith(expect.anything(), 'c1', 'u1');
+    });
+
+    it('rejects client_user', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(deleteSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects cross-client', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${otherClientAdminToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('requires auth', async () => {
+      const res = await app.inject({ method: 'DELETE', url: '/api/v1/clients/c1/users/u1' });
+      expect(res.statusCode).toBe(401);
+    });
   });
 });

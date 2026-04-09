@@ -99,9 +99,25 @@ export function requireClientAccess() {
       return;
     }
 
-    // Admin panel users can access any client
-    if (user.panel === 'admin') {
+    // Non-client-panel tokens (admin panel staff, service accounts
+    // without a panel claim) can access any client — authorization
+    // is already enforced by their preceding `requireRole(...)` hook.
+    if (user.panel !== 'client') {
       done();
+      return;
+    }
+
+    // Client panel users MUST have a clientId claim on their token.
+    // Phase 1 hardening: the previous version only rejected when
+    // both `requestedClientId` and `user.clientId` were truthy, so
+    // a misconfigured / hand-crafted client-panel token with no
+    // clientId claim could cross-tenant freely. Fail closed.
+    if (!user.clientId) {
+      done(new ApiError(
+        'CLIENT_ACCESS_DENIED',
+        'Client-panel tokens must carry a clientId claim',
+        403,
+      ));
       return;
     }
 
@@ -109,7 +125,7 @@ export function requireClientAccess() {
     const params = request.params as { clientId?: string; id?: string };
     const requestedClientId = params.clientId ?? params.id;
 
-    if (requestedClientId && user.clientId && requestedClientId !== user.clientId) {
+    if (requestedClientId && requestedClientId !== user.clientId) {
       done(new ApiError(
         'CLIENT_ACCESS_DENIED',
         'You can only access your own client resources',

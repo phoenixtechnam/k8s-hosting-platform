@@ -1,10 +1,28 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import bcrypt from 'bcrypt';
+import { z } from 'zod';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
+
+/**
+ * Phase 1: local Zod schema for the POST /clients/:clientId/users
+ * body. Phase 2 will move this to @k8s-hosting/api-contracts as
+ * `createSubUserSchema`.
+ */
+const createSubUserBodySchema = z.object({
+  email: z.string().email('email must be a valid email address'),
+  full_name: z.string().min(1, 'full_name is required').max(255),
+  password: z.string().min(8, 'password must be at least 8 characters').max(255),
+});
 import * as service from './service.js';
+import {
+  listSubUsers,
+  createSubUser,
+  deleteSubUser,
+  makeDrizzleSubUsersDb,
+  getEffectiveMaxSubUsers,
+} from './sub-users-service.js';
 import { bulkUpdateClientStatus, bulkDeleteClients } from './bulk.js';
 import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
@@ -24,12 +42,18 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  // All client routes require auth + admin role
+  // Phase 1: the previous version applied
+  // `requireRole('super_admin','admin')` as a plugin-wide hook
+  // which short-circuited the permissive per-route hooks on the
+  // sub-user routes (GET /clients/:clientId/users and friends).
+  // That produced the "Failed to load users" 403 in the client
+  // panel. We now install only `authenticate` plugin-wide, and
+  // each route declares its own role list in `onRequest`.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // POST /api/v1/clients
   app.post('/clients', {
+    onRequest: [requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Clients'],
       summary: 'Create a new client',
@@ -115,6 +139,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/clients
   app.get('/clients', {
+    onRequest: [requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Clients'],
       summary: 'List clients with cursor-based pagination',
@@ -174,14 +199,18 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/clients/:id
-  app.get('/clients/:id', async (request) => {
+  app.get('/clients/:id', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request) => {
     const { id } = request.params as { id: string };
     const client = await service.getClientById(app.db, id);
     return success(client);
   });
 
   // PATCH /api/v1/clients/:id
-  app.patch('/clients/:id', async (request) => {
+  app.patch('/clients/:id', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request) => {
     const { id } = request.params as { id: string };
     const parsed = updateClientSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -199,7 +228,9 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // DELETE /api/v1/clients/:id
-  app.delete('/clients/:id', async (request, reply) => {
+  app.delete('/clients/:id', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     await service.deleteClient(app.db, id, getK8s());
     return reply.status(204).send();
@@ -209,7 +240,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/impersonate/:clientId
   app.post('/admin/impersonate/:clientId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support')],
+    onRequest: [requireRole('super_admin', 'admin', 'support')],
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
 
@@ -262,104 +293,65 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Client Sub-Users ───────────────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/users
+  // GET /api/v1/clients/:clientId/users — readable by the client themselves
+  // (client_admin + client_user) plus staff roles. Scoped via
+  // requireClientAccess() so client-panel tokens can only see their
+  // own team.
   app.get('/clients/:clientId/users', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin'), requireClientAccess()],
+    onRequest: [
+      requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'),
+      requireClientAccess(),
+    ],
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
-    const clientUsers = await app.db
-      .select({
-        id: users.id,
-        email: users.email,
-        fullName: users.fullName,
-        roleName: users.roleName,
-        status: users.status,
-        createdAt: users.createdAt,
-        lastLoginAt: users.lastLoginAt,
-      })
-      .from(users)
-      .where(eq(users.clientId, clientId));
+    const clientUsers = await listSubUsers(makeDrizzleSubUsersDb(app.db), clientId);
     return success(clientUsers);
   });
 
-  // POST /api/v1/clients/:clientId/users
+  // POST /api/v1/clients/:clientId/users — create a sub-user.
+  // Only client_admin + staff can mutate the team.
   app.post('/clients/:clientId/users', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+    onRequest: [
+      requireRole('super_admin', 'admin', 'client_admin'),
+      requireClientAccess(),
+    ],
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
-    const body = request.body as { email: string; full_name: string; password: string };
 
-    if (!body.email || !body.full_name || !body.password) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'email, full_name, and password are required', 400);
+    const parsed = createSubUserBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        firstError.path.length > 0 ? 'INVALID_FIELD_VALUE' : 'MISSING_REQUIRED_FIELD',
+        `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
+        400,
+        { field: firstError.path.join('.') },
+      );
     }
 
-    // Check sub-user limit from hosting plan
+    // Verify client exists (preserves CLIENT_NOT_FOUND behavior)
     await service.getClientById(app.db, clientId);
-    const existingUsers = await app.db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.clientId, clientId));
 
-    // Plan limit check (default 3 if no plan)
-    const maxUsers = 10; // Default. Would check client.planId → hostingPlans.maxSubUsers in production
-    if (existingUsers.length >= maxUsers) {
-      throw new ApiError('SUB_USER_LIMIT', `Maximum ${maxUsers} users allowed for this plan`, 403);
-    }
-
-    const passwordHash = await bcrypt.hash(body.password, 12);
-    const userId = crypto.randomUUID();
-
-    await app.db.insert(users).values({
-      id: userId,
-      email: body.email,
-      passwordHash,
-      fullName: body.full_name,
-      roleName: 'client_user',
-      panel: 'client',
+    const maxSubUsers = await getEffectiveMaxSubUsers(app.db, clientId);
+    const created = await createSubUser(
+      makeDrizzleSubUsersDb(app.db),
       clientId,
-      status: 'active',
-      emailVerifiedAt: new Date(),
-    });
-
-    const [created] = await app.db.select({
-      id: users.id,
-      email: users.email,
-      fullName: users.fullName,
-      roleName: users.roleName,
-      status: users.status,
-      createdAt: users.createdAt,
-    }).from(users).where(eq(users.id, userId));
+      parsed.data,
+      { maxSubUsers },
+    );
 
     reply.status(201).send(success(created));
   });
 
   // DELETE /api/v1/clients/:clientId/users/:userId
   app.delete('/clients/:clientId/users/:userId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+    onRequest: [
+      requireRole('super_admin', 'admin', 'client_admin'),
+      requireClientAccess(),
+    ],
   }, async (request, reply) => {
     const { clientId, userId } = request.params as { clientId: string; userId: string };
-
-    const [user] = await app.db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, userId), eq(users.clientId, clientId)));
-
-    if (!user) {
-      throw new ApiError('USER_NOT_FOUND', 'User not found', 404);
-    }
-
-    // Don't allow deleting the last client_admin
-    if (user.roleName === 'client_admin') {
-      const admins = await app.db
-        .select({ id: users.id })
-        .from(users)
-        .where(and(eq(users.clientId, clientId), eq(users.roleName, 'client_admin')));
-      if (admins.length <= 1) {
-        throw new ApiError('LAST_ADMIN', 'Cannot delete the last client admin', 403);
-      }
-    }
-
-    await app.db.delete(users).where(eq(users.id, userId));
+    await deleteSubUser(makeDrizzleSubUsersDb(app.db), clientId, userId);
     reply.status(204).send();
   });
 
@@ -367,7 +359,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/admin/clients/bulk
   app.post('/admin/clients/bulk', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
     const body = request.body as { client_ids?: string[]; action?: string };
 
@@ -385,7 +377,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // DELETE /api/v1/admin/clients/bulk
   app.delete('/admin/clients/bulk', {
-    onRequest: [authenticate, requireRole('super_admin')],
+    onRequest: [requireRole('super_admin')],
   }, async (request, reply) => {
     const body = request.body as { client_ids?: string[] };
 
