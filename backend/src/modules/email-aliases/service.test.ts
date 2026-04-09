@@ -9,8 +9,6 @@ const DOMAIN = {
   dkimSelector: 'default',
   dkimPrivateKeyEncrypted: null,
   dkimPublicKey: null,
-  maxMailboxes: 50,
-  maxQuotaMb: 10240,
   catchAllAddress: null,
   mxProvisioned: 0,
   spfProvisioned: 0,

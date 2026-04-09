@@ -5,6 +5,7 @@ import { generateDkimKeyPair } from './dkim.js';
 import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
+import { notifyClientEmailBootstrapped } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -55,8 +56,9 @@ export async function enableEmailForDomain(
     dkimSelector,
     dkimPrivateKeyEncrypted,
     dkimPublicKey: publicKey,
-    maxMailboxes: input.max_mailboxes ?? 50,
-    maxQuotaMb: input.max_quota_mb ?? 10240,
+    // max_mailboxes + max_quota_mb removed in migration 0019.
+    // Mailbox count is now capped at the plan level via
+    // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
     catchAllAddress: input.catch_all_address ?? null,
   });
 
@@ -70,6 +72,13 @@ export async function enableEmailForDomain(
     .select()
     .from(emailDomains)
     .where(eq(emailDomains.id, id));
+
+  // Phase 3 round-2: notify client admins that email is now live.
+  // Fire-and-forget; a failure here cannot roll back the enable.
+  void notifyClientEmailBootstrapped(db, clientId, {
+    emailDomainId: id,
+    domainName: domain.domainName,
+  });
 
   return { ...created, domainName: domain.domainName };
 }
@@ -112,8 +121,6 @@ export async function getEmailDomain(
       webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
-      maxMailboxes: emailDomains.maxMailboxes,
-      maxQuotaMb: emailDomains.maxQuotaMb,
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -210,8 +217,6 @@ export async function listEmailDomains(
       webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
-      maxMailboxes: emailDomains.maxMailboxes,
-      maxQuotaMb: emailDomains.maxQuotaMb,
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -241,8 +246,6 @@ export async function listAllEmailDomains(db: Database) {
       webmailEnabled: emailDomains.webmailEnabled,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
-      maxMailboxes: emailDomains.maxMailboxes,
-      maxQuotaMb: emailDomains.maxQuotaMb,
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -280,8 +283,8 @@ export async function updateEmailDomain(
   const updateValues: Record<string, unknown> = {};
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
   if (input.webmail_enabled !== undefined) updateValues.webmailEnabled = input.webmail_enabled ? 1 : 0;
-  if (input.max_mailboxes !== undefined) updateValues.maxMailboxes = input.max_mailboxes;
-  if (input.max_quota_mb !== undefined) updateValues.maxQuotaMb = input.max_quota_mb;
+  // max_mailboxes + max_quota_mb removed in migration 0019 —
+  // plan-based limits now come from hosting_plans.max_mailboxes.
   if (input.catch_all_address !== undefined) updateValues.catchAllAddress = input.catch_all_address;
   if (input.spam_threshold_junk !== undefined) updateValues.spamThresholdJunk = String(input.spam_threshold_junk);
   if (input.spam_threshold_reject !== undefined) updateValues.spamThresholdReject = String(input.spam_threshold_reject);

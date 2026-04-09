@@ -369,3 +369,23 @@ export function useMailRateLimit(clientId?: string) {
     enabled: !!clientId,
   });
 }
+
+// ─── Mailbox usage / plan limit (Phase 4/5 round 2) ──────────────
+
+export interface MailboxUsageInfo {
+  readonly limit: number;
+  readonly current: number;
+  readonly remaining: number;
+  readonly source: 'plan' | 'client_override';
+}
+
+export function useMailboxUsage(clientId?: string) {
+  return useQuery({
+    queryKey: ['mailbox-usage', clientId],
+    queryFn: () =>
+      apiFetch<{ data: MailboxUsageInfo }>(
+        `/api/v1/clients/${clientId}/mail/mailbox-usage`,
+      ),
+    enabled: !!clientId,
+  });
+}

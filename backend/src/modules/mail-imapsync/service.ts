@@ -30,6 +30,7 @@ import {
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt } from '../oidc/crypto.js';
+import { notifyClientImapsyncTerminal } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { CreateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/api-contracts';
 
@@ -310,6 +311,12 @@ export async function markCancelled(
   db: Database,
   jobId: string,
 ): Promise<void> {
+  // Look up clientId first so we can notify after the DB write.
+  const [row] = await db
+    .select({ clientId: imapSyncJobs.clientId })
+    .from(imapSyncJobs)
+    .where(eq(imapSyncJobs.id, jobId));
+
   await db
     .update(imapSyncJobs)
     .set({
@@ -317,6 +324,13 @@ export async function markCancelled(
       finishedAt: new Date(),
     })
     .where(eq(imapSyncJobs.id, jobId));
+
+  if (row?.clientId) {
+    void notifyClientImapsyncTerminal(db, row.clientId, {
+      jobId,
+      status: 'cancelled',
+    });
+  }
 }
 
 /**
@@ -347,6 +361,11 @@ export async function markFailed(
   jobId: string,
   errorMessage: string,
 ): Promise<void> {
+  const [row] = await db
+    .select({ clientId: imapSyncJobs.clientId })
+    .from(imapSyncJobs)
+    .where(eq(imapSyncJobs.id, jobId));
+
   await db
     .update(imapSyncJobs)
     .set({
@@ -355,4 +374,12 @@ export async function markFailed(
       finishedAt: new Date(),
     })
     .where(eq(imapSyncJobs.id, jobId));
+
+  if (row?.clientId) {
+    void notifyClientImapsyncTerminal(db, row.clientId, {
+      jobId,
+      status: 'failed',
+      errorMessage,
+    });
+  }
 }

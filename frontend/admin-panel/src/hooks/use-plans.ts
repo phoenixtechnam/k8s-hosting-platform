@@ -11,6 +11,7 @@ export interface Plan {
   readonly storageLimit: string;
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
+  readonly maxMailboxes: number;
   readonly status: string;
 }
 

@@ -12,6 +12,7 @@
 
 import { eq, inArray } from 'drizzle-orm';
 import { imapSyncJobs } from '../../db/schema.js';
+import { notifyClientImapsyncTerminal } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -147,6 +148,11 @@ export async function reconcileImapSyncJobs(
         await deleteJobAndSecret(k8s, row.k8sNamespace, row.k8sJobName);
         finished += 1;
         logger.info?.(`[mail-imapsync] job ${row.id} succeeded`);
+        // Phase 3 round-2: notify client on terminal success.
+        void notifyClientImapsyncTerminal(db, row.clientId, {
+          jobId: row.id,
+          status: 'succeeded',
+        });
         continue;
       }
 
@@ -164,6 +170,12 @@ export async function reconcileImapSyncJobs(
         await deleteJobAndSecret(k8s, row.k8sNamespace, row.k8sJobName);
         finished += 1;
         logger.warn(`[mail-imapsync] job ${row.id} failed`);
+        // Phase 3 round-2: notify client on terminal failure.
+        void notifyClientImapsyncTerminal(db, row.clientId, {
+          jobId: row.id,
+          status: 'failed',
+          errorMessage: 'imapsync job failed — see the job log tail in the client panel.',
+        });
         continue;
       }
 
@@ -206,6 +218,12 @@ export async function reconcileImapSyncJobs(
         }
         finished += 1;
         logger.warn(`[mail-imapsync] job ${row.id} disappeared`);
+        // Phase 3 round-2: notify client on terminal failure (disappeared).
+        void notifyClientImapsyncTerminal(db, row.clientId, {
+          jobId: row.id,
+          status: 'failed',
+          errorMessage: `Kubernetes Job '${row.k8sJobName}' disappeared before reconciler could observe completion.`,
+        });
         continue;
       }
       logger.warn(

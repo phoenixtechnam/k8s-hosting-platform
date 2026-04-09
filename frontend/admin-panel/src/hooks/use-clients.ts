@@ -69,6 +69,7 @@ interface UpdateClientInput {
   readonly memory_limit_override?: number | null;
   readonly storage_limit_override?: number | null;
   readonly max_sub_users_override?: number | null;
+  readonly max_mailboxes_override?: number | null;
   readonly monthly_price_override?: number | null;
 }
 

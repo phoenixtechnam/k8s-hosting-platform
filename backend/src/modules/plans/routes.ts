@@ -33,6 +33,7 @@ export async function planRoutes(app: FastifyInstance) {
       storageLimit: String(body.storage_limit),
       monthlyPriceUsd: String(body.monthly_price_usd),
       maxSubUsers: (body.max_sub_users as number) ?? 3,
+      maxMailboxes: (body.max_mailboxes as number) ?? 50,
       features: (body.features as Record<string, unknown>) ?? null,
       status: 'active',
     });
@@ -59,6 +60,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (body.storage_limit !== undefined) updateValues.storageLimit = String(body.storage_limit);
     if (body.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = String(body.monthly_price_usd);
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
+    if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;
     if (body.features !== undefined) updateValues.features = body.features;
     if (body.status !== undefined) updateValues.status = body.status;
 

@@ -57,6 +57,7 @@ import { generateDkimKeyPair, formatDkimDnsValue } from '../email-domains/dkim.j
 import { syncRecordToProviders } from '../dns-records/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getActiveServersForDomain } from '../dns-servers/service.js';
+import { notifyClientDkimRotated } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 
 export type DkimMode = 'primary' | 'cname' | 'secondary';
@@ -409,8 +410,28 @@ export async function autoRotatePrimaryDomains(
   let errors = 0;
   for (const row of candidates.rows ?? []) {
     try {
-      await rotateDkimKey(db, row.email_domain_id, encryptionKey);
+      const result = await rotateDkimKey(db, row.email_domain_id, encryptionKey);
       rotated += 1;
+
+      // Phase 3 round-2: notify the client on successful rotation.
+      // We need clientId + domainName which aren't on `result` — load
+      // the minimal join. Swallow any failure so a notification hiccup
+      // cannot mask a successful rotation.
+      try {
+        const ed = await loadEmailDomainWithMode(db, row.email_domain_id);
+        if (ed) {
+          await notifyClientDkimRotated(db, ed.clientId, {
+            emailDomainId: row.email_domain_id,
+            domainName: ed.domainName,
+            selector: result.newSelector,
+          });
+        }
+      } catch (notifyErr) {
+        console.warn(
+          '[email-dkim] autoRotatePrimaryDomains: notification failed:',
+          notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+        );
+      }
     } catch (err) {
       errors += 1;
       console.warn(

@@ -916,17 +916,20 @@ function ResourceLimitsCard({
   const [memOverride, setMemOverride] = useState<string>('');
   const [storageOverride, setStorageOverride] = useState<string>('');
   const [subUsersOverride, setSubUsersOverride] = useState<string>('');
+  const [mailboxesOverride, setMailboxesOverride] = useState<string>('');
   const [priceOverride, setPriceOverride] = useState<string>('');
   const [cpuCustom, setCpuCustom] = useState(false);
   const [memCustom, setMemCustom] = useState(false);
   const [storageCustom, setStorageCustom] = useState(false);
   const [subUsersCustom, setSubUsersCustom] = useState(false);
+  const [mailboxesCustom, setMailboxesCustom] = useState(false);
   const [priceCustom, setPriceCustom] = useState(false);
 
   const effectiveCpu = client.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
   const effectiveMem = client.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
   const effectiveStorage = client.storageLimitOverride ?? plan?.storageLimit ?? '—';
   const effectiveSubUsers = client.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
+  const effectiveMailboxes = client.maxMailboxesOverride ?? plan?.maxMailboxes ?? '—';
   const effectivePrice = client.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
 
   const startEditing = () => {
@@ -934,16 +937,19 @@ function ResourceLimitsCard({
     const hasMem = client.memoryLimitOverride != null;
     const hasStorage = client.storageLimitOverride != null;
     const hasSubUsers = client.maxSubUsersOverride != null;
+    const hasMailboxes = client.maxMailboxesOverride != null;
     const hasPrice = client.monthlyPriceOverride != null;
     setCpuCustom(hasCpu);
     setMemCustom(hasMem);
     setStorageCustom(hasStorage);
     setSubUsersCustom(hasSubUsers);
+    setMailboxesCustom(hasMailboxes);
     setPriceCustom(hasPrice);
     setCpuOverride(hasCpu ? String(client.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
     setMemOverride(hasMem ? String(client.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
     setStorageOverride(hasStorage ? String(client.storageLimitOverride) : (plan?.storageLimit ?? ''));
     setSubUsersOverride(hasSubUsers ? String(client.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
+    setMailboxesOverride(hasMailboxes ? String(client.maxMailboxesOverride) : String(plan?.maxMailboxes ?? ''));
     setPriceOverride(hasPrice ? String(client.monthlyPriceOverride) : (plan?.monthlyPriceUsd ?? ''));
     setEditing(true);
   };
@@ -956,6 +962,7 @@ function ResourceLimitsCard({
         memory_limit_override: memCustom ? Number(memOverride) : null,
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
+        max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
       });
       setEditing(false);
@@ -1037,11 +1044,12 @@ function ResourceLimitsCard({
       </div>
 
       <form onSubmit={handleSave}>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
           {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, client.cpuLimitOverride != null, 'number', '0.25')}
           {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, client.memoryLimitOverride != null, 'number', '0.5')}
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, client.storageLimitOverride != null, 'number', '1')}
           {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, client.maxSubUsersOverride != null, 'number', '1')}
+          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, client.maxMailboxesOverride != null, 'number', '1')}
           {renderField('Monthly Price', 'USD', effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, client.monthlyPriceOverride != null, 'number', '0.01')}
         </div>
 

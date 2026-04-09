@@ -66,8 +66,9 @@ describe('createMailbox', () => {
   });
 
   it('should create a mailbox and hash the password', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1', maxMailboxes: 50 };
+    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
     const countResult = { count: 0 };
     const created = {
       id: 'mb1', emailDomainId: 'ed1', clientId: 'c1', localPart: 'info',
@@ -75,8 +76,17 @@ describe('createMailbox', () => {
       usedMb: 0, status: 'active', mailboxType: 'mailbox', autoReply: 0,
     };
 
-    // Select calls: 1) emailDomain, 2) domain, 3) count, 4) existing check, 5) return created
-    selectResults = [[emailDomain], [domain], [countResult], [], [created]];
+    // Select calls: 1) emailDomain, 2) domain, 3) clients+hostingPlans for
+    //   getClientMailboxLimit, 4) count for getClientMailboxCount,
+    //   5) existing check, 6) return created
+    selectResults = [
+      [emailDomain],
+      [domain],
+      [planRow],
+      [countResult],
+      [],
+      [created],
+    ];
     const db = createMockDb();
 
     const result = await createMailbox(
@@ -91,29 +101,57 @@ describe('createMailbox', () => {
     expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
   });
 
-  it('should enforce max mailbox limit', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1', maxMailboxes: 2 };
+  it('should enforce client mailbox limit from the plan', async () => {
+    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 2, override: null };
     const countResult = { count: 2 };
 
-    selectResults = [[emailDomain], [domain], [countResult]];
+    selectResults = [[emailDomain], [domain], [planRow], [countResult]];
     const db = createMockDb();
 
     await expect(
       createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
     ).rejects.toMatchObject({
-      code: 'MAILBOX_LIMIT_REACHED',
+      code: 'CLIENT_MAILBOX_LIMIT_REACHED',
       status: 409,
+      details: { limit: 2, current: 2, source: 'plan' },
+    });
+  });
+
+  it('should prefer a positive per-client override over the plan limit', async () => {
+    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    // Plan allows 50, override cuts it to 5 — count is at 5
+    const planRow = { planLimit: 50, override: 5 };
+    const countResult = { count: 5 };
+
+    selectResults = [[emailDomain], [domain], [planRow], [countResult]];
+    const db = createMockDb();
+
+    await expect(
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
+    ).rejects.toMatchObject({
+      code: 'CLIENT_MAILBOX_LIMIT_REACHED',
+      status: 409,
+      details: { limit: 5, current: 5, source: 'client_override' },
     });
   });
 
   it('should reject duplicate full address', async () => {
-    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1', maxMailboxes: 50 };
+    const emailDomain = { id: 'ed1', clientId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
     const countResult = { count: 1 };
     const existing = { id: 'mb-existing' };
 
-    selectResults = [[emailDomain], [domain], [countResult], [existing]];
+    selectResults = [
+      [emailDomain],
+      [domain],
+      [planRow],
+      [countResult],
+      [existing],
+    ];
     const db = createMockDb();
 
     await expect(

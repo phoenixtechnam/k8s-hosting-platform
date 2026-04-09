@@ -46,6 +46,27 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       return success(data);
     });
 
+    // GET /api/v1/clients/:clientId/mail/mailbox-usage
+    //
+    // Phase 4/5 of client-panel email parity round 2: expose the
+    // computed plan-based limit + current count so the client panel
+    // can render a usage bar. Returns { limit, current, source,
+    // remaining } — source is 'plan' or 'client_override'.
+    clientScope.get('/clients/:clientId/mail/mailbox-usage', {
+      onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user')],
+    }, async (request) => {
+      const { clientId } = request.params as { clientId: string };
+      const { getClientMailboxLimit, getClientMailboxCount } = await import('./limit.js');
+      const limit = await getClientMailboxLimit(app.db, clientId);
+      const current = await getClientMailboxCount(app.db, clientId);
+      return success({
+        limit: limit.limit,
+        current,
+        source: limit.source,
+        remaining: Math.max(0, limit.limit - current),
+      });
+    });
+
     // GET /api/v1/clients/:clientId/mailboxes/:id
     clientScope.get('/clients/:clientId/mailboxes/:id', {
       onRequest: [requireRole('super_admin', 'admin', 'support', 'client_admin')],

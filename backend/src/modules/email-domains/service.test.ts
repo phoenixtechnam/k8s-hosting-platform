@@ -30,8 +30,6 @@ const EMAIL_DOMAIN = {
   dkimSelector: 'default',
   dkimPrivateKeyEncrypted: 'encrypted:test',
   dkimPublicKey: '-----BEGIN PUBLIC KEY-----\nMOCK_PUBLIC\n-----END PUBLIC KEY-----',
-  maxMailboxes: 50,
-  maxQuotaMb: 10240,
   catchAllAddress: null,
   mxProvisioned: 1,
   spfProvisioned: 1,
@@ -94,7 +92,7 @@ function createMockDb(options: {
 describe('enableEmailForDomain', () => {
   it('should generate DKIM keys and create email domain record', async () => {
     const db = createMockDb();
-    const result = await enableEmailForDomain(db, 'c1', 'd1', { max_mailboxes: 50, max_quota_mb: 10240 }, '0'.repeat(64));
+    const result = await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
 
     expect(result).toBeDefined();
     expect((db as any)._mocks.insertFn).toHaveBeenCalled();
@@ -102,7 +100,7 @@ describe('enableEmailForDomain', () => {
 
   it('should return existing record when already enabled (idempotent)', async () => {
     const db = createMockDb({ emailDomainResult: [EMAIL_DOMAIN] });
-    const result = await enableEmailForDomain(db, 'c1', 'd1', { max_mailboxes: 50, max_quota_mb: 10240 }, '0'.repeat(64));
+    const result = await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
 
     expect(result).toBeDefined();
     expect(result.domainName).toBe('example.com');
@@ -112,7 +110,7 @@ describe('enableEmailForDomain', () => {
   it('should throw DOMAIN_NOT_FOUND for non-existent domain', async () => {
     const db = createMockDb({ domainResult: [] });
     await expect(
-      enableEmailForDomain(db, 'c1', 'missing', { max_mailboxes: 50, max_quota_mb: 10240 }, '0'.repeat(64)),
+      enableEmailForDomain(db, 'c1', 'missing', {}, '0'.repeat(64)),
     ).rejects.toMatchObject({
       code: 'DOMAIN_NOT_FOUND',
       status: 404,
@@ -169,7 +167,7 @@ describe('updateEmailDomain', () => {
       selectCallCount++;
       if (selectCallCount === 1) return Promise.resolve([DOMAIN]);
       if (selectCallCount === 2) return Promise.resolve([EMAIL_DOMAIN]);
-      return Promise.resolve([{ ...EMAIL_DOMAIN, maxMailboxes: 100 }]);
+      return Promise.resolve([{ ...EMAIL_DOMAIN, catchAllAddress: 'postmaster@example.com' }]);
     });
     const fromFn = vi.fn().mockReturnValue({ where: whereFn });
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
@@ -179,7 +177,9 @@ describe('updateEmailDomain', () => {
     const updateFn = vi.fn().mockReturnValue({ set: updateSet });
 
     const db = { select: selectFn, update: updateFn } as unknown as Parameters<typeof updateEmailDomain>[0];
-    const result = await updateEmailDomain(db, 'c1', 'd1', { max_mailboxes: 100 });
+    const result = await updateEmailDomain(db, 'c1', 'd1', {
+      catch_all_address: 'postmaster@example.com',
+    });
 
     expect(result).toBeDefined();
     expect(updateFn).toHaveBeenCalled();
@@ -196,7 +196,9 @@ describe('updateEmailDomain', () => {
     const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 
     const db = { select: selectFn } as unknown as Parameters<typeof updateEmailDomain>[0];
-    await expect(updateEmailDomain(db, 'c1', 'd1', { max_mailboxes: 100 })).rejects.toMatchObject({
+    await expect(
+      updateEmailDomain(db, 'c1', 'd1', { catch_all_address: 'postmaster@example.com' }),
+    ).rejects.toMatchObject({
       code: 'EMAIL_DOMAIN_NOT_FOUND',
       status: 404,
     });

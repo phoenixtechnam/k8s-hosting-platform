@@ -50,6 +50,17 @@ vi.mock('../hooks/use-email', () => ({
     data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
     isLoading: false,
   })),
+  useMailboxUsage: vi.fn(() => ({
+    data: { data: { limit: 50, current: 0, remaining: 50, source: 'plan' } },
+    isLoading: false,
+  })),
+}));
+
+vi.mock('../hooks/use-domains', () => ({
+  useDomains: vi.fn(() => ({
+    data: { data: [] },
+    isLoading: false,
+  })),
 }));
 
 import { useEmailDomains, useMailboxes, useUpdateMailbox, useEmailDomainDnsRecords } from '../hooks/use-email';
@@ -84,10 +95,10 @@ describe('Email Page', () => {
     expect(screen.getByText('Email')).toBeInTheDocument();
   });
 
-  it('shows email not enabled when no domains', () => {
+  it('shows the Enable Email card when no email domains exist', () => {
     renderWithProviders(<Email />);
-    expect(screen.getByTestId('email-not-enabled')).toBeInTheDocument();
-    expect(screen.getByText('Email Not Enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('email-enable-card')).toBeInTheDocument();
+    expect(screen.getByText('Enable Email Hosting')).toBeInTheDocument();
   });
 
   it('shows Mailboxes and Aliases tabs when domains exist', () => {

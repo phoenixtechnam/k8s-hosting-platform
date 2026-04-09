@@ -83,6 +83,12 @@ export async function deleteNotification(db: Database, userId: string, id: strin
 /**
  * Fire-and-forget notification helper. Wraps createNotification in try/catch
  * so callers can safely notify without risking their own operation.
+ *
+ * Round-2 refactor: `encryptionKey` now defaults to
+ * `process.env.OIDC_ENCRYPTION_KEY` (the same key used by
+ * startDkimScheduler in app.ts), so call sites no longer need to
+ * thread it through every layer just to get emails sent. Pass an
+ * explicit key to override — useful for tests.
  */
 export async function notifyUser(
   db: Database,
@@ -100,12 +106,42 @@ export async function notifyUser(
     const created = await createNotification(db, { userId, ...opts });
 
     // Fire-and-forget email notification if encryption key is available
-    if (encryptionKey && created) {
-      sendNotificationEmail(db, created, encryptionKey).catch(() => {
+    const effectiveKey = encryptionKey ?? process.env.OIDC_ENCRYPTION_KEY;
+    if (effectiveKey && created) {
+      sendNotificationEmail(db, created, effectiveKey).catch(() => {
         // Silently ignore email failures
       });
     }
   } catch {
     // Fire-and-forget: notification failure must not break the caller
+  }
+}
+
+/**
+ * Fan-out helper: fire the same notification to every user ID in the
+ * given list. Individual failures are swallowed (notifyUser is already
+ * fire-and-forget) so one bad recipient cannot starve the others.
+ *
+ * Used by the events.ts helpers that resolve client_admin recipients
+ * via getClientNotificationRecipients and then call this with the
+ * resolved list.
+ */
+export async function notifyUsers(
+  db: Database,
+  userIds: readonly string[],
+  opts: {
+    readonly type: 'info' | 'warning' | 'error' | 'success';
+    readonly title: string;
+    readonly message: string;
+    readonly resourceType?: string | null;
+    readonly resourceId?: string | null;
+  },
+  encryptionKey?: string,
+): Promise<void> {
+  for (const uid of userIds) {
+    // Sequential, not parallel: createNotification is cheap and
+    // serial keeps the log ordering predictable for ops triage.
+    // eslint-disable-next-line no-await-in-loop
+    await notifyUser(db, uid, opts, encryptionKey);
   }
 }

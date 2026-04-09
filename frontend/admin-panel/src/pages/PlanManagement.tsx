@@ -16,6 +16,7 @@ interface PlanRow {
   readonly storageLimit: string;
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
+  readonly maxMailboxes: number;
   readonly status: string;
 }
 
@@ -66,11 +67,16 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     cpu_limit: initial?.cpuLimit ?? '0.50', memory_limit: initial?.memoryLimit ?? '1.00',
     storage_limit: initial?.storageLimit ?? '10.00', monthly_price_usd: initial?.monthlyPriceUsd ?? '5.00',
     max_sub_users: String(initial?.maxSubUsers ?? 3),
+    max_mailboxes: String(initial?.maxMailboxes ?? 50),
   });
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const payload = { ...form, max_sub_users: Number(form.max_sub_users) };
+    const payload = {
+      ...form,
+      max_sub_users: Number(form.max_sub_users),
+      max_mailboxes: Number(form.max_mailboxes),
+    };
     try {
       if (isEdit && initial) { await update.mutateAsync({ id: initial.id, ...payload }); }
       else { await create.mutateAsync(payload); }
@@ -93,6 +99,20 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Memory Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.memory_limit} onChange={(e) => setForm({ ...form, memory_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.storage_limit} onChange={(e) => setForm({ ...form, storage_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} /></div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Mailboxes</label>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            min={1}
+            max={10000}
+            value={form.max_mailboxes}
+            onChange={(e) => setForm({ ...form, max_mailboxes: e.target.value })}
+            data-testid="plan-max-mailboxes-input"
+          />
+        </div>
       </div>
       <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Description</label><input type="text" className={INPUT_CLASS} placeholder="Optional description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
       {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
@@ -130,6 +150,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.memoryLimit}GB RAM</span>
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.maxSubUsers} users</span>
+          <span>{plan.maxMailboxes} mailboxes</span>
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-plan-${plan.id}`}><Edit size={12} /></button>
             {confirmDel ? (

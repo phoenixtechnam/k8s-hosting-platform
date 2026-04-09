@@ -17,7 +17,7 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { createNotification } from '../notifications/service.js';
+import { notifyUser } from '../notifications/service.js';
 import type { Database } from '../../db/index.js';
 
 const THRESHOLDS = [80, 90, 100] as const;
@@ -136,25 +136,20 @@ export async function checkQuotaThresholds(
         continue;
       }
 
-      // Fan out to all recipients.
+      // Fan out to all recipients via notifyUser, which also fires
+      // an email through sendNotificationEmail when
+      // OIDC_ENCRYPTION_KEY is configured (see notifications/service.ts).
+      // notifyUser is already fire-and-forget and swallows errors,
+      // so one flaky SMTP send cannot starve the loop.
       for (const userId of row.recipient_user_ids) {
-        try {
-          await createNotification(db, {
-            userId,
-            type: notificationType(threshold),
-            title: buildTitle(threshold),
-            message: buildMessage(row.full_address, threshold, row.used_mb, row.quota_mb),
-            resourceType: 'mailbox',
-            resourceId: row.mailbox_id,
-          });
-          fired += 1;
-        } catch (err) {
-          console.warn(
-            `[mail-stats:quota] failed to notify user ${userId} for mailbox ${row.mailbox_id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+        await notifyUser(db, userId, {
+          type: notificationType(threshold),
+          title: buildTitle(threshold),
+          message: buildMessage(row.full_address, threshold, row.used_mb, row.quota_mb),
+          resourceType: 'mailbox',
+          resourceId: row.mailbox_id,
+        });
+        fired += 1;
       }
     }
   }

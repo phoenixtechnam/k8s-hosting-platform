@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download } from 'lucide-react';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { useDomains } from '@/hooks/use-domains';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const styles: Record<string, string> = {
@@ -39,6 +40,7 @@ import {
   useCreateImapSyncJob,
   useCancelImapSyncJob,
   useMailRateLimit,
+  useMailboxUsage,
   type Mailbox,
   type EmailDomain,
   type DnsRecordDisplay,
@@ -67,14 +69,8 @@ export default function Email() {
 
       {domainsLoading && <div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}
 
-      {!domainsLoading && emailDomains.length === 0 && (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-12 text-center shadow-sm" data-testid="email-not-enabled">
-          <Mail size={48} className="mx-auto text-gray-300 dark:text-gray-600" />
-          <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Email Not Enabled</h2>
-          <p className="mx-auto mt-2 max-w-md text-sm text-gray-500 dark:text-gray-400">
-            Email hosting has not been enabled for any of your domains yet. Contact your administrator to enable email.
-          </p>
-        </div>
+      {!domainsLoading && emailDomains.length === 0 && clientId && (
+        <EnableEmailCard clientId={clientId} />
       )}
 
       {!domainsLoading && emailDomains.length > 0 && (
@@ -97,6 +93,165 @@ export default function Email() {
           {tab === 'aliases' && <AliasesTab clientId={clientId!} emailDomains={emailDomains} />}
           {tab === 'settings' && <SettingsTab clientId={clientId!} emailDomains={emailDomains} />}
         </>
+      )}
+    </div>
+  );
+}
+
+// Phase 4 round-2: self-service Enable Email card.
+//
+// Shows the list of a client's domains with an "Enable Email" button
+// per row. Clicking it hits POST
+// /api/v1/clients/:clientId/email/domains/:domainId/enable, which
+// generates DKIM keys + provisions DNS records server-side. When
+// the mutation succeeds, the email domains query is invalidated and
+// the parent re-renders into the normal tabbed layout.
+function EnableEmailCard({ clientId }: { readonly clientId: string }) {
+  const { data: domainsRes, isLoading: domainsLoading } = useDomains(clientId);
+  const enable = useEnableEmailDomain(clientId);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [errorId, setErrorId] = useState<string | null>(null);
+
+  const domains = domainsRes?.data ?? [];
+
+  const handleEnable = async (domainId: string) => {
+    setSubmittingId(domainId);
+    setErrorId(null);
+    try {
+      await enable.mutateAsync({ domainId, input: {} });
+    } catch {
+      setErrorId(domainId);
+    } finally {
+      setSubmittingId(null);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-8 shadow-sm"
+      data-testid="email-enable-card"
+    >
+      <div className="flex items-start gap-4">
+        <div className="rounded-xl bg-brand-50 dark:bg-brand-900/30 p-3">
+          <Mail size={28} className="text-brand-600 dark:text-brand-400" />
+        </div>
+        <div className="flex-1">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Enable Email Hosting
+          </h2>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Turn on email for one of your domains to start creating mailboxes. The
+            platform will generate DKIM keys and publish DNS records for you.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6 space-y-2">
+        {domainsLoading && (
+          <div className="flex justify-center py-6">
+            <Loader2 size={18} className="animate-spin text-brand-500" />
+          </div>
+        )}
+        {!domainsLoading && domains.length === 0 && (
+          <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-6 text-center text-sm text-gray-500 dark:text-gray-400">
+            You don't have any domains yet. Add a domain from the Domains page, then come
+            back here to enable email for it.
+          </div>
+        )}
+        {!domainsLoading
+          && domains.map((d) => (
+            <div
+              key={d.id}
+              className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3"
+              data-testid={`enable-email-row-${d.id}`}
+            >
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {d.domainName}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  DNS mode: {d.dnsMode ?? 'unknown'}
+                </div>
+                {errorId === d.id && enable.error && (
+                  <div className="mt-1 flex items-center gap-1 text-xs text-red-600">
+                    <AlertCircle size={12} />
+                    {enable.error instanceof Error ? enable.error.message : 'Failed to enable'}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={submittingId === d.id}
+                onClick={() => handleEnable(d.id)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50"
+                data-testid={`enable-email-button-${d.id}`}
+              >
+                {submittingId === d.id && <Loader2 size={12} className="animate-spin" />}
+                {submittingId === d.id ? 'Enabling…' : 'Enable Email'}
+              </button>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+// Phase 5 round-2: client mailbox usage bar.
+// Displays { current / limit } with a colored progress bar driven
+// by the plan-based limit helper on the backend.
+function MailboxUsageBar({ clientId }: { readonly clientId: string }) {
+  const { data } = useMailboxUsage(clientId);
+  const usage = data?.data;
+  if (!usage) return null;
+  const pct = usage.limit > 0 ? (usage.current / usage.limit) * 100 : 0;
+  const nearLimit = pct >= 80;
+  const atLimit = pct >= 100;
+  const barColor = atLimit
+    ? 'bg-red-500'
+    : nearLimit
+      ? 'bg-amber-500'
+      : 'bg-brand-500';
+  const containerBorder = atLimit
+    ? 'border-red-200 dark:border-red-800'
+    : nearLimit
+      ? 'border-amber-200 dark:border-amber-800'
+      : 'border-gray-200 dark:border-gray-700';
+  return (
+    <div
+      className={clsx(
+        'rounded-xl border bg-white dark:bg-gray-800 p-4 shadow-sm',
+        containerBorder,
+      )}
+      data-testid="mailbox-usage-bar"
+    >
+      <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+        <Inbox size={14} />
+        <span>Mailbox usage</span>
+        <span className="ml-auto font-medium text-gray-700 dark:text-gray-200">
+          {usage.current} / {usage.limit}
+        </span>
+      </div>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        <div
+          className={clsx('h-2 rounded-full transition-all', barColor)}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
+      {atLimit && (
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+          You have reached the mailbox limit for your plan. Remove an existing mailbox or
+          contact your administrator to request a larger plan.
+        </p>
+      )}
+      {!atLimit && nearLimit && (
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+          You're approaching your plan's mailbox limit. Consider upgrading if you'll need more.
+        </p>
+      )}
+      {usage.source === 'client_override' && (
+        <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+          Limit set by per-client override.
+        </p>
       )}
     </div>
   );
@@ -138,6 +293,7 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
 
   return (
     <div className="space-y-4">
+      <MailboxUsageBar clientId={clientId} />
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500 dark:text-gray-400">{mailboxesRaw.length} mailbox{mailboxesRaw.length !== 1 ? 'es' : ''}</p>
         <button type="button" onClick={() => setShowForm(p => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-mailbox-button">

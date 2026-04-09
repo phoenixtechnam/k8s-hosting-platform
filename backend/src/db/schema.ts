@@ -133,6 +133,10 @@ export const hostingPlans = pgTable('hosting_plans', {
   storageLimit: numeric('storage_limit', { precision: 10, scale: 2 }).notNull(),
   monthlyPriceUsd: numeric('monthly_price_usd', { precision: 10, scale: 2 }).notNull(),
   maxSubUsers: integer('max_sub_users').notNull().default(3),
+  // Plan-level cap on total mailboxes across all the client's
+  // email domains. Can be overridden per-client via
+  // clients.max_mailboxes_override.
+  maxMailboxes: integer('max_mailboxes').notNull().default(50),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -156,6 +160,10 @@ export const clients = pgTable('clients', {
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
   maxSubUsersOverride: integer('max_sub_users_override'),
   monthlyPriceOverride: numeric('monthly_price_override', { precision: 10, scale: 2 }),
+  // Phase 1 (client-panel email parity round 2): per-customer
+  // mailbox count override. null = inherit from the plan's
+  // max_mailboxes. Used by the limit check in mailboxes/service.ts.
+  maxMailboxesOverride: integer('max_mailboxes_override'),
   // Phase 3.B.3: per-customer email send rate limit (messages/hour).
   // null = inherit the global default from platform_settings key
   // `email_send_rate_limit_default`. Suspended clients are forced to
@@ -637,8 +645,9 @@ export const emailDomains = pgTable('email_domains', {
   dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
   dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
   dkimPublicKey: text('dkim_public_key'),
-  maxMailboxes: integer('max_mailboxes').notNull().default(50),
-  maxQuotaMb: integer('max_quota_mb').notNull().default(10240),
+  // NOTE: max_mailboxes + max_quota_mb were removed in migration
+  // 0019. Mailbox count is now capped at the plan level via
+  // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
   catchAllAddress: varchar('catch_all_address', { length: 255 }),
   mxProvisioned: integer('mx_provisioned').notNull().default(0),
   spfProvisioned: integer('spf_provisioned').notNull().default(0),

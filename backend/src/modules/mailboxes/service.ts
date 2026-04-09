@@ -1,8 +1,10 @@
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { mailboxes, mailboxAccess, emailDomains, domains, users, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { getClientMailboxLimit, getClientMailboxCount } from './limit.js';
+import { notifyClientMailboxLimitReached } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { CreateMailboxInput, UpdateMailboxInput } from '@k8s-hosting/api-contracts';
 import type { FastifyInstance } from 'fastify';
@@ -62,20 +64,34 @@ export async function createMailbox(
     throw new ApiError('DOMAIN_NOT_FOUND', 'Associated domain not found', 404);
   }
 
-  // 3. Check mailbox count against maxMailboxes limit
-  const [countResult] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(mailboxes)
-    .where(eq(mailboxes.emailDomainId, emailDomainId));
-
-  const currentCount = Number(countResult?.count ?? 0);
-  if (currentCount >= emailDomain.maxMailboxes) {
+  // 3. Check mailbox count against plan-based client-total limit.
+  //    Round-2 refactor: per-email-domain max_mailboxes is gone. We
+  //    now cap TOTAL mailboxes for the client via the plan
+  //    (hosting_plans.max_mailboxes) with an optional per-client
+  //    override (clients.max_mailboxes_override). See limit.ts.
+  const effective = await getClientMailboxLimit(db, clientId);
+  const currentCount = await getClientMailboxCount(db, clientId);
+  if (currentCount >= effective.limit) {
+    // Fire-and-forget notification fan-out to all client_admin users.
+    // We do NOT await the email delivery; we only await the DB insert
+    // so the test path is deterministic. Any failure inside
+    // notifyClientMailboxLimitReached is swallowed by notifyUser's
+    // try/catch so this cannot mask the original ApiError.
+    void notifyClientMailboxLimitReached(db, clientId, {
+      limit: effective.limit,
+      current: currentCount,
+      source: effective.source,
+    });
     throw new ApiError(
-      'MAILBOX_LIMIT_REACHED',
-      `Maximum mailbox limit (${emailDomain.maxMailboxes}) reached for this email domain`,
+      'CLIENT_MAILBOX_LIMIT_REACHED',
+      `Mailbox limit (${effective.limit}) reached for this account`,
       409,
-      { limit: emailDomain.maxMailboxes, current: currentCount },
-      'Upgrade plan or remove unused mailboxes',
+      {
+        limit: effective.limit,
+        current: currentCount,
+        source: effective.source,
+      },
+      'Upgrade your plan or request a per-client override from your administrator',
     );
   }
 

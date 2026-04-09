@@ -12,8 +12,6 @@ const mockEmailDomain = {
   enabled: 1,
   dkimSelector: 'default',
   dkimPublicKey: 'pk-data',
-  maxMailboxes: 50,
-  maxQuotaMb: 10240,
   catchAllAddress: null,
   mxProvisioned: 1,
   spfProvisioned: 1,
@@ -31,7 +29,10 @@ vi.mock('./service.js', () => ({
   disableEmailForDomain: vi.fn().mockResolvedValue(undefined),
   listEmailDomains: vi.fn().mockResolvedValue([mockEmailDomain]),
   getEmailDomain: vi.fn().mockResolvedValue(mockEmailDomain),
-  updateEmailDomain: vi.fn().mockResolvedValue({ ...mockEmailDomain, maxMailboxes: 100 }),
+  updateEmailDomain: vi.fn().mockResolvedValue({
+    ...mockEmailDomain,
+    catchAllAddress: 'postmaster@example.com',
+  }),
 }));
 
 const { emailDomainRoutes } = await import('./routes.js');
@@ -118,12 +119,12 @@ describe('email-domain routes', () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it('POST enable should reject invalid max_mailboxes', async () => {
+  it('POST enable should reject invalid catch_all_address', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/clients/c1/email/domains/d1/enable',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { max_mailboxes: 0 },
+      payload: { catch_all_address: 'not-an-email' },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
@@ -180,7 +181,7 @@ describe('email-domain routes', () => {
       method: 'PATCH',
       url: '/api/v1/clients/c1/email/domains/ed-1',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { max_mailboxes: 100 },
+      payload: { catch_all_address: 'postmaster@example.com' },
     });
     expect(res.statusCode).toBe(200);
   });

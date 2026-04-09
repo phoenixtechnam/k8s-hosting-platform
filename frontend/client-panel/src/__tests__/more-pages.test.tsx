@@ -65,11 +65,37 @@ vi.mock('../hooks/use-email', () => ({
   useMailboxes: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useCreateMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useUpdateMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailAliases: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useCreateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useDkimKeys: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useRotateDkimKey: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useActivateDkimKey: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMailSubmitCredential: vi.fn(() => ({ data: { data: { exists: false } }, isLoading: false })),
+  useRotateMailSubmitCredential: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useImapSyncJobs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateImapSyncJob: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useCancelImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useMailRateLimit: vi.fn(() => ({
+    data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
+    isLoading: false,
+  })),
+  useMailboxUsage: vi.fn(() => ({
+    data: { data: { limit: 50, current: 0, remaining: 50, source: 'plan' } },
+    isLoading: false,
+  })),
+}));
+
+vi.mock('../hooks/use-domains', () => ({
+  useDomains: vi.fn(() => ({
+    data: { data: [] },
+    isLoading: false,
+  })),
 }));
 
 import { useBackups } from '../hooks/use-backups';
@@ -194,10 +220,10 @@ describe('Email', () => {
     expect(screen.getByText('Email')).toBeInTheDocument();
   });
 
-  it('shows email not enabled message when no email domains', () => {
+  it('shows the Enable Email card when no email domains', () => {
     renderWithProviders(<Email />);
-    expect(screen.getByTestId('email-not-enabled')).toBeInTheDocument();
-    expect(screen.getByText('Email Not Enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('email-enable-card')).toBeInTheDocument();
+    expect(screen.getByText('Enable Email Hosting')).toBeInTheDocument();
   });
 });
 

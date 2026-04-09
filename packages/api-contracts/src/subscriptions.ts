@@ -22,6 +22,9 @@ export const hostingPlanSchema = z.object({
   storageLimit: z.string(),
   monthlyPriceUsd: z.string(),
   maxSubUsers: z.number(),
+  // Phase 1 (client-panel email parity round 2): per-plan cap on
+  // total mailboxes across the client's email domains.
+  maxMailboxes: z.number(),
   features: z.unknown().nullable(),
   status: z.string(),
   createdAt: z.string(),

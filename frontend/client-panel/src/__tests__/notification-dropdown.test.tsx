@@ -7,10 +7,15 @@ import NotificationDropdown from '../components/NotificationDropdown';
 
 vi.mock('../hooks/use-notifications', () => ({
   useNotifications: vi.fn(() => ({
-    data: [],
+    data: { data: [] },
     isLoading: false,
     isError: false,
   })),
+  useUnreadCount: vi.fn(() => ({
+    data: { data: { count: 0 } },
+    isLoading: false,
+  })),
+  useMarkNotificationsRead: vi.fn(() => ({ mutate: vi.fn() })),
 }));
 
 function createWrapper() {
@@ -70,7 +75,7 @@ describe('Client NotificationDropdown', () => {
     expect(screen.queryByTestId('notification-dropdown')).not.toBeInTheDocument();
   });
 
-  it('does not show red dot when there are no notifications', () => {
+  it('does not show red badge when there are no unread notifications', () => {
     const { container } = render(<NotificationDropdown />, { wrapper: createWrapper() });
     const redDot = container.querySelector('.bg-red-500');
     expect(redDot).not.toBeInTheDocument();

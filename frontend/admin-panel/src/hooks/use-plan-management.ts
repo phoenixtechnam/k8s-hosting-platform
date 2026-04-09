@@ -10,6 +10,7 @@ interface CreatePlanInput {
   readonly storage_limit: string;
   readonly monthly_price_usd: string;
   readonly max_sub_users?: number;
+  readonly max_mailboxes?: number;
   readonly features?: Record<string, unknown>;
 }
 

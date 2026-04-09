@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the notifications module so we can assert which userIds
 // receive what without touching the real DB.
 vi.mock('../notifications/service.js', () => ({
+  notifyUser: vi.fn(async () => undefined),
   createNotification: vi.fn(async (_db: unknown, input: Record<string, unknown>) => ({
     id: `notif-${input.userId}-${input.title}`,
   })),
@@ -62,7 +63,7 @@ beforeEach(() => {
   executeCallIndex = 0;
   insertConflictCount = 0;
   updateClearedCount = 0;
-  vi.mocked(notifications.createNotification).mockClear();
+  vi.mocked(notifications.notifyUser).mockClear();
 });
 
 describe('checkQuotaThresholds', () => {
@@ -91,12 +92,14 @@ describe('checkQuotaThresholds', () => {
     const result = await qn.checkQuotaThresholds(db as never);
 
     expect(result.fired).toBe(1);
-    expect(notifications.createNotification).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(notifications.createNotification).mock.calls[0][1];
-    expect(call.userId).toBe('user-alice');
-    expect(call.type).toBe('warning');
-    expect(call.title).toContain('80');
-    expect(call.message).toContain('alice@acme.com');
+    expect(notifications.notifyUser).toHaveBeenCalledTimes(1);
+    // notifyUser(db, userId, opts) — opts is arg index 2
+    const notifyCall = vi.mocked(notifications.notifyUser).mock.calls[0];
+    expect(notifyCall[1]).toBe('user-alice');
+    const opts = notifyCall[2];
+    expect(opts.type).toBe('warning');
+    expect(opts.title).toContain('80');
+    expect(opts.message).toContain('alice@acme.com');
   });
 
   it('does NOT fire a notification when the threshold is already recorded (ON CONFLICT DO NOTHING)', async () => {
@@ -121,7 +124,7 @@ describe('checkQuotaThresholds', () => {
     const result = await qn.checkQuotaThresholds(db as never);
 
     expect(result.fired).toBe(0);
-    expect(notifications.createNotification).not.toHaveBeenCalled();
+    expect(notifications.notifyUser).not.toHaveBeenCalled();
   });
 
   it('fires SEPARATE notifications for 80, 90, and 100 thresholds when usage = 100%', async () => {
@@ -147,8 +150,8 @@ describe('checkQuotaThresholds', () => {
     const result = await qn.checkQuotaThresholds(db as never);
 
     expect(result.fired).toBe(3);
-    expect(notifications.createNotification).toHaveBeenCalledTimes(3);
-    const titles = vi.mocked(notifications.createNotification).mock.calls.map(c => c[1].title);
+    expect(notifications.notifyUser).toHaveBeenCalledTimes(3);
+    const titles = vi.mocked(notifications.notifyUser).mock.calls.map(c => c[2].title);
     expect(titles.some(t => String(t).includes('80'))).toBe(true);
     expect(titles.some(t => String(t).includes('90'))).toBe(true);
     expect(titles.some(t => String(t).includes('100'))).toBe(true);
@@ -193,8 +196,8 @@ describe('checkQuotaThresholds', () => {
 
     await qn.checkQuotaThresholds(db as never);
 
-    expect(notifications.createNotification).toHaveBeenCalledTimes(2);
-    const userIds = vi.mocked(notifications.createNotification).mock.calls.map(c => c[1].userId);
+    expect(notifications.notifyUser).toHaveBeenCalledTimes(2);
+    const userIds = vi.mocked(notifications.notifyUser).mock.calls.map(c => c[1]);
     expect(userIds).toContain('user-alice');
     expect(userIds).toContain('user-admin');
   });
@@ -220,6 +223,6 @@ describe('checkQuotaThresholds', () => {
 
     expect(result.fired).toBe(0);
     expect(result.skipped).toBe(1);
-    expect(notifications.createNotification).not.toHaveBeenCalled();
+    expect(notifications.notifyUser).not.toHaveBeenCalled();
   });
 });
