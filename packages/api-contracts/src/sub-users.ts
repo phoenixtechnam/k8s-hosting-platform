@@ -37,6 +37,29 @@ export const createSubUserSchema = z.object({
 });
 export type CreateSubUserInput = z.infer<typeof createSubUserSchema>;
 
+// ─── Update (Phase 3) ───────────────────────────────────────────────────────
+
+/**
+ * Partial update of a sub-user. All fields optional — callers should
+ * send only the fields they want to change. Password changes go
+ * through a separate reset-password endpoint in Phase 4, not here.
+ */
+export const updateSubUserSchema = z.object({
+  full_name: z.string().min(1, 'full_name cannot be empty').max(255).optional(),
+  role_name: subUserRoleSchema.optional(),
+  /**
+   * Lifecycle state. `active` = can log in; `disabled` = cannot
+   * log in but row is preserved (soft-delete); `pending` is
+   * reserved for invitation flows (Phase 8+) and cannot be set
+   * via this endpoint.
+   */
+  status: z.enum(['active', 'disabled']).optional(),
+}).refine(
+  (data) => Object.values(data).some((v) => v !== undefined),
+  { message: 'at least one field (full_name, role_name, status) must be provided' },
+);
+export type UpdateSubUserInput = z.infer<typeof updateSubUserSchema>;
+
 // ─── Response shapes ────────────────────────────────────────────────────────
 
 /**

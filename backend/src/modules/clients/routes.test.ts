@@ -54,10 +54,24 @@ const createSubUserMock = vi.fn().mockImplementation(
   },
 );
 const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
+const updateSubUserMock = vi.fn().mockImplementation(
+  (_db: unknown, _clientId: string, userId: string, payload: { fullName?: string; roleName?: string; status?: string }) => {
+    return Promise.resolve({
+      id: userId,
+      email: 'alice@c1.com',
+      fullName: payload.fullName ?? 'Alice',
+      roleName: payload.roleName ?? 'client_user',
+      status: payload.status ?? 'active',
+      createdAt: new Date('2026-01-01'),
+      lastLoginAt: null,
+    });
+  },
+);
 
 vi.mock('./sub-users-service.js', () => ({
   listSubUsers: (...args: unknown[]) => listSubUsersMock(...args),
   createSubUser: (...args: unknown[]) => createSubUserMock(...args),
+  updateSubUser: (...args: unknown[]) => updateSubUserMock(...args),
   deleteSubUser: (...args: unknown[]) => deleteSubUserMock(...args),
   makeDrizzleSubUsersDb: vi.fn().mockReturnValue({}),
   getEffectiveMaxSubUsers: vi.fn().mockResolvedValue(10),
@@ -116,6 +130,7 @@ describe('client routes', () => {
   beforeEach(() => {
     listSubUsersMock.mockClear();
     createSubUserMock.mockClear();
+    updateSubUserMock.mockClear();
     deleteSubUserMock.mockClear();
   });
 
@@ -439,6 +454,98 @@ describe('client routes', () => {
         },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('PATCH /api/v1/clients/:clientId/users/:userId (Phase 3)', () => {
+    it('allows client_admin to rename a sub-user', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { full_name: 'Renamed' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.fullName).toBe('Renamed');
+      expect(updateSubUserMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'c1',
+        'u1',
+        expect.objectContaining({ fullName: 'Renamed' }),
+      );
+    });
+
+    it('allows status changes (disable)', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { status: 'disabled' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.status).toBe('disabled');
+    });
+
+    it('allows role changes', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { role_name: 'client_admin' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.roleName).toBe('client_admin');
+    });
+
+    it('rejects an empty patch body', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(updateSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid status values', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { status: 'pending' },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('rejects client_user (read-only cannot edit)', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: { full_name: 'Evil' },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(updateSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects cross-client edits', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        headers: { authorization: `Bearer ${otherClientAdminToken}` },
+        payload: { full_name: 'Hack' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('requires auth', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/clients/c1/users/u1',
+        payload: { full_name: 'Anon' },
+      });
+      expect(res.statusCode).toBe(401);
     });
   });
 

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { createSubUserSchema } from '@k8s-hosting/api-contracts';
+import { createSubUserSchema, updateSubUserSchema } from '@k8s-hosting/api-contracts';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
@@ -8,6 +8,7 @@ import * as service from './service.js';
 import {
   listSubUsers,
   createSubUser,
+  updateSubUser,
   deleteSubUser,
   makeDrizzleSubUsersDb,
   getEffectiveMaxSubUsers,
@@ -337,6 +338,41 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     );
 
     reply.status(201).send(success(created));
+  });
+
+  // PATCH /api/v1/clients/:clientId/users/:userId — edit a sub-user.
+  // Phase 3: allows client_admin + staff to update full_name, role,
+  // or status. Password changes go through the Phase 4 endpoint.
+  app.patch('/clients/:clientId/users/:userId', {
+    onRequest: [
+      requireRole('super_admin', 'admin', 'client_admin'),
+      requireClientAccess(),
+    ],
+  }, async (request) => {
+    const { clientId, userId } = request.params as { clientId: string; userId: string };
+
+    const parsed = updateSubUserSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+
+    const updated = await updateSubUser(
+      makeDrizzleSubUsersDb(app.db),
+      clientId,
+      userId,
+      {
+        fullName: parsed.data.full_name,
+        roleName: parsed.data.role_name,
+        status: parsed.data.status,
+      },
+    );
+    return success(updated);
   });
 
   // DELETE /api/v1/clients/:clientId/users/:userId

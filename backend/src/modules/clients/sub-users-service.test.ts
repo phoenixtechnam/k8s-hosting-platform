@@ -3,6 +3,7 @@ import {
   listSubUsers,
   createSubUser,
   deleteSubUser,
+  updateSubUser,
   type SubUsersDb,
 } from './sub-users-service.js';
 
@@ -32,7 +33,7 @@ interface SubUserRow {
  */
 function makeStub(initialRows: SubUserRow[]): SubUsersDb {
   let rows = [...initialRows];
-  return {
+  const stub: SubUsersDb = {
     listByClientId: async (clientId) =>
       rows
         .filter((r) => r.clientId === clientId)
@@ -51,9 +52,18 @@ function makeStub(initialRows: SubUserRow[]): SubUsersDb {
       rows.filter(
         (r) => r.clientId === clientId && r.roleName === 'client_admin',
       ).length,
+    countActiveAdminsByClientId: async (clientId) =>
+      rows.filter(
+        (r) =>
+          r.clientId === clientId
+          && r.roleName === 'client_admin'
+          && r.status === 'active',
+      ).length,
     findByIdAndClientId: async (userId, clientId) => {
       const row = rows.find((r) => r.id === userId && r.clientId === clientId);
-      return row ?? null;
+      return row
+        ? { id: row.id, roleName: row.roleName, status: row.status }
+        : null;
     },
     insertSubUser: async (input) => {
       const now = new Date('2026-04-09T12:00:00Z');
@@ -78,10 +88,38 @@ function makeStub(initialRows: SubUserRow[]): SubUsersDb {
         createdAt: row.createdAt,
       };
     },
-    deleteById: async (userId) => {
-      rows = rows.filter((r) => r.id !== userId);
+    updateSubUser: async (userId, clientId, payload) => {
+      const idx = rows.findIndex(
+        (r) => r.id === userId && r.clientId === clientId,
+      );
+      if (idx < 0) throw new Error(`row not found: ${userId}`);
+      const current = rows[idx];
+      const next: SubUserRow = {
+        ...current,
+        fullName: payload.fullName ?? current.fullName,
+        roleName: payload.roleName ?? current.roleName,
+        status: payload.status ?? current.status,
+      };
+      rows[idx] = next;
+      return {
+        id: next.id,
+        email: next.email,
+        fullName: next.fullName,
+        roleName: next.roleName,
+        status: next.status,
+        createdAt: next.createdAt,
+        lastLoginAt: next.lastLoginAt,
+      };
     },
+    deleteById: async (userId, clientId) => {
+      rows = rows.filter(
+        (r) => !(r.id === userId && r.clientId === clientId),
+      );
+    },
+    // Single-threaded test stub — no actual locking needed.
+    runInTransaction: async (fn) => fn(stub),
   };
+  return stub;
 }
 
 const SEED: SubUserRow[] = [
@@ -337,4 +375,127 @@ describe('sub-users-service', () => {
     });
   });
 
+  describe('updateSubUser (Phase 3)', () => {
+    it('updates a user full_name', async () => {
+      const db = makeStub(SEED);
+      const updated = await updateSubUser(db, 'c1', 'u-user-1', {
+        fullName: 'Renamed User',
+      });
+      expect(updated.fullName).toBe('Renamed User');
+      expect(updated.roleName).toBe('client_user');
+      expect(updated.status).toBe('active');
+    });
+
+    it('promotes a client_user to client_admin', async () => {
+      const db = makeStub(SEED);
+      const updated = await updateSubUser(db, 'c1', 'u-user-1', {
+        roleName: 'client_admin',
+      });
+      expect(updated.roleName).toBe('client_admin');
+    });
+
+    it('disables an active user (soft-delete)', async () => {
+      const db = makeStub(SEED);
+      const updated = await updateSubUser(db, 'c1', 'u-user-1', {
+        status: 'disabled',
+      });
+      expect(updated.status).toBe('disabled');
+    });
+
+    it('re-enables a disabled user', async () => {
+      const seed: SubUserRow[] = [
+        ...SEED,
+        {
+          id: 'u-disabled',
+          email: 'off@c1.com',
+          fullName: 'Off',
+          roleName: 'client_user',
+          status: 'disabled',
+          clientId: 'c1',
+          createdAt: new Date(),
+          lastLoginAt: null,
+          passwordHash: 'x',
+        },
+      ];
+      const db = makeStub(seed);
+      const updated = await updateSubUser(db, 'c1', 'u-disabled', {
+        status: 'active',
+      });
+      expect(updated.status).toBe('active');
+    });
+
+    it('rejects updates for a user not in this client', async () => {
+      const db = makeStub(SEED);
+      await expect(
+        updateSubUser(db, 'c1', 'u-admin-2', { fullName: 'Hack' }),
+      ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
+    });
+
+    it('rejects unknown role names (defense in depth)', async () => {
+      const db = makeStub(SEED);
+      await expect(
+        updateSubUser(db, 'c1', 'u-user-1', {
+          roleName: 'super_admin' as unknown as 'client_admin',
+        }),
+      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+    });
+
+    it('refuses to demote the last active client_admin', async () => {
+      const db = makeStub(SEED);
+      await expect(
+        updateSubUser(db, 'c1', 'u-admin-1', { roleName: 'client_user' }),
+      ).rejects.toMatchObject({ code: 'LAST_ADMIN', status: 403 });
+    });
+
+    it('refuses to disable the last active client_admin', async () => {
+      const db = makeStub(SEED);
+      await expect(
+        updateSubUser(db, 'c1', 'u-admin-1', { status: 'disabled' }),
+      ).rejects.toMatchObject({ code: 'LAST_ADMIN' });
+    });
+
+    it('allows demoting a client_admin if another active admin exists', async () => {
+      const seed: SubUserRow[] = [
+        ...SEED,
+        {
+          id: 'u-admin-1b',
+          email: 'admin2@c1.com',
+          fullName: 'Second Admin',
+          roleName: 'client_admin',
+          status: 'active',
+          clientId: 'c1',
+          createdAt: new Date(),
+          lastLoginAt: null,
+          passwordHash: 'x',
+        },
+      ];
+      const db = makeStub(seed);
+      const updated = await updateSubUser(db, 'c1', 'u-admin-1', {
+        roleName: 'client_user',
+      });
+      expect(updated.roleName).toBe('client_user');
+    });
+
+    it('allows disabling a client_admin if another active admin exists', async () => {
+      const seed: SubUserRow[] = [
+        ...SEED,
+        {
+          id: 'u-admin-1b',
+          email: 'admin2@c1.com',
+          fullName: 'Second Admin',
+          roleName: 'client_admin',
+          status: 'active',
+          clientId: 'c1',
+          createdAt: new Date(),
+          lastLoginAt: null,
+          passwordHash: 'x',
+        },
+      ];
+      const db = makeStub(seed);
+      const updated = await updateSubUser(db, 'c1', 'u-admin-1', {
+        status: 'disabled',
+      });
+      expect(updated.status).toBe('disabled');
+    });
+  });
 });

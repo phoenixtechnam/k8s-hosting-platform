@@ -1,11 +1,16 @@
 import { useState, type FormEvent } from 'react';
-import { Users, Plus, Loader2, AlertCircle, Trash2, X, Info } from 'lucide-react';
+import {
+  Users, Plus, Loader2, AlertCircle, Trash2, X, Info,
+  Edit2, Power, PowerOff,
+} from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
 import {
   useSubUsers,
   useCreateSubUser,
+  useUpdateSubUser,
   useDeleteSubUser,
+  type SubUser,
   type SubUserRole,
 } from '@/hooks/use-sub-users';
 import { useSortable } from '@/hooks/use-sortable';
@@ -37,12 +42,15 @@ export default function SubUsers() {
   const canManage = authUser?.role === 'client_admin';
   const { data: response, isLoading, isError } = useSubUsers(clientId);
   const createUser = useCreateSubUser(clientId);
+  const updateUser = useUpdateSubUser(clientId);
   const deleteUser = useDeleteSubUser(clientId);
 
   const usersRaw = response?.data ?? [];
   const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'fullName');
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [disableConfirmId, setDisableConfirmId] = useState<string | null>(null);
+  const [editingUser, setEditingUser] = useState<SubUser | null>(null);
   const [form, setForm] = useState<{
     email: string;
     full_name: string;
@@ -71,6 +79,35 @@ export default function SubUsers() {
       // Mutation error surfaces via `deleteUser.error` (not rendered yet
       // in the row; covered by Phase 6 polish sweep). Leaving the confirm
       // open so the user can retry or cancel.
+    }
+  };
+
+  const handleToggleStatus = async (u: SubUser) => {
+    // Enabling is non-destructive → fire immediately.
+    // Disabling is destructive (user loses access) → require confirm.
+    if (u.status === 'active') {
+      setDisableConfirmId(u.id);
+      return;
+    }
+    try {
+      await updateUser.mutateAsync({
+        userId: u.id,
+        patch: { status: 'active' },
+      });
+    } catch {
+      // Surfaced via updateUser.error.
+    }
+  };
+
+  const handleConfirmDisable = async (id: string) => {
+    try {
+      await updateUser.mutateAsync({
+        userId: id,
+        patch: { status: 'disabled' },
+      });
+      setDisableConfirmId(null);
+    } catch {
+      // Leave the confirm open for retry/cancel.
     }
   };
 
@@ -165,12 +202,63 @@ export default function SubUsers() {
                     {canManage && (
                       <td className="px-6 py-4">
                         {deleteConfirmId === u.id ? (
-                          <div className="inline-flex gap-1">
-                            <button type="button" onClick={() => handleDelete(u.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50">Confirm</button>
+                          <div className="inline-flex gap-1" data-testid={`delete-confirm-${u.id}`}>
+                            <button type="button" onClick={() => handleDelete(u.id)} disabled={deleteUser.isPending} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`delete-confirm-yes-${u.id}`}>Confirm</button>
                             <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                           </div>
+                        ) : disableConfirmId === u.id ? (
+                          <div className="inline-flex gap-1" data-testid={`disable-confirm-${u.id}`}>
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmDisable(u.id)}
+                              disabled={updateUser.isPending}
+                              className="rounded-md bg-amber-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                              data-testid={`disable-confirm-yes-${u.id}`}
+                            >
+                              Disable
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDisableConfirmId(null)}
+                              className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         ) : (
-                          <button type="button" onClick={() => setDeleteConfirmId(u.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-user-${u.id}`}><Trash2 size={12} /></button>
+                          <div className="inline-flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditingUser(u)}
+                              className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                              aria-label="Edit user"
+                              title="Edit user"
+                              data-testid={`edit-user-${u.id}`}
+                            >
+                              <Edit2 size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStatus(u)}
+                              disabled={updateUser.isPending}
+                              className={`rounded-md border p-1.5 ${u.status === 'active' ? 'border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30' : 'border-emerald-200 dark:border-emerald-700 bg-white dark:bg-gray-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'} disabled:opacity-50`}
+                              aria-label={u.status === 'active' ? 'Disable user' : 'Enable user'}
+                              title={u.status === 'active' ? 'Disable user' : 'Enable user'}
+                              data-testid={`toggle-status-${u.id}`}
+                            >
+                              {u.status === 'active' ? <PowerOff size={12} /> : <Power size={12} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmId(u.id)}
+                              className="rounded-md border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                              aria-label="Delete user"
+                              title="Delete user"
+                              data-testid={`delete-user-${u.id}`}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
                         )}
                       </td>
                     )}
@@ -180,6 +268,162 @@ export default function SubUsers() {
             </table>
           </div>
         )}
+      </div>
+
+      {editingUser && (
+        <EditUserModal
+          user={editingUser}
+          onClose={() => setEditingUser(null)}
+          onSave={async (patch) => {
+            try {
+              await updateUser.mutateAsync({ userId: editingUser.id, patch });
+              setEditingUser(null);
+            } catch {
+              // Error surfaces via updateUser.error inside the modal
+            }
+          }}
+          isPending={updateUser.isPending}
+          error={updateUser.error}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditUserModal({
+  user,
+  onClose,
+  onSave,
+  isPending,
+  error,
+}: {
+  readonly user: SubUser;
+  readonly onClose: () => void;
+  readonly onSave: (patch: { full_name?: string; role_name?: SubUserRole; status?: 'active' | 'disabled' }) => Promise<void>;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+}) {
+  const [fullName, setFullName] = useState(user.fullName);
+  const [roleName, setRoleName] = useState<SubUserRole>((user.roleName as SubUserRole) ?? 'client_user');
+  const [status, setStatus] = useState<'active' | 'disabled'>(
+    user.status === 'disabled' ? 'disabled' : 'active',
+  );
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const patch: { full_name?: string; role_name?: SubUserRole; status?: 'active' | 'disabled' } = {};
+    if (fullName !== user.fullName) patch.full_name = fullName;
+    if (roleName !== user.roleName) patch.role_name = roleName;
+    if (status !== user.status) patch.status = status;
+    if (Object.keys(patch).length === 0) {
+      onClose();
+      return;
+    }
+    void onSave(patch);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      data-testid="edit-user-modal"
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit User</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-200"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="edit-email" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>
+            <input
+              id="edit-email"
+              type="email"
+              value={user.email}
+              disabled
+              className={INPUT_CLASS + ' mt-1 opacity-60 cursor-not-allowed'}
+              data-testid="edit-user-email-input"
+            />
+            <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">Email cannot be changed.</p>
+          </div>
+          <div>
+            <label htmlFor="edit-full-name" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Full Name</label>
+            <input
+              id="edit-full-name"
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              required
+              maxLength={255}
+              className={INPUT_CLASS + ' mt-1'}
+              data-testid="edit-user-name-input"
+            />
+          </div>
+          <div>
+            <label htmlFor="edit-role" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
+            <select
+              id="edit-role"
+              value={roleName}
+              onChange={(e) => setRoleName(e.target.value as SubUserRole)}
+              className={INPUT_CLASS + ' mt-1'}
+              data-testid="edit-user-role-select"
+            >
+              <option value="client_user">Member (read-only)</option>
+              <option value="client_admin">Administrator (can manage team)</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="edit-status" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Status</label>
+            <select
+              id="edit-status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as 'active' | 'disabled')}
+              className={INPUT_CLASS + ' mt-1'}
+              data-testid="edit-user-status-select"
+            >
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+            <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+              Disabled users cannot log in but their data is preserved.
+            </p>
+          </div>
+          {error && (
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="edit-user-error">
+              <AlertCircle size={14} />
+              {error instanceof Error ? error.message : 'Failed to update user'}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isPending}
+              className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="edit-user-save"
+            >
+              {isPending && <Loader2 size={14} className="animate-spin" />}
+              Save Changes
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

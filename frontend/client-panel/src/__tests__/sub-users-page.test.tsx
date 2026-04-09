@@ -33,6 +33,8 @@ vi.mock('../hooks/use-client-context', () => ({
 }));
 
 const createUserMutate = vi.fn();
+const updateUserMutate = vi.fn();
+const deleteUserMutate = vi.fn();
 vi.mock('../hooks/use-sub-users', () => ({
   useSubUsers: vi.fn(() => ({
     data: { data: [] },
@@ -41,7 +43,8 @@ vi.mock('../hooks/use-sub-users', () => ({
     error: null,
   })),
   useCreateSubUser: vi.fn(() => ({ mutateAsync: createUserMutate, isPending: false, error: null })),
-  useDeleteSubUser: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useUpdateSubUser: vi.fn(() => ({ mutateAsync: updateUserMutate, isPending: false, error: null })),
+  useDeleteSubUser: vi.fn(() => ({ mutateAsync: deleteUserMutate, isPending: false, error: null })),
 }));
 
 import { useSubUsers } from '../hooks/use-sub-users';
@@ -76,6 +79,9 @@ describe('SubUsers Page', () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof useSubUsers>);
+    createUserMutate.mockReset();
+    updateUserMutate.mockReset();
+    deleteUserMutate.mockReset();
   });
 
   it('renders the heading', () => {
@@ -237,6 +243,142 @@ describe('SubUsers Page', () => {
       expect(screen.getByText('Member')).toBeInTheDocument();
       expect(screen.queryByText('client_admin')).not.toBeInTheDocument();
       expect(screen.queryByText('client_user')).not.toBeInTheDocument();
+    });
+
+    // ─── Phase 3 edit / disable ────────────────────────────────────
+    describe('with a row to edit', () => {
+      beforeEach(() => {
+        mockedUseSubUsers.mockReturnValue({
+          data: {
+            data: [
+              {
+                id: 'u1',
+                fullName: 'Alice',
+                email: 'alice@c1.com',
+                roleName: 'client_user',
+                status: 'active',
+                createdAt: '2026-01-01T00:00:00Z',
+                lastLoginAt: null,
+              },
+            ],
+          },
+          isLoading: false, isError: false, error: null,
+        } as unknown as ReturnType<typeof useSubUsers>);
+      });
+
+      it('renders the row action buttons (edit, toggle status, delete)', () => {
+        renderWithProviders(<SubUsers />);
+        expect(screen.getByTestId('edit-user-u1')).toBeInTheDocument();
+        expect(screen.getByTestId('toggle-status-u1')).toBeInTheDocument();
+        expect(screen.getByTestId('delete-user-u1')).toBeInTheDocument();
+      });
+
+      it('opens the edit modal when the edit button is clicked', async () => {
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('edit-user-u1'));
+        expect(screen.getByTestId('edit-user-modal')).toBeInTheDocument();
+        expect(screen.getByTestId('edit-user-name-input')).toHaveValue('Alice');
+        expect(screen.getByTestId('edit-user-email-input')).toBeDisabled();
+      });
+
+      it('sends only changed fields in the patch', async () => {
+        updateUserMutate.mockResolvedValueOnce({ data: { id: 'u1' } });
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('edit-user-u1'));
+        const nameInput = screen.getByTestId('edit-user-name-input');
+        await user.clear(nameInput);
+        await user.type(nameInput, 'Alice Renamed');
+        await user.click(screen.getByTestId('edit-user-save'));
+        expect(updateUserMutate).toHaveBeenCalledWith({
+          userId: 'u1',
+          patch: { full_name: 'Alice Renamed' },
+        });
+      });
+
+      it('promotes a member to admin via the edit form', async () => {
+        updateUserMutate.mockResolvedValueOnce({ data: { id: 'u1' } });
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('edit-user-u1'));
+        await user.selectOptions(screen.getByTestId('edit-user-role-select'), 'client_admin');
+        await user.click(screen.getByTestId('edit-user-save'));
+        expect(updateUserMutate).toHaveBeenCalledWith({
+          userId: 'u1',
+          patch: { role_name: 'client_admin' },
+        });
+      });
+
+      it('disables a user via the edit form', async () => {
+        updateUserMutate.mockResolvedValueOnce({ data: { id: 'u1' } });
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('edit-user-u1'));
+        await user.selectOptions(screen.getByTestId('edit-user-status-select'), 'disabled');
+        await user.click(screen.getByTestId('edit-user-save'));
+        expect(updateUserMutate).toHaveBeenCalledWith({
+          userId: 'u1',
+          patch: { status: 'disabled' },
+        });
+      });
+
+      it('requires confirmation before disabling from the row button', async () => {
+        updateUserMutate.mockResolvedValueOnce({ data: { id: 'u1' } });
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        // First click reveals the confirm prompt, does NOT fire the mutation
+        await user.click(screen.getByTestId('toggle-status-u1'));
+        expect(updateUserMutate).not.toHaveBeenCalled();
+        expect(screen.getByTestId('disable-confirm-u1')).toBeInTheDocument();
+        await user.click(screen.getByTestId('disable-confirm-yes-u1'));
+        expect(updateUserMutate).toHaveBeenCalledWith({
+          userId: 'u1',
+          patch: { status: 'disabled' },
+        });
+      });
+
+      it('closes the modal without a network call when no fields are changed', async () => {
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('edit-user-u1'));
+        expect(screen.getByTestId('edit-user-modal')).toBeInTheDocument();
+        await user.click(screen.getByTestId('edit-user-save'));
+        expect(updateUserMutate).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('edit-user-modal')).not.toBeInTheDocument();
+      });
+    });
+
+    describe('with a disabled row', () => {
+      beforeEach(() => {
+        mockedUseSubUsers.mockReturnValue({
+          data: {
+            data: [
+              {
+                id: 'u-off',
+                fullName: 'Off User',
+                email: 'off@c1.com',
+                roleName: 'client_user',
+                status: 'disabled',
+                createdAt: '2026-01-01T00:00:00Z',
+                lastLoginAt: null,
+              },
+            ],
+          },
+          isLoading: false, isError: false, error: null,
+        } as unknown as ReturnType<typeof useSubUsers>);
+      });
+
+      it('re-enables a disabled user immediately without confirmation', async () => {
+        updateUserMutate.mockResolvedValueOnce({ data: { id: 'u-off' } });
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('toggle-status-u-off'));
+        expect(updateUserMutate).toHaveBeenCalledWith({
+          userId: 'u-off',
+          patch: { status: 'active' },
+        });
+      });
     });
   });
 
