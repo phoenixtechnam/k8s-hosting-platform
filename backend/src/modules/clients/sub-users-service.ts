@@ -42,6 +42,13 @@ export interface CreateSubUserInput {
   readonly email: string;
   readonly full_name: string;
   readonly password: string;
+  /**
+   * Phase 2: optional — defaults to `client_user`. Callers
+   * upstream of the service are responsible for enforcing that
+   * only authorized roles (client_admin + staff) can request a
+   * `client_admin` sub-user.
+   */
+  readonly role_name?: 'client_admin' | 'client_user';
 }
 
 export interface CreateSubUserOptions {
@@ -81,6 +88,21 @@ export interface SubUsersDb {
 
 // ─── Service functions ─────────────────────────────────────────────────────
 
+/**
+ * Closed set of roles the service is willing to write for a
+ * client-panel sub-user. This is the service's self-defense
+ * against callers that bypass the route-level Zod parse (e.g.
+ * scripts, future internal callers). Changing this set also
+ * requires updating `subUserRoleSchema` in
+ * `@k8s-hosting/api-contracts` so the HTTP surface stays in sync.
+ */
+const ALLOWED_SUB_USER_ROLES = ['client_admin', 'client_user'] as const;
+type AllowedSubUserRole = typeof ALLOWED_SUB_USER_ROLES[number];
+
+function isAllowedRole(role: string): role is AllowedSubUserRole {
+  return (ALLOWED_SUB_USER_ROLES as readonly string[]).includes(role);
+}
+
 export async function listSubUsers(
   db: SubUsersDb,
   clientId: string,
@@ -99,6 +121,19 @@ export async function createSubUser(
       'MISSING_REQUIRED_FIELD',
       'email, full_name, and password are required',
       400,
+    );
+  }
+
+  const roleName = input.role_name ?? 'client_user';
+  if (!isAllowedRole(roleName)) {
+    // Defense in depth — the route layer's Zod parse should have
+    // already rejected this, but we refuse to persist an unknown
+    // role at the service boundary too.
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      `role_name must be one of: ${ALLOWED_SUB_USER_ROLES.join(', ')}`,
+      400,
+      { field: 'role_name' },
     );
   }
 
@@ -121,7 +156,7 @@ export async function createSubUser(
     email: input.email,
     passwordHash,
     fullName: input.full_name,
-    roleName: 'client_user',
+    roleName,
     clientId,
   });
 }

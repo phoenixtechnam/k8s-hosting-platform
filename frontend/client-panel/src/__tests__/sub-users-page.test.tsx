@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -31,6 +32,7 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
+const createUserMutate = vi.fn();
 vi.mock('../hooks/use-sub-users', () => ({
   useSubUsers: vi.fn(() => ({
     data: { data: [] },
@@ -38,7 +40,7 @@ vi.mock('../hooks/use-sub-users', () => ({
     isError: false,
     error: null,
   })),
-  useCreateSubUser: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useCreateSubUser: vi.fn(() => ({ mutateAsync: createUserMutate, isPending: false, error: null })),
   useDeleteSubUser: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
@@ -179,6 +181,62 @@ describe('SubUsers Page', () => {
     it('does not show the read-only notice', () => {
       renderWithProviders(<SubUsers />);
       expect(screen.queryByTestId('read-only-notice')).not.toBeInTheDocument();
+    });
+
+    // ─── Phase 2 role selector ─────────────────────────────────────
+    it('renders the role selector in the create form', async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      const select = screen.getByTestId('user-role-select') as HTMLSelectElement;
+      expect(select).toBeInTheDocument();
+      expect(select.value).toBe('client_user'); // default
+    });
+
+    it('defaults new users to client_user', async () => {
+      createUserMutate.mockResolvedValueOnce({ data: { id: 'u-new' } });
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      await user.type(screen.getByTestId('user-name-input'), 'New Guy');
+      await user.type(screen.getByTestId('user-email-input'), 'new@c1.com');
+      await user.type(screen.getByTestId('user-password-input'), 'password123');
+      await user.click(screen.getByTestId('submit-user'));
+      expect(createUserMutate).toHaveBeenCalledWith(
+        expect.objectContaining({ role_name: 'client_user' }),
+      );
+    });
+
+    it('creates a client_admin when that role is selected', async () => {
+      createUserMutate.mockResolvedValueOnce({ data: { id: 'u-new' } });
+      const user = userEvent.setup();
+      renderWithProviders(<SubUsers />);
+      await user.click(screen.getByTestId('add-user-button'));
+      await user.type(screen.getByTestId('user-name-input'), 'Promoted');
+      await user.type(screen.getByTestId('user-email-input'), 'promo@c1.com');
+      await user.type(screen.getByTestId('user-password-input'), 'password123');
+      await user.selectOptions(screen.getByTestId('user-role-select'), 'client_admin');
+      await user.click(screen.getByTestId('submit-user'));
+      expect(createUserMutate).toHaveBeenCalledWith(
+        expect.objectContaining({ role_name: 'client_admin' }),
+      );
+    });
+
+    it('renders the role column as "Admin" or "Member" (not the raw enum)', () => {
+      mockedUseSubUsers.mockReturnValue({
+        data: {
+          data: [
+            { id: 'u1', fullName: 'A', email: 'a@c1.com', roleName: 'client_admin', status: 'active', lastLoginAt: null },
+            { id: 'u2', fullName: 'B', email: 'b@c1.com', roleName: 'client_user', status: 'active', lastLoginAt: null },
+          ],
+        },
+        isLoading: false, isError: false, error: null,
+      } as unknown as ReturnType<typeof useSubUsers>);
+      renderWithProviders(<SubUsers />);
+      expect(screen.getByText('Admin')).toBeInTheDocument();
+      expect(screen.getByText('Member')).toBeInTheDocument();
+      expect(screen.queryByText('client_admin')).not.toBeInTheDocument();
+      expect(screen.queryByText('client_user')).not.toBeInTheDocument();
     });
   });
 

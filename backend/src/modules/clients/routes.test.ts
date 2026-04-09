@@ -39,14 +39,20 @@ const listSubUsersMock = vi.fn().mockResolvedValue([
     lastLoginAt: null,
   },
 ]);
-const createSubUserMock = vi.fn().mockResolvedValue({
-  id: 'u-new',
-  email: 'bob@c1.com',
-  fullName: 'Bob',
-  roleName: 'client_user',
-  status: 'active',
-  createdAt: new Date('2026-01-02'),
-});
+const createSubUserMock = vi.fn().mockImplementation(
+  (_db: unknown, _clientId: string, input: { email: string; full_name: string; role_name?: string }) => {
+    return Promise.resolve({
+      id: 'u-new',
+      email: input.email,
+      fullName: input.full_name,
+      // Reflect the role from the payload so tests can assert the
+      // route wires the parsed body through to the service.
+      roleName: input.role_name ?? 'client_user',
+      status: 'active',
+      createdAt: new Date('2026-01-02'),
+    });
+  },
+);
 const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('./sub-users-service.js', () => ({
@@ -363,6 +369,76 @@ describe('client routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts role_name=client_admin in the body (Phase 2)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {
+          email: 'promoted@c1.com',
+          full_name: 'Promoted',
+          password: 'password123',
+          role_name: 'client_admin',
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(createSubUserMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'c1',
+        expect.objectContaining({ role_name: 'client_admin' }),
+        expect.anything(),
+      );
+      // Assert the roleName is reflected in the response body — this
+      // catches bugs where the route forgets to pass role_name through.
+      expect(res.json().data.roleName).toBe('client_admin');
+    });
+
+    it('rejects client_user attempting to create a client_admin (authz before body parse)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: {
+          email: 'escalate@c1.com',
+          full_name: 'Escalate',
+          password: 'password123',
+          role_name: 'client_admin',
+        },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(createSubUserMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts role_name=client_user in the body', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {
+          email: 'member@c1.com',
+          full_name: 'Member',
+          password: 'password123',
+          role_name: 'client_user',
+        },
+      });
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('rejects role_name outside the enum', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {
+          email: 'bad@c1.com',
+          full_name: 'Bad',
+          password: 'password123',
+          role_name: 'super_admin',
+        },
+      });
+      expect(res.statusCode).toBe(400);
     });
   });
 

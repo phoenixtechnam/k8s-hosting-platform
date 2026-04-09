@@ -2,11 +2,31 @@ import { useState, type FormEvent } from 'react';
 import { Users, Plus, Loader2, AlertCircle, Trash2, X, Info } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
-import { useSubUsers, useCreateSubUser, useDeleteSubUser } from '@/hooks/use-sub-users';
+import {
+  useSubUsers,
+  useCreateSubUser,
+  useDeleteSubUser,
+  type SubUserRole,
+} from '@/hooks/use-sub-users';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
+
+/**
+ * Phase 2: canonical display labels for sub-user roles. Kept as a
+ * `Record<SubUserRole, string>` so TypeScript will flag any
+ * `subUserRoleSchema` expansion that forgets to add a label.
+ */
+const ROLE_LABELS: Record<SubUserRole, string> = {
+  client_admin: 'Admin',
+  client_user: 'Member',
+};
+
+const ROLE_BADGE_CLASSES: Record<SubUserRole, string> = {
+  client_admin: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+  client_user: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+};
 
 export default function SubUsers() {
   const { clientId } = useClientContext();
@@ -23,13 +43,18 @@ export default function SubUsers() {
   const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'fullName');
   const [showForm, setShowForm] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState({ email: '', full_name: '', password: '' });
+  const [form, setForm] = useState<{
+    email: string;
+    full_name: string;
+    password: string;
+    role_name: SubUserRole;
+  }>({ email: '', full_name: '', password: '', role_name: 'client_user' });
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
       await createUser.mutateAsync(form);
-      setForm({ email: '', full_name: '', password: '' });
+      setForm({ email: '', full_name: '', password: '', role_name: 'client_user' });
       setShowForm(false);
     } catch {
       // Mutation error is surfaced via `createUser.error` in the form UI
@@ -78,10 +103,26 @@ export default function SubUsers() {
 
       {canManage && showForm && (
         <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4" data-testid="create-user-form">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Full Name</label><input type="text" className={INPUT_CLASS + ' mt-1'} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} required data-testid="user-name-input" /></div>
             <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label><input type="email" className={INPUT_CLASS + ' mt-1'} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required data-testid="user-email-input" /></div>
             <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Password</label><input type="password" className={INPUT_CLASS + ' mt-1'} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={8} data-testid="user-password-input" /></div>
+            <div>
+              <label htmlFor="new-user-role" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
+              <select
+                id="new-user-role"
+                className={INPUT_CLASS + ' mt-1'}
+                value={form.role_name}
+                onChange={(e) => setForm({ ...form, role_name: e.target.value as SubUserRole })}
+                data-testid="user-role-select"
+              >
+                <option value="client_user">Member (read-only)</option>
+                <option value="client_admin">Administrator (can manage team)</option>
+              </select>
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                Administrators can add, edit, and remove users. Members have read-only access.
+              </p>
+            </div>
           </div>
           {createUser.error && <div className="mt-3 flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{createUser.error instanceof Error ? createUser.error.message : 'Failed'}</div>}
           <div className="mt-3 flex justify-end">
@@ -112,7 +153,13 @@ export default function SubUsers() {
                   <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
                     <td className="px-6 py-4 font-medium text-gray-900 dark:text-gray-100">{u.fullName}</td>
                     <td className="px-6 py-4 text-gray-600 dark:text-gray-400">{u.email}</td>
-                    <td className="px-6 py-4"><span className="rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">{u.roleName}</span></td>
+                    <td className="px-6 py-4">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_BADGE_CLASSES[u.roleName as SubUserRole] ?? ROLE_BADGE_CLASSES.client_user}`}
+                      >
+                        {ROLE_LABELS[u.roleName as SubUserRole] ?? u.roleName}
+                      </span>
+                    </td>
                     <td className="px-6 py-4"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${u.status === 'active' ? 'bg-green-50 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-50 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>{u.status}</span></td>
                     <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 sm:table-cell">{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString() : 'Never'}</td>
                     {canManage && (

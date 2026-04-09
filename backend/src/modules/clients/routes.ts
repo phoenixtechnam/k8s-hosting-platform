@@ -1,20 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { z } from 'zod';
+import { createSubUserSchema } from '@k8s-hosting/api-contracts';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
-
-/**
- * Phase 1: local Zod schema for the POST /clients/:clientId/users
- * body. Phase 2 will move this to @k8s-hosting/api-contracts as
- * `createSubUserSchema`.
- */
-const createSubUserBodySchema = z.object({
-  email: z.string().email('email must be a valid email address'),
-  full_name: z.string().min(1, 'full_name is required').max(255),
-  password: z.string().min(8, 'password must be at least 8 characters').max(255),
-});
 import * as service from './service.js';
 import {
   listSubUsers,
@@ -310,6 +299,13 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/clients/:clientId/users — create a sub-user.
   // Only client_admin + staff can mutate the team.
+  //
+  // Phase 2 promotion rule: by design, a `client_admin` caller
+  // CAN create another `client_admin` for their own tenant. This
+  // is intentional peer-promotion within a single client — cross-
+  // tenant escalation is still blocked by `requireClientAccess()`,
+  // and the Zod enum rejects any staff-level role (admin, support,
+  // etc.) in the body.
   app.post('/clients/:clientId/users', {
     onRequest: [
       requireRole('super_admin', 'admin', 'client_admin'),
@@ -318,7 +314,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
 
-    const parsed = createSubUserBodySchema.safeParse(request.body);
+    const parsed = createSubUserSchema.safeParse(request.body);
     if (!parsed.success) {
       const firstError = parsed.error.errors[0];
       throw new ApiError(

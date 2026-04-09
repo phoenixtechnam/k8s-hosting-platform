@@ -1,15 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type {
+  CreateSubUserInput,
+  SubUser,
+  SubUserRole,
+} from '@k8s-hosting/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
-export interface SubUser {
-  readonly id: string;
-  readonly email: string;
-  readonly fullName: string;
-  readonly roleName: string;
-  readonly status: string;
-  readonly createdAt: string;
-  readonly lastLoginAt: string | null;
-}
+export type { SubUser, CreateSubUserInput, SubUserRole } from '@k8s-hosting/api-contracts';
 
 export function useSubUsers(clientId: string | null) {
   return useQuery({
@@ -17,12 +14,6 @@ export function useSubUsers(clientId: string | null) {
     queryFn: () => apiFetch<{ data: readonly SubUser[] }>(`/api/v1/clients/${clientId}/users`),
     enabled: Boolean(clientId),
   });
-}
-
-interface CreateSubUserInput {
-  readonly email: string;
-  readonly full_name: string;
-  readonly password: string;
 }
 
 export function useCreateSubUser(clientId: string | null) {

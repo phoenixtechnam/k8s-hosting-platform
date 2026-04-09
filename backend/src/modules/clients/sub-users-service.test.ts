@@ -163,6 +163,45 @@ describe('sub-users-service', () => {
       expect(list).toHaveLength(3);
     });
 
+    it('creates a sub-user with explicit role_name=client_admin (Phase 2)', async () => {
+      const db = makeStub(SEED);
+      const created = await createSubUser(db, 'c1', {
+        email: 'promoted@c1.com',
+        full_name: 'Promoted User',
+        password: 'password123',
+        role_name: 'client_admin',
+      });
+      expect(created.roleName).toBe('client_admin');
+    });
+
+    it('creates a sub-user with explicit role_name=client_user (Phase 2)', async () => {
+      const db = makeStub(SEED);
+      const created = await createSubUser(db, 'c1', {
+        email: 'member@c1.com',
+        full_name: 'Team Member',
+        password: 'password123',
+        role_name: 'client_user',
+      });
+      expect(created.roleName).toBe('client_user');
+    });
+
+    it('refuses unknown roles at the service boundary (defense in depth)', async () => {
+      const db = makeStub(SEED);
+      await expect(
+        createSubUser(db, 'c1', {
+          email: 'bad@c1.com',
+          full_name: 'Bad',
+          password: 'password123',
+          // Cast around the TS union so we can simulate a caller
+          // that bypasses the route-level Zod parse.
+          role_name: 'super_admin' as unknown as 'client_admin',
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_FIELD_VALUE',
+        status: 400,
+      });
+    });
+
     it('rejects when the plan sub-user limit is reached', async () => {
       // Seed with maxSubUsers already full
       const seed: SubUserRow[] = Array.from({ length: 5 }, (_, i) => ({
