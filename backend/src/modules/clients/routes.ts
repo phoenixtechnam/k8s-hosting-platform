@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
-import { createSubUserSchema, updateSubUserSchema } from '@k8s-hosting/api-contracts';
+import {
+  createSubUserSchema,
+  updateSubUserSchema,
+  resetSubUserPasswordSchema,
+} from '@k8s-hosting/api-contracts';
 import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
 import { users } from '../../db/schema.js';
 import { createClientSchema, updateClientSchema } from './schema.js';
@@ -9,6 +13,7 @@ import {
   listSubUsers,
   createSubUser,
   updateSubUser,
+  resetSubUserPassword,
   deleteSubUser,
   makeDrizzleSubUsersDb,
   getEffectiveMaxSubUsers,
@@ -373,6 +378,40 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       },
     );
     return success(updated);
+  });
+
+  // POST /api/v1/clients/:clientId/users/:userId/reset-password — admin-
+  // assisted password reset. Phase 4: client_admin + staff can set a new
+  // password for a sub-user. The caller is responsible for communicating
+  // the new password to the user out-of-band (no email is sent). JWTs
+  // issued before the reset are NOT invalidated — that's blocked on the
+  // deferred session-management epic.
+  app.post('/clients/:clientId/users/:userId/reset-password', {
+    onRequest: [
+      requireRole('super_admin', 'admin', 'client_admin'),
+      requireClientAccess(),
+    ],
+  }, async (request, reply) => {
+    const { clientId, userId } = request.params as { clientId: string; userId: string };
+
+    const parsed = resetSubUserPasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+
+    await resetSubUserPassword(
+      makeDrizzleSubUsersDb(app.db),
+      clientId,
+      userId,
+      parsed.data.new_password,
+    );
+    reply.status(204).send();
   });
 
   // DELETE /api/v1/clients/:clientId/users/:userId

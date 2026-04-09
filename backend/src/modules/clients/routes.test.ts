@@ -54,6 +54,7 @@ const createSubUserMock = vi.fn().mockImplementation(
   },
 );
 const deleteSubUserMock = vi.fn().mockResolvedValue(undefined);
+const resetSubUserPasswordMock = vi.fn().mockResolvedValue(undefined);
 const updateSubUserMock = vi.fn().mockImplementation(
   (_db: unknown, _clientId: string, userId: string, payload: { fullName?: string; roleName?: string; status?: string }) => {
     return Promise.resolve({
@@ -72,6 +73,7 @@ vi.mock('./sub-users-service.js', () => ({
   listSubUsers: (...args: unknown[]) => listSubUsersMock(...args),
   createSubUser: (...args: unknown[]) => createSubUserMock(...args),
   updateSubUser: (...args: unknown[]) => updateSubUserMock(...args),
+  resetSubUserPassword: (...args: unknown[]) => resetSubUserPasswordMock(...args),
   deleteSubUser: (...args: unknown[]) => deleteSubUserMock(...args),
   makeDrizzleSubUsersDb: vi.fn().mockReturnValue({}),
   getEffectiveMaxSubUsers: vi.fn().mockResolvedValue(10),
@@ -131,6 +133,7 @@ describe('client routes', () => {
     listSubUsersMock.mockClear();
     createSubUserMock.mockClear();
     updateSubUserMock.mockClear();
+    resetSubUserPasswordMock.mockClear();
     deleteSubUserMock.mockClear();
   });
 
@@ -544,6 +547,77 @@ describe('client routes', () => {
         method: 'PATCH',
         url: '/api/v1/clients/c1/users/u1',
         payload: { full_name: 'Anon' },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('POST /api/v1/clients/:clientId/users/:userId/reset-password (Phase 4)', () => {
+    const validBody = { new_password: 'brand-new-pw-123' };
+
+    it('allows client_admin to reset a sub-user password', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(204);
+      expect(resetSubUserPasswordMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'c1',
+        'u1',
+        'brand-new-pw-123',
+      );
+    });
+
+    it('rejects passwords shorter than 8 characters', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: { new_password: 'short' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(resetSubUserPasswordMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missing new_password field', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('rejects client_user (read-only cannot reset passwords)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(resetSubUserPasswordMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects cross-client password resets', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        headers: { authorization: `Bearer ${otherClientAdminToken}` },
+        payload: validBody,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('requires auth', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/clients/c1/users/u1/reset-password',
+        payload: validBody,
       });
       expect(res.statusCode).toBe(401);
     });

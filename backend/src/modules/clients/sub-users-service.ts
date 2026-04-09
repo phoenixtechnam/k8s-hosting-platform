@@ -106,6 +106,11 @@ export interface SubUsersDb {
     clientId: string,
     payload: UpdateSubUserPayload,
   ): Promise<SubUserDto>;
+  updatePasswordHash(
+    userId: string,
+    clientId: string,
+    passwordHash: string,
+  ): Promise<void>;
   deleteById(userId: string, clientId: string): Promise<void>;
   runInTransaction<T>(fn: (tx: SubUsersDb) => Promise<T>): Promise<T>;
 }
@@ -279,6 +284,40 @@ export async function updateSubUser(
   });
 }
 
+/**
+ * Phase 4: admin-assisted password reset. Hashes the new password
+ * with bcrypt and writes it to the users row. Verifies the user
+ * belongs to the client before writing.
+ *
+ * Does NOT send email or notify the user — the caller is
+ * responsible for communicating the new password out-of-band.
+ * Does NOT invalidate existing JWTs — Phase 9 will address session
+ * invalidation when the sessions table lands.
+ */
+export async function resetSubUserPassword(
+  db: SubUsersDb,
+  clientId: string,
+  userId: string,
+  newPassword: string,
+): Promise<void> {
+  if (!newPassword || newPassword.length < 8) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      'new_password must be at least 8 characters',
+      400,
+      { field: 'new_password' },
+    );
+  }
+
+  const existing = await db.findByIdAndClientId(userId, clientId);
+  if (!existing) {
+    throw new ApiError('USER_NOT_FOUND', 'User not found', 404);
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await db.updatePasswordHash(userId, clientId, passwordHash);
+}
+
 // ─── Production Drizzle adapter ────────────────────────────────────────────
 
 /**
@@ -418,6 +457,12 @@ function buildAdapter(db: DbOrTx): SubUsersDb {
           lastLoginAt: users.lastLoginAt,
         });
       return updated;
+    },
+    async updatePasswordHash(userId, clientId, passwordHash) {
+      await db
+        .update(users)
+        .set({ passwordHash })
+        .where(and(eq(users.id, userId), clientUserScope(clientId)));
     },
     async deleteById(userId, clientId) {
       await db

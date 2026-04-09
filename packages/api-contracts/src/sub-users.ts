@@ -60,6 +60,19 @@ export const updateSubUserSchema = z.object({
 );
 export type UpdateSubUserInput = z.infer<typeof updateSubUserSchema>;
 
+// ─── Reset password (Phase 4) ───────────────────────────────────────────────
+
+/**
+ * Admin-assisted password reset. The caller sets the new password
+ * directly — they are responsible for communicating it to the user
+ * out-of-band. No email is sent (the self-service forgot-password
+ * flow is a separate deferred epic).
+ */
+export const resetSubUserPasswordSchema = z.object({
+  new_password: z.string().min(8, 'new_password must be at least 8 characters').max(255),
+});
+export type ResetSubUserPasswordInput = z.infer<typeof resetSubUserPasswordSchema>;
+
 // ─── Response shapes ────────────────────────────────────────────────────────
 
 /**

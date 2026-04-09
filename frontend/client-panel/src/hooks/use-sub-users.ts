@@ -35,8 +35,7 @@ export function useCreateSubUser(clientId: string | null) {
 
 /**
  * Phase 3: edit a sub-user's name, role, or status. Password
- * changes go through a separate `useResetSubUserPassword` hook
- * added in Phase 4.
+ * changes go through `useResetSubUserPassword` in Phase 4.
  */
 export function useUpdateSubUser(clientId: string | null) {
   const qc = useQueryClient();
@@ -46,6 +45,21 @@ export function useUpdateSubUser(clientId: string | null) {
         method: 'PATCH', body: JSON.stringify(patch),
       }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['sub-users', clientId] }); },
+  });
+}
+
+/**
+ * Phase 4: admin-assisted password reset. The calling client_admin
+ * sets a new password for a teammate and is responsible for
+ * communicating it out-of-band. No email is sent.
+ */
+export function useResetSubUserPassword(clientId: string | null) {
+  return useMutation({
+    mutationFn: ({ userId, newPassword }: { userId: string; newPassword: string }) =>
+      apiFetch<void>(`/api/v1/clients/${clientId}/users/${userId}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify({ new_password: newPassword }),
+      }),
   });
 }
 

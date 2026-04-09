@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import {
   Users, Plus, Loader2, AlertCircle, Trash2, X, Info,
-  Edit2, Power, PowerOff,
+  Edit2, Power, PowerOff, KeyRound, CheckCircle,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -9,6 +9,7 @@ import {
   useSubUsers,
   useCreateSubUser,
   useUpdateSubUser,
+  useResetSubUserPassword,
   useDeleteSubUser,
   type SubUser,
   type SubUserRole,
@@ -43,6 +44,7 @@ export default function SubUsers() {
   const { data: response, isLoading, isError } = useSubUsers(clientId);
   const createUser = useCreateSubUser(clientId);
   const updateUser = useUpdateSubUser(clientId);
+  const resetPassword = useResetSubUserPassword(clientId);
   const deleteUser = useDeleteSubUser(clientId);
 
   const usersRaw = response?.data ?? [];
@@ -51,6 +53,7 @@ export default function SubUsers() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [disableConfirmId, setDisableConfirmId] = useState<string | null>(null);
   const [editingUser, setEditingUser] = useState<SubUser | null>(null);
+  const [resetPasswordUser, setResetPasswordUser] = useState<SubUser | null>(null);
   const [form, setForm] = useState<{
     email: string;
     full_name: string;
@@ -239,6 +242,16 @@ export default function SubUsers() {
                             </button>
                             <button
                               type="button"
+                              onClick={() => setResetPasswordUser(u)}
+                              className="rounded-md border border-purple-200 dark:border-purple-700 bg-white dark:bg-gray-800 p-1.5 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30"
+                              aria-label="Reset password"
+                              title="Reset password"
+                              data-testid={`reset-password-${u.id}`}
+                            >
+                              <KeyRound size={12} />
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => handleToggleStatus(u)}
                               disabled={updateUser.isPending}
                               className={`rounded-md border p-1.5 ${u.status === 'active' ? 'border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30' : 'border-emerald-200 dark:border-emerald-700 bg-white dark:bg-gray-800 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'} disabled:opacity-50`}
@@ -284,6 +297,29 @@ export default function SubUsers() {
           }}
           isPending={updateUser.isPending}
           error={updateUser.error}
+        />
+      )}
+
+      {resetPasswordUser && (
+        <ResetPasswordModal
+          user={resetPasswordUser}
+          onClose={() => {
+            setResetPasswordUser(null);
+            resetPassword.reset();
+          }}
+          onSave={async (newPassword) => {
+            try {
+              await resetPassword.mutateAsync({
+                userId: resetPasswordUser.id,
+                newPassword,
+              });
+            } catch {
+              // Error surfaces via resetPassword.error inside the modal
+            }
+          }}
+          isPending={resetPassword.isPending}
+          isSuccess={resetPassword.isSuccess}
+          error={resetPassword.error}
         />
       )}
     </div>
@@ -424,6 +460,157 @@ function EditUserModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function ResetPasswordModal({
+  user,
+  onClose,
+  onSave,
+  isPending,
+  isSuccess,
+  error,
+}: {
+  readonly user: SubUser;
+  readonly onClose: () => void;
+  readonly onSave: (newPassword: string) => Promise<void>;
+  readonly isPending: boolean;
+  readonly isSuccess: boolean;
+  readonly error: Error | null;
+}) {
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [mismatchError, setMismatchError] = useState<string | null>(null);
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    setMismatchError(null);
+    if (newPassword !== confirmPassword) {
+      setMismatchError('Passwords do not match');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setMismatchError('Password must be at least 8 characters');
+      return;
+    }
+    void onSave(newPassword);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      data-testid="reset-password-modal"
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Reset Password</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-200"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {isSuccess ? (
+          <div className="space-y-4">
+            <div className="flex items-start gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 px-4 py-3 text-sm text-green-700 dark:text-green-300" data-testid="reset-password-success">
+              <CheckCircle size={16} className="mt-0.5 shrink-0" />
+              <div>
+                Password updated for <strong>{user.fullName}</strong>. Communicate
+                the new password to them securely — it is not shown again.
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                data-testid="reset-password-done"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+              <Info size={14} className="mt-0.5 shrink-0" />
+              <div>
+                Setting a new password for <strong>{user.fullName}</strong>
+                {' '}({user.email}). The user is not notified automatically — you
+                must share the new password with them out-of-band.
+              </div>
+            </div>
+            <div>
+              <label htmlFor="reset-new-password" className="block text-xs font-medium text-gray-700 dark:text-gray-300">New Password</label>
+              <input
+                id="reset-new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+                minLength={8}
+                maxLength={255}
+                className={INPUT_CLASS + ' mt-1'}
+                data-testid="reset-new-password-input"
+              />
+            </div>
+            <div>
+              <label htmlFor="reset-confirm-password" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Confirm New Password</label>
+              <input
+                id="reset-confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+                minLength={8}
+                maxLength={255}
+                className={INPUT_CLASS + ' mt-1'}
+                data-testid="reset-confirm-password-input"
+              />
+            </div>
+            {mismatchError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="reset-password-mismatch-error">
+                <AlertCircle size={14} />
+                {mismatchError}
+              </div>
+            )}
+            {error && !mismatchError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="reset-password-error">
+                <AlertCircle size={14} />
+                {error instanceof Error ? error.message : 'Failed to reset password'}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isPending}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                data-testid="reset-password-save"
+              >
+                {isPending && <Loader2 size={14} className="animate-spin" />}
+                Reset Password
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

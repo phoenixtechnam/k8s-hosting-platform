@@ -34,7 +34,10 @@ vi.mock('../hooks/use-client-context', () => ({
 
 const createUserMutate = vi.fn();
 const updateUserMutate = vi.fn();
+const resetPasswordMutate = vi.fn();
+const resetPasswordReset = vi.fn();
 const deleteUserMutate = vi.fn();
+let resetPasswordIsSuccess = false;
 vi.mock('../hooks/use-sub-users', () => ({
   useSubUsers: vi.fn(() => ({
     data: { data: [] },
@@ -44,6 +47,13 @@ vi.mock('../hooks/use-sub-users', () => ({
   })),
   useCreateSubUser: vi.fn(() => ({ mutateAsync: createUserMutate, isPending: false, error: null })),
   useUpdateSubUser: vi.fn(() => ({ mutateAsync: updateUserMutate, isPending: false, error: null })),
+  useResetSubUserPassword: vi.fn(() => ({
+    mutateAsync: resetPasswordMutate,
+    reset: resetPasswordReset,
+    isPending: false,
+    isSuccess: resetPasswordIsSuccess,
+    error: null,
+  })),
   useDeleteSubUser: vi.fn(() => ({ mutateAsync: deleteUserMutate, isPending: false, error: null })),
 }));
 
@@ -81,6 +91,9 @@ describe('SubUsers Page', () => {
     } as unknown as ReturnType<typeof useSubUsers>);
     createUserMutate.mockReset();
     updateUserMutate.mockReset();
+    resetPasswordMutate.mockReset();
+    resetPasswordReset.mockReset();
+    resetPasswordIsSuccess = false;
     deleteUserMutate.mockReset();
   });
 
@@ -346,6 +359,90 @@ describe('SubUsers Page', () => {
         await user.click(screen.getByTestId('edit-user-save'));
         expect(updateUserMutate).not.toHaveBeenCalled();
         expect(screen.queryByTestId('edit-user-modal')).not.toBeInTheDocument();
+      });
+    });
+
+    describe('reset password (Phase 4)', () => {
+      beforeEach(() => {
+        mockedUseSubUsers.mockReturnValue({
+          data: {
+            data: [
+              {
+                id: 'u1',
+                fullName: 'Alice',
+                email: 'alice@c1.com',
+                roleName: 'client_user',
+                status: 'active',
+                createdAt: '2026-01-01T00:00:00Z',
+                lastLoginAt: null,
+              },
+            ],
+          },
+          isLoading: false, isError: false, error: null,
+        } as unknown as ReturnType<typeof useSubUsers>);
+      });
+
+      it('renders a reset-password button on each row', () => {
+        renderWithProviders(<SubUsers />);
+        expect(screen.getByTestId('reset-password-u1')).toBeInTheDocument();
+      });
+
+      it('opens the reset password modal on button click', async () => {
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('reset-password-u1'));
+        expect(screen.getByTestId('reset-password-modal')).toBeInTheDocument();
+        expect(screen.getByTestId('reset-new-password-input')).toBeInTheDocument();
+        expect(screen.getByTestId('reset-confirm-password-input')).toBeInTheDocument();
+      });
+
+      it('rejects mismatched confirmation before calling the mutation', async () => {
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('reset-password-u1'));
+        await user.type(screen.getByTestId('reset-new-password-input'), 'password123');
+        await user.type(screen.getByTestId('reset-confirm-password-input'), 'different999');
+        await user.click(screen.getByTestId('reset-password-save'));
+        expect(screen.getByTestId('reset-password-mismatch-error')).toBeInTheDocument();
+        expect(resetPasswordMutate).not.toHaveBeenCalled();
+      });
+
+      it('rejects a password shorter than 8 characters', async () => {
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('reset-password-u1'));
+        // HTML5 minLength prevents <form onSubmit> from firing at all, so
+        // we verify the mutation wasn't called when the user tried to
+        // submit a short password. The mismatch helper also covers length.
+        await user.type(screen.getByTestId('reset-new-password-input'), 'short');
+        await user.type(screen.getByTestId('reset-confirm-password-input'), 'short');
+        await user.click(screen.getByTestId('reset-password-save'));
+        expect(resetPasswordMutate).not.toHaveBeenCalled();
+      });
+
+      it('calls the mutation with matching passwords', async () => {
+        resetPasswordMutate.mockResolvedValueOnce(undefined);
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('reset-password-u1'));
+        await user.type(screen.getByTestId('reset-new-password-input'), 'brand-new-pw-123');
+        await user.type(screen.getByTestId('reset-confirm-password-input'), 'brand-new-pw-123');
+        await user.click(screen.getByTestId('reset-password-save'));
+        expect(resetPasswordMutate).toHaveBeenCalledWith({
+          userId: 'u1',
+          newPassword: 'brand-new-pw-123',
+        });
+      });
+
+      it('shows a success state after the mutation resolves', async () => {
+        resetPasswordIsSuccess = true;
+        const user = userEvent.setup();
+        renderWithProviders(<SubUsers />);
+        await user.click(screen.getByTestId('reset-password-u1'));
+        expect(screen.getByTestId('reset-password-success')).toBeInTheDocument();
+        expect(screen.getByText(/Password updated for/)).toBeInTheDocument();
+        await user.click(screen.getByTestId('reset-password-done'));
+        expect(resetPasswordReset).toHaveBeenCalled();
       });
     });
 

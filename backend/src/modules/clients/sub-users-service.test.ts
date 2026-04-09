@@ -4,6 +4,7 @@ import {
   createSubUser,
   deleteSubUser,
   updateSubUser,
+  resetSubUserPassword,
   type SubUsersDb,
 } from './sub-users-service.js';
 
@@ -111,6 +112,13 @@ function makeStub(initialRows: SubUserRow[]): SubUsersDb {
         lastLoginAt: next.lastLoginAt,
       };
     },
+    updatePasswordHash: async (userId, clientId, passwordHash) => {
+      const idx = rows.findIndex(
+        (r) => r.id === userId && r.clientId === clientId,
+      );
+      if (idx < 0) throw new Error(`row not found: ${userId}`);
+      rows[idx] = { ...rows[idx], passwordHash };
+    },
     deleteById: async (userId, clientId) => {
       rows = rows.filter(
         (r) => !(r.id === userId && r.clientId === clientId),
@@ -120,6 +128,50 @@ function makeStub(initialRows: SubUserRow[]): SubUsersDb {
     runInTransaction: async (fn) => fn(stub),
   };
   return stub;
+}
+
+/**
+ * Test helper: pokes inside the in-memory stub to read the current
+ * password hash for assertions. The real stub is fully closure-
+ * scoped, so we expose a readback via the spy pattern below.
+ */
+function makeStubWithPasswordReadback(initialRows: SubUserRow[]): {
+  db: SubUsersDb;
+  readHash: (userId: string) => string | null;
+} {
+  const state: { rows: SubUserRow[] } = { rows: [...initialRows] };
+  const stub: SubUsersDb = {
+    listByClientId: async (clientId) =>
+      state.rows
+        .filter((r) => r.clientId === clientId)
+        .map((r) => ({
+          id: r.id, email: r.email, fullName: r.fullName, roleName: r.roleName,
+          status: r.status, createdAt: r.createdAt, lastLoginAt: r.lastLoginAt,
+        })),
+    countByClientId: async (clientId) =>
+      state.rows.filter((r) => r.clientId === clientId).length,
+    countAdminsByClientId: async (clientId) =>
+      state.rows.filter((r) => r.clientId === clientId && r.roleName === 'client_admin').length,
+    countActiveAdminsByClientId: async (clientId) =>
+      state.rows.filter((r) => r.clientId === clientId && r.roleName === 'client_admin' && r.status === 'active').length,
+    findByIdAndClientId: async (userId, clientId) => {
+      const row = state.rows.find((r) => r.id === userId && r.clientId === clientId);
+      return row ? { id: row.id, roleName: row.roleName, status: row.status } : null;
+    },
+    insertSubUser: async () => { throw new Error('not implemented in readback stub'); },
+    updateSubUser: async () => { throw new Error('not implemented in readback stub'); },
+    updatePasswordHash: async (userId, clientId, passwordHash) => {
+      const idx = state.rows.findIndex((r) => r.id === userId && r.clientId === clientId);
+      if (idx < 0) throw new Error(`row not found: ${userId}`);
+      state.rows[idx] = { ...state.rows[idx], passwordHash };
+    },
+    deleteById: async () => { throw new Error('not implemented in readback stub'); },
+    runInTransaction: async (fn) => fn(stub),
+  };
+  return {
+    db: stub,
+    readHash: (userId) => state.rows.find((r) => r.id === userId)?.passwordHash ?? null,
+  };
 }
 
 const SEED: SubUserRow[] = [
@@ -496,6 +548,47 @@ describe('sub-users-service', () => {
         status: 'disabled',
       });
       expect(updated.status).toBe('disabled');
+    });
+  });
+
+  describe('resetSubUserPassword (Phase 4)', () => {
+    it('resets a user password to a new bcrypt hash', async () => {
+      const { db, readHash } = makeStubWithPasswordReadback(SEED);
+      const before = readHash('u-user-1');
+      await resetSubUserPassword(db, 'c1', 'u-user-1', 'brand-new-pw-123');
+      const after = readHash('u-user-1');
+      expect(after).not.toBe(before);
+      expect(after).not.toBe('brand-new-pw-123'); // Should be hashed, not stored plaintext
+      // Bcrypt hash starts with $2a$ or $2b$
+      expect(after).toMatch(/^\$2[aby]\$/);
+    });
+
+    it('rejects short passwords', async () => {
+      const { db } = makeStubWithPasswordReadback(SEED);
+      await expect(
+        resetSubUserPassword(db, 'c1', 'u-user-1', 'short'),
+      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+    });
+
+    it('rejects an empty password', async () => {
+      const { db } = makeStubWithPasswordReadback(SEED);
+      await expect(
+        resetSubUserPassword(db, 'c1', 'u-user-1', ''),
+      ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
+    });
+
+    it('returns 404 for users not in this client', async () => {
+      const { db } = makeStubWithPasswordReadback(SEED);
+      await expect(
+        resetSubUserPassword(db, 'c1', 'u-admin-2', 'brand-new-pw-123'),
+      ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
+    });
+
+    it('returns 404 for non-existent users', async () => {
+      const { db } = makeStubWithPasswordReadback(SEED);
+      await expect(
+        resetSubUserPassword(db, 'c1', 'u-does-not-exist', 'brand-new-pw-123'),
+      ).rejects.toMatchObject({ code: 'USER_NOT_FOUND' });
     });
   });
 });
