@@ -300,12 +300,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       // Phase 3 T2.1: IMAPSync reconciler. Polls active K8s Jobs
       // and writes terminal status + log tail back to the DB.
+      // Round-4 Phase 2: also start the webmail cert reconciler so
+      // pending Certificates promote to ready as cert-manager
+      // catches up.
       try {
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
         const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
         const k8sForImapsync = createK8sClients(kubePath);
         const imapsyncTimer = startImapSyncReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => clearInterval(imapsyncTimer));
+
+        const { startWebmailReconciler, stopWebmailReconciler } = await import(
+          './modules/email-domains/webmail-reconciler.js'
+        );
+        const webmailReconTimer = startWebmailReconciler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => stopWebmailReconciler(webmailReconTimer));
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }

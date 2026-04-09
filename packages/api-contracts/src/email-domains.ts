@@ -22,6 +22,10 @@ export const updateEmailDomainSchema = z.object({
 
 export type UpdateEmailDomainInput = z.infer<typeof updateEmailDomainSchema>;
 
+// Round-4 Phase 2: webmail provisioning lifecycle status.
+export const webmailStatusEnum = z.enum(['pending', 'ready', 'ready_no_tls', 'failed']);
+export type WebmailStatus = z.infer<typeof webmailStatusEnum>;
+
 export const emailDomainResponseSchema = z.object({
   id: z.string(),
   domainId: z.string(),
@@ -29,6 +33,11 @@ export const emailDomainResponseSchema = z.object({
   domainName: z.string(),
   enabled: z.number(),
   webmailEnabled: z.number().optional(),
+  // Round-4 Phase 2 — webmail provisioning lifecycle (lifecycle
+  // tracker columns added in migration 0021).
+  webmailStatus: webmailStatusEnum.optional(),
+  webmailStatusMessage: z.string().nullable().optional(),
+  webmailStatusUpdatedAt: z.string().nullable().optional(),
   dkimSelector: z.string(),
   dkimPublicKey: z.string().nullable(),
   catchAllAddress: z.string().nullable(),

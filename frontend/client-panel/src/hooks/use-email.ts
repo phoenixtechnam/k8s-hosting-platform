@@ -7,6 +7,10 @@ export interface EmailDomain {
   readonly domainName: string;
   readonly enabled: number;
   readonly webmailEnabled?: number;
+  // Round-4 Phase 2 — webmail provisioning lifecycle status.
+  readonly webmailStatus?: 'pending' | 'ready' | 'ready_no_tls' | 'failed';
+  readonly webmailStatusMessage?: string | null;
+  readonly webmailStatusUpdatedAt?: string | null;
   readonly maxMailboxes: number;
   readonly maxQuotaMb: number;
   readonly mailboxCount?: number;

@@ -1098,6 +1098,52 @@ function SettingsTab({
   );
 }
 
+// Round-4 Phase 2: webmail provisioning lifecycle badge.
+//
+// Renders next to the webmail enable toggle in the Settings tab.
+// 'pending' = blue (provisioning in flight)
+// 'ready' = green (Ingress + TLS up)
+// 'ready_no_tls' = amber (Ingress up, cert pending — site is HTTP)
+// 'failed' = red (Ingress could not be created at all)
+// undefined = no badge (legacy rows or non-webmail-enabled domains)
+function WebmailStatusBadge({
+  status,
+  message,
+}: {
+  readonly status: 'pending' | 'ready' | 'ready_no_tls' | 'failed' | undefined;
+  readonly message: string | null;
+}) {
+  if (!status) return null;
+  const meta: Record<string, { label: string; cls: string }> = {
+    pending: {
+      label: 'Provisioning…',
+      cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+    },
+    ready: {
+      label: 'Ready',
+      cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+    },
+    ready_no_tls: {
+      label: 'Cert pending (HTTP only)',
+      cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    },
+    failed: {
+      label: 'Failed',
+      cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+    },
+  };
+  const m = meta[status] ?? meta.pending;
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${m.cls}`}
+      title={message ?? m.label}
+      data-testid={`webmail-status-${status}`}
+    >
+      {m.label}
+    </span>
+  );
+}
+
 function DomainSettingsCard({
   clientId,
   domain,
@@ -1175,17 +1221,23 @@ function DomainSettingsCard({
           <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
             Enable webmail.{domain.domainName} → Roundcube.
           </p>
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={webmailEnabled}
-              onChange={(e) => setWebmailEnabled(e.target.checked)}
-              data-testid="settings-webmail-enabled"
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={webmailEnabled}
+                onChange={(e) => setWebmailEnabled(e.target.checked)}
+                data-testid="settings-webmail-enabled"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                Enabled (webmail.{domain.domainName})
+              </span>
+            </label>
+            <WebmailStatusBadge
+              status={domain.webmailStatus}
+              message={domain.webmailStatusMessage ?? null}
             />
-            <span className="text-sm text-gray-700 dark:text-gray-300">
-              Enabled (webmail.{domain.domainName})
-            </span>
-          </label>
+          </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">

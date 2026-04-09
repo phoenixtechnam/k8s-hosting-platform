@@ -6,7 +6,7 @@ import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
-import type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
+import type { EmailDomainDisablePreview, WebmailStatus } from '@k8s-hosting/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -241,6 +241,10 @@ export async function getEmailDomain(
       dnsMode: domains.dnsMode,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
+      // Round-4 Phase 2: webmail provisioning status fields.
+      webmailStatus: emailDomains.webmailStatus,
+      webmailStatusMessage: emailDomains.webmailStatusMessage,
+      webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
       catchAllAddress: emailDomains.catchAllAddress,
@@ -340,6 +344,10 @@ export async function listEmailDomains(
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
+      // Round-4 Phase 2: webmail status fields.
+      webmailStatus: emailDomains.webmailStatus,
+      webmailStatusMessage: emailDomains.webmailStatusMessage,
+      webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
       dkimSelector: emailDomains.dkimSelector,
       dkimPublicKey: emailDomains.dkimPublicKey,
       catchAllAddress: emailDomains.catchAllAddress,
@@ -500,6 +508,29 @@ export async function getDerivedWebmailUrlForMailbox(
   return `https://webmail.${row.domainName}`;
 }
 
+// Round-4 Phase 2: webmail provisioning lifecycle status writer.
+// Centralizes the column updates so every transition path looks
+// the same and we never accidentally leave a row in 'pending'.
+//
+// Review HIGH-1: type is the canonical one from
+// @k8s-hosting/api-contracts so the backend and frontend cannot
+// drift on lifecycle values.
+async function setWebmailStatus(
+  db: Database,
+  emailDomainId: string,
+  status: WebmailStatus,
+  message: string | null = null,
+): Promise<void> {
+  await db
+    .update(emailDomains)
+    .set({
+      webmailStatus: status,
+      webmailStatusMessage: message,
+      webmailStatusUpdatedAt: new Date(),
+    })
+    .where(eq(emailDomains.id, emailDomainId));
+}
+
 /**
  * Ensure a webmail.<domain> Ingress + ExternalName Service exist in
  * the client's namespace, pointing at the shared Roundcube Service in
@@ -507,13 +538,18 @@ export async function getDerivedWebmailUrlForMailbox(
  *
  * Called by enableEmailForDomain and updateEmailDomain (when
  * webmail_enabled is toggled on). Idempotent on 409 (replace).
+ *
+ * Round-4 Phase 2: writes the webmail_status column at every
+ * transition (pending → ready / ready_no_tls / failed) so the UI
+ * can render an accurate badge instead of relying on the
+ * fire-and-forget notification.
  */
 export async function ensureWebmailIngress(
   db: Database,
   k8s: K8sClients | undefined,
   emailDomainId: string,
-): Promise<{ ingressCreated: boolean; reason?: string }> {
-  if (!k8s) return { ingressCreated: false, reason: 'no k8s client' };
+): Promise<{ ingressCreated: boolean; reason?: string; status: WebmailStatus }> {
+  if (!k8s) return { ingressCreated: false, reason: 'no k8s client', status: 'failed' };
 
   const [row] = await db
     .select({
@@ -527,13 +563,33 @@ export async function ensureWebmailIngress(
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
     .where(eq(emailDomains.id, emailDomainId));
 
-  if (!row) return { ingressCreated: false, reason: 'email_domain not found' };
+  if (!row) return { ingressCreated: false, reason: 'email_domain not found', status: 'failed' };
   if (row.webmailEnabled !== 1) {
-    return { ingressCreated: false, reason: 'webmail_enabled=false' };
+    // Review HIGH-3: this branch is a contract violation by the
+    // caller — `ensureWebmailIngress` should never be invoked when
+    // webmail is disabled. Returning a `'pending'` status would
+    // mislead callers about the actual DB state. Return whatever
+    // the row currently holds (read-back) so the response is
+    // consistent with the row.
+    const [current] = await db
+      .select({ webmailStatus: emailDomains.webmailStatus })
+      .from(emailDomains)
+      .where(eq(emailDomains.id, row.emailDomainId));
+    return {
+      ingressCreated: false,
+      reason: 'webmail_enabled=false',
+      status: (current?.webmailStatus ?? 'failed') as WebmailStatus,
+    };
   }
 
+  // Mark pending at the start so the UI sees the transition.
+  await setWebmailStatus(db, row.emailDomainId, 'pending');
+
   const [client] = await db.select().from(clients).where(eq(clients.id, row.clientId));
-  if (!client) return { ingressCreated: false, reason: 'client not found' };
+  if (!client) {
+    await setWebmailStatus(db, row.emailDomainId, 'failed', 'client row not found');
+    return { ingressCreated: false, reason: 'client not found', status: 'failed' };
+  }
   const namespace = client.kubernetesNamespace;
   const hostname = `webmail.${row.domainName}`;
 
@@ -565,26 +621,32 @@ export async function ensureWebmailIngress(
     await k8s.core.createNamespacedService({ namespace, body: externalSvcBody });
   } catch (err: unknown) {
     const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 409) throw err;
-    await k8s.core.replaceNamespacedService({
-      name: externalSvcName,
-      namespace,
-      body: externalSvcBody,
-    });
+    if (statusCode !== 409) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await setWebmailStatus(db, row.emailDomainId, 'failed', `ExternalName service create failed: ${msg}`);
+      throw err;
+    }
+    try {
+      await k8s.core.replaceNamespacedService({
+        name: externalSvcName,
+        namespace,
+        body: externalSvcBody,
+      });
+    } catch (replaceErr) {
+      const msg = replaceErr instanceof Error ? replaceErr.message : String(replaceErr);
+      await setWebmailStatus(db, row.emailDomainId, 'failed', `ExternalName service replace failed: ${msg}`);
+      throw replaceErr;
+    }
   }
 
   // Step 2: ensure the Ingress rule for webmail.<domain>
   //
-  // Cert secret name is resolved by the certificates module inside
-  // domains/k8s-ingress.ts during its reconcile pass — we don't
-  // duplicate that logic here. For the webmail Ingress we create a
-  // dedicated Ingress separate from the platform's {namespace}-ingress
-  // because webmail lives on a different hostname pattern and we want
-  // it reconciled independently.
-  //
-  // Use ensureRouteCertificate to get the right secret name. Round-3:
-  // surface cert failures as a client-facing error notification so
-  // operators don't silently end up with a non-HTTPS webmail site.
+  // Use ensureRouteCertificate to get the right secret name. Round-3
+  // round-2 surfaced cert failures as a client-facing notification.
+  // Round-4 Phase 2: cert failure is no longer a "failed" outcome —
+  // the Ingress is still created without TLS and is reachable on
+  // plain HTTP. Status becomes 'ready_no_tls' and the cert
+  // reconciler can flip it to 'ready' once cert-manager catches up.
   const { ensureRouteCertificate } = await import('../certificates/service.js');
   let certResult: Awaited<ReturnType<typeof ensureRouteCertificate>> | null = null;
   let certError: string | null = null;
@@ -595,19 +657,6 @@ export async function ensureWebmailIngress(
     console.warn(
       `[email-domains] ensureRouteCertificate failed for ${hostname}: ${certError}`,
     );
-  }
-
-  if (certError) {
-    try {
-      const { notifyClientWebmailCertFailed } = await import('../notifications/events.js');
-      await notifyClientWebmailCertFailed(db, row.clientId, {
-        emailDomainId: row.emailDomainId,
-        hostname,
-        errorMessage: certError,
-      });
-    } catch {
-      // Fire-and-forget
-    }
   }
 
   const tls = certResult && !certResult.skipped && certResult.secretName
@@ -650,15 +699,32 @@ export async function ensureWebmailIngress(
     await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
   } catch (err: unknown) {
     const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode !== 409) throw err;
-    await k8s.networking.replaceNamespacedIngress({
-      name: ingressName,
-      namespace,
-      body: ingressBody,
-    });
+    if (statusCode !== 409) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await setWebmailStatus(db, row.emailDomainId, 'failed', `Ingress create failed: ${msg}`);
+      throw err;
+    }
+    try {
+      await k8s.networking.replaceNamespacedIngress({
+        name: ingressName,
+        namespace,
+        body: ingressBody,
+      });
+    } catch (replaceErr) {
+      const msg = replaceErr instanceof Error ? replaceErr.message : String(replaceErr);
+      await setWebmailStatus(db, row.emailDomainId, 'failed', `Ingress replace failed: ${msg}`);
+      throw replaceErr;
+    }
   }
 
-  return { ingressCreated: true };
+  // Final status: ready (with TLS) or ready_no_tls (cert pending/failed).
+  const finalStatus: WebmailStatus = tls ? 'ready' : 'ready_no_tls';
+  const finalMessage = certError
+    ? `Ingress is serving HTTP but TLS certificate is not yet issued: ${certError}`
+    : null;
+  await setWebmailStatus(db, row.emailDomainId, finalStatus, finalMessage);
+
+  return { ingressCreated: true, status: finalStatus };
 }
 
 /**

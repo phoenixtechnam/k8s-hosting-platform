@@ -656,6 +656,12 @@ export const emailDomains = pgTable('email_domains', {
   // Default true — every email domain gets webmail access out of the
   // box; operators or client_admins can toggle it off per domain.
   webmailEnabled: integer('webmail_enabled').notNull().default(1),
+  // Round-4 Phase 2 — webmail provisioning lifecycle status.
+  // Values: 'pending' | 'ready' | 'ready_no_tls' | 'failed'.
+  // See migration 0021 for the rationale.
+  webmailStatus: varchar('webmail_status', { length: 16 }).notNull().default('pending'),
+  webmailStatusMessage: text('webmail_status_message'),
+  webmailStatusUpdatedAt: timestamp('webmail_status_updated_at'),
   dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
   dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
   dkimPublicKey: text('dkim_public_key'),

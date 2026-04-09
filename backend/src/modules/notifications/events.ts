@@ -208,36 +208,17 @@ export async function notifyClientEmailBootstrapped(
 // ──────────────────────────────────────────────────────────────────
 // Webmail cert / provisioning failure
 // ──────────────────────────────────────────────────────────────────
-
-export interface WebmailCertFailedPayload {
-  readonly emailDomainId: string;
-  readonly hostname: string;
-  readonly errorMessage: string;
-}
-
-/**
- * Fire when ensureWebmailIngress or ensureRouteCertificate fails
- * while provisioning the per-domain webmail site. Error level —
- * the DNS record may have been published but the site is not yet
- * reachable. The client should verify DNS propagation and retry.
- */
-export async function notifyClientWebmailCertFailed(
-  db: Database,
-  clientId: string,
-  payload: WebmailCertFailedPayload,
-): Promise<void> {
-  const recipients = await getClientNotificationRecipients(db, clientId);
-  if (recipients.length === 0) return;
-
-  await notifyUsers(db, recipients, {
-    type: 'error',
-    title: 'Webmail provisioning failed',
-    message:
-      `Failed to provision the webmail site at ${payload.hostname}. `
-      + `${payload.errorMessage} `
-      + 'The DNS record may have been published, but the site is not yet reachable. '
-      + 'Try again from the Email Settings tab after DNS propagation.',
-    resourceType: 'email_domain',
-    resourceId: payload.emailDomainId,
-  });
-}
+//
+// Round-4 Phase 2 review HIGH-2: notifyClientWebmailCertFailed was
+// removed as a dead code path. The previous behaviour was to fire
+// an "error" notification whenever ensureRouteCertificate threw —
+// but in dev (and any environment using HTTP-01 ACME without real
+// DNS propagation) this was a false alarm because the Ingress was
+// still created without TLS and serving HTTP. The new
+// `webmail_status` column on `email_domains` tracks the lifecycle
+// in a way the UI can render directly without the noise.
+//
+// If a future iteration adds a real "webmail provisioning broke
+// in a way the user must manually fix" path, re-add the helper
+// here and call it from the corresponding error branch in
+// ensureWebmailIngress.
