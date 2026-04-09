@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Clock, Plus, Loader2, AlertCircle, Trash2, X, Play, Pause, RotateCw, Globe, Terminal } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useCanManage } from '@/hooks/use-can-manage';
+import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCronJobs, useCreateCronJob, useUpdateCronJob, useRunCronJob, useDeleteCronJob } from '@/hooks/use-cron-jobs';
 import { useDeployments } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
@@ -63,6 +65,7 @@ const INITIAL_FORM: CronFormState = {
 
 export default function CronJobs() {
   const { clientId } = useClientContext();
+  const canManage = useCanManage();
   const { data: response, isLoading, isError, error } = useCronJobs(clientId ?? undefined);
   const createJob = useCreateCronJob(clientId ?? undefined);
   const updateJob = useUpdateCronJob(clientId ?? undefined);
@@ -131,16 +134,20 @@ export default function CronJobs() {
             <p className="text-sm text-gray-500 dark:text-gray-400">Schedule recurring tasks.</p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowForm((p) => !p)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          data-testid="add-cron-job-button"
-        >
-          {showForm ? <X size={14} /> : <Plus size={14} />}
-          {showForm ? 'Cancel' : 'Add Cron Job'}
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowForm((p) => !p)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            data-testid="add-cron-job-button"
+          >
+            {showForm ? <X size={14} /> : <Plus size={14} />}
+            {showForm ? 'Cancel' : 'Add Cron Job'}
+          </button>
+        )}
       </div>
+
+      {!canManage && <ReadOnlyNotice message="You have read-only access to scheduled tasks. Creating, editing, and running cron jobs require administrator access." />}
 
       {showForm && (
         <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-4" data-testid="cron-job-form">

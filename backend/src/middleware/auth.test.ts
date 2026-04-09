@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { registerAuth, authenticate, requireRole } from './auth.js';
+import { registerAuth, authenticate, requireRole, requireClientRoleByMethod } from './auth.js';
 import { errorHandler } from './error-handler.js';
 
 describe('auth middleware', () => {
@@ -29,6 +29,20 @@ describe('auth middleware', () => {
     app.get('/auth-only', { preHandler: [authenticate] }, async (request) => {
       return { user: request.user };
     });
+
+    // Phase 6: method-aware client role guard test routes
+    app.get('/client-rsrc', {
+      preHandler: [authenticate, requireClientRoleByMethod()],
+    }, async () => ({ ok: true }));
+    app.post('/client-rsrc', {
+      preHandler: [authenticate, requireClientRoleByMethod()],
+    }, async () => ({ ok: true }));
+    app.patch('/client-rsrc', {
+      preHandler: [authenticate, requireClientRoleByMethod()],
+    }, async () => ({ ok: true }));
+    app.delete('/client-rsrc', {
+      preHandler: [authenticate, requireClientRoleByMethod()],
+    }, async () => ({ ok: true }));
 
     await app.ready();
 
@@ -103,5 +117,114 @@ describe('auth middleware', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(res.json().error.code).toBe('MISSING_BEARER_TOKEN');
+  });
+
+  describe('requireClientRoleByMethod (Phase 6)', () => {
+    const iat = Math.floor(Date.now() / 1000);
+    let clientAdminToken: string;
+    let clientUserToken: string;
+    let readOnlyToken: string;
+    let supportTokenLocal: string;
+
+    beforeAll(() => {
+      clientAdminToken = app.jwt.sign({ sub: 'ca', role: 'client_admin', panel: 'client', clientId: 'c1', iat });
+      clientUserToken = app.jwt.sign({ sub: 'cu', role: 'client_user', panel: 'client', clientId: 'c1', iat });
+      readOnlyToken = app.jwt.sign({ sub: 'ro', role: 'read_only', panel: 'admin', iat });
+      supportTokenLocal = app.jwt.sign({ sub: 'sup', role: 'support', panel: 'admin', iat });
+    });
+
+    it('allows client_user to GET (read)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('rejects read_only admin on client resources (admin-panel role)', async () => {
+      // `read_only` is for admin dashboard / metrics / health
+      // aggregate reads — it should NOT have access to individual
+      // client resource endpoints like /clients/:id/domains.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${readOnlyToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects client_user POST (write)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects client_user PATCH (write)', async () => {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects client_user DELETE (write)', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientUserToken}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('rejects read_only admin POST (read_only cannot write)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${readOnlyToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('allows client_admin POST (client_admin can write)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows support POST (staff can write)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${supportTokenLocal}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows client_admin DELETE', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/client-rsrc',
+        headers: { authorization: `Bearer ${clientAdminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('rejects unauthenticated requests', async () => {
+      const res = await app.inject({ method: 'POST', url: '/client-rsrc', payload: {} });
+      expect(res.statusCode).toBe(401);
+    });
   });
 });

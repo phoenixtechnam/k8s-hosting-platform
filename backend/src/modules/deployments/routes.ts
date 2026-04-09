@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
@@ -17,8 +17,10 @@ import { fileManagerRequest } from '../file-manager/service.js';
 const FM_IMAGE = 'file-manager-sidecar:latest';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
+  // Phase 6: method-aware role guard — read for all client roles,
+  // writes only for client_admin + staff.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   // Lazy-init K8s clients (null if no kubeconfig available)

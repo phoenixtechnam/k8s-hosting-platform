@@ -8,7 +8,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -16,8 +16,9 @@ import { clients } from '../../db/schema.js';
 import * as sqliteService from './service.js';
 
 export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
+  // Phase 6: method-aware role guard — read open, writes staff+client_admin only
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   const getK8s = () => {

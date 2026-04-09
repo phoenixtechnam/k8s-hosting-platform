@@ -2,9 +2,11 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Globe, Plus, X, Loader2, Shield } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useCanManage } from '@/hooks/use-can-manage';
 import { useDomains, useCreateDomain } from '@/hooks/use-domains';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 
 function StatusBadge({ status }: { readonly status: string }) {
   const colorMap: Record<string, string> = {
@@ -28,6 +30,7 @@ const INPUT_CLASS =
 export default function Domains() {
   const { clientId } = useClientContext();
   const navigate = useNavigate();
+  const canManage = useCanManage();
   const { data, isLoading, isError, error } = useDomains(clientId ?? undefined);
   const [showAddModal, setShowAddModal] = useState(false);
 
@@ -48,16 +51,20 @@ export default function Domains() {
             <p className="text-sm text-gray-500 dark:text-gray-400">Manage your domain names and DNS settings.</p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAddModal(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          data-testid="add-domain-button"
-        >
-          <Plus size={14} />
-          Add Domain
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            data-testid="add-domain-button"
+          >
+            <Plus size={14} />
+            Add Domain
+          </button>
+        )}
       </div>
+
+      {!canManage && <ReadOnlyNotice />}
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         {isLoading && (

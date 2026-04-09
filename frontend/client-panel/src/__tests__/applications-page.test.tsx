@@ -4,17 +4,23 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import Applications from '../pages/Applications';
 
+// Phase 6: Applications uses useCanManage (which reads useAuth with a
+// selector). Mock useAuth so both the selector and no-arg calls resolve
+// to a client_admin user — that keeps the existing Deploy-button tests
+// passing and the page's other useAuth call sites happy.
+const _mockAuthState = {
+  user: { id: 'client-1', email: 'test@example.com', fullName: 'Test User', role: 'client_admin' },
+  token: 'test-token',
+  isAuthenticated: true,
+  isLoading: false,
+  error: null,
+  login: vi.fn(),
+  logout: vi.fn(),
+  initialize: vi.fn(),
+};
 vi.mock('../hooks/use-auth', () => ({
-  useAuth: vi.fn(() => ({
-    user: { id: 'client-1', email: 'test@example.com', fullName: 'Test User', role: 'client' },
-    token: 'test-token',
-    isAuthenticated: true,
-    isLoading: false,
-    error: null,
-    login: vi.fn(),
-    logout: vi.fn(),
-    initialize: vi.fn(),
-  })),
+  useAuth: <T,>(selector?: (state: typeof _mockAuthState) => T) =>
+    (selector ? selector(_mockAuthState) : _mockAuthState),
 }));
 
 vi.mock('../hooks/use-client-context', () => ({

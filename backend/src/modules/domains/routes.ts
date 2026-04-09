@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { domains } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
@@ -23,7 +23,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     return success(await listProviderGroups(app.db));
   });
 
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  // Phase 6: method-aware role guard — GET is open to all client
+  // roles (including client_user), writes require client_admin.
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   const getK8s = () => {

@@ -13,6 +13,16 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
+// Phase 6: SshKeys now uses useCanManage which reads from useAuth.
+// Default to client_admin so the existing tests still see the Add button.
+const _mockAuthUser = { id: 'u1', email: 'u@c1.com', fullName: 'Me', role: 'client_admin' };
+vi.mock('../hooks/use-auth', () => ({
+  useAuth: <T,>(selector?: (state: { user: typeof _mockAuthUser }) => T) => {
+    const state = { user: _mockAuthUser };
+    return selector ? selector(state) : state;
+  },
+}));
+
 const mockKey = {
   id: 'key-1',
   clientId: 'client-1',

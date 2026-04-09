@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { createCronJobSchema, updateCronJobSchema } from './schema.js';
 import * as service from './service.js';
 import { bulkUpdateCronJobEnabled, bulkDeleteCronJobs } from './service.js';
@@ -8,8 +8,10 @@ import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function cronJobRoutes(app: FastifyInstance): Promise<void> {
+  // Phase 6: method-aware role guard — read for all client roles,
+  // writes only for client_admin + staff.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   // POST /api/v1/admin/cron-jobs/bulk — bulk enable/disable/delete

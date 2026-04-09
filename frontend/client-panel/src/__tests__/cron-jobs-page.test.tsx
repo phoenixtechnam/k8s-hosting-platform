@@ -10,6 +10,16 @@ vi.mock('@/hooks/use-client-context', () => ({
   useClientContext: vi.fn(() => ({ clientId: 'c1', clientName: 'Test Corp', isLoading: false })),
 }));
 
+// Phase 6: CronJobs now uses useCanManage which reads from useAuth.
+// Default to client_admin so the existing tests still see the Add button.
+const _mockAuthUser = { id: 'u1', email: 'u@c1.com', fullName: 'Me', role: 'client_admin' };
+vi.mock('@/hooks/use-auth', () => ({
+  useAuth: <T,>(selector?: (state: { user: typeof _mockAuthUser }) => T) => {
+    const state = { user: _mockAuthUser };
+    return selector ? selector(state) : state;
+  },
+}));
+
 vi.mock('@/lib/api-client', () => ({
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {

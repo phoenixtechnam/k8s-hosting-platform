@@ -4,6 +4,8 @@ import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useCanManage } from '@/hooks/use-can-manage';
+import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCatalog } from '@/hooks/use-catalog';
 import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
@@ -33,6 +35,7 @@ const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
 
 export default function Applications() {
   const { clientId } = useClientContext();
+  const canManage = useCanManage();
   const { data: deploymentsForNames } = useDeployments(clientId ?? undefined);
   const existingDeploymentNames = useMemo(
     () => (deploymentsForNames?.data ?? []).filter(d => d.status !== 'deleted').map(d => d.name),
@@ -60,16 +63,20 @@ export default function Applications() {
             <p className="text-sm text-gray-500 dark:text-gray-400">Browse the catalog and manage your deployed applications.</p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => openDeployModal()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          data-testid="deploy-button"
-        >
-          <Rocket size={14} />
-          Deploy
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => openDeployModal()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            data-testid="deploy-button"
+          >
+            <Rocket size={14} />
+            Deploy
+          </button>
+        )}
       </div>
+
+      {!canManage && <ReadOnlyNotice message="You have read-only access. Deploying, updating, and deleting applications require administrator access." />}
 
       <div className="border-b border-gray-200 dark:border-gray-700">
         <nav className="-mb-px flex gap-6" data-testid="tab-bar">

@@ -1,6 +1,6 @@
 import { eq, and } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import { domains } from '../../db/schema.js';
 import { createDnsRecordSchema, updateDnsRecordSchema } from './schema.js';
 import * as service from './service.js';
@@ -20,7 +20,8 @@ async function assertNotSecondaryDns(app: FastifyInstance, clientId: string, dom
 
 export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  // Phase 6: method-aware role guard — read open, writes staff+client_admin only
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   // GET /api/v1/clients/:clientId/domains/:domainId/dns-records

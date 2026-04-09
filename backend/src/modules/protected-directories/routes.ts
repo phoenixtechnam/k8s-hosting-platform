@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
 import {
   createProtectedDirectorySchema,
   updateProtectedDirectorySchema,
@@ -11,8 +11,9 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
 export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<void> {
+  // Phase 6: method-aware role guard — read open, writes staff+client_admin only
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'));
+  app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
 
   const base = '/clients/:clientId/domains/:domainId/protected-directories';

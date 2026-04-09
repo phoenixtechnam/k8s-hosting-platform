@@ -2,14 +2,17 @@ import { useState, type FormEvent } from 'react';
 import { Key, Plus, Trash2, Loader2, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useCanManage } from '@/hooks/use-can-manage';
 import { useSshKeys, useCreateSshKey, useDeleteSshKey, type SshKey } from '@/hooks/use-ssh-keys';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 export default function SshKeys() {
   const { clientId } = useClientContext();
+  const canManage = useCanManage();
   const { data, isLoading } = useSshKeys(clientId ?? undefined);
   const createKey = useCreateSshKey(clientId ?? undefined);
   const deleteKey = useDeleteSshKey(clientId ?? undefined);
@@ -63,15 +66,19 @@ export default function SshKeys() {
         <p className="text-sm text-gray-500 dark:text-gray-400" data-testid="ssh-keys-count">
           {keysRaw.length} key{keysRaw.length !== 1 ? 's' : ''}
         </p>
-        <button
-          type="button"
-          onClick={() => setShowForm((s) => !s)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
-          data-testid="add-ssh-key-button"
-        >
-          {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add SSH Key'}
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowForm((s) => !s)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
+            data-testid="add-ssh-key-button"
+          >
+            {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add SSH Key'}
+          </button>
+        )}
       </div>
+
+      {!canManage && <ReadOnlyNotice message="You have read-only access to SSH keys. Adding and removing SSH keys requires administrator access." />}
 
       {showForm && (
         <form

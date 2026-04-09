@@ -87,6 +87,53 @@ export function requireRole(...roles: AnyRole[]) {
   };
 }
 
+/**
+ * Phase 6: shared method-aware role guard for client-resource
+ * modules (domains, deployments, cron-jobs, ssh-keys, backups,
+ * mailboxes, email-domains). GET/HEAD/OPTIONS are allowed for
+ * read-only roles (including `client_user` and `read_only`),
+ * but writes (POST/PATCH/PUT/DELETE) require `client_admin` or
+ * staff (`super_admin`, `admin`, `support`).
+ *
+ * Before this helper existed, most modules installed a single
+ * plugin-wide `requireRole('super_admin','admin','support',
+ * 'client_admin','client_user')` hook which let a read-only
+ * `client_user` token issue destructive requests — the UI just
+ * happened to not expose the buttons in most places, but the
+ * backend leaked write access.
+ */
+export function requireClientRoleByMethod() {
+  // Note: `read_only` is deliberately excluded from both lists
+  // because it's an admin-panel aggregate-read role (dashboard,
+  // metrics, health), not a client-resource read role. Adding it
+  // here would be a permission expansion, not a preservation.
+  const READ_ROLES: readonly AnyRole[] = [
+    'super_admin', 'admin', 'support', 'client_admin', 'client_user',
+  ];
+  const WRITE_ROLES: readonly AnyRole[] = [
+    'super_admin', 'admin', 'support', 'client_admin',
+  ];
+  return function checkClientRoleByMethod(
+    request: FastifyRequest,
+    _reply: FastifyReply,
+    done: (err?: Error) => void,
+  ): void {
+    const user = request.user;
+    if (!user) {
+      done(invalidToken());
+      return;
+    }
+    const method = request.method.toUpperCase();
+    const isWrite = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+    const allowed = isWrite ? WRITE_ROLES : READ_ROLES;
+    if (!allowed.includes(user.role)) {
+      done(insufficientPermissions(allowed.join(', ')));
+      return;
+    }
+    done();
+  };
+}
+
 export function requireClientAccess() {
   return function checkClientAccess(
     request: FastifyRequest,
