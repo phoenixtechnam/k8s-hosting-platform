@@ -4,6 +4,8 @@ import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCh
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
+import ClientUsersTab from '@/components/ClientUsersTab';
+import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
@@ -21,7 +23,7 @@ import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-prov
 import { useClientMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 
-type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups';
+type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
 
 export default function ClientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -39,6 +41,7 @@ export default function ClientDetail() {
   const subscriptionQuery = useSubscription(id);
   const emailDomainsQuery = useEmailDomains(id);
   const mailboxesQuery = useMailboxes(id);
+  const subUsersQuery = useAdminSubUsers(id ?? null);
 
   const [provisioningOpen, setProvisioningOpen] = useState(false);
   const [decommissionOpen, setDecommissionOpen] = useState(false);
@@ -106,6 +109,7 @@ export default function ClientDetail() {
   const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
   const backupCount = backupsQuery.data?.data.length ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
+  const subUserCount = subUsersQuery.data?.data.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
@@ -114,6 +118,7 @@ export default function ClientDetail() {
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
+    { key: 'users', label: 'Users', count: subUserCount },
   ];
 
   return (
@@ -325,6 +330,7 @@ export default function ClientDetail() {
           )}
           {activeTab === 'email' && <EmailTab clientId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />}
+          {activeTab === 'users' && id && <ClientUsersTab clientId={id} />}
         </div>
       </div>
 
