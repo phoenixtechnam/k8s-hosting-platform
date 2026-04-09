@@ -458,6 +458,11 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
 
   const [newHostname, setNewHostname] = useState('');
+  // Round-4 Phase A: confirm-before-delete pattern for ingress routes.
+  // Previously a single click deleted the route immediately, which
+  // could drop live traffic. Now clicking the trash icon arms a
+  // "Confirm" state and a second click performs the delete.
+  const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
 
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
@@ -542,13 +547,41 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => deleteRoute.mutate(route.id)}
-                      className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {deleteRouteConfirmId === route.id ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            deleteRoute.mutate(route.id, {
+                              onSuccess: () => setDeleteRouteConfirmId(null),
+                            });
+                          }}
+                          disabled={deleteRoute.isPending}
+                          className="rounded-md bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                          data-testid={`route-delete-confirm-${route.id}`}
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteRouteConfirmId(null)}
+                          className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                          data-testid={`route-delete-cancel-${route.id}`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteRouteConfirmId(route.id)}
+                        className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                        data-testid={`route-delete-${route.id}`}
+                        aria-label="Delete route"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1336,6 +1369,9 @@ function DirUsersPanel({ clientId, domainId, dirId }: { readonly clientId: strin
   const [showForm, setShowForm] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  // Round-4 Phase A: confirm-before-delete for protected directory
+  // users. Same two-state pattern as ingress routes.
+  const [deleteUserConfirmId, setDeleteUserConfirmId] = useState<string | null>(null);
   const users = response?.data ?? [];
 
   const handleCreate = async (e: FormEvent) => {
@@ -1359,16 +1395,29 @@ function DirUsersPanel({ clientId, domainId, dirId }: { readonly clientId: strin
         </button>
       </div>
       {showForm && (
-        <form onSubmit={handleCreate} className="mb-3 flex items-end gap-2" data-testid={`create-user-form-${dirId}`}>
-          <div>
-            <label htmlFor={`un-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Username</label>
-            <input id={`un-${dirId}`} type="text" className={INPUT_CLASS + ' mt-0.5'} value={username} onChange={(e) => setUsername(e.target.value)} required data-testid={`user-name-input-${dirId}`} />
+        <form onSubmit={handleCreate} className="mb-3 space-y-2" data-testid={`create-user-form-${dirId}`}>
+          <div className="flex items-end gap-2">
+            <div>
+              <label htmlFor={`un-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Username</label>
+              <input id={`un-${dirId}`} type="text" className={INPUT_CLASS + ' mt-0.5'} value={username} onChange={(e) => setUsername(e.target.value)} required data-testid={`user-name-input-${dirId}`} />
+            </div>
+            <div>
+              <label htmlFor={`pw-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Password</label>
+              <input id={`pw-${dirId}`} type="password" className={INPUT_CLASS + ' mt-0.5'} value={password} onChange={(e) => setPassword(e.target.value)} required data-testid={`user-pass-input-${dirId}`} />
+            </div>
+            <button type="submit" disabled={createUser.isPending} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid={`submit-user-${dirId}`}>
+              {createUser.isPending && <Loader2 size={12} className="mr-1 inline animate-spin" />}
+              Add
+            </button>
           </div>
-          <div>
-            <label htmlFor={`pw-${dirId}`} className="block text-xs font-medium text-gray-600 dark:text-gray-400">Password</label>
-            <input id={`pw-${dirId}`} type="password" className={INPUT_CLASS + ' mt-0.5'} value={password} onChange={(e) => setPassword(e.target.value)} required data-testid={`user-pass-input-${dirId}`} />
-          </div>
-          <button type="submit" disabled={createUser.isPending} className="rounded-md bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid={`submit-user-${dirId}`}>Add</button>
+          {/* Round-4 Phase A: surface backend errors so the user
+              doesn't wonder why the form silently "does nothing". */}
+          {createUser.isError && (
+            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400" data-testid={`create-user-error-${dirId}`}>
+              <AlertCircle size={12} />
+              {createUser.error instanceof Error ? createUser.error.message : 'Failed to create user'}
+            </div>
+          )}
         </form>
       )}
       {isLoading ? (
@@ -1383,9 +1432,41 @@ function DirUsersPanel({ clientId, domainId, dirId }: { readonly clientId: strin
                 <span className="font-medium text-gray-900 dark:text-gray-100">{u.username}</span>
                 {!u.enabled && <span className="rounded bg-red-100 dark:bg-red-900/40 px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400">disabled</span>}
               </div>
-              <button type="button" onClick={() => deleteUser.mutate(u.id)} className="rounded-md border border-red-200 dark:border-red-700 px-2 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-user-${u.id}`}>
-                <Trash2 size={12} />
-              </button>
+              {deleteUserConfirmId === u.id ? (
+                <div className="inline-flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      deleteUser.mutate(u.id, {
+                        onSuccess: () => setDeleteUserConfirmId(null),
+                      });
+                    }}
+                    disabled={deleteUser.isPending}
+                    className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                    data-testid={`confirm-delete-user-${u.id}`}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteUserConfirmId(null)}
+                    className="rounded-md border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                    data-testid={`cancel-delete-user-${u.id}`}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setDeleteUserConfirmId(u.id)}
+                  className="rounded-md border border-red-200 dark:border-red-700 px-2 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                  data-testid={`delete-user-${u.id}`}
+                  aria-label="Delete user"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
             </div>
           ))}
         </div>

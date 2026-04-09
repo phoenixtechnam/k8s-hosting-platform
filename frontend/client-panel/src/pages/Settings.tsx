@@ -35,28 +35,31 @@ export default function Settings() {
         </p>
       </div>
 
-      {/* Notification Preferences Section */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="notification-prefs-section">
+      {/*
+        Notification Preferences Section
+        Round-4 Phase A: the previous version rendered three interactive
+        checkboxes with `defaultChecked` but no save mechanism, making
+        users think they were toggling preferences when nothing was
+        persisted. Per the gap scan MEDIUM-6, the section is now a
+        read-only "coming soon" panel until a real backend endpoint
+        exists. All notifications currently ship to the notifications
+        dropdown — email delivery is enabled globally via
+        OIDC_ENCRYPTION_KEY + the SMTP relay config on the platform.
+      */}
+      <div
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+        data-testid="notification-prefs-section"
+      >
         <div className="mb-4 flex items-center gap-2">
           <Bell size={20} className="text-gray-600 dark:text-gray-400" />
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Notification Preferences</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Notification Preferences
+          </h2>
         </div>
-        <div className="space-y-3">
-          <label className="flex items-center gap-3">
-            <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">Email notifications for domain changes</span>
-          </label>
-          <label className="flex items-center gap-3">
-            <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">Email notifications for backup completions</span>
-          </label>
-          <label className="flex items-center gap-3">
-            <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
-            <span className="text-sm text-gray-700 dark:text-gray-300">Weekly usage summary</span>
-          </label>
-        </div>
-        <p className="mt-4 text-xs text-gray-400 dark:text-gray-500">
-          (Not yet saved — notification preferences will be available in a future update)
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          All notifications currently land in the bell menu in the top right of the
+          client panel. Per-category email delivery opt-outs will be added in a
+          future release.
         </p>
       </div>
     </div>
