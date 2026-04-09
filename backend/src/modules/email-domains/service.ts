@@ -1,11 +1,12 @@
 import { eq, and, sql } from 'drizzle-orm';
-import { emailDomains, domains, mailboxes, clients } from '../../db/schema.js';
+import { emailDomains, domains, mailboxes, clients, emailAliases, emailDkimKeys, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { generateDkimKeyPair } from './dkim.js';
 import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
+import type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@k8s-hosting/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -112,6 +113,116 @@ export async function disableEmailForDomain(
 
   await db.delete(emailDomains).where(eq(emailDomains.id, existing.id));
   await deprovisionEmailDns(db, domainId);
+}
+
+// Round-4 Phase 1: authoritative disable preview. Returns the exact
+// list of resources that `disableEmailForDomain` + the FK cascade
+// from migration 0020 will remove for this email domain. Pure read —
+// no side effects. Reused by the client-panel disable confirmation
+// modal so users see mailbox addresses, alias sources, DNS records,
+// DKIM keys, and the webmail hostname by name BEFORE they confirm.
+export async function getEmailDomainDisablePreview(
+  db: Database,
+  clientId: string,
+  domainId: string,
+): Promise<EmailDomainDisablePreview> {
+  await verifyDomainOwnership(db, clientId, domainId);
+
+  const [ed] = await db
+    .select({
+      id: emailDomains.id,
+      webmailEnabled: emailDomains.webmailEnabled,
+      domainName: domains.domainName,
+    })
+    .from(emailDomains)
+    .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .where(and(eq(emailDomains.domainId, domainId), eq(emailDomains.clientId, clientId)));
+
+  if (!ed) {
+    throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
+  }
+
+  const mailboxRows = await db
+    .select({ id: mailboxes.id, fullAddress: mailboxes.fullAddress })
+    .from(mailboxes)
+    .where(eq(mailboxes.emailDomainId, ed.id));
+
+  const aliasRows = await db
+    .select({ id: emailAliases.id, sourceAddress: emailAliases.sourceAddress })
+    .from(emailAliases)
+    .where(eq(emailAliases.emailDomainId, ed.id));
+
+  const dkimRows = await db
+    .select({
+      id: emailDkimKeys.id,
+      selector: emailDkimKeys.selector,
+      status: emailDkimKeys.status,
+    })
+    .from(emailDkimKeys)
+    .where(eq(emailDkimKeys.emailDomainId, ed.id));
+
+  // DNS records that disableEmailForDomain → deprovisionEmailDns
+  // would remove. deprovisionEmailDns targets MX + A 'mail.*' + TXT
+  // SPF/DKIM/DMARC entries. We enumerate here using the same filter
+  // so the preview matches the actual deletion behaviour.
+  const allDnsRows = await db
+    .select({
+      id: dnsRecords.id,
+      type: dnsRecords.recordType,
+      name: dnsRecords.recordName,
+      value: dnsRecords.recordValue,
+    })
+    .from(dnsRecords)
+    .where(eq(dnsRecords.domainId, domainId));
+
+  const emailDnsRows = allDnsRows.filter((r) => {
+    if (r.type === 'MX') return true;
+    if (r.type === 'A' && (r.name?.startsWith('mail.') || r.name?.startsWith('webmail.'))) return true;
+    if (r.type === 'TXT') {
+      const v = r.value ?? '';
+      return (
+        v.startsWith('v=spf1')
+        || v.startsWith('v=DKIM1')
+        || v.startsWith('v=DMARC1')
+        || v.startsWith('v=STSv1')
+      );
+    }
+    // SRV / CNAME autoconfig / mta-sts records were published by
+    // provisionEmailDns but deprovisionEmailDns does not currently
+    // remove them. Skip them in the preview so we don't lie.
+    return false;
+  });
+
+  // Map purpose heuristically from the record shape so the UI can
+  // label rows without re-running buildEmailDnsRecordsForDisplay.
+  const purposeFor = (type: string, name: string | null, value: string | null): string | null => {
+    if (type === 'MX') return 'mx';
+    if (type === 'A' && name?.startsWith('mail.')) return 'mail_host';
+    if (type === 'A' && name?.startsWith('webmail.')) return 'webmail';
+    if (type === 'TXT') {
+      const v = value ?? '';
+      if (v.startsWith('v=spf1')) return 'spf';
+      if (v.startsWith('v=DKIM1')) return 'dkim';
+      if (v.startsWith('v=DMARC1')) return 'dmarc';
+      if (v.startsWith('v=STSv1')) return 'mta_sts';
+    }
+    return null;
+  };
+
+  return {
+    emailDomainId: ed.id,
+    domainName: ed.domainName,
+    mailboxes: mailboxRows,
+    aliases: aliasRows,
+    dnsRecords: emailDnsRows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      name: r.name,
+      purpose: purposeFor(r.type, r.name, r.value),
+    })),
+    dkimKeys: dkimRows,
+    webmailHostname: ed.webmailEnabled === 1 ? `webmail.${ed.domainName}` : null,
+  };
 }
 
 export async function getEmailDomain(

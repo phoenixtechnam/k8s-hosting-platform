@@ -36,6 +36,8 @@ vi.mock('../hooks/use-email', () => ({
   useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDisableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null })),
+  useEmailDomainDisablePreview: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
   useDkimKeys: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
@@ -46,6 +48,8 @@ vi.mock('../hooks/use-email', () => ({
   useImapSyncJobs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useCreateImapSyncJob: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCancelImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePurgeImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResyncImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useMailRateLimit: vi.fn(() => ({
     data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
     isLoading: false,
@@ -370,5 +374,63 @@ describe('Email Page', () => {
 
     expect(screen.getByTestId('tab-mailboxes')).toBeInTheDocument();
     expect(screen.queryByTestId('email-enable-card')).not.toBeInTheDocument();
+  });
+
+  // ── Round-4 Phase 1: top-level domain selector ────────────────────
+
+  it('shows a label (no dropdown) when only one email domain is enabled', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [{ id: 'ed1', domainId: 'd1', domainName: 'only.example.com' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+
+    renderWithProviders(<Email />);
+
+    expect(screen.getByTestId('email-domain-label')).toHaveTextContent('only.example.com');
+    expect(screen.queryByTestId('email-domain-selector')).not.toBeInTheDocument();
+  });
+
+  it('shows a dropdown when multiple email domains are enabled', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: {
+        data: [
+          { id: 'ed1', domainId: 'd1', domainName: 'first.com' },
+          { id: 'ed2', domainId: 'd2', domainName: 'second.com' },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+
+    renderWithProviders(<Email />);
+
+    expect(screen.getByTestId('email-domain-selector')).toBeInTheDocument();
+    expect(screen.queryByTestId('email-domain-label')).not.toBeInTheDocument();
+  });
+
+  // Round-4 Phase 1 review LOW-3: switching the dropdown updates
+  // the URL search params so the selection survives reloads.
+  it('updates the ?emailDomain= URL param when the dropdown changes', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    mockedUseEmailDomains.mockReturnValue({
+      data: {
+        data: [
+          { id: 'ed1', domainId: 'd1', domainName: 'first.com' },
+          { id: 'ed2', domainId: 'd2', domainName: 'second.com' },
+        ],
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+
+    renderWithProviders(<Email />);
+
+    const select = screen.getByTestId('email-domain-selector') as HTMLSelectElement;
+    expect(select.value).toBe('ed1');
+
+    fireEvent.change(select, { target: { value: 'ed2' } });
+
+    // After the change, the URL search params should reflect the
+    // new selection. We can't read window.location with MemoryRouter,
+    // but the select element's controlled value tracks searchParams.
+    expect(select.value).toBe('ed2');
   });
 });

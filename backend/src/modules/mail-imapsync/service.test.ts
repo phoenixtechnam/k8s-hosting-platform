@@ -343,3 +343,160 @@ describe('listImapSyncJobs', () => {
     expect(rows[0].sourceSsl).toBe(true); // converted from int to bool
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Round-4 Phase 1: deleteTerminalJob
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('deleteTerminalJob', () => {
+  it('deletes a succeeded job and returns its clientId, status, and K8s coordinates', async () => {
+    selectResults = [[
+      {
+        clientId: 'c1',
+        status: 'succeeded',
+        k8sJobName: 'imapsync-job-1',
+        k8sNamespace: 'mail',
+      },
+    ]];
+    let deleted = false;
+    deleteImpl = async () => { deleted = true; };
+    const db = createMockDb();
+
+    const result = await service.deleteTerminalJob(db as never, 'c1', 'job-1');
+
+    expect(result).toEqual({
+      clientId: 'c1',
+      status: 'succeeded',
+      k8sJobName: 'imapsync-job-1',
+      k8sNamespace: 'mail',
+    });
+    expect(deleted).toBe(true);
+  });
+
+  it('deletes a failed job', async () => {
+    selectResults = [[{ clientId: 'c1', status: 'failed', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    deleteImpl = async () => undefined;
+    const db = createMockDb();
+
+    const result = await service.deleteTerminalJob(db as never, 'c1', 'job-1');
+    expect(result?.status).toBe('failed');
+  });
+
+  it('deletes a cancelled job', async () => {
+    selectResults = [[{ clientId: 'c1', status: 'cancelled', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    deleteImpl = async () => undefined;
+    const db = createMockDb();
+
+    const result = await service.deleteTerminalJob(db as never, 'c1', 'job-1');
+    expect(result?.status).toBe('cancelled');
+  });
+
+  it('throws INVALID_STATE 409 when the job is still running', async () => {
+    selectResults = [[{ clientId: 'c1', status: 'running', k8sJobName: 'imapsync-job-1', k8sNamespace: 'mail' }]];
+    const db = createMockDb();
+
+    await expect(service.deleteTerminalJob(db as never, 'c1', 'job-1'))
+      .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('throws INVALID_STATE 409 when the job is still pending', async () => {
+    selectResults = [[{ clientId: 'c1', status: 'pending', k8sJobName: null, k8sNamespace: 'mail' }]];
+    const db = createMockDb();
+
+    await expect(service.deleteTerminalJob(db as never, 'c1', 'job-1'))
+      .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('returns null when the job does not exist', async () => {
+    selectResults = [[]];
+    const db = createMockDb();
+
+    const result = await service.deleteTerminalJob(db as never, 'c1', 'missing');
+    expect(result).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Round-4 Phase 1: resyncImapSyncJob
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('resyncImapSyncJob', () => {
+  const ORIGINAL = {
+    id: 'job-orig',
+    clientId: 'c1',
+    mailboxId: 'mb1',
+    sourceHost: 'imap.gmail.com',
+    sourcePort: 993,
+    sourceUsername: 'alice@gmail.com',
+    sourcePasswordEncrypted: 'encrypted:secret',
+    sourceSsl: 1,
+    options: { automap: true },
+    status: 'succeeded',
+    k8sJobName: 'imapsync-job-orig',
+    k8sNamespace: 'mail',
+    logTail: null,
+    errorMessage: null,
+    startedAt: new Date(),
+    finishedAt: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  it('inserts a new pending row that copies the source server, port, username, encrypted password, and options', async () => {
+    selectResults = [[ORIGINAL]];
+    insertImpl = async () => undefined;
+    insertReturning = [{ ...ORIGINAL, id: 'job-new', status: 'pending' }];
+    const db = createMockDb();
+
+    const result = await service.resyncImapSyncJob(db as never, 'c1', 'job-orig');
+
+    expect(result.id).toBe('job-new');
+    expect(result.status).toBe('pending');
+    // The values passed into .insert(...).values(...) include the
+    // original encrypted password, NOT a fresh encrypt of clear text.
+    const values = (db as unknown as { _insertValuesFn: { mock: { calls: [unknown[]][] } } })._insertValuesFn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(values.sourcePasswordEncrypted).toBe(ORIGINAL.sourcePasswordEncrypted);
+    expect(values.sourceHost).toBe(ORIGINAL.sourceHost);
+    expect(values.sourcePort).toBe(ORIGINAL.sourcePort);
+    expect(values.sourceUsername).toBe(ORIGINAL.sourceUsername);
+    expect(values.sourceSsl).toBe(1);
+    expect(values.status).toBe('pending');
+  });
+
+  it('throws INVALID_STATE when the original is still running', async () => {
+    selectResults = [[{ ...ORIGINAL, status: 'running' }]];
+    const db = createMockDb();
+
+    await expect(service.resyncImapSyncJob(db as never, 'c1', 'job-orig'))
+      .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('throws INVALID_STATE when the original is still pending', async () => {
+    selectResults = [[{ ...ORIGINAL, status: 'pending' }]];
+    const db = createMockDb();
+
+    await expect(service.resyncImapSyncJob(db as never, 'c1', 'job-orig'))
+      .rejects.toMatchObject({ code: 'INVALID_STATE', status: 409 });
+  });
+
+  it('throws IMAPSYNC_JOB_NOT_FOUND when the row does not exist', async () => {
+    selectResults = [[]];
+    const db = createMockDb();
+
+    await expect(service.resyncImapSyncJob(db as never, 'c1', 'missing'))
+      .rejects.toMatchObject({ code: 'IMAPSYNC_JOB_NOT_FOUND', status: 404 });
+  });
+
+  it('throws IMAPSYNC_ALREADY_RUNNING on partial-unique-index violation', async () => {
+    selectResults = [[ORIGINAL]];
+    insertImpl = async () => {
+      const err = new Error('duplicate key') as Error & { code?: string };
+      err.code = '23505';
+      throw err;
+    };
+    const db = createMockDb();
+
+    await expect(service.resyncImapSyncJob(db as never, 'c1', 'job-orig'))
+      .rejects.toMatchObject({ code: 'IMAPSYNC_ALREADY_RUNNING', status: 409 });
+  });
+});

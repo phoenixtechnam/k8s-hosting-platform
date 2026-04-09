@@ -95,6 +95,52 @@ export function useUpdateEmailDomain(clientId: string) {
   });
 }
 
+// Round-4 Phase 1: disable preview + mutation
+//
+// `useEmailDomainDisablePreview(clientId, domainId, enabled)` is
+// guarded by an `enabled` flag so the modal only fetches when open.
+// `useDisableEmailDomain(clientId)` invalidates email-domains,
+// mailboxes, mailbox-usage, and email-aliases on success.
+//
+// Review HIGH-5: type imported from @k8s-hosting/api-contracts —
+// the local interface that previously lived here was a duplicate
+// and violated the project's single-source-of-truth rule.
+export type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
+import type { EmailDomainDisablePreview } from '@k8s-hosting/api-contracts';
+
+export function useEmailDomainDisablePreview(
+  clientId: string | undefined,
+  domainId: string | undefined,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ['email-domain-disable-preview', clientId, domainId],
+    queryFn: () =>
+      apiFetch<{ data: EmailDomainDisablePreview }>(
+        `/api/v1/clients/${clientId}/email/domains/${domainId}/disable-preview`,
+      ),
+    enabled: enabled && Boolean(clientId && domainId),
+    staleTime: 0,
+  });
+}
+
+export function useDisableEmailDomain(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (domainId: string) =>
+      apiFetch<void>(
+        `/api/v1/clients/${clientId}/email/domains/${domainId}/disable`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['email-domains', clientId] });
+      qc.invalidateQueries({ queryKey: ['mailboxes', clientId] });
+      qc.invalidateQueries({ queryKey: ['email-aliases', clientId] });
+      qc.invalidateQueries({ queryKey: ['mailbox-usage', clientId] });
+    },
+  });
+}
+
 export function useEmailDomainDnsRecords(clientId?: string, domainId?: string) {
   return useQuery({
     queryKey: ['email-domain-dns-records', clientId, domainId],
@@ -106,10 +152,20 @@ export function useEmailDomainDnsRecords(clientId?: string, domainId?: string) {
   });
 }
 
-export function useMailboxes(clientId?: string) {
+// Round-4 Phase 1: optional emailDomainId scopes the query to a
+// specific domain. The backend route at
+// `GET /clients/:clientId/mailboxes` already accepts this filter
+// via ?email_domain_id=. Cache key includes the filter so different
+// domains do not collide.
+export function useMailboxes(clientId?: string, emailDomainId?: string) {
   return useQuery({
-    queryKey: ['mailboxes', clientId],
-    queryFn: () => apiFetch<MailboxesResponse>(`/api/v1/clients/${clientId}/mailboxes`),
+    queryKey: ['mailboxes', clientId, emailDomainId ?? null],
+    queryFn: () => {
+      const url = emailDomainId
+        ? `/api/v1/clients/${clientId}/mailboxes?email_domain_id=${encodeURIComponent(emailDomainId)}`
+        : `/api/v1/clients/${clientId}/mailboxes`;
+      return apiFetch<MailboxesResponse>(url);
+    },
     enabled: !!clientId,
   });
 }
@@ -146,10 +202,16 @@ export function useDeleteMailbox(clientId: string) {
   });
 }
 
-export function useEmailAliases(clientId?: string) {
+// Round-4 Phase 1: optional emailDomainId scopes the query.
+export function useEmailAliases(clientId?: string, emailDomainId?: string) {
   return useQuery({
-    queryKey: ['email-aliases', clientId],
-    queryFn: () => apiFetch<AliasesResponse>(`/api/v1/clients/${clientId}/email/aliases`),
+    queryKey: ['email-aliases', clientId, emailDomainId ?? null],
+    queryFn: () => {
+      const url = emailDomainId
+        ? `/api/v1/clients/${clientId}/email/aliases?email_domain_id=${encodeURIComponent(emailDomainId)}`
+        : `/api/v1/clients/${clientId}/email/aliases`;
+      return apiFetch<AliasesResponse>(url);
+    },
     enabled: !!clientId,
   });
 }
@@ -361,6 +423,40 @@ export function useCancelImapSyncJob(clientId: string) {
       apiFetch<{ data: { id: string; status: string } }>(
         `/api/v1/clients/${clientId}/mail/imapsync/${jobId}`,
         { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+// Round-4 Phase 1: purge a TERMINAL job row. The backend route
+// `DELETE /clients/:cid/mail/imapsync/:jobId/purge` 409s on active
+// jobs and 204s on terminal — wraps service.deleteTerminalJob.
+export function usePurgeImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) =>
+      apiFetch<void>(
+        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}/purge`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+// Round-4 Phase 1: re-sync a terminal job. Creates a new pending
+// row that copies the original source server / port / username /
+// encrypted password / options. The K8s Job is created server-side.
+//
+// Review MEDIUM-2: no request body — the route reads no JSON input.
+// apiFetch only sets Content-Type when `options.body` exists, so
+// omitting body keeps the request lean.
+export function useResyncImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) =>
+      apiFetch<{ data: ImapSyncJob }>(
+        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}/resync`,
+        { method: 'POST' },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
   });

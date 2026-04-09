@@ -352,6 +352,138 @@ export async function markRunning(
 }
 
 /**
+ * Round-4 Phase 1: delete a terminal IMAPSync job row.
+ *
+ * Only allowed for jobs in `succeeded`, `failed`, or `cancelled`
+ * status. Active jobs must be cancelled first via the existing
+ * DELETE cancel endpoint. Returns the deleted row's identifying
+ * info (clientId, status, k8sJobName, k8sNamespace) so the caller
+ * can clean up any K8s residue without re-querying the DB. Returns
+ * null if the row doesn't exist.
+ *
+ * Review HIGH-3 fix: previously the route called getImapSyncJob
+ * THEN this function, both reading the same row. Returning the K8s
+ * coordinates here lets the route skip the outer fetch and closes
+ * the TOCTOU window between the two reads.
+ */
+export async function deleteTerminalJob(
+  db: Database,
+  clientId: string,
+  jobId: string,
+): Promise<{
+  clientId: string;
+  status: string;
+  k8sJobName: string | null;
+  k8sNamespace: string;
+} | null> {
+  const [row] = await db
+    .select({
+      clientId: imapSyncJobs.clientId,
+      status: imapSyncJobs.status,
+      k8sJobName: imapSyncJobs.k8sJobName,
+      k8sNamespace: imapSyncJobs.k8sNamespace,
+    })
+    .from(imapSyncJobs)
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+  if (!row) return null;
+  if (row.status !== 'succeeded' && row.status !== 'failed' && row.status !== 'cancelled') {
+    throw new ApiError(
+      'INVALID_STATE',
+      `Cannot delete IMAPSync job in '${row.status}' state — cancel it first`,
+      409,
+      { status: row.status },
+    );
+  }
+  await db.delete(imapSyncJobs).where(eq(imapSyncJobs.id, jobId));
+  return {
+    clientId: row.clientId,
+    status: row.status,
+    k8sJobName: row.k8sJobName,
+    k8sNamespace: row.k8sNamespace,
+  };
+}
+
+/**
+ * Round-4 Phase 1: replay an existing IMAPSync job by creating a
+ * new pending row that copies all source-server fields from the
+ * original. The encrypted source password is reused as-is so the
+ * client doesn't have to re-enter it. The new row gets a fresh id
+ * and starts in `pending` state — the route handler is responsible
+ * for creating the K8s Job afterwards (same flow as create).
+ *
+ * Concurrency check (partial unique index on mailbox_id WHERE
+ * status IN ('pending','running')) is enforced inside the insert.
+ *
+ * Returns the freshly-loaded ImapSyncJob row (raw, NOT
+ * rowToResponse — the route adds the master/destination details
+ * via the same buildJobManifest path as createImapSyncJob).
+ */
+export async function resyncImapSyncJob(
+  db: Database,
+  clientId: string,
+  jobId: string,
+): Promise<ImapSyncJob> {
+  const [original] = await db
+    .select()
+    .from(imapSyncJobs)
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+  if (!original) {
+    throw new ApiError(
+      'IMAPSYNC_JOB_NOT_FOUND',
+      `IMAPSync job '${jobId}' not found for client '${clientId}'`,
+      404,
+    );
+  }
+  if (
+    original.status !== 'succeeded'
+    && original.status !== 'failed'
+    && original.status !== 'cancelled'
+  ) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `Cannot re-sync a job in '${original.status}' state — wait for it to finish or cancel it first`,
+      409,
+      { status: original.status },
+    );
+  }
+
+  const newId = crypto.randomUUID();
+  const now = new Date();
+  try {
+    const [row] = await db
+      .insert(imapSyncJobs)
+      .values({
+        id: newId,
+        clientId: original.clientId,
+        mailboxId: original.mailboxId,
+        sourceHost: original.sourceHost,
+        sourcePort: original.sourcePort,
+        sourceUsername: original.sourceUsername,
+        // The original password is already at-rest encrypted with
+        // OIDC_ENCRYPTION_KEY. Copy verbatim — don't decrypt+re-encrypt.
+        sourcePasswordEncrypted: original.sourcePasswordEncrypted,
+        sourceSsl: original.sourceSsl,
+        options: original.options,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    return row as ImapSyncJob;
+  } catch (err: unknown) {
+    const pgErr = err as { code?: string; message?: string };
+    if (pgErr.code === '23505') {
+      throw new ApiError(
+        'IMAPSYNC_ALREADY_RUNNING',
+        'An IMAPSync job is already running for this mailbox',
+        409,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * Mark a job as failed with an optional error message and log
  * tail. Used by the start flow if the K8s Job creation itself
  * fails.

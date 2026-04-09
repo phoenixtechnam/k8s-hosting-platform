@@ -71,6 +71,8 @@ vi.mock('../hooks/use-email', () => ({
   useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDisableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null })),
+  useEmailDomainDisablePreview: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
   useDkimKeys: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
@@ -81,6 +83,8 @@ vi.mock('../hooks/use-email', () => ({
   useImapSyncJobs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useCreateImapSyncJob: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useCancelImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  usePurgeImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResyncImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useMailRateLimit: vi.fn(() => ({
     data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
     isLoading: false,

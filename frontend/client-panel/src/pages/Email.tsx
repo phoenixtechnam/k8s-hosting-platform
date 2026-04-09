@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox } from 'lucide-react';
+import { useState, useEffect, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSortable } from '@/hooks/use-sortable';
@@ -29,6 +30,8 @@ import {
   useDeleteEmailAlias,
   useWebmailToken,
   useEnableEmailDomain,
+  useDisableEmailDomain,
+  useEmailDomainDisablePreview,
   useUpdateEmailDomain,
   useEmailDomainDnsRecords,
   useDkimKeys,
@@ -39,6 +42,8 @@ import {
   useImapSyncJobs,
   useCreateImapSyncJob,
   useCancelImapSyncJob,
+  usePurgeImapSyncJob,
+  useResyncImapSyncJob,
   useMailRateLimit,
   useMailboxUsage,
   type Mailbox,
@@ -60,16 +65,87 @@ export default function Email() {
   const { data: domainsRes, isLoading: domainsLoading } = useEmailDomains(clientId ?? undefined);
   const emailDomains = domainsRes?.data ?? [];
 
+  // Round-4 Phase 1: top-level domain selector with URL persistence.
+  // The selected emailDomain id lives in `?emailDomain=<id>` so the
+  // selection survives reloads and is shareable. When the URL param
+  // is missing or refers to a domain the client no longer has, fall
+  // back to the first email-enabled domain.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSelectedId = searchParams.get('emailDomain');
+  const validUrlSelection = emailDomains.find((ed) => ed.id === urlSelectedId);
+  const fallbackId = emailDomains[0]?.id;
+  const selectedEmailDomainId = validUrlSelection?.id ?? fallbackId ?? null;
+  const selectedEmailDomain = emailDomains.find((ed) => ed.id === selectedEmailDomainId) ?? null;
+
+  // If the URL param is stale (e.g. the selected domain was just
+  // deleted), repair the URL to match the fallback. This avoids the
+  // user being stuck on a phantom selection.
+  // Review MEDIUM-3: if the client has NO email domains at all,
+  // strip the param entirely so a later add lands cleanly.
+  useEffect(() => {
+    if (domainsLoading) return;
+    if (urlSelectedId && !validUrlSelection) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (fallbackId) {
+          next.set('emailDomain', fallbackId);
+        } else {
+          next.delete('emailDomain');
+        }
+        return next;
+      }, { replace: true });
+    }
+  }, [domainsLoading, urlSelectedId, validUrlSelection, fallbackId, setSearchParams]);
+
+  const handleDomainChange = (id: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('emailDomain', id);
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Mail size={28} className="text-gray-700 dark:text-gray-300" />
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="email-heading">Email</h1>
+
+        {/*
+          Round-4 Phase 1: top-level domain selector. Decision per
+          user: when only ONE email-enabled domain exists, show the
+          domain name as plain text; otherwise render a dropdown so
+          users can switch which domain's email config they're
+          viewing. All tabs (Mailboxes / Aliases / Settings) filter
+          their queries by `selectedEmailDomainId`.
+        */}
+        {!domainsLoading && emailDomains.length === 1 && (
+          <span
+            className="rounded-full border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-1 text-sm font-medium text-gray-700 dark:text-gray-300"
+            data-testid="email-domain-label"
+          >
+            {emailDomains[0].domainName}
+          </span>
+        )}
+        {!domainsLoading && emailDomains.length > 1 && selectedEmailDomainId && (
+          <select
+            value={selectedEmailDomainId}
+            onChange={(e) => handleDomainChange(e.target.value)}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200"
+            data-testid="email-domain-selector"
+          >
+            {emailDomains.map((ed) => (
+              <option key={ed.id} value={ed.id}>
+                {ed.domainName}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {domainsLoading && <div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}
 
-      {!domainsLoading && emailDomains.length > 0 && (
+      {!domainsLoading && emailDomains.length > 0 && selectedEmailDomain && (
         <>
           <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
             {[
@@ -85,19 +161,32 @@ export default function Email() {
             ))}
           </div>
 
-          {tab === 'mailboxes' && <MailboxesTab clientId={clientId!} emailDomains={emailDomains} />}
-          {tab === 'aliases' && <AliasesTab clientId={clientId!} emailDomains={emailDomains} />}
-          {tab === 'settings' && <SettingsTab clientId={clientId!} emailDomains={emailDomains} />}
+          {tab === 'mailboxes' && (
+            <MailboxesTab
+              clientId={clientId!}
+              emailDomain={selectedEmailDomain}
+            />
+          )}
+          {tab === 'aliases' && (
+            <AliasesTab
+              clientId={clientId!}
+              emailDomain={selectedEmailDomain}
+            />
+          )}
+          {tab === 'settings' && (
+            <SettingsTab
+              clientId={clientId!}
+              emailDomain={selectedEmailDomain}
+            />
+          )}
         </>
       )}
 
       {/*
-        Phase 2 round-3: the Enable Email card is always available
-        when there are domains that have NOT yet been email-enabled.
-        Previously this block was mutually exclusive with the tabs,
-        so clients who added a second domain had no path to enable
-        email on it. The card filters out domains that already exist
-        in emailDomains, so it auto-hides once every domain has email.
+        The Enable Email card is always available when there are
+        domains that have NOT yet been email-enabled. The card
+        filters out domains that already exist in emailDomains, so
+        it auto-hides once every domain has email.
       */}
       {!domainsLoading && clientId && (
         <EnableEmailCard
@@ -234,6 +323,226 @@ function EnableEmailCard({
   );
 }
 
+// Round-4 Phase 1: DisableEmailCard with server-side preview.
+//
+// Lives at the bottom of the Settings & DNS tab as a "danger zone".
+// Opens a confirmation modal that fetches the authoritative
+// disable preview from the backend (mailboxes, aliases, DNS
+// records, DKIM keys, webmail hostname) and forces the user to type
+// the domain name to enable the destructive Confirm button.
+function DisableEmailCard({
+  clientId,
+  domain,
+}: {
+  readonly clientId: string;
+  readonly domain: EmailDomain;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const preview = useEmailDomainDisablePreview(clientId, domain.domainId, open);
+  const disable = useDisableEmailDomain(clientId);
+
+  const handleConfirm = async () => {
+    try {
+      await disable.mutateAsync(domain.domainId);
+      setOpen(false);
+      setConfirmText('');
+    } catch {
+      // Error shown inside the modal via disable.error
+    }
+  };
+
+  const previewData = preview.data?.data;
+
+  return (
+    <>
+      <div
+        className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/50 dark:bg-red-900/10 p-5 shadow-sm"
+        data-testid="disable-email-card"
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={18} className="text-red-600 dark:text-red-400 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-red-700 dark:text-red-300">Danger zone</h3>
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              Disabling email for <span className="font-mono">{domain.domainName}</span> will
+              permanently delete all mailboxes, aliases, DKIM keys, DNS records, and the
+              webmail site for this domain. The domain itself will remain active for
+              non-email use (websites, ingress routes, etc.).
+            </p>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700"
+              data-testid="disable-email-button"
+            >
+              <Trash2 size={12} /> Disable email for this domain
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          data-testid="disable-email-modal"
+        >
+          <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-red-600 dark:text-red-400">Disable Email for {domain.domainName}</h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              The following resources will be permanently deleted. This action cannot be undone.
+            </p>
+
+            <div
+              className="mt-4 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 p-4"
+              data-testid="disable-email-preview-list"
+            >
+              {preview.isLoading && (
+                <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading cascade list…
+                </div>
+              )}
+              {preview.isError && (
+                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                  <AlertCircle size={14} />
+                  Failed to load preview — please cancel and try again.
+                </div>
+              )}
+              {previewData && (
+                <div className="space-y-3 text-sm">
+                  {previewData.mailboxes.length > 0 && (
+                    <div data-testid="disable-preview-mailboxes">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {previewData.mailboxes.length} mailbox(es):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {previewData.mailboxes.slice(0, 10).map((m) => (
+                          <li key={m.id}>{m.fullAddress}</li>
+                        ))}
+                        {previewData.mailboxes.length > 10 && (
+                          <li className="italic">…and {previewData.mailboxes.length - 10} more</li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewData.aliases.length > 0 && (
+                    <div data-testid="disable-preview-aliases">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {previewData.aliases.length} alias(es):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {previewData.aliases.slice(0, 10).map((a) => (
+                          <li key={a.id}>{a.sourceAddress}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewData.dkimKeys.length > 0 && (
+                    <div data-testid="disable-preview-dkim">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {previewData.dkimKeys.length} DKIM key(s):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {previewData.dkimKeys.map((k) => (
+                          <li key={k.id}>{k.selector} ({k.status})</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewData.dnsRecords.length > 0 && (
+                    <div data-testid="disable-preview-dns">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">
+                        {previewData.dnsRecords.length} DNS record(s):
+                      </div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        {previewData.dnsRecords.slice(0, 15).map((r) => (
+                          <li key={r.id}>
+                            {r.type} {r.name ?? '(apex)'} {r.purpose && <span className="text-gray-400">[{r.purpose}]</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewData.webmailHostname && (
+                    <div data-testid="disable-preview-webmail">
+                      <div className="font-medium text-gray-700 dark:text-gray-300">Webmail site:</div>
+                      <ul className="ml-4 mt-1 list-disc text-xs text-gray-600 dark:text-gray-400">
+                        <li>{previewData.webmailHostname}</li>
+                      </ul>
+                    </div>
+                  )}
+
+                  {previewData.mailboxes.length === 0
+                    && previewData.aliases.length === 0
+                    && previewData.dnsRecords.length === 0
+                    && previewData.dkimKeys.length === 0 && (
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      No resources to delete — only the email_domains row.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4">
+              <label htmlFor="disable-confirm-input" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Type <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{domain.domainName}</span> to confirm
+              </label>
+              <input
+                id="disable-confirm-input"
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={domain.domainName}
+                className={INPUT_CLASS + ' mt-1'}
+                data-testid="disable-confirm-input"
+              />
+            </div>
+
+            {disable.isError && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <AlertCircle size={14} />
+                {disable.error instanceof Error ? disable.error.message : 'Failed to disable email'}
+              </div>
+            )}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setOpen(false); setConfirmText(''); }}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600"
+                data-testid="disable-cancel-button"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirm}
+                disabled={
+                  confirmText !== domain.domainName
+                  || disable.isPending
+                  || preview.isLoading
+                  || preview.isError
+                }
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="disable-confirm-button"
+              >
+                {disable.isPending && <Loader2 size={14} className="animate-spin" />}
+                Disable Email
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Phase 5 round-2: client mailbox usage bar.
 // Displays { current / limit } with a colored progress bar driven
 // by the plan-based limit helper on the backend.
@@ -295,19 +604,27 @@ function MailboxUsageBar({ clientId }: { readonly clientId: string }) {
   );
 }
 
-function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; readonly emailDomains: readonly { id: string; domainName: string }[] }) {
-  const { data: res, isLoading } = useMailboxes(clientId);
+// Round-4 Phase 1: tabs receive a SINGLE selected emailDomain
+// instead of the array. The top-level selector picks which one.
+function MailboxesTab({
+  clientId,
+  emailDomain,
+}: {
+  readonly clientId: string;
+  readonly emailDomain: { readonly id: string; readonly domainName: string };
+}) {
+  // Round-4 Phase 1: scope mailboxes to the selected emailDomain.
+  const { data: res, isLoading } = useMailboxes(clientId, emailDomain.id);
   const deleteMailbox = useDeleteMailbox(clientId);
   const webmailToken = useWebmailToken();
   const [showForm, setShowForm] = useState(false);
-  const [selectedDomain, setSelectedDomain] = useState(emailDomains[0]?.id ?? '');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [editingMailbox, setEditingMailbox] = useState<Mailbox | null>(null);
   const [form, setForm] = useState({ local_part: '', password: '', display_name: '', quota_mb: '1024' });
 
   const mailboxesRaw = res?.data ?? [];
   const { sortedData: mailboxes, sortKey, sortDirection, onSort } = useSortable(mailboxesRaw, 'fullAddress');
-  const createMailbox = useCreateMailbox(clientId, selectedDomain);
+  const createMailbox = useCreateMailbox(clientId, emailDomain.id);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -327,7 +644,7 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
     } catch { /* will show error */ }
   };
 
-  const domainName = emailDomains.find(d => d.id === selectedDomain)?.domainName ?? '';
+  const domainName = emailDomain.domainName;
 
   return (
     <div className="space-y-4">
@@ -342,14 +659,11 @@ function MailboxesTab({ clientId, emailDomains }: { readonly clientId: string; r
       {showForm && (
         <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="create-mailbox-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {emailDomains.length > 1 && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain</label>
-                <select className={INPUT_CLASS + ' mt-1'} value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)} data-testid="mailbox-domain-select">
-                  {emailDomains.map(d => <option key={d.id} value={d.id}>{d.domainName}</option>)}
-                </select>
-              </div>
-            )}
+            {/*
+              Round-4 Phase 1: per-tab Domain selector removed. The
+              parent page's top-level selector now controls which
+              domain mailboxes are scoped to.
+            */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
               <div className="mt-1 flex">
@@ -668,16 +982,22 @@ function EditMailboxModal({
   );
 }
 
-function AliasesTab({ clientId, emailDomains }: { readonly clientId: string; readonly emailDomains: readonly { id: string; domainName: string }[] }) {
-  const { data: res, isLoading } = useEmailAliases(clientId);
+function AliasesTab({
+  clientId,
+  emailDomain,
+}: {
+  readonly clientId: string;
+  readonly emailDomain: { readonly id: string; readonly domainName: string };
+}) {
+  // Round-4 Phase 1: scope aliases to the selected emailDomain.
+  const { data: res, isLoading } = useEmailAliases(clientId, emailDomain.id);
   const deleteAlias = useDeleteEmailAlias(clientId);
   const [showForm, setShowForm] = useState(false);
-  const [selectedDomain, setSelectedDomain] = useState(emailDomains[0]?.id ?? '');
   const [form, setForm] = useState({ source: '', destinations: '' });
-  const createAlias = useCreateEmailAlias(clientId, selectedDomain);
+  const createAlias = useCreateEmailAlias(clientId, emailDomain.id);
 
   const aliases = res?.data ?? [];
-  const domainName = emailDomains.find(d => d.id === selectedDomain)?.domainName ?? '';
+  const domainName = emailDomain.domainName;
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -756,45 +1076,24 @@ function AliasesTab({ clientId, emailDomains }: { readonly clientId: string; rea
 
 function SettingsTab({
   clientId,
-  emailDomains,
+  emailDomain,
 }: {
   readonly clientId: string;
-  readonly emailDomains: readonly EmailDomain[];
+  readonly emailDomain: EmailDomain;
 }) {
-  const [selectedDomain, setSelectedDomain] = useState(emailDomains[0]?.id ?? '');
-  const current = emailDomains.find((d) => d.id === selectedDomain) ?? emailDomains[0];
-
-  if (!current) {
-    return (
-      <div className="py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-        No email domains configured yet.
-      </div>
-    );
-  }
+  // Round-4 Phase 1: per-tab Domain selector removed; the parent
+  // page's top-level selector is the single source of truth.
+  const current = emailDomain;
 
   return (
     <div className="space-y-6" data-testid="settings-tab">
-      {emailDomains.length > 1 && (
-        <div>
-          <label className="mr-2 text-sm font-medium text-gray-700 dark:text-gray-300">Domain:</label>
-          <select
-            className={INPUT_CLASS + ' inline w-auto'}
-            value={selectedDomain}
-            onChange={(e) => setSelectedDomain(e.target.value)}
-            data-testid="settings-domain-select"
-          >
-            {emailDomains.map((d) => (
-              <option key={d.id} value={d.id}>{d.domainName}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
       <DomainSettingsCard clientId={clientId} domain={current} />
       <DnsRecordsCard clientId={clientId} domain={current} />
       <DkimKeysCard clientId={clientId} domain={current} />
       <SendmailCredentialCard clientId={clientId} />
       <RateLimitCard clientId={clientId} />
+      {/* Round-4 Phase 1: Danger zone — disable email for the current domain */}
+      <DisableEmailCard clientId={clientId} domain={current} />
     </div>
   );
 }
@@ -1404,6 +1703,9 @@ function ImapSyncPanel({
   const { data: jobsRes, isLoading } = useImapSyncJobs(clientId);
   const create = useCreateImapSyncJob(clientId);
   const cancel = useCancelImapSyncJob(clientId);
+  // Round-4 Phase 1: re-sync + purge for terminal jobs.
+  const purge = usePurgeImapSyncJob(clientId);
+  const resync = useResyncImapSyncJob(clientId);
   const [showForm, setShowForm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const jobs = jobsRes?.data ?? [];
@@ -1508,7 +1810,18 @@ function ImapSyncPanel({
       {!isLoading && jobs.length === 0 && !showForm && (
         <p className="text-xs italic text-gray-500 dark:text-gray-400">No migrations yet.</p>
       )}
-      {jobs.map(j => <ImapSyncJobRow key={j.id} job={j} onCancel={() => cancel.mutate(j.id)} cancelPending={cancel.isPending} />)}
+      {jobs.map(j => (
+        <ImapSyncJobRow
+          key={j.id}
+          job={j}
+          onCancel={() => cancel.mutate(j.id)}
+          cancelPending={cancel.isPending}
+          onPurge={() => purge.mutate(j.id)}
+          purgePending={purge.isPending}
+          onResync={() => resync.mutate(j.id)}
+          resyncPending={resync.isPending}
+        />
+      ))}
     </div>
   );
 }
@@ -1517,13 +1830,22 @@ function ImapSyncJobRow({
   job,
   onCancel,
   cancelPending,
+  onPurge,
+  purgePending,
+  onResync,
+  resyncPending,
 }: {
   readonly job: ImapSyncJob;
   readonly onCancel: () => void;
   readonly cancelPending: boolean;
+  readonly onPurge: () => void;
+  readonly purgePending: boolean;
+  readonly onResync: () => void;
+  readonly resyncPending: boolean;
 }) {
   const [showLog, setShowLog] = useState(false);
   const isActive = job.status === 'pending' || job.status === 'running';
+  const isTerminal = job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled';
   return (
     <div className="rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs" data-testid={`imapsync-job-${job.id}`}>
       <div className="flex items-center justify-between">
@@ -1531,16 +1853,41 @@ function ImapSyncJobRow({
           <code className="font-mono text-gray-900 dark:text-gray-100">{job.sourceUsername}@{job.sourceHost}</code>
           <ImapSyncStatusBadge status={job.status} />
         </div>
-        {isActive && (
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={cancelPending}
-            className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {isActive && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelPending}
+              className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+              data-testid={`imapsync-cancel-${job.id}`}
+            >
+              Cancel
+            </button>
+          )}
+          {isTerminal && (
+            <>
+              <button
+                type="button"
+                onClick={onResync}
+                disabled={resyncPending}
+                className="rounded border border-brand-200 dark:border-brand-700 px-2 py-0.5 text-brand-700 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20 disabled:opacity-50"
+                data-testid={`imapsync-resync-${job.id}`}
+              >
+                {resyncPending ? <Loader2 size={10} className="inline animate-spin" /> : <RefreshCw size={10} className="inline" />} Re-sync
+              </button>
+              <button
+                type="button"
+                onClick={onPurge}
+                disabled={purgePending}
+                className="rounded border border-red-200 dark:border-red-700 px-2 py-0.5 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+                data-testid={`imapsync-purge-${job.id}`}
+              >
+                <Trash2 size={10} className="inline" /> Delete
+              </button>
+            </>
+          )}
+        </div>
       </div>
       <div className="mt-1 text-gray-500 dark:text-gray-400">
         Started {job.startedAt ? new Date(job.startedAt).toLocaleString() : '—'}
@@ -1549,7 +1896,7 @@ function ImapSyncJobRow({
       {job.errorMessage && <p className="mt-1 text-red-600 dark:text-red-400">{job.errorMessage}</p>}
       {job.logTail && (
         <div className="mt-2">
-          <button type="button" onClick={() => setShowLog(s => !s)} className="text-brand-600 dark:text-brand-400 hover:underline">
+          <button type="button" onClick={() => setShowLog(s => !s)} className="text-brand-600 dark:text-brand-400 hover:underline" data-testid={`imapsync-log-toggle-${job.id}`}>
             {showLog ? 'Hide log' : 'Show log'}
           </button>
           {showLog && (

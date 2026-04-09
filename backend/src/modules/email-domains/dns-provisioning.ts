@@ -6,7 +6,38 @@ import { canManageDnsZone } from '../dns-servers/authority.js';
 import { formatDkimDnsValue } from './dkim.js';
 import type { Database } from '../../db/index.js';
 
-const MAIL_SERVER_IP = () => process.env.MAIL_SERVER_IP ?? '127.0.0.1';
+// Round-4 Phase 1: multi-step fallback so deployments only need to
+// set the one env var they already have. INGRESS_DEFAULT_IPV4 is
+// already wired into docker-compose.local.yml for the local stack
+// and should be the canonical platform ingress IP in production.
+// 127.0.0.1 is a last-resort dev fallback — a WARN fires the first
+// time a record is built so operators see it in logs.
+//
+// Review HIGH-1 fix: an empty string in a Docker Compose / systemd
+// env file (e.g. `MAIL_SERVER_IP=`) is functionally undefined, NOT
+// a valid override. Normalize blank values to undefined before the
+// truthiness gate so the fallback chain progresses correctly.
+let mailServerIpWarned = false;
+const normalizeEnv = (v: string | undefined): string | undefined => {
+  if (v === undefined) return undefined;
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+const MAIL_SERVER_IP = (): string => {
+  const explicit = normalizeEnv(process.env.MAIL_SERVER_IP);
+  if (explicit) return explicit;
+  const ingressIp = normalizeEnv(process.env.INGRESS_DEFAULT_IPV4);
+  if (ingressIp) return ingressIp;
+  if (!mailServerIpWarned) {
+    console.warn(
+      '[email-dns] Neither MAIL_SERVER_IP nor INGRESS_DEFAULT_IPV4 is set — '
+      + 'falling back to 127.0.0.1 for mail.<domain> and webmail.<domain> A records. '
+      + 'This is almost certainly wrong in production.',
+    );
+    mailServerIpWarned = true;
+  }
+  return '127.0.0.1';
+};
 
 /**
  * MEDIUM-2: deterministic MTA-STS policy ID derived from the domain

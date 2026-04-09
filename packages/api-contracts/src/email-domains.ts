@@ -44,3 +44,43 @@ export const emailDomainResponseSchema = z.object({
 });
 
 export type EmailDomainResponse = z.infer<typeof emailDomainResponseSchema>;
+
+// Round-4 Phase 1: disable preview. Returns the exact set of
+// mailboxes, aliases, DNS records, and DKIM keys that would be
+// removed when the client calls `DELETE .../disable` for this
+// email domain. Used by the client panel to render a complete
+// confirmation warning.
+export const emailDomainDisablePreviewSchema = z.object({
+  emailDomainId: z.string(),
+  domainName: z.string(),
+  mailboxes: z.array(
+    z.object({
+      id: z.string(),
+      fullAddress: z.string(),
+    }),
+  ),
+  aliases: z.array(
+    z.object({
+      id: z.string(),
+      sourceAddress: z.string(),
+    }),
+  ),
+  dnsRecords: z.array(
+    z.object({
+      id: z.string(),
+      type: z.string(),
+      name: z.string().nullable(),
+      purpose: z.string().nullable(),
+    }),
+  ),
+  dkimKeys: z.array(
+    z.object({
+      id: z.string(),
+      selector: z.string(),
+      status: z.string(),
+    }),
+  ),
+  webmailHostname: z.string().nullable(),
+});
+
+export type EmailDomainDisablePreview = z.infer<typeof emailDomainDisablePreviewSchema>;

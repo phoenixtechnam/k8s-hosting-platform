@@ -117,6 +117,19 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
+  // GET /api/v1/clients/:clientId/email/domains/:domainId/disable-preview
+  //
+  // Round-4 Phase 1: enumeration of everything that will be deleted
+  // when the client calls DELETE .../disable. Used to populate the
+  // confirmation modal in the client panel's Settings tab.
+  app.get('/clients/:clientId/email/domains/:domainId/disable-preview', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  }, async (request) => {
+    const { clientId, domainId } = request.params as { clientId: string; domainId: string };
+    const preview = await service.getEmailDomainDisablePreview(app.db, clientId, domainId);
+    return success(preview);
+  });
+
   // GET /api/v1/clients/:clientId/email/domains/:domainId/dns-records
   //
   // Returns the canonical list of DNS records the operator should
