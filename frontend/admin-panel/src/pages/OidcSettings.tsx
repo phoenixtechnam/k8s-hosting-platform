@@ -37,14 +37,8 @@ export default function OidcSettings() {
         </div>
       </div>
 
-      {/* Issue #5: Providers ABOVE auth settings */}
       <ProvidersSection providers={providers} />
-      <IngressProtectionSection
-        settings={globalSettings}
-        hasAdminProvider={hasAdminProvider}
-        hasClientProvider={hasClientProvider}
-      />
-      <GlobalSettingsSection
+      <AuthenticationSection
         settings={globalSettings}
         hasAdminProvider={hasAdminProvider}
         hasClientProvider={hasClientProvider}
@@ -53,24 +47,26 @@ export default function OidcSettings() {
   );
 }
 
-// ─── Global Settings (below providers) ───────────────────────────────────────
+// ─── Combined Authentication & Ingress Protection ────────────────────────────
 
-function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }: {
+function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }: {
   readonly settings: OidcGlobalSettings | undefined;
   readonly hasAdminProvider: boolean;
   readonly hasClientProvider: boolean;
 }) {
   const saveSettings = useSaveOidcGlobalSettings();
   const regenerateBreakGlass = useRegenerateBreakGlass();
+  const regenerateCookieSecret = useRegenerateCookieSecret();
   const [disableAdmin, setDisableAdmin] = useState(settings?.disableLocalAuthAdmin ?? false);
   const [disableClient, setDisableClient] = useState(settings?.disableLocalAuthClient ?? false);
+  const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
+  const [proxyClient, setProxyClient] = useState(settings?.proxyProtectClient ?? false);
   const [showWarning, setShowWarning] = useState(false);
   const [warningChecks, setWarningChecks] = useState({ tested: false, secretSet: false });
   const [bgCopied, setBgCopied] = useState(false);
+  const [showCookieConfirm, setShowCookieConfirm] = useState(false);
 
-  // Issue #2: client toggle disabled until client provider exists
   const canDisableClient = hasClientProvider;
-  // Issue #3: admin toggle disabled until admin provider + break-glass path exists
   const canDisableAdmin = hasAdminProvider && !!settings?.breakGlassPath;
 
   const breakGlassUrl = settings?.breakGlassPath
@@ -88,16 +84,21 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
       await saveSettings.mutateAsync({
         disable_local_auth_admin: disableAdmin,
         disable_local_auth_client: disableClient,
+        proxy_protect_admin: proxyAdmin,
+        proxy_protect_client: proxyClient,
       });
       setShowWarning(false);
     } catch { /* error shown */ }
   };
 
   return (
-    <form onSubmit={handleSave} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="global-settings-section">
-      <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Authentication Settings</h2>
+    <form onSubmit={handleSave} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="auth-ingress-section">
+      <div className="flex items-center gap-2">
+        <ShieldCheck size={18} className="text-brand-500" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Authentication &amp; Ingress Protection</h2>
+      </div>
 
-      {/* Issue #2 */}
+      {/* ── Client Panel ── */}
       <label className={clsx('flex items-start gap-3', !canDisableClient && 'opacity-50')}>
         <input type="checkbox" checked={disableClient} onChange={(e) => setDisableClient(e.target.checked)} disabled={!canDisableClient} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-client-toggle" />
         <div>
@@ -108,7 +109,17 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
         </div>
       </label>
 
-      {/* Disable local auth for admin */}
+      {disableClient && (
+        <label className={clsx('flex items-start gap-3 ml-6', !hasClientProvider && 'opacity-50')}>
+          <input type="checkbox" checked={proxyClient} onChange={(e) => setProxyClient(e.target.checked)} disabled={!hasClientProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-client-toggle" />
+          <div>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect client panel via OAuth2 Proxy</span>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the client panel without OIDC authentication.</p>
+          </div>
+        </label>
+      )}
+
+      {/* ── Admin Panel ── */}
       <label className={clsx('flex items-start gap-3', !canDisableAdmin && 'opacity-50')}>
         <input type="checkbox" checked={disableAdmin} onChange={(e) => setDisableAdmin(e.target.checked)} disabled={!canDisableAdmin} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-admin-toggle" />
         <div>
@@ -119,9 +130,19 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
         </div>
       </label>
 
-      {/* Break-glass emergency access path (auto-generated, read-only) */}
-      {hasAdminProvider && (
-        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-2" data-testid="break-glass-section">
+      {disableAdmin && (
+        <label className={clsx('flex items-start gap-3 ml-6', !hasAdminProvider && 'opacity-50')}>
+          <input type="checkbox" checked={proxyAdmin} onChange={(e) => setProxyAdmin(e.target.checked)} disabled={!hasAdminProvider} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="proxy-protect-admin-toggle" />
+          <div>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect admin panel via OAuth2 Proxy</span>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Unauthenticated users cannot reach the admin panel without OIDC authentication.</p>
+          </div>
+        </label>
+      )}
+
+      {/* ── Break-Glass (shown when admin local auth is disabled) ── */}
+      {disableAdmin && (
+        <div className="ml-6 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-2" data-testid="break-glass-section">
           <div className="flex items-center gap-2">
             <KeyRound size={14} className="text-amber-600 dark:text-amber-400" />
             <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Break-Glass Emergency Access</span>
@@ -146,9 +167,24 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
               </button>
             </div>
           )}
-          <p className="text-xs text-amber-600 dark:text-amber-500">
-            This URL bypasses OAuth2 Proxy for emergency admin access. Keep it secret.
-          </p>
+          <p className="text-xs text-amber-600 dark:text-amber-500">This URL bypasses OAuth2 Proxy for emergency admin access. Keep it secret.</p>
+        </div>
+      )}
+
+      {/* ── Cookie Secret (shown when any proxy is enabled) ── */}
+      {(proxyAdmin || proxyClient) && (
+        <div className="ml-6 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid="cookie-secret-section">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">OAuth2 Proxy Cookie Secret</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Auto-generated. Regenerate if compromised — invalidates all proxy sessions.</p>
+            </div>
+            <button type="button" onClick={() => setShowCookieConfirm(true)} disabled={regenerateCookieSecret.isPending} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50 disabled:opacity-50" data-testid="regenerate-cookie-secret">
+              {regenerateCookieSecret.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate
+            </button>
+          </div>
+          {regenerateCookieSecret.isSuccess && <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400"><CheckCircle size={12} /> Cookie secret regenerated. Proxy pods restarting.</div>}
+          {regenerateCookieSecret.isError && <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400"><AlertCircle size={12} /> {regenerateCookieSecret.error instanceof Error ? regenerateCookieSecret.error.message : 'Failed'}</div>}
         </div>
       )}
 
@@ -182,239 +218,7 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
   );
 }
 
-// ─── Ingress Protection Section ──────────────────────────────────────────────
-
-function IngressProtectionSection({ settings, hasAdminProvider, hasClientProvider }: {
-  readonly settings: OidcGlobalSettings | undefined;
-  readonly hasAdminProvider: boolean;
-  readonly hasClientProvider: boolean;
-}) {
-  const saveSettings = useSaveOidcGlobalSettings();
-  const regenerateBreakGlass = useRegenerateBreakGlass();
-  const regenerateCookieSecret = useRegenerateCookieSecret();
-  const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
-  const [proxyClient, setProxyClient] = useState(settings?.proxyProtectClient ?? false);
-  const [copied, setCopied] = useState(false);
-  const [showCookieConfirm, setShowCookieConfirm] = useState(false);
-
-  const breakGlassPath = settings?.breakGlassPath ?? null;
-  const breakGlassUrl = breakGlassPath
-    ? `${window.location.origin}/${breakGlassPath}/`
-    : null;
-
-  const handleSaveProxy = async (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      await saveSettings.mutateAsync({
-        proxy_protect_admin: proxyAdmin,
-        proxy_protect_client: proxyClient,
-      });
-    } catch { /* error shown */ }
-  };
-
-  const handleCopy = async () => {
-    if (!breakGlassUrl) return;
-    try {
-      await navigator.clipboard.writeText(breakGlassUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard unavailable */ }
-  };
-
-  const handleRegenerate = async () => {
-    try {
-      await regenerateBreakGlass.mutateAsync();
-    } catch { /* error shown */ }
-  };
-
-  return (
-    <form onSubmit={handleSaveProxy} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="ingress-protection-section">
-      <div className="flex items-center gap-2">
-        <ShieldCheck size={18} className="text-brand-500" />
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Ingress Protection</h2>
-      </div>
-      <p className="text-sm text-gray-500 dark:text-gray-400">
-        Protect panel access with OAuth2 Proxy. Unauthenticated users cannot reach the panel without first authenticating via your OIDC provider.
-      </p>
-
-      <label className={clsx('flex items-start gap-3', !hasAdminProvider && 'opacity-50')} title={!hasAdminProvider ? 'Enable an admin-scoped OIDC provider first' : undefined}>
-        <input
-          type="checkbox"
-          checked={proxyAdmin}
-          onChange={(e) => setProxyAdmin(e.target.checked)}
-          disabled={!hasAdminProvider}
-          className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed"
-          data-testid="proxy-protect-admin-toggle"
-        />
-        <div>
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect admin panel via OAuth2 Proxy</span>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            {hasAdminProvider
-              ? 'When enabled, unauthenticated users cannot access the admin panel without first authenticating via your OIDC provider.'
-              : 'Enable an admin-scoped OIDC provider first.'}
-          </p>
-        </div>
-      </label>
-
-      <label className={clsx('flex items-start gap-3', !hasClientProvider && 'opacity-50')} title={!hasClientProvider ? 'Enable a client-scoped OIDC provider first' : undefined}>
-        <input
-          type="checkbox"
-          checked={proxyClient}
-          onChange={(e) => setProxyClient(e.target.checked)}
-          disabled={!hasClientProvider}
-          className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed"
-          data-testid="proxy-protect-client-toggle"
-        />
-        <div>
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect client panel via OAuth2 Proxy</span>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            {hasClientProvider
-              ? 'When enabled, unauthenticated users cannot access the client panel without first authenticating via your OIDC provider.'
-              : 'Enable a client-scoped OIDC provider first.'}
-          </p>
-        </div>
-      </label>
-
-      {/* Break-glass path display — only visible when admin protection is enabled */}
-      {proxyAdmin && (
-        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3" data-testid="break-glass-path-section">
-          <div className="flex items-center gap-2">
-            <AlertTriangle size={16} className="text-amber-500 dark:text-amber-400" />
-            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Break-Glass Access Path</span>
-          </div>
-          <p className="text-xs text-amber-700 dark:text-amber-400">
-            This URL bypasses OAuth2 Proxy. Keep it secret. Use it only for emergency access.
-          </p>
-          {breakGlassUrl ? (
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-900 px-3 py-2 text-xs font-mono text-gray-900 dark:text-gray-100 break-all" data-testid="break-glass-url">
-                {breakGlassUrl}
-              </code>
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40"
-                title="Copy to clipboard"
-                data-testid="copy-break-glass-url"
-              >
-                {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
-              </button>
-              <button
-                type="button"
-                onClick={handleRegenerate}
-                disabled={regenerateBreakGlass.isPending}
-                className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
-                title="Regenerate break-glass path"
-                data-testid="regenerate-break-glass"
-              >
-                {regenerateBreakGlass.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <p className="flex-1 text-xs text-amber-700 dark:text-amber-400 italic">No break-glass path generated yet.</p>
-              <button
-                type="button"
-                onClick={handleRegenerate}
-                disabled={regenerateBreakGlass.isPending}
-                className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
-                data-testid="generate-break-glass"
-              >
-                {regenerateBreakGlass.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Generate
-              </button>
-            </div>
-          )}
-          {regenerateBreakGlass.isError && (
-            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
-              <AlertCircle size={12} />
-              {regenerateBreakGlass.error instanceof Error ? regenerateBreakGlass.error.message : 'Failed to regenerate'}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Cookie Secret Regeneration — visible when any proxy is enabled */}
-      {(proxyAdmin || proxyClient) && (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid="cookie-secret-section">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">OAuth2 Proxy Cookie Secret</span>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Auto-generated when proxy protection is enabled. Regenerate if compromised.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowCookieConfirm(true)}
-              disabled={regenerateCookieSecret.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50 disabled:opacity-50"
-              data-testid="regenerate-cookie-secret"
-            >
-              {regenerateCookieSecret.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate Cookie Secret
-            </button>
-          </div>
-          {regenerateCookieSecret.isSuccess && (
-            <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
-              <CheckCircle size={12} /> Cookie secret regenerated. Proxy pods restarting.
-            </div>
-          )}
-          {regenerateCookieSecret.isError && (
-            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
-              <AlertCircle size={12} />
-              {regenerateCookieSecret.error instanceof Error ? regenerateCookieSecret.error.message : 'Failed to regenerate cookie secret'}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Cookie secret regeneration confirmation dialog */}
-      {showCookieConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setShowCookieConfirm(false)} />
-          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" data-testid="cookie-secret-confirm-dialog">
-            <div className="flex items-center gap-3 mb-4">
-              <AlertTriangle size={24} className="text-amber-500 dark:text-amber-400" />
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Regenerate Cookie Secret?</h3>
-            </div>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
-              This will invalidate all existing OAuth2 proxy sessions. Users will need to re-authenticate.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                type="button"
-                onClick={() => setShowCookieConfirm(false)}
-                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  try { await regenerateCookieSecret.mutateAsync(); } catch { /* error shown */ }
-                  setShowCookieConfirm(false);
-                }}
-                disabled={regenerateCookieSecret.isPending}
-                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-                data-testid="confirm-regenerate-cookie-secret"
-              >
-                {regenerateCookieSecret.isPending ? <Loader2 size={14} className="animate-spin" /> : null} Regenerate
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {saveSettings.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{saveSettings.error instanceof Error ? saveSettings.error.message : 'Failed'}</div>}
-      {saveSettings.isSuccess && <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400"><CheckCircle size={14} /> Saved.</div>}
-
-      <div className="flex justify-end">
-        <button type="submit" disabled={saveSettings.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="save-proxy-settings">
-          {saveSettings.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
-        </button>
-      </div>
-    </form>
-  );
-}
+/* IngressProtectionSection removed — merged into AuthenticationSection above */
 
 // ─── Providers Section ───────────────────────────────────────────────────────
 

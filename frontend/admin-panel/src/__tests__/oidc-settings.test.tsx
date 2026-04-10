@@ -82,9 +82,9 @@ describe('OidcSettings page', () => {
     setupMockApi();
     render(<OidcSettings />, { wrapper: createWrapper() });
     await waitFor(() => {
-      expect(screen.getByTestId('global-settings-section')).toBeInTheDocument();
+      expect(screen.getByTestId('auth-ingress-section')).toBeInTheDocument();
     });
-    expect(screen.getByText('Authentication Settings')).toBeInTheDocument();
+    expect(screen.getByText(/Authentication.*Ingress Protection/)).toBeInTheDocument();
   });
 
   it('shows add provider button', async () => {
@@ -104,13 +104,12 @@ describe('OidcSettings page', () => {
     });
   });
 
-  it('shows break-glass input and auth toggles', async () => {
+  it('shows auth toggles in combined section', async () => {
     setupMockApi();
     render(<OidcSettings />, { wrapper: createWrapper() });
     await waitFor(() => {
-      expect(screen.getByTestId('break-glass-input')).toBeInTheDocument();
+      expect(screen.getByTestId('disable-local-client-toggle')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('disable-local-client-toggle')).toBeInTheDocument();
     expect(screen.getByTestId('disable-local-admin-toggle')).toBeInTheDocument();
   });
 
