@@ -1,5 +1,13 @@
 # Dex configuration for local development
-# This config uses a static user for testing without an external IdP.
+#
+# Static users for testing (both use password "admin"):
+#   - admin@platform.local  (maps to the platform's default super_admin)
+#   - admin2@platform.local (second admin for multi-user testing)
+#
+# Static OIDC clients:
+#   - hosting-platform-admin   (admin panel SSO)
+#   - hosting-platform-client  (client panel SSO)
+#   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
 
 issuer: http://dind.local:2015/dex
 
@@ -36,13 +44,13 @@ connectors: []
 enablePasswordDB: true
 
 staticPasswords:
-  - email: admin@example.com
-    hash: "$2a$12$eeH0FYMB7SNpQVmP0ULLAeUmWX3UILFSuUj/YAVWge4h78bMzHxni"
-    # password: "password"
+  - email: admin@platform.local
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
     username: admin
     userID: "00000000-0000-0000-0000-000000000001"
-  - email: user@example.com
-    hash: "$2a$12$eeH0FYMB7SNpQVmP0ULLAeUmWX3UILFSuUj/YAVWge4h78bMzHxni"
-    # password: "password"
-    username: testuser
+  - email: admin2@platform.local
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+    username: admin2
     userID: "00000000-0000-0000-0000-000000000002"

@@ -229,7 +229,9 @@ cmd_status() {
   fi
 
   echo ""
-  echo "  Login: admin@platform.local / admin"
+  echo "  Login (local): admin@platform.local / admin"
+  echo "  Login (Dex):   admin@platform.local / admin"
+  echo "               admin2@platform.local / admin"
   echo "════════════════════════════════════════════════"
 }
 
