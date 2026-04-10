@@ -74,6 +74,8 @@ export interface SaveGlobalSettingsInput {
   readonly break_glass_secret?: string;
   readonly protect_admin_via_proxy?: boolean;
   readonly protect_client_via_proxy?: boolean;
+  readonly proxy_protect_admin?: boolean;
+  readonly proxy_protect_client?: boolean;
   readonly break_glass_path?: string | null;
 }
 
@@ -85,22 +87,24 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (input.disable_local_auth_client !== undefined) updateValues.disableLocalAuthClient = input.disable_local_auth_client ? 1 : 0;
   if (input.break_glass_secret) updateValues.breakGlassSecretHash = await bcrypt.hash(input.break_glass_secret, 12);
 
-  // Handle proxy protection fields
-  if (input.protect_admin_via_proxy !== undefined) {
-    updateValues.protectAdminViaProxy = input.protect_admin_via_proxy ? 1 : 0;
+  // Handle proxy protection fields (accept both naming conventions)
+  const adminProxy = input.protect_admin_via_proxy ?? input.proxy_protect_admin;
+  const clientProxy = input.protect_client_via_proxy ?? input.proxy_protect_client;
+  if (adminProxy !== undefined) {
+    updateValues.protectAdminViaProxy = adminProxy ? 1 : 0;
   }
-  if (input.protect_client_via_proxy !== undefined) {
-    updateValues.protectClientViaProxy = input.protect_client_via_proxy ? 1 : 0;
+  if (clientProxy !== undefined) {
+    updateValues.protectClientViaProxy = clientProxy ? 1 : 0;
   }
   if (input.break_glass_path !== undefined) {
     updateValues.breakGlassPath = input.break_glass_path;
   }
 
-  // Validate: can't disable admin local auth without a break-glass secret
+  // Validate: can't disable admin local auth without a break-glass mechanism
   if (input.disable_local_auth_admin) {
-    const hasSecret = input.break_glass_secret || rows[0]?.breakGlassSecretHash;
-    if (!hasSecret) {
-      throw new ApiError('BREAK_GLASS_REQUIRED', 'You must set a break-glass secret before disabling admin local authentication', 400);
+    const hasBreakGlass = rows[0]?.breakGlassSecretHash || rows[0]?.breakGlassPath;
+    if (!hasBreakGlass) {
+      throw new ApiError('BREAK_GLASS_REQUIRED', 'Generate a break-glass path before disabling admin local authentication', 400);
     }
     // Verify at least one admin-scoped provider is enabled
     const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
@@ -110,8 +114,8 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   }
 
   // Validate: can't enable proxy protection without at least one OIDC provider for that panel
-  const wantsAdminProxy = input.protect_admin_via_proxy ?? (rows[0]?.protectAdminViaProxy === 1);
-  const wantsClientProxy = input.protect_client_via_proxy ?? (rows[0]?.protectClientViaProxy === 1);
+  const wantsAdminProxy = adminProxy ?? (rows[0]?.protectAdminViaProxy === 1);
+  const wantsClientProxy = clientProxy ?? (rows[0]?.protectClientViaProxy === 1);
 
   if (wantsAdminProxy) {
     const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
