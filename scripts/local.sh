@@ -87,6 +87,9 @@ cmd_up() {
   echo ""
   _rebuild_sidecar
   _check_k3s_health
+  # If mail namespace exists, re-patch the postgres bridge IP (it changes
+  # on every container recreate and Stalwart can't authenticate without it).
+  _patch_postgres_bridge 2>/dev/null || true
   cmd_status
 }
 
@@ -102,6 +105,7 @@ cmd_reset() {
   compose up -d --build
   echo ""
   _rebuild_sidecar
+  _patch_postgres_bridge 2>/dev/null || true
   cmd_status
 }
 
@@ -116,6 +120,7 @@ cmd_rebuild() {
   _rebuild_sidecar
   # Verify k3s is still running (warn if not)
   _check_k3s_health
+  _patch_postgres_bridge 2>/dev/null || true
   cmd_status
 }
 
