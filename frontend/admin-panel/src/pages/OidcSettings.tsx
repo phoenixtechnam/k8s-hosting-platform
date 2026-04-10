@@ -61,18 +61,21 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
   readonly hasClientProvider: boolean;
 }) {
   const saveSettings = useSaveOidcGlobalSettings();
+  const regenerateBreakGlass = useRegenerateBreakGlass();
   const [disableAdmin, setDisableAdmin] = useState(settings?.disableLocalAuthAdmin ?? false);
   const [disableClient, setDisableClient] = useState(settings?.disableLocalAuthClient ?? false);
-  const [breakGlassSecret, setBreakGlassSecret] = useState('');
   const [showWarning, setShowWarning] = useState(false);
   const [warningChecks, setWarningChecks] = useState({ tested: false, secretSet: false });
+  const [bgCopied, setBgCopied] = useState(false);
 
-  // Issue #4: break-glass disabled until admin provider exists
-  const canSetBreakGlass = hasAdminProvider;
   // Issue #2: client toggle disabled until client provider exists
   const canDisableClient = hasClientProvider;
-  // Issue #3: admin toggle disabled until admin provider + break-glass exists
-  const canDisableAdmin = hasAdminProvider && (settings?.hasBreakGlassSecret || breakGlassSecret.length > 0);
+  // Issue #3: admin toggle disabled until admin provider + break-glass path exists
+  const canDisableAdmin = hasAdminProvider && !!settings?.breakGlassPath;
+
+  const breakGlassUrl = settings?.breakGlassPath
+    ? `${window.location.origin}/${settings.breakGlassPath}/`
+    : null;
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -85,9 +88,7 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
       await saveSettings.mutateAsync({
         disable_local_auth_admin: disableAdmin,
         disable_local_auth_client: disableClient,
-        break_glass_secret: breakGlassSecret || undefined,
       });
-      setBreakGlassSecret('');
       setShowWarning(false);
     } catch { /* error shown */ }
   };
@@ -107,25 +108,49 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
         </div>
       </label>
 
-      {/* Issue #3 */}
+      {/* Disable local auth for admin */}
       <label className={clsx('flex items-start gap-3', !canDisableAdmin && 'opacity-50')}>
         <input type="checkbox" checked={disableAdmin} onChange={(e) => setDisableAdmin(e.target.checked)} disabled={!canDisableAdmin} className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed" data-testid="disable-local-admin-toggle" />
         <div>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Disable Local Auth for Admin Panel</span>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {canDisableAdmin ? 'Admins must use SSO. Requires a break-glass secret.' : hasAdminProvider ? 'Set a break-glass secret first.' : 'Enable an admin-scoped OIDC provider and set a break-glass secret first.'}
+            {canDisableAdmin ? 'Admins must use SSO. Break-glass URL available below.' : hasAdminProvider ? 'Generate a break-glass path first.' : 'Enable an admin-scoped OIDC provider first.'}
           </p>
         </div>
       </label>
 
-      {/* Issue #4 */}
-      <div className={clsx(!canSetBreakGlass && 'opacity-50')}>
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"><KeyRound size={14} /> Break-Glass Emergency Secret</label>
-        <input type="password" className={INPUT_CLASS} placeholder={settings?.hasBreakGlassSecret ? '(set — enter new value to change)' : 'Set emergency secret'} value={breakGlassSecret} onChange={(e) => setBreakGlassSecret(e.target.value)} disabled={!canSetBreakGlass} data-testid="break-glass-input" />
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          {canSetBreakGlass ? 'Used at /login?emergency=true when SSO is down.' : 'Enable an admin-scoped OIDC provider first.'}
-        </p>
-      </div>
+      {/* Break-glass emergency access path (auto-generated, read-only) */}
+      {hasAdminProvider && (
+        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-2" data-testid="break-glass-section">
+          <div className="flex items-center gap-2">
+            <KeyRound size={14} className="text-amber-600 dark:text-amber-400" />
+            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Break-Glass Emergency Access</span>
+          </div>
+          {breakGlassUrl ? (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-900 px-3 py-2 text-xs font-mono text-gray-900 dark:text-gray-100 break-all" data-testid="break-glass-url">
+                {breakGlassUrl}
+              </code>
+              <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(breakGlassUrl); setBgCopied(true); setTimeout(() => setBgCopied(false), 2000); } catch {} }} className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30" title="Copy URL">
+                {bgCopied ? <CheckCircle size={14} /> : <Copy size={14} />}
+              </button>
+              <button type="button" onClick={async () => { try { await regenerateBreakGlass.mutateAsync(); } catch {} }} disabled={regenerateBreakGlass.isPending} className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50" title="Regenerate path">
+                {regenerateBreakGlass.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-xs text-amber-700 dark:text-amber-400 italic">No break-glass path generated yet.</p>
+              <button type="button" onClick={async () => { try { await regenerateBreakGlass.mutateAsync(); } catch {} }} disabled={regenerateBreakGlass.isPending} className="inline-flex items-center gap-1 rounded-md border border-amber-300 dark:border-amber-700 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-50">
+                {regenerateBreakGlass.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Generate
+              </button>
+            </div>
+          )}
+          <p className="text-xs text-amber-600 dark:text-amber-500">
+            This URL bypasses OAuth2 Proxy for emergency admin access. Keep it secret.
+          </p>
+        </div>
+      )}
 
       {saveSettings.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{saveSettings.error instanceof Error ? saveSettings.error.message : 'Failed'}</div>}
       {saveSettings.isSuccess && <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400"><CheckCircle size={14} /> Saved.</div>}
@@ -141,10 +166,10 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowWarning(false)} />
           <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" data-testid="disable-admin-warning">
             <div className="flex items-center gap-3 mb-4"><AlertTriangle size={24} className="text-amber-500 dark:text-amber-400" /><h3 className="text-lg font-semibold">Warning</h3></div>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">Disabling local auth for admin panel means all admins must use SSO. If the OIDC provider becomes unavailable, you will be locked out unless you have a break-glass secret.</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">Disabling local auth for admin panel means all admins must use SSO. If the OIDC provider becomes unavailable, use the break-glass URL above for emergency access.</p>
             <div className="space-y-3 mb-6">
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={warningChecks.tested} onChange={(e) => setWarningChecks({ ...warningChecks, tested: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-600" /> I have tested OIDC login and it works</label>
-              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={warningChecks.secretSet} onChange={(e) => setWarningChecks({ ...warningChecks, secretSet: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-600" /> I have configured a break-glass secret</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={warningChecks.secretSet} onChange={(e) => setWarningChecks({ ...warningChecks, secretSet: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-600" /> I have saved the break-glass URL</label>
             </div>
             <div className="flex gap-3 justify-end">
               <button type="button" onClick={() => setShowWarning(false)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
