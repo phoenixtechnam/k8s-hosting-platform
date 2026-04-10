@@ -162,7 +162,7 @@ services:
       - --tls-san=${DOCKER_HOST_NAME:-dind.local}
       - --tls-san=k3s-server
       - --node-name=k8s-local
-      - --kubelet-arg=max-pods=250
+      - --kubelet-arg=max-pods=110
     ports:
       - "${PORT_K3S_API:-2016}:6443"
       # Roundcube webmail (Phase 2b) — host 2017 → NodePort 30017 → pod 80

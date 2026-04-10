@@ -41,8 +41,8 @@ suspendExpiredClients(db).catch((err) => {
   app.log.error({ err }, 'Failed initial expired subscription check');
 });
 
-// Reconcile deployment statuses every 30 seconds
-const RECONCILE_INTERVAL = 30_000;
+// Reconcile deployment statuses every 60 seconds
+const RECONCILE_INTERVAL = 60_000;
 const reconcileTimer = setInterval(async () => {
   try {
     const k8s = createK8sClients(config.KUBECONFIG_PATH);
