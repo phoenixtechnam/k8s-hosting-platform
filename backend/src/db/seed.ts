@@ -1,7 +1,8 @@
 import { sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, users, catalogRepositories } from './schema.js';
+import { rbacRoles, regions, hostingPlans, users, catalogRepositories, oidcProviders } from './schema.js';
+import { encrypt } from '../modules/oidc/crypto.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -73,6 +74,36 @@ await db.insert(catalogRepositories).values([{
   status: 'active',
 }]).onConflictDoUpdate({ target: catalogRepositories.url, set: { name: sql`excluded.name` } });
 console.log('  Seeded catalog repositories');
+
+// OIDC Providers (local Dex for development)
+if (process.env.NODE_ENV !== 'production') {
+  const encKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const dexIssuer = process.env.DEX_ISSUER_URL ?? 'http://dind.local:2015/dex';
+
+  await db.insert(oidcProviders).values([
+    {
+      id: crypto.randomUUID(),
+      displayName: 'Local Dex (Admin)',
+      issuerUrl: dexIssuer,
+      clientId: 'hosting-platform-admin',
+      clientSecretEncrypted: encrypt('local-dev-secret-admin', encKey),
+      panelScope: 'admin',
+      enabled: 1,
+      displayOrder: 0,
+    },
+    {
+      id: crypto.randomUUID(),
+      displayName: 'Local Dex (Client)',
+      issuerUrl: dexIssuer,
+      clientId: 'hosting-platform-client',
+      clientSecretEncrypted: encrypt('local-dev-secret-client', encKey),
+      panelScope: 'client',
+      enabled: 1,
+      displayOrder: 0,
+    },
+  ]).onConflictDoNothing();
+  console.log('  Seeded OIDC providers (local Dex)');
+}
 
 console.log('Seed complete.');
 await closeDb();

@@ -81,8 +81,18 @@ compose_k3s() {
   compose "$@"
 }
 
+_ensure_cookie_secret() {
+  if ! grep -q 'OAUTH2_PROXY_COOKIE_SECRET' "$ENV_FILE" 2>/dev/null; then
+    local secret
+    secret=$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(24)).decode())')
+    echo "OAUTH2_PROXY_COOKIE_SECRET=$secret" >> "$ENV_FILE"
+    echo "  Generated OAuth2 proxy cookie secret"
+  fi
+}
+
 cmd_up() {
   echo "Building and starting local stack..."
+  _ensure_cookie_secret
   compose up -d --build
   echo ""
   _rebuild_sidecar
@@ -101,7 +111,12 @@ cmd_down() {
 cmd_reset() {
   echo "Resetting local stack (wiping volumes)..."
   compose down -v
+  # Remove stale cookie secret so a fresh one is generated
+  if [[ -f "$ENV_FILE" ]]; then
+    sed -i '/^OAUTH2_PROXY_COOKIE_SECRET=/d' "$ENV_FILE"
+  fi
   echo "Starting fresh..."
+  _ensure_cookie_secret
   compose up -d --build
   echo ""
   _rebuild_sidecar

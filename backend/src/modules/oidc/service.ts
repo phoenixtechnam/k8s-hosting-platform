@@ -41,6 +41,10 @@ export function generateBreakGlassPath(): string {
   return `bg-${crypto.randomBytes(16).toString('hex')}`;
 }
 
+export function generateCookieSecret(): string {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
 export async function getGlobalSettings(db: Database) {
   const rows = await db.select().from(oidcGlobalSettings);
   if (rows.length === 0) {
@@ -73,7 +77,7 @@ export interface SaveGlobalSettingsInput {
   readonly break_glass_path?: string | null;
 }
 
-export async function saveGlobalSettings(db: Database, input: SaveGlobalSettingsInput) {
+export async function saveGlobalSettings(db: Database, input: SaveGlobalSettingsInput, encryptionKey: string) {
   const rows = await db.select().from(oidcGlobalSettings);
 
   const updateValues: Record<string, unknown> = {};
@@ -127,6 +131,14 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
     const existingPath = input.break_glass_path !== undefined ? input.break_glass_path : rows[0]?.breakGlassPath;
     if (!existingPath) {
       updateValues.breakGlassPath = generateBreakGlassPath();
+    }
+  }
+
+  // Auto-generate cookie secret when proxy is enabled and none exists yet
+  if (wantsAdminProxy || wantsClientProxy) {
+    const existingSecret = rows[0]?.oauth2ProxyCookieSecretEncrypted;
+    if (!existingSecret) {
+      updateValues.oauth2ProxyCookieSecretEncrypted = encrypt(generateCookieSecret(), encryptionKey);
     }
   }
 
@@ -474,6 +486,33 @@ export async function regenerateBreakGlassPath(db: Database): Promise<string> {
   }
 
   return newPath;
+}
+
+// ─── Cookie Secret Management ───────────────────────────────────────────────
+
+export async function getDecryptedCookieSecret(db: Database, encryptionKey: string): Promise<string | null> {
+  const rows = await db.select().from(oidcGlobalSettings);
+  if (rows.length === 0 || !rows[0].oauth2ProxyCookieSecretEncrypted) return null;
+  return decrypt(rows[0].oauth2ProxyCookieSecretEncrypted, encryptionKey);
+}
+
+export async function regenerateCookieSecret(db: Database, encryptionKey: string): Promise<string> {
+  const rows = await db.select().from(oidcGlobalSettings);
+  const newSecret = generateCookieSecret();
+  const encrypted = encrypt(newSecret, encryptionKey);
+
+  if (rows.length > 0) {
+    await db.update(oidcGlobalSettings)
+      .set({ oauth2ProxyCookieSecretEncrypted: encrypted })
+      .where(eq(oidcGlobalSettings.id, rows[0].id));
+  } else {
+    await db.insert(oidcGlobalSettings).values({
+      id: crypto.randomUUID(),
+      oauth2ProxyCookieSecretEncrypted: encrypted,
+    } as typeof oidcGlobalSettings.$inferInsert);
+  }
+
+  return newSecret;
 }
 
 // ─── Auth Status Checks ──────────────────────────────────────────────────────

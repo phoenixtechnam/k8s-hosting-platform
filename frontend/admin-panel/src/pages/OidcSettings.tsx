@@ -7,6 +7,7 @@ import clsx from 'clsx';
 import {
   useOidcProviders, useCreateOidcProvider, useUpdateOidcProvider, useDeleteOidcProvider,
   useTestOidcProvider, useOidcGlobalSettings, useSaveOidcGlobalSettings, useRegenerateBreakGlass,
+  useRegenerateCookieSecret,
   type OidcProvider, type OidcGlobalSettings,
 } from '@/hooks/use-oidc-settings';
 
@@ -165,9 +166,11 @@ function IngressProtectionSection({ settings, hasAdminProvider, hasClientProvide
 }) {
   const saveSettings = useSaveOidcGlobalSettings();
   const regenerateBreakGlass = useRegenerateBreakGlass();
+  const regenerateCookieSecret = useRegenerateCookieSecret();
   const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
   const [proxyClient, setProxyClient] = useState(settings?.proxyProtectClient ?? false);
   const [copied, setCopied] = useState(false);
+  const [showCookieConfirm, setShowCookieConfirm] = useState(false);
 
   const breakGlassPath = settings?.breakGlassPath ?? null;
   const breakGlassUrl = breakGlassPath
@@ -302,6 +305,77 @@ function IngressProtectionSection({ settings, hasAdminProvider, hasClientProvide
               {regenerateBreakGlass.error instanceof Error ? regenerateBreakGlass.error.message : 'Failed to regenerate'}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Cookie Secret Regeneration — visible when any proxy is enabled */}
+      {(proxyAdmin || proxyClient) && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid="cookie-secret-section">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">OAuth2 Proxy Cookie Secret</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Auto-generated when proxy protection is enabled. Regenerate if compromised.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowCookieConfirm(true)}
+              disabled={regenerateCookieSecret.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50 disabled:opacity-50"
+              data-testid="regenerate-cookie-secret"
+            >
+              {regenerateCookieSecret.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate Cookie Secret
+            </button>
+          </div>
+          {regenerateCookieSecret.isSuccess && (
+            <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+              <CheckCircle size={12} /> Cookie secret regenerated. Proxy pods restarting.
+            </div>
+          )}
+          {regenerateCookieSecret.isError && (
+            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+              <AlertCircle size={12} />
+              {regenerateCookieSecret.error instanceof Error ? regenerateCookieSecret.error.message : 'Failed to regenerate cookie secret'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cookie secret regeneration confirmation dialog */}
+      {showCookieConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowCookieConfirm(false)} />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" data-testid="cookie-secret-confirm-dialog">
+            <div className="flex items-center gap-3 mb-4">
+              <AlertTriangle size={24} className="text-amber-500 dark:text-amber-400" />
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Regenerate Cookie Secret?</h3>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+              This will invalidate all existing OAuth2 proxy sessions. Users will need to re-authenticate.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCookieConfirm(false)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try { await regenerateCookieSecret.mutateAsync(); } catch { /* error shown */ }
+                  setShowCookieConfirm(false);
+                }}
+                disabled={regenerateCookieSecret.isPending}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                data-testid="confirm-regenerate-cookie-secret"
+              >
+                {regenerateCookieSecret.isPending ? <Loader2 size={14} className="animate-spin" /> : null} Regenerate
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

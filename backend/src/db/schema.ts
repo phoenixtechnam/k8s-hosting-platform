@@ -101,6 +101,7 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   protectAdminViaProxy: integer('protect_admin_via_proxy').notNull().default(0),
   protectClientViaProxy: integer('protect_client_via_proxy').notNull().default(0),
   breakGlassPath: varchar('break_glass_path', { length: 100 }),
+  oauth2ProxyCookieSecretEncrypted: text('oauth2_proxy_cookie_secret_encrypted'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });

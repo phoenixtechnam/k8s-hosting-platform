@@ -239,6 +239,38 @@ async function syncBreakGlassIngress(
   }
 }
 
+// ─── OAuth2 Proxy K8s Secret ─────────────────────────────────────────────────
+
+/**
+ * Sync the cookie secret to the oauth2-proxy K8s Secret.
+ * Creates the Secret if it does not exist, patches it otherwise.
+ */
+export async function syncOAuth2ProxySecret(k8s: K8sClients, cookieSecret: string): Promise<void> {
+  const secretBody = {
+    apiVersion: 'v1' as const,
+    kind: 'Secret' as const,
+    metadata: { name: 'oauth2-proxy-config', namespace: PLATFORM_NAMESPACE },
+    stringData: { OAUTH2_PROXY_COOKIE_SECRET: cookieSecret },
+  };
+
+  try {
+    await k8s.core.patchNamespacedSecret({
+      name: 'oauth2-proxy-config',
+      namespace: PLATFORM_NAMESPACE,
+      body: secretBody,
+    });
+  } catch (err: unknown) {
+    if (isK8s404(err)) {
+      await k8s.core.createNamespacedSecret({
+        namespace: PLATFORM_NAMESPACE,
+        body: secretBody,
+      });
+    } else {
+      throw err;
+    }
+  }
+}
+
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
 /**

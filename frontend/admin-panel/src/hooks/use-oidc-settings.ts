@@ -131,3 +131,14 @@ export function useRegenerateBreakGlass() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['oidc-global-settings'] }); },
   });
 }
+
+export function useRegenerateCookieSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { regenerated: boolean } }>('/api/v1/admin/oidc/regenerate-cookie-secret', {
+        method: 'POST',
+      }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['oidc-global-settings'] }); },
+  });
+}

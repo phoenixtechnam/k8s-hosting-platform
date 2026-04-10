@@ -4,7 +4,7 @@ import * as service from './service.js';
 import type { SaveProviderInput, SaveGlobalSettingsInput } from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncProxyIngressAnnotations } from './ingress-proxy-manager.js';
+import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // In-memory PKCE state store (Phase 1). Replace with Redis in production.
@@ -205,9 +205,9 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const input = request.body as unknown as SaveGlobalSettingsInput;
-    const settings = await service.saveGlobalSettings(app.db, input);
+    const settings = await service.saveGlobalSettings(app.db, input, encryptionKey);
 
-    // Sync K8s Ingress annotations when proxy settings change
+    // Sync K8s Ingress annotations + cookie secret when proxy settings change
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const k8s = createK8sClients(kubeconfigPath);
@@ -216,6 +216,14 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         protectClientViaProxy: settings.protectClientViaProxy,
         breakGlassPath: settings.breakGlassPath,
       });
+
+      // Sync cookie secret to K8s Secret if proxy is enabled
+      if (settings.protectAdminViaProxy || settings.protectClientViaProxy) {
+        const cookieSecret = await service.getDecryptedCookieSecret(app.db, encryptionKey);
+        if (cookieSecret) {
+          await syncOAuth2ProxySecret(k8s, cookieSecret);
+        }
+      }
     } catch (err) {
       app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations — K8s may be unavailable');
     }
@@ -245,5 +253,39 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     }
 
     return success({ breakGlassPath: newPath });
+  });
+
+  // ─── Admin: Regenerate Cookie Secret ──────────────────────────────────────
+
+  app.post('/admin/oidc/regenerate-cookie-secret', {
+    onRequest: [authenticate, requireRole('super_admin')],
+  }, async (_request) => {
+    const newSecret = await service.regenerateCookieSecret(app.db, encryptionKey);
+
+    // Update the K8s oauth2-proxy Secret and restart the proxy pod
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8s = createK8sClients(kubeconfigPath);
+      await syncOAuth2ProxySecret(k8s, newSecret);
+
+      // Rollout restart oauth2-proxy so it picks up the new secret
+      await k8s.apps.patchNamespacedDeployment({
+        name: 'oauth2-proxy',
+        namespace: process.env.PLATFORM_NAMESPACE ?? 'platform',
+        body: {
+          spec: {
+            template: {
+              metadata: {
+                annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() },
+              },
+            },
+          },
+        },
+      });
+    } catch (err) {
+      app.log.warn({ err }, 'Failed to sync cookie secret to K8s — K8s may be unavailable');
+    }
+
+    return success({ regenerated: true });
   });
 }
