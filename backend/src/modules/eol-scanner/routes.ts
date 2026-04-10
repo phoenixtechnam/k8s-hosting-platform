@@ -55,7 +55,7 @@ export async function eolScannerRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const userId = ((request as unknown as Record<string, unknown>).user as { id?: string } | undefined)?.id ?? 'system';
+    const userId = ((request as unknown as Record<string, unknown>).user as { sub?: string } | undefined)?.sub ?? 'system';
     const result = await runEolScan(app.db, userId);
     return success(result);
   });

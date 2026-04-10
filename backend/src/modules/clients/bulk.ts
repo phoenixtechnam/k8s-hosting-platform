@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { clients } from '../../db/schema.js';
+import { clients, domains, deployments, cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -32,6 +32,15 @@ export async function bulkUpdateClientStatus(
       await db.update(clients)
         .set({ status: targetStatus as typeof clients.$inferInsert['status'] })
         .where(eq(clients.id, id));
+
+      if (targetStatus === 'suspended') {
+        await db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, id));
+        await db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, id));
+        await db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, id));
+      } else if (targetStatus === 'active') {
+        await db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, id));
+        await db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, id));
+      }
 
       succeeded.push(id);
     } catch (err) {

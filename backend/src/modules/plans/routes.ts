@@ -5,6 +5,7 @@ import { hostingPlans, clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createCacheMiddleware } from '../../middleware/cache.js';
+import { createPlanSchema, updatePlanSchema } from '@k8s-hosting/api-contracts';
 
 export async function planRoutes(app: FastifyInstance) {
   // GET /api/v1/plans — public, no auth
@@ -17,24 +18,31 @@ export async function planRoutes(app: FastifyInstance) {
   app.post('/admin/plans', {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request, reply) => {
-    const body = request.body as Record<string, unknown>;
-    if (!body.code || !body.name || !body.cpu_limit || !body.memory_limit || !body.storage_limit || !body.monthly_price_usd) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'code, name, cpu_limit, memory_limit, storage_limit, monthly_price_usd are required', 400);
+    const parsed = createPlanSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'MISSING_REQUIRED_FIELD',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
     }
 
+    const body = request.body as Record<string, unknown>;
     const id = crypto.randomUUID();
     await app.db.insert(hostingPlans).values({
       id,
-      code: body.code as string,
-      name: body.name as string,
+      code: parsed.data.code,
+      name: parsed.data.name,
       description: (body.description as string) ?? null,
-      cpuLimit: String(body.cpu_limit),
-      memoryLimit: String(body.memory_limit),
-      storageLimit: String(body.storage_limit),
-      monthlyPriceUsd: String(body.monthly_price_usd),
+      cpuLimit: parsed.data.cpu_limit,
+      memoryLimit: parsed.data.memory_limit,
+      storageLimit: parsed.data.storage_limit,
+      monthlyPriceUsd: parsed.data.monthly_price_usd,
       maxSubUsers: (body.max_sub_users as number) ?? 3,
       maxMailboxes: (body.max_mailboxes as number) ?? 50,
-      features: (body.features as Record<string, unknown>) ?? null,
+      features: parsed.data.features ?? null,
       status: 'active',
     });
 
@@ -47,21 +55,32 @@ export async function planRoutes(app: FastifyInstance) {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const { id } = request.params as { id: string };
+    const parsed = updatePlanSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'MISSING_REQUIRED_FIELD',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+
     const body = request.body as Record<string, unknown>;
 
     const [existing] = await app.db.select().from(hostingPlans).where(eq(hostingPlans.id, id));
     if (!existing) throw new ApiError('PLAN_NOT_FOUND', `Plan '${id}' not found`, 404);
 
     const updateValues: Record<string, unknown> = {};
-    if (body.name !== undefined) updateValues.name = body.name;
+    if (parsed.data.name !== undefined) updateValues.name = parsed.data.name;
     if (body.description !== undefined) updateValues.description = body.description;
-    if (body.cpu_limit !== undefined) updateValues.cpuLimit = String(body.cpu_limit);
-    if (body.memory_limit !== undefined) updateValues.memoryLimit = String(body.memory_limit);
-    if (body.storage_limit !== undefined) updateValues.storageLimit = String(body.storage_limit);
-    if (body.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = String(body.monthly_price_usd);
+    if (parsed.data.cpu_limit !== undefined) updateValues.cpuLimit = parsed.data.cpu_limit;
+    if (parsed.data.memory_limit !== undefined) updateValues.memoryLimit = parsed.data.memory_limit;
+    if (parsed.data.storage_limit !== undefined) updateValues.storageLimit = parsed.data.storage_limit;
+    if (parsed.data.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = parsed.data.monthly_price_usd;
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
     if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;
-    if (body.features !== undefined) updateValues.features = body.features;
+    if (parsed.data.features !== undefined) updateValues.features = parsed.data.features;
     if (body.status !== undefined) updateValues.status = body.status;
 
     if (Object.keys(updateValues).length > 0) {
@@ -72,7 +91,7 @@ export async function planRoutes(app: FastifyInstance) {
 
     // Cascade K8s ResourceQuota to all provisioned clients on this plan
     // (only those without per-client overrides — overrides take precedence)
-    if (body.cpu_limit !== undefined || body.memory_limit !== undefined || body.storage_limit !== undefined) {
+    if (parsed.data.cpu_limit !== undefined || parsed.data.memory_limit !== undefined || parsed.data.storage_limit !== undefined) {
       try {
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const { applyResourceQuota } = await import('../k8s-provisioner/service.js');

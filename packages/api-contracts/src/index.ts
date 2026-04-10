@@ -49,3 +49,4 @@ export * from './ssh-keys.js';
 export * from './storage.js';
 export * from './mail-imapsync.js';
 export * from './sub-users.js';
+export * from './plans.js';

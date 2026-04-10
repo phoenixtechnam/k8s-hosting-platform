@@ -331,8 +331,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           const { reconcileDeploymentStatuses } = await import('./modules/deployments/status-reconciler.js');
           const k8s = createK8sClients(kubePath);
           await reconcileDeploymentStatuses(app.db, k8s);
-        } catch {
-          // K8s not available — skip this cycle
+        } catch (err) {
+          app.log.warn({ err }, 'Deployment status reconciliation failed — skipping cycle');
         }
       }, 15_000); // Every 15 seconds
       app.addHook('onClose', () => clearInterval(reconcileInterval));

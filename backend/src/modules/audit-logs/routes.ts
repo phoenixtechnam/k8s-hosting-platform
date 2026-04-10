@@ -20,7 +20,10 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
     if (query.resource_type) conditions.push(eq(auditLogs.resourceType, query.resource_type));
     if (query.actor_id) conditions.push(eq(auditLogs.actorId, query.actor_id));
     if (query.http_method) conditions.push(eq(auditLogs.httpMethod, query.http_method));
-    if (query.search) conditions.push(like(auditLogs.httpPath, `%${query.search}%`));
+    if (query.search) {
+      const escaped = query.search.replace(/%/g, '\\%').replace(/_/g, '\\_');
+      conditions.push(like(auditLogs.httpPath, `%${escaped}%`));
+    }
     if (query.from) conditions.push(gte(auditLogs.createdAt, new Date(query.from)));
     if (query.to) conditions.push(lte(auditLogs.createdAt, new Date(query.to)));
 

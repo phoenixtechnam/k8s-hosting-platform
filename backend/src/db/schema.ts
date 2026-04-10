@@ -64,7 +64,8 @@ export const users = pgTable('users', {
   fullName: varchar('full_name', { length: 255 }).notNull(),
   roleName: varchar('role_name', { length: 50 }).notNull().default('read_only'),
   panel: panelEnum().notNull().default('admin'),
-  clientId: varchar('client_id', { length: 36 }),
+  clientId: varchar('client_id', { length: 36 })
+    .references(() => clients.id, { onDelete: 'cascade' }),
   status: userStatusEnum().notNull().default('pending'),
   emailVerifiedAt: timestamp('email_verified_at'),
   lastLoginAt: timestamp('last_login_at'),
@@ -97,6 +98,7 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   disableLocalAuthAdmin: integer('disable_local_auth_admin').notNull().default(0),
   disableLocalAuthClient: integer('disable_local_auth_client').notNull().default(0),
   breakGlassSecretHash: varchar('break_glass_secret_hash', { length: 255 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
@@ -183,7 +185,9 @@ export const clients = pgTable('clients', {
 
 export const domains = pgTable('domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   domainName: varchar('domain_name', { length: 255 }).notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
   dnsGroupId: varchar('dns_group_id', { length: 36 }),
@@ -301,7 +305,9 @@ export const catalogEntries = pgTable('catalog_entries', {
 
 export const deployments = pgTable('deployments', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   catalogEntryId: varchar('catalog_entry_id', { length: 36 }).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   domainName: varchar('domain_name', { length: 255 }),
@@ -375,7 +381,9 @@ export const backupConfigurations = pgTable('backup_configurations', {
 
 export const backups = pgTable('backups', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   backupType: backupTypeEnum().notNull().default('manual'),
   resourceType: varchar('resource_type', { length: 50 }).notNull().default('full'),
   resourceId: varchar('resource_id', { length: 36 }),
@@ -393,7 +401,9 @@ export const backups = pgTable('backups', {
 
 export const usageMetrics = pgTable('usage_metrics', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   metricType: metricTypeEnum().notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
   value: numeric('value', { precision: 10, scale: 4 }).notNull(),
@@ -409,7 +419,9 @@ export const usageMetrics = pgTable('usage_metrics', {
 
 export const cronJobs = pgTable('cron_jobs', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   type: cronJobTypeEnum().notNull().default('webcron'),
   schedule: varchar('schedule', { length: 100 }).notNull(),
@@ -454,7 +466,9 @@ export const auditLogs = pgTable('audit_logs', {
 
 export const provisioningTasks = pgTable('provisioning_tasks', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   type: provTaskTypeEnum().notNull(),
   status: provTaskStatusEnum().notNull().default('pending'),
   currentStep: varchar('current_step', { length: 100 }),
@@ -546,6 +560,7 @@ export const dnsRecords = pgTable('dns_records', {
   priority: integer('priority'),
   weight: integer('weight'),
   port: integer('port'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   index('dns_records_domain_idx').on(table.domainId),
@@ -581,7 +596,9 @@ export type IngressRoute = typeof ingressRoutes.$inferSelect;
 
 export const sshKeys = pgTable('ssh_keys', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   publicKey: text('public_key').notNull(),
   keyFingerprint: varchar('key_fingerprint', { length: 255 }).notNull(),
@@ -597,7 +614,9 @@ export const sshKeys = pgTable('ssh_keys', {
 
 export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   billingCycleStart: timestamp('billing_cycle_start').notNull(),
   billingCycleEnd: timestamp('billing_cycle_end').notNull(),
   planId: varchar('plan_id', { length: 36 }).notNull(),
@@ -621,7 +640,9 @@ export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', 
 
 export const resourceQuotas = pgTable('resource_quotas', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   cpuCoresLimit: numeric('cpu_cores_limit', { precision: 5, scale: 2 }),
   memoryGbLimit: integer('memory_gb_limit'),
   storageGbLimit: integer('storage_gb_limit'),
@@ -632,6 +653,7 @@ export const resourceQuotas = pgTable('resource_quotas', {
   cpuWarningThreshold: numeric('cpu_warning_threshold', { precision: 5, scale: 2 }).default('80'),
   memoryWarningThreshold: integer('memory_warning_threshold').default(80),
   storageWarningThreshold: integer('storage_warning_threshold').default(80),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('resource_quotas_client_unique').on(table.clientId),
@@ -767,6 +789,7 @@ export const mailboxQuotaEvents = pgTable('mailbox_quota_events', {
   clearedAt: timestamp('cleared_at'),
   notificationId: varchar('notification_id', { length: 36 }),
 }, (table) => [
+  uniqueIndex('mailbox_quota_events_unique').on(table.mailboxId, table.threshold),
   index('mailbox_quota_events_open_idx').on(table.mailboxId),
 ]);
 
@@ -932,7 +955,9 @@ export const catalogEntryVersions = pgTable('catalog_entry_versions', {
 export const sslCertificates = pgTable('ssl_certificates', {
   id: varchar('id', { length: 36 }).primaryKey(),
   domainId: varchar('domain_id', { length: 36 }).notNull(),
-  clientId: varchar('client_id', { length: 36 }).notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
   certificate: text('certificate').notNull(),
   privateKeyEncrypted: text('private_key_encrypted').notNull(),
   caBundle: text('ca_bundle'),

@@ -107,13 +107,14 @@ export default function ClientDetail() {
 
   const domainCount = domainsQuery.data?.data.length ?? 0;
   const deploymentCount = deploymentsQuery.data?.data.length ?? 0;
+  const applicationCount = deploymentsQuery.data?.data.filter((d) => d.type === 'application').length ?? 0;
   const backupCount = backupsQuery.data?.data.length ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
   const subUserCount = subUsersQuery.data?.data.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
-    { key: 'applications', label: 'Applications', count: 0 },
+    { key: 'applications', label: 'Applications', count: applicationCount },
     { key: 'deployments', label: 'Deployments', count: deploymentCount },
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
@@ -319,7 +320,7 @@ export default function ClientDetail() {
 
         <div className="p-5">
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
-          {activeTab === 'applications' && <ApplicationsTab />}
+          {activeTab === 'applications' && <ApplicationsTab clientId={id} />}
           {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} />}
           {activeTab === 'files' && (
             <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
@@ -439,11 +440,44 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
   );
 }
 
-function ApplicationsTab() {
+function ApplicationsTab({ clientId }: { readonly clientId: string | undefined }) {
+  const { data, isLoading, error } = useDeployments(clientId, 'application');
+
+  if (isLoading) return <TabLoading />;
+  if (error) return <TabError message="Failed to load applications." />;
+
+  const items = data?.data ?? [];
+  if (items.length === 0) {
+    return (
+      <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="applications-tab-empty">
+        No applications deployed.
+      </p>
+    );
+  }
+
   return (
-    <div className="py-10 text-center" data-testid="applications-tab">
-      <p className="text-sm text-gray-500 dark:text-gray-400">Application management coming soon.</p>
-    </div>
+    <table className="w-full text-left text-sm" data-testid="applications-table">
+      <thead>
+        <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+          <th className="py-2 pr-4">Name</th>
+          <th className="py-2 pr-4">Version</th>
+          <th className="py-2 pr-4">Domain</th>
+          <th className="py-2 pr-4">Status</th>
+          <th className="py-2 pr-4">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((d) => (
+          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
+            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.installedVersion ?? '\u2014'}</td>
+            <td className="py-2 text-gray-600 dark:text-gray-400">{d.domainName ?? '\u2014'}</td>
+            <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
+            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

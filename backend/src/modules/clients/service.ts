@@ -72,7 +72,8 @@ export async function listClients(
 
   const conditions = [];
   if (search) {
-    conditions.push(like(clients.companyName, `%${search}%`));
+    const escaped = search.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    conditions.push(like(clients.companyName, `%${escaped}%`));
   }
 
   if (cursor) {
