@@ -192,12 +192,21 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {
   const client = await getClientById(db, id);
 
-  // Best-effort k8s namespace cleanup
-  if (k8sClients && client.kubernetesNamespace && client.provisioningStatus === 'provisioned') {
+  // Best-effort k8s namespace cleanup. The previous version only
+  // ran when `provisioningStatus === 'provisioned'`, but that was
+  // the exact cause of a massive orphan-namespace leak: a client
+  // deleted *during* provisioning (e.g. smoke tests creating and
+  // immediately dropping clients) left the half-provisioned k8s
+  // namespace behind forever — the DB row was gone, so nothing
+  // could clean it up. We now attempt the cleanup whenever we
+  // know the namespace name, regardless of status. The try/catch
+  // swallows 404s and other failures so DB deletion still runs.
+  if (k8sClients && client.kubernetesNamespace) {
     try {
       await k8sClients.core.deleteNamespace({ name: client.kubernetesNamespace });
     } catch (err: unknown) {
-      // Log but don't block — namespace may already be gone
+      // Log but don't block — namespace may already be gone, or
+      // may not exist yet because provisioning never started.
       console.warn(`[client-delete] Failed to delete k8s namespace ${client.kubernetesNamespace}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

@@ -801,6 +801,14 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   messagesTransferred: integer('messages_transferred'),
   currentFolder: varchar('current_folder', { length: 255 }),
   lastProgressAt: timestamp('last_progress_at'),
+  // IMAP Phase 3: pod-level observability. The reconciler polls
+  // the pod (not just the Job) and writes its phase + a short
+  // human-readable reason so the UI can distinguish a truly
+  // running sync from one whose pod is stuck Pending (e.g.
+  // FailedScheduling, ImagePullBackOff). These are NULL until
+  // the reconciler has seen the pod at least once.
+  podPhase: varchar('pod_phase', { length: 32 }),
+  podMessage: text('pod_message'),
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

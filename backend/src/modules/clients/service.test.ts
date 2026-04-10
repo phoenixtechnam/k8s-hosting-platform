@@ -219,7 +219,12 @@ describe('deleteClient', () => {
     expect(deleteFn).toHaveBeenCalled();
   });
 
-  it('should skip k8s cleanup when client is not provisioned', async () => {
+  it('attempts k8s namespace cleanup even for pending/provisioning clients (regression: prevents orphan leak)', async () => {
+    // IMAP Phase 2: before this fix, deleteClient only touched the
+    // namespace when provisioningStatus === 'provisioned'. Clients
+    // created and immediately deleted (e.g. smoke tests) left
+    // orphaned namespaces behind forever. Now we attempt cleanup
+    // whenever we know the namespace name, regardless of status.
     const client = {
       id: 'c1',
       status: 'pending',
@@ -236,6 +241,91 @@ describe('deleteClient', () => {
     const db = {
       select: selectFn,
       delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    await deleteClient(db, 'c1', k8sClients);
+    expect(mockDeleteNamespace).toHaveBeenCalledWith({ name: 'client-acme-abc12345' });
+    expect(deleteFn).toHaveBeenCalled();
+  });
+
+  it('attempts k8s namespace cleanup for provisioning clients (half-provisioned)', async () => {
+    const client = {
+      id: 'c1',
+      status: 'pending',
+      kubernetesNamespace: 'client-acme-abc12345',
+      provisioningStatus: 'provisioning',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = {
+      select: selectFn, delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const mockDeleteNamespace = vi.fn().mockResolvedValue(undefined);
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    await deleteClient(db, 'c1', k8sClients);
+    expect(mockDeleteNamespace).toHaveBeenCalledWith({ name: 'client-acme-abc12345' });
+  });
+
+  it('swallows 404 from namespace delete (already-deleted namespace)', async () => {
+    // A common case when the smoke test cleanup races with a prior
+    // cleanup pass, or when provisioning never actually created the
+    // namespace yet.
+    const client = {
+      id: 'c1',
+      status: 'pending',
+      kubernetesNamespace: 'client-acme-abc12345',
+      provisioningStatus: 'pending',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = {
+      select: selectFn, delete: deleteFn,
+    } as unknown as Parameters<typeof deleteClient>[0];
+
+    const notFoundErr = Object.assign(new Error('namespaces "x" not found'), { statusCode: 404 });
+    const mockDeleteNamespace = vi.fn().mockRejectedValue(notFoundErr);
+    const k8sClients = {
+      core: { deleteNamespace: mockDeleteNamespace },
+    } as unknown as Parameters<typeof deleteClient>[2];
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await deleteClient(db, 'c1', k8sClients);
+    // Delete still proceeds even when namespace delete fails
+    expect(deleteFn).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('still skips k8s cleanup when kubernetesNamespace is empty', async () => {
+    const client = {
+      id: 'c1',
+      status: 'pending',
+      kubernetesNamespace: null,
+      provisioningStatus: 'pending',
+    };
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = {
+      select: selectFn, delete: deleteFn,
     } as unknown as Parameters<typeof deleteClient>[0];
 
     const mockDeleteNamespace = vi.fn();

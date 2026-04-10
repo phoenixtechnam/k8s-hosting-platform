@@ -1966,6 +1966,25 @@ function ImapSyncJobRow({
         "N / total · folder". Otherwise show an indeterminate
         "Starting…" hint so the user knows the job hasn't frozen.
       */}
+      {/*
+        IMAP Phase 3: Pod-level observability banner. When the job
+        is active but the backing pod is stuck (Pending with a
+        FailedScheduling event, ImagePullBackOff, etc.), surface
+        the reason here instead of showing only the "Discovering
+        folders..." spinner.
+      */}
+      {isActive && job.podMessage && job.podPhase !== 'Running' && (
+        <div
+          className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+          data-testid={`imapsync-pod-warning-${job.id}`}
+        >
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          <div>
+            <strong>Pod {job.podPhase ?? 'not running'}:</strong> {job.podMessage}
+          </div>
+        </div>
+      )}
+
       {isActive && (
         <div className="mt-2" data-testid={`imapsync-progress-${job.id}`}>
           {hasProgress ? (

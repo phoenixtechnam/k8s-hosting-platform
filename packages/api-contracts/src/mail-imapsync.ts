@@ -72,6 +72,14 @@ export interface ImapSyncJobResponse {
   readonly messagesTransferred: number | null;
   readonly currentFolder: string | null;
   readonly lastProgressAt: string | null;
+  // IMAP Phase 3: pod-level observability. `podPhase` mirrors the
+  // Kubernetes Pod phase (Pending | Running | Succeeded | Failed)
+  // and `podMessage` is the human-readable reason when the pod is
+  // stuck (e.g. `0/1 nodes are available: 1 Too many pods`). The
+  // UI surfaces a warning banner on running jobs whose pod is not
+  // actually running.
+  readonly podPhase: string | null;
+  readonly podMessage: string | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;

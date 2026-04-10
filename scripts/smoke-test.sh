@@ -48,6 +48,36 @@ check_status() {
   fi
 }
 
+# IMAP Phase 5: track all clients created during this run so we can
+# clean them up even if the script exits early (trap handler). This
+# prevents the orphaned-namespace leak that exhausted node pod capacity.
+CREATED_CLIENT_IDS=()
+
+cleanup_smoke_clients() {
+  if [[ ${#CREATED_CLIENT_IDS[@]} -eq 0 ]]; then return; fi
+  echo ""
+  echo "  [cleanup] Deleting ${#CREATED_CLIENT_IDS[@]} smoke-test client(s)..."
+  for cid in "${CREATED_CLIENT_IDS[@]}"; do
+    curl -sS -o /dev/null -w "" -X DELETE \
+      -H "Authorization: Bearer ${TOKEN:-}" \
+      "${API_URL}/api/v1/clients/${cid}" 2>/dev/null || true
+    echo "    ✓ $cid"
+  done
+}
+trap cleanup_smoke_clients EXIT
+
+# IMAP Phase 5: orphan-namespace startup warning. If there are many
+# client-smoke-test-* namespaces in k3s with no matching DB row,
+# alert the operator before adding more.
+K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
+ORPHAN_COUNT=$(docker exec "$K3S_CONTAINER" kubectl get ns --no-headers 2>/dev/null \
+  | awk '/client-smoke-test/ {n++} END {print n+0}' || echo "0")
+if (( ORPHAN_COUNT > 10 )); then
+  echo "  ⚠ WARNING: $ORPHAN_COUNT orphaned client-smoke-test-* namespaces found in k3s."
+  echo "    Run ./scripts/cleanup-orphaned-namespaces.sh to reclaim pod capacity."
+  echo ""
+fi
+
 echo "════════════════════════════════════════════════"
 echo "  Smoke Tests — ${API_URL}"
 echo "════════════════════════════════════════════════"
@@ -109,6 +139,11 @@ if [[ -n "$PLAN_ID" && -n "$REGION_ID" ]]; then
   CREATE_CODE=$(echo "$CREATE_RESPONSE" | tail -1)
   CREATE_BODY=$(echo "$CREATE_RESPONSE" | head -n -1)
   CLIENT_ID=$(echo "$CREATE_BODY" | jq -r '.data.id // empty')
+  # IMAP Phase 5: register for trap cleanup so an early exit
+  # doesn't leak the namespace.
+  if [[ -n "$CLIENT_ID" ]]; then
+    CREATED_CLIENT_IDS+=("$CLIENT_ID")
+  fi
   # 200 or 201 are both valid for creation
   if [[ "$CREATE_CODE" == "200" || "$CREATE_CODE" == "201" ]]; then
     pass "POST /clients (create) (HTTP $CREATE_CODE)"
@@ -417,6 +452,8 @@ if [[ "$MAIL_E2E_SQL" == "1" && "$MAIL_TESTS_ENABLED" == "1" ]]; then
         -d "{\"company_name\":\"${SQL_E2E_CLIENT_NAME}\",\"company_email\":\"sqltest@test.local\",\"plan_id\":\"${SQL_PLAN_ID}\",\"region_id\":\"${SQL_REGION_ID}\"}" \
         "${API_URL}/api/v1/clients")
       SQL_E2E_CLIENT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id // empty')
+      # IMAP Phase 5: register for trap cleanup
+      [[ -n "$SQL_E2E_CLIENT_ID" ]] && CREATED_CLIENT_IDS+=("$SQL_E2E_CLIENT_ID")
 
       if [[ -z "$SQL_E2E_CLIENT_ID" ]]; then
         fail "SQL E2E create client" "${CLIENT_RESP:0:200}"
@@ -609,6 +646,8 @@ if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
     WM_CLIENT_ID=$(curl -sS -X POST -H "$AUTH_HEADER" -H "Content-Type: application/json" \
       -d "{\"company_name\":\"${WM_CLIENT_NAME}\",\"company_email\":\"wm@test.local\",\"plan_id\":\"${WM_PLAN_ID}\",\"region_id\":\"${WM_REGION_ID}\"}" \
       "${API_URL}/api/v1/clients" | jq -r '.data.id // empty')
+    # IMAP Phase 5: register for trap cleanup
+    [[ -n "$WM_CLIENT_ID" ]] && CREATED_CLIENT_IDS+=("$WM_CLIENT_ID")
 
     if [[ -z "$WM_CLIENT_ID" ]]; then
       fail "Webmail E2E create client" ""

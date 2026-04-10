@@ -119,6 +119,18 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
       // Auto-clean up after 1 hour past terminal state. Operator
       // can still grab logs from the DB row's `log_tail`.
       ttlSecondsAfterFinished: 3600,
+      // IMAP Phase 4: wall-clock timeout. Without this a pod
+      // stuck Pending (failed scheduling, ImagePullBackOff,
+      // CrashLoopBackOff, etc.) would sit forever until an
+      // operator manually cleaned it up. 2 hours is generous
+      // enough for large mailbox migrations (imapsync typically
+      // moves ~500 msg/min over fast links) but short enough
+      // that a stuck job doesn't hold resources indefinitely.
+      // When this deadline is exceeded the pod transitions to
+      // Failed with reason `DeadlineExceeded` — which the
+      // reconciler observes via `status.failed >= 1` and flips
+      // the DB row to `failed` with the log tail attached.
+      activeDeadlineSeconds: 7200,
       template: {
         metadata: {
           labels: {
@@ -202,6 +214,9 @@ function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
     messagesTransferred: row.messagesTransferred ?? null,
     currentFolder: row.currentFolder ?? null,
     lastProgressAt: row.lastProgressAt ? row.lastProgressAt.toISOString() : null,
+    // IMAP Phase 3: pod-level observability from migration 0023.
+    podPhase: row.podPhase ?? null,
+    podMessage: row.podMessage ?? null,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),

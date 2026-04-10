@@ -44,7 +44,15 @@ function createMockDb() {
 
 let mockJobStatus: { active?: number; succeeded?: number; failed?: number } | null = null;
 let mockJobNotFound = false;
-let mockPodList: { items: { metadata?: { name?: string } }[] } = { items: [] };
+interface MockPod {
+  metadata?: { name?: string };
+  status?: {
+    phase?: string;
+    conditions?: { type: string; status: string; reason?: string; message?: string }[];
+    containerStatuses?: { state?: { waiting?: { reason?: string; message?: string } } }[];
+  };
+}
+let mockPodList: { items: MockPod[] } = { items: [] };
 let mockPodLog = '';
 let deletedJobs: string[] = [];
 let deletedSecrets: string[] = [];
@@ -234,6 +242,131 @@ describe('reconcileImapSyncJobs', () => {
     const failedUpdate = updateCalls.find((u) => u.status === 'failed');
     expect(failedUpdate).toBeDefined();
     expect(failedUpdate?.errorMessage).toContain('disappeared');
+  });
+
+  // ─── IMAP Phase 3: Pending-pod observability ─────────────────────────
+
+  it('records podPhase + podMessage when the pod is stuck Pending (FailedScheduling)', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-stuck',
+          k8sJobName: 'imapsync-job-stuck',
+          k8sNamespace: 'mail',
+          status: 'running',
+          lastProgressAt: null,
+        },
+      ],
+    ];
+    mockJobStatus = { active: 1 };
+    mockPodList = {
+      items: [
+        {
+          metadata: { name: 'imapsync-job-stuck-pod' },
+          status: {
+            phase: 'Pending',
+            conditions: [
+              {
+                type: 'PodScheduled',
+                status: 'False',
+                reason: 'Unschedulable',
+                message: '0/1 nodes are available: 1 Too many pods. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.',
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    // Should NOT transition to failed — the job might still recover
+    expect(updateCalls.find((u) => u.status === 'failed')).toBeUndefined();
+    // Should write podPhase + podMessage on the progress tick
+    expect(updateCalls.length).toBe(1);
+    const tick = updateCalls[0];
+    expect(tick.podPhase).toBe('Pending');
+    expect(tick.podMessage).toContain('Too many pods');
+  });
+
+  it('records podPhase + podMessage when the pod is in ImagePullBackOff', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-imgfail',
+          k8sJobName: 'imapsync-job-imgfail',
+          k8sNamespace: 'mail',
+          status: 'running',
+          lastProgressAt: null,
+        },
+      ],
+    ];
+    mockJobStatus = { active: 1 };
+    mockPodList = {
+      items: [
+        {
+          metadata: { name: 'imapsync-job-imgfail-pod' },
+          status: {
+            phase: 'Pending',
+            containerStatuses: [
+              {
+                state: {
+                  waiting: {
+                    reason: 'ImagePullBackOff',
+                    message: 'Back-off pulling image "gilleslamiral/imapsync:2.296"',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    const tick = updateCalls[0];
+    expect(tick.podPhase).toBe('Pending');
+    expect(tick.podMessage).toContain('ImagePullBackOff');
+  });
+
+  it('records podPhase=Running and clears podMessage on a healthy running pod', async () => {
+    selectResults = [
+      [
+        {
+          id: 'job-ok',
+          k8sJobName: 'imapsync-job-ok',
+          k8sNamespace: 'mail',
+          status: 'running',
+          lastProgressAt: null,
+        },
+      ],
+    ];
+    mockJobStatus = { active: 1 };
+    mockPodList = {
+      items: [
+        {
+          metadata: { name: 'imapsync-job-ok-pod' },
+          status: {
+            phase: 'Running',
+            conditions: [{ type: 'Ready', status: 'True' }],
+          },
+        },
+      ],
+    };
+    mockPodLog = '+ Copying msg 5/200 [INBOX]\n';
+
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    await reconciler.reconcileImapSyncJobs(db as never, k8s as never);
+
+    const tick = updateCalls[0];
+    expect(tick.podPhase).toBe('Running');
+    expect(tick.podMessage).toBe(null);
   });
 
   it('truncates very long log tails to the configured max', async () => {

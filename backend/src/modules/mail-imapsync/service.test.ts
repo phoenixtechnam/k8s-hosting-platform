@@ -109,6 +109,10 @@ describe('buildJobManifest', () => {
     expect(job.metadata?.namespace).toBe('mail');
     expect(job.spec?.template.spec?.restartPolicy).toBe('Never');
     expect(job.spec?.backoffLimit).toBe(0);
+    // IMAP Phase 4: wall-clock timeout so stuck pods don't sit
+    // forever. 2 hours is the default.
+    expect(job.spec?.activeDeadlineSeconds).toBe(7200);
+    expect(job.spec?.ttlSecondsAfterFinished).toBe(3600);
 
     const container = job.spec?.template.spec?.containers?.[0];
     expect(container).toBeDefined();

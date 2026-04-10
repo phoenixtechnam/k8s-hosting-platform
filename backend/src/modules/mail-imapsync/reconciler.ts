@@ -49,15 +49,91 @@ function truncateTail(s: string): string {
   return s.slice(s.length - MAX_LOG_TAIL_BYTES);
 }
 
+interface PodSnapshot {
+  readonly podName: string | null;
+  readonly phase: string | null;
+  readonly message: string | null;
+}
+
+interface K8sPodItem {
+  metadata?: { name?: string };
+  status?: {
+    phase?: string;
+    conditions?: { type: string; status: string; reason?: string; message?: string }[];
+    containerStatuses?: { state?: { waiting?: { reason?: string; message?: string } } }[];
+  };
+}
+
+/**
+ * Fetch the Job's pod and summarize its state. Returns a structured
+ * snapshot the reconciler uses to populate `podPhase` / `podMessage`.
+ * Returns nulls if the pod cannot be found (job just started) or
+ * the list call fails.
+ */
+async function fetchPodSnapshot(
+  k8s: K8sClients,
+  namespace: string,
+  jobName: string,
+): Promise<PodSnapshot> {
+  try {
+    const pods = await (k8s.core as unknown as {
+      listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
+        items: K8sPodItem[];
+      }>;
+    }).listNamespacedPod({
+      namespace,
+      labelSelector: `job-name=${jobName}`,
+    });
+    const pod = pods.items?.[0];
+    if (!pod) return { podName: null, phase: null, message: null };
+
+    const phase = pod.status?.phase ?? null;
+
+    // Derive a human-readable message from pod conditions +
+    // container statuses. Priority:
+    //   1. `Unschedulable` condition message (FailedScheduling)
+    //   2. Waiting container state reason + message (ImagePullBackOff,
+    //      CrashLoopBackOff, CreateContainerError, etc.)
+    //   3. Any other non-True condition with a reason/message
+    //   4. null when the pod is healthy (Running + Ready=True)
+    let message: string | null = null;
+
+    const unschedulable = pod.status?.conditions?.find(
+      (c) => c.type === 'PodScheduled' && c.status === 'False',
+    );
+    if (unschedulable && (unschedulable.message || unschedulable.reason)) {
+      message = unschedulable.message ?? unschedulable.reason ?? null;
+    }
+
+    if (!message) {
+      const waiting = pod.status?.containerStatuses?.find((cs) => cs.state?.waiting);
+      if (waiting?.state?.waiting) {
+        const w = waiting.state.waiting;
+        if (w.reason === 'ContainerCreating' || w.reason === 'PodInitializing') {
+          // Benign transient states — don't surface as an error
+          message = null;
+        } else if (w.reason) {
+          message = w.message ? `${w.reason}: ${w.message}` : w.reason;
+        }
+      }
+    }
+
+    return {
+      podName: pod.metadata?.name ?? null,
+      phase,
+      message,
+    };
+  } catch {
+    return { podName: null, phase: null, message: null };
+  }
+}
+
 async function fetchPodLogs(
   k8s: K8sClients,
   namespace: string,
   jobName: string,
 ): Promise<string> {
   try {
-    // Find the pod owned by this Job. The Job controller adds a
-    // `job-name=<name>` label to its pods. We use that label
-    // selector to fetch the pod name then read its logs.
     const pods = await (k8s.core as unknown as {
       listNamespacedPod: (args: { namespace: string; labelSelector: string }) => Promise<{
         items: { metadata?: { name?: string } }[];
@@ -197,7 +273,25 @@ export async function reconcileImapSyncJobs(
       const now = Date.now();
       if (now - lastProgress >= PROGRESS_FETCH_INTERVAL_MS) {
         try {
-          const log = await fetchPodLogs(k8s, row.k8sNamespace, row.k8sJobName);
+          // IMAP Phase 3: snapshot the pod's phase + conditions
+          // FIRST so we can surface scheduling / image-pull
+          // failures even when there are zero log lines to fetch.
+          const snapshot = await fetchPodSnapshot(k8s, row.k8sNamespace, row.k8sJobName);
+
+          // Only attempt to fetch logs when the pod is Running/
+          // Succeeded, or when we don't know the phase yet (e.g.
+          // the pod hasn't been observed yet, or the list call
+          // failed and returned nulls). Pending pods have no
+          // container to read from and trying to fetch returns
+          // an empty string + an error on the k8s API server.
+          const phaseAllowsLogFetch =
+            snapshot.phase === null
+            || snapshot.phase === 'Running'
+            || snapshot.phase === 'Succeeded';
+          const log = phaseAllowsLogFetch
+            ? await fetchPodLogs(k8s, row.k8sNamespace, row.k8sJobName)
+            : '';
+
           const parsed = parseImapsyncProgress(log);
           // Build a partial UPDATE — never overwrite existing
           // columns with null/empty. The parser returns null for
@@ -211,6 +305,12 @@ export async function reconcileImapSyncJobs(
           // works regardless.
           const updates: Record<string, unknown> = {
             lastProgressAt: new Date(),
+            // IMAP Phase 3: always write the pod phase + message so
+            // the UI can show "Pod pending: Too many pods" instead
+            // of a silent running spinner. The message is set to
+            // null when the pod is healthy.
+            podPhase: snapshot.phase,
+            podMessage: snapshot.message,
           };
           if (log.length > 0) updates.logTail = truncateTail(log);
           if (parsed.messagesTotal !== null) updates.messagesTotal = parsed.messagesTotal;
