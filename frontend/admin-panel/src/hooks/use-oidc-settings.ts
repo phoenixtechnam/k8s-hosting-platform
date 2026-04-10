@@ -13,6 +13,9 @@ export interface OidcProvider {
   readonly backchannelLogoutEnabled: boolean;
   readonly displayOrder: number;
   readonly discoveryMetadata: Record<string, unknown> | null;
+  readonly autoProvision: boolean;
+  readonly defaultRole: string | null;
+  readonly additionalClaims: string[] | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -53,6 +56,9 @@ interface CreateProviderInput {
   readonly panel_scope: 'admin' | 'client';
   readonly enabled?: boolean;
   readonly backchannel_logout_enabled?: boolean;
+  readonly auto_provision?: boolean;
+  readonly default_role?: string;
+  readonly additional_claims?: string[];
 }
 
 export function useCreateOidcProvider() {

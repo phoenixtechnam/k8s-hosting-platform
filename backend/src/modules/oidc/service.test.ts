@@ -97,6 +97,25 @@ describe('isLocalAuthDisabled', () => {
 });
 
 describe('findOrCreateOidcUser', () => {
+  const makeProvider = (overrides: Record<string, unknown> = {}) => ({
+    id: 'prov-1',
+    displayName: 'Test Provider',
+    issuerUrl: 'https://dex',
+    clientId: 'client-id',
+    clientSecretEncrypted: 'encrypted',
+    panelScope: 'admin' as const,
+    enabled: 1,
+    backchannelLogoutEnabled: 0,
+    autoProvision: 1,
+    defaultRole: null as string | null,
+    additionalClaims: null as string[] | null,
+    discoveryMetadata: null as Record<string, unknown> | null,
+    displayOrder: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+
   it('should return existing user when matched by OIDC subject', async () => {
     const existingUser = { id: 'u1', email: 'test@example.com', oidcIssuer: 'https://dex', oidcSubject: 'sub-1' };
     let callCount = 0;
@@ -116,9 +135,35 @@ describe('findOrCreateOidcUser', () => {
     const result = await findOrCreateOidcUser(db, {
       sub: 'sub-1', iss: 'https://dex', email: 'test@example.com',
       aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
-    }, 'admin');
+    }, makeProvider());
 
     expect(result).toEqual(existingUser);
     expect(updateFn).toHaveBeenCalled();
+  });
+
+  it('should throw OIDC_USER_NOT_FOUND when autoProvision is disabled and user not found (admin)', async () => {
+    const whereFn = vi.fn().mockResolvedValue([]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = { select: selectFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
+
+    await expect(findOrCreateOidcUser(db, {
+      sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, makeProvider({ autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
+  });
+
+  it('should throw OIDC_USER_NOT_FOUND when autoProvision is disabled and user not found (client)', async () => {
+    const whereFn = vi.fn().mockResolvedValue([]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = { select: selectFn } as unknown as Parameters<typeof findOrCreateOidcUser>[0];
+
+    await expect(findOrCreateOidcUser(db, {
+      sub: 'sub-new', iss: 'https://dex', email: 'new@example.com',
+      aud: 'hosting-platform', exp: 9999999999, iat: 1000000000,
+    }, makeProvider({ panelScope: 'client', autoProvision: 0 }))).rejects.toThrow('Your account is not registered on this platform');
   });
 });

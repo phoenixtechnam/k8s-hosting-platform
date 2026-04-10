@@ -91,6 +91,7 @@ export default function Login() {
   const showLocalAuth = authStatus?.localAuthEnabled ?? true;
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
+  const oidcMessage = searchParams.get('message');
 
   // Show spinner while auto-redirecting to SSO
   if (shouldAutoLogin) {
@@ -112,8 +113,8 @@ export default function Login() {
         </div>
 
         {(error || oidcError) && (
-          <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="login-error">
-            {error ?? decodeURIComponent(oidcError ?? '')}
+          <div className="mb-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="login-error">
+            {error ?? (oidcMessage ? decodeURIComponent(oidcMessage) : 'Authentication failed. Please contact your administrator.')}
           </div>
         )}
 

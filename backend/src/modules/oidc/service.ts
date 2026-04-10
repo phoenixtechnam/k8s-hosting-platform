@@ -167,6 +167,9 @@ export async function listProviders(db: Database) {
     panelScope: p.panelScope,
     enabled: Boolean(p.enabled),
     backchannelLogoutEnabled: Boolean(p.backchannelLogoutEnabled),
+    autoProvision: Boolean(p.autoProvision),
+    defaultRole: p.defaultRole,
+    additionalClaims: p.additionalClaims ?? [],
     displayOrder: p.displayOrder,
     discoveryMetadata: p.discoveryMetadata,
     createdAt: p.createdAt,
@@ -189,6 +192,9 @@ export interface SaveProviderInput {
   readonly enabled?: boolean;
   readonly backchannel_logout_enabled?: boolean;
   readonly display_order?: number;
+  readonly auto_provision?: boolean;
+  readonly default_role?: string;
+  readonly additional_claims?: string[];
 }
 
 export async function createProvider(db: Database, input: SaveProviderInput, encryptionKey: string) {
@@ -205,6 +211,9 @@ export async function createProvider(db: Database, input: SaveProviderInput, enc
     panelScope: input.panel_scope,
     enabled: input.enabled ? 1 : 0,
     backchannelLogoutEnabled: input.backchannel_logout_enabled ? 1 : 0,
+    autoProvision: input.auto_provision === false ? 0 : 1,
+    defaultRole: input.default_role ?? null,
+    additionalClaims: input.additional_claims ?? null,
     discoveryMetadata: discovery as unknown as Record<string, unknown>,
     displayOrder: input.display_order ?? 0,
   });
@@ -223,6 +232,9 @@ export async function updateProvider(db: Database, id: string, input: Partial<Sa
   if (input.panel_scope !== undefined) updateValues.panelScope = input.panel_scope;
   if (input.enabled !== undefined) updateValues.enabled = input.enabled ? 1 : 0;
   if (input.backchannel_logout_enabled !== undefined) updateValues.backchannelLogoutEnabled = input.backchannel_logout_enabled ? 1 : 0;
+  if (input.auto_provision !== undefined) updateValues.autoProvision = input.auto_provision ? 1 : 0;
+  if (input.default_role !== undefined) updateValues.defaultRole = input.default_role;
+  if (input.additional_claims !== undefined) updateValues.additionalClaims = input.additional_claims;
   if (input.display_order !== undefined) updateValues.displayOrder = input.display_order;
 
   // Re-fetch discovery if issuer URL changed
@@ -366,8 +378,10 @@ export async function exchangeCodeForTokens(
 export async function findOrCreateOidcUser(
   db: Database,
   claims: IdTokenClaims,
-  panelScope: 'admin' | 'client',
+  provider: typeof oidcProviders.$inferSelect,
 ): Promise<typeof users.$inferSelect> {
+  const panelScope = provider.panelScope as 'admin' | 'client';
+
   // Match by OIDC subject + issuer
   const [existingByOidc] = await db.select().from(users)
     .where(and(eq(users.oidcIssuer, claims.iss), eq(users.oidcSubject, claims.sub)));
@@ -377,10 +391,11 @@ export async function findOrCreateOidcUser(
     return existingByOidc;
   }
 
-  // Match by email
+  // Match by email (scoped to the same panel)
   const email = claims.email;
   if (email) {
-    const [existingByEmail] = await db.select().from(users).where(eq(users.email, email));
+    const [existingByEmail] = await db.select().from(users)
+      .where(and(eq(users.email, email), eq(users.panel, panelScope)));
     if (existingByEmail) {
       await db.update(users).set({
         oidcIssuer: claims.iss,
@@ -393,7 +408,10 @@ export async function findOrCreateOidcUser(
     }
   }
 
-  // For client-scoped providers: match email to client account
+  // No existing user found — check autoProvision setting
+  const autoProvision = Boolean(provider.autoProvision);
+
+  // For client-scoped providers: match email to client account first
   if (panelScope === 'client' && email) {
     const [matchingClient] = await db.select().from(clients)
       .where(eq(clients.companyEmail, email));
@@ -418,18 +436,64 @@ export async function findOrCreateOidcUser(
       return created;
     }
 
-    // No client match — reject for now (self-service onboarding is Phase 2)
-    throw new ApiError('NO_CLIENT_ACCOUNT', 'No hosting account found for your email. Contact your administrator.', 403);
+    // No existing client — check if auto-provisioning is allowed
+    if (!autoProvision) {
+      throw new ApiError(
+        'OIDC_USER_NOT_FOUND',
+        'Your account is not registered on this platform. Contact your administrator.',
+        403,
+      );
+    }
+
+    // Auto-create a new client and client_admin user
+    const clientId = crypto.randomUUID();
+    const companyName = claims.name ?? email.split('@')[0];
+    await db.insert(clients).values({
+      id: clientId,
+      companyName,
+      companyEmail: email,
+      regionId: 'default',
+      kubernetesNamespace: `ns-${clientId.slice(0, 8)}`,
+      planId: 'default',
+      status: 'pending',
+      provisioningStatus: 'unprovisioned',
+    });
+
+    const userId = crypto.randomUUID();
+    await db.insert(users).values({
+      id: userId,
+      email,
+      fullName: claims.name ?? claims.preferred_username ?? 'Client User',
+      passwordHash: null,
+      roleName: 'client_admin',
+      panel: 'client',
+      clientId,
+      status: 'active',
+      oidcIssuer: claims.iss,
+      oidcSubject: claims.sub,
+      emailVerifiedAt: claims.email_verified ? new Date() : null,
+      lastLoginAt: new Date(),
+    });
+    const [created] = await db.select().from(users).where(eq(users.id, userId));
+    return created;
   }
 
-  // Admin-scoped: auto-create as read_only admin
+  // Admin-scoped: check autoProvision before creating
+  if (!autoProvision) {
+    throw new ApiError(
+      'OIDC_USER_NOT_FOUND',
+      'Your account is not registered on this platform. Contact your administrator.',
+      403,
+    );
+  }
+
   const id = crypto.randomUUID();
   await db.insert(users).values({
     id,
     email: email ?? `${claims.sub}@oidc`,
     fullName: claims.name ?? claims.preferred_username ?? 'OIDC User',
     passwordHash: null,
-    roleName: 'read_only',
+    roleName: provider.defaultRole ?? 'read_only',
     panel: 'admin',
     status: 'active',
     oidcIssuer: claims.iss,

@@ -1,8 +1,10 @@
 # Dex configuration for local development
 #
-# Static users for testing (both use password "admin"):
-#   - admin@platform.local  (maps to the platform's default super_admin)
-#   - admin2@platform.local (second admin for multi-user testing)
+# Static users for testing:
+#   - admin@platform.local  / admin  (maps to the platform's default super_admin)
+#   - admin2@platform.local / admin  (second admin for multi-user testing)
+#   - user@platform.local   / user   (unprivileged user for OIDC auto-provision testing)
+#   - user2@platform.local  / user   (second unprivileged user)
 #
 # Static OIDC clients:
 #   - hosting-platform-admin   (admin panel SSO)
@@ -54,3 +56,13 @@ staticPasswords:
     hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
     username: admin2
     userID: "00000000-0000-0000-0000-000000000002"
+  - email: user@platform.local
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user
+    userID: "00000000-0000-0000-0000-000000000003"
+  - email: user2@platform.local
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user2
+    userID: "00000000-0000-0000-0000-000000000004"

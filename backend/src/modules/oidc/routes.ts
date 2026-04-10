@@ -92,7 +92,19 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       app.db, pkce.providerId, query.code, callbackUrl, pkce.codeVerifier, encryptionKey,
     );
 
-    const user = await service.findOrCreateOidcUser(app.db, idToken, provider.panelScope as 'admin' | 'client');
+    let user: Awaited<ReturnType<typeof service.findOrCreateOidcUser>>;
+    try {
+      user = await service.findOrCreateOidcUser(app.db, idToken, provider);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'OIDC_USER_NOT_FOUND') {
+        const frontendRedirect = pkce.frontendRedirect;
+        const sep = frontendRedirect.includes('?') ? '&' : '?';
+        return reply.redirect(
+          `${frontendRedirect}${sep}error=oidc_user_not_found&message=${encodeURIComponent(err.message)}`,
+        );
+      }
+      throw err;
+    }
 
     const jwtPayload: Record<string, unknown> = {
       sub: user.id, role: user.roleName, panel: user.panel ?? 'admin',

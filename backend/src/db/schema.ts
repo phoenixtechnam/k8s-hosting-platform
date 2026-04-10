@@ -89,6 +89,9 @@ export const oidcProviders = pgTable('oidc_providers', {
   backchannelLogoutEnabled: integer('backchannel_logout_enabled').notNull().default(0),
   discoveryMetadata: jsonb('discovery_metadata').$type<Record<string, unknown>>(),
   displayOrder: integer('display_order').notNull().default(0),
+  autoProvision: integer('auto_provision').notNull().default(0),
+  defaultRole: varchar('default_role', { length: 50 }).default('read_only'),
+  additionalClaims: jsonb('additional_claims').$type<string[]>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
