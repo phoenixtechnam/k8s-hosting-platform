@@ -49,6 +49,7 @@ services:
       - "${PORT_API:-2012}:3000"
     environment:
       NODE_ENV: production
+      CERT_ENVIRONMENT: development
       PORT: "3000"
       LOG_LEVEL: debug
       DATABASE_URL: "postgresql://${DB_USER:-platform}:${DB_PASSWORD:-local-dev-password}@postgres:5432/${DB_NAME:-hosting_platform}"

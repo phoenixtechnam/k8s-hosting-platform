@@ -337,6 +337,28 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }, 15_000); // Every 15 seconds
       app.addHook('onClose', () => clearInterval(reconcileInterval));
 
+      // Periodic certificate status reconciler — syncs cert-manager TLS
+      // Secret metadata into the ssl_certificates DB table so the UI can
+      // display real cert status without live K8s queries on every page load.
+      const certReconcileInterval = setInterval(async () => {
+        try {
+          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { reconcileCertificateStatuses } = await import('./modules/certificates/cert-reconciler.js');
+          const k8s = createK8sClients(kubePath);
+          const result = await reconcileCertificateStatuses(app.db, k8s);
+          if (result.synced > 0) {
+            app.log.info(`Certificate reconciler: synced ${result.synced}/${result.checked}`);
+          }
+          if (result.errors.length > 0) {
+            app.log.warn({ errors: result.errors }, 'Certificate reconciler had errors');
+          }
+        } catch (err) {
+          app.log.warn({ err }, 'Certificate reconciler failed — skipping cycle');
+        }
+      }, 60_000); // Every 60 seconds
+      app.addHook('onClose', () => clearInterval(certReconcileInterval));
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }
