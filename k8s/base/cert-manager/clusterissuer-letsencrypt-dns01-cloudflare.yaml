@@ -1,0 +1,25 @@
+# Cloudflare DNS-01 solver (built-in cert-manager support)
+# Requires: Secret 'cloudflare-api-token' in cert-manager namespace
+#
+# Create the secret:
+#   kubectl create secret generic cloudflare-api-token \
+#     --namespace cert-manager \
+#     --from-literal=api-token='YOUR_CLOUDFLARE_API_TOKEN'
+#
+# The token needs Zone:DNS:Edit and Zone:Zone:Read permissions.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-cloudflare
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "${ACME_EMAIL:-operator@example.com}"
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-cloudflare-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token

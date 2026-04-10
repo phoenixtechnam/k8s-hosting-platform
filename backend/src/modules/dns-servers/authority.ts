@@ -26,6 +26,7 @@ export type ProviderType =
   | 'cloudflare'
   | 'route53'
   | 'hetzner'
+  | 'cloudns'
   | 'mock';
 
 export interface DomainAuthorityServer {
@@ -77,8 +78,12 @@ export function canManageDnsZone(input: DomainAuthorityInput): boolean {
  * solvers that could be added in a later phase — just update this
  * allowlist and provision the matching ClusterIssuer + Secret.
  */
-const DNS01_SOLVER_PROVIDERS: ReadonlySet<string> = new Set([
+export const DNS01_SOLVER_PROVIDERS: ReadonlySet<string> = new Set([
   'powerdns',
+  'cloudflare',
+  'route53',
+  'hetzner',
+  'cloudns',
 ]);
 
 export function canIssueWildcardCert(input: DomainAuthorityInput): boolean {

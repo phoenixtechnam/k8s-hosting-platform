@@ -1,48 +1,13 @@
+# PowerDNS DNS-01 solver via REST API webhook
+# Requires: cert-manager-webhook-powerdns installed in the cluster
+# Secret: powerdns-api-key in cert-manager namespace with key 'api-key'
 #
-# Let's Encrypt production issuer — DNS-01 challenge via PowerDNS
-# (RFC2136 dynamic update).
-#
-# This ClusterIssuer is used by the backend `certificates` module when
-# ALL of the following hold:
-#
-#   1. The domain's `dnsMode` is `primary` — the platform is the
-#      authoritative nameserver for the zone
-#   2. The domain's assigned DNS provider group contains at least one
-#      enabled `powerdns` server
-#   3. A `wildcard` cert is being requested
-#      (wildcard issuance is DNS-01-only per Let's Encrypt policy)
-#
-# Unlike HTTP-01, DNS-01 can issue wildcard certs like `*.customer.com`.
-# That's the whole reason this issuer exists — one wildcard covers all
-# current and future subdomains under a customer domain (www, api,
-# mail, webmail, autodiscover, autoconfig, etc.) without per-hostname
-# Certificate CRs.
-#
-# ─── Operator setup (manual, one-time per cluster) ──────────────────
-#
-# cert-manager's RFC2136 solver needs a TSIG key to authenticate
-# dynamic DNS updates against PowerDNS. The key must be configured
-# BOTH in PowerDNS (pdnsutil activate-tsig-key) AND in a k8s Secret
-# in the `cert-manager` namespace:
-#
-#   kubectl create secret generic powerdns-tsig-key \
-#     -n cert-manager \
-#     --from-literal=tsig-secret-key='<base64 HMAC-SHA256 key from pdns>'
-#
-# In PowerDNS:
-#   pdnsutil generate-tsig-key cert-manager-tsig hmac-sha256
-#   pdnsutil activate-tsig-key <zone> cert-manager-tsig master
-#
-# Replace `pdns.platform.internal` below with the actual hostname or
-# IP of your PowerDNS instance. Port 53 (UDP+TCP) must be reachable
-# from cert-manager pods.
-#
-# If this Secret does NOT exist, this ClusterIssuer will fail to
-# validate challenges. Certificates that select it will move to
-# `Issuing / Pending` and stay there until an operator fixes the
-# config. The backend `certificates` module detects this state and
-# surfaces it in the admin UI.
-#
+# Install the webhook:
+#   helm repo add cert-manager-webhook-powerdns https://lordofsystem.github.io/cert-manager-webhook-powerdns
+#   helm install cert-manager-webhook-powerdns cert-manager-webhook-powerdns/cert-manager-webhook-powerdns \
+#     --namespace cert-manager \
+#     --set powerdns.apiUrl=http://pdns.platform.internal:8081 \
+#     --set powerdns.secretName=powerdns-api-key
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -50,17 +15,16 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: operator@example.com
+    email: "${ACME_EMAIL:-operator@example.com}"
     privateKeySecretRef:
-      name: letsencrypt-prod-dns01-powerdns-account
+      name: letsencrypt-prod-dns01-powerdns-key
     solvers:
       - dns01:
-          rfc2136:
-            # Replace with the actual PowerDNS endpoint in an overlay.
-            # Port 53 is the standard DNS port for dynamic updates.
-            nameserver: pdns.platform.internal:53
-            tsigKeyName: cert-manager-tsig
-            tsigAlgorithm: HMACSHA256
-            tsigSecretSecretRef:
-              name: powerdns-tsig-key
-              key: tsig-secret-key
+          webhook:
+            groupName: acme.powerdns.com
+            solverName: powerdns
+            config:
+              apiUrl: http://pdns.platform.internal:8081
+              apiKeySecretRef:
+                name: powerdns-api-key
+                key: api-key

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Globe, Shield, ShieldCheck, Trash2 } from 'lucide-react';
+import { Plus, Search, Loader2, Globe, Shield, ShieldCheck, Lock, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
@@ -174,11 +174,13 @@ export default function Domains() {
                       </td>
                       <td className="hidden px-5 py-3.5 lg:table-cell">
                         <span className={clsx(
-                          'inline-flex items-center gap-1 text-xs font-medium',
-                          domain.sslAutoRenew ? 'text-green-600 dark:text-green-400' : 'text-gray-400',
-                        )}>
-                          <Shield size={12} />
-                          {domain.sslAutoRenew ? 'Auto (TLS)' : 'Manual'}
+                          'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+                          domain.sslAutoRenew
+                            ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+                        )} data-testid={`ssl-badge-${domain.id}`}>
+                          <Lock size={10} />
+                          {domain.sslAutoRenew ? 'Auto' : 'None'}
                         </span>
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">

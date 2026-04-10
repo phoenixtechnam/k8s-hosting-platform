@@ -79,6 +79,13 @@ export interface HetznerDnsConfig {
   readonly api_token: string;
 }
 
+export interface ClouDnsConfig {
+  readonly auth_id?: string;
+  readonly sub_auth_id?: string;
+  readonly auth_password: string;
+  readonly api_url?: string;
+}
+
 export interface MockConfig {
   readonly latency_ms?: number;
 }

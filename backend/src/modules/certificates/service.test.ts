@@ -150,7 +150,7 @@ describe('ensureDomainCertificate', () => {
     expect(call.body.spec.secretName).toBe('acme-com-wildcard-tls');
   });
 
-  it('falls back to HTTP-01 when primary mode but no PowerDNS server available', async () => {
+  it('uses Cloudflare DNS-01 issuer when primary mode with Cloudflare provider', async () => {
     vi.mocked(dnsServersService.getActiveServersForDomain).mockResolvedValue([
       { id: 's1', providerType: 'cloudflare', enabled: 1, role: 'primary' } as never,
     ]);
@@ -160,8 +160,8 @@ describe('ensureDomainCertificate', () => {
 
     const result = await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
 
-    expect(result.wildcard).toBe(false);
-    expect(result.issuerName).toBe('letsencrypt-prod-http01');
+    expect(result.wildcard).toBe(true);
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudflare');
   });
 
   it('uses local-ca-issuer in development environment', async () => {

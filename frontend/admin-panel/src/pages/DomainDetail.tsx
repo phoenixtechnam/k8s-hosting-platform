@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, Settings, Shield, X,
-  Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network,
+  Users, Lock, ChevronDown, ChevronRight, CheckCircle, Network, Upload, ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -17,11 +17,12 @@ import {
   useProtectedDirectories, useCreateProtectedDirectory, useDeleteProtectedDirectory,
   useDirectoryUsers, useCreateDirectoryUser, useDisableDirectoryUser, useDeleteDirectoryUser,
 } from '@/hooks/use-protected-directories';
+import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-type Tab = 'routing' | 'dns' | 'hosting' | 'protected';
+type Tab = 'routing' | 'dns' | 'hosting' | 'protected' | 'ssl';
 
 export default function DomainDetail() {
   const { clientId, domainId } = useParams<{ clientId: string; domainId: string }>();
@@ -53,6 +54,7 @@ export default function DomainDetail() {
     { key: 'dns', label: 'DNS Records', icon: <Globe size={14} /> },
     { key: 'hosting', label: 'Hosting Settings', icon: <Settings size={14} /> },
     { key: 'protected', label: 'Protected Directories', icon: <Shield size={14} /> },
+    { key: 'ssl', label: 'SSL/TLS', icon: <ShieldCheck size={14} /> },
   ];
 
   return (
@@ -131,6 +133,7 @@ export default function DomainDetail() {
       {activeTab === 'dns' && <DnsRecordsTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'hosting' && <HostingSettingsTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'protected' && <ProtectedDirectoriesTab clientId={clientId!} domainId={domainId!} />}
+      {activeTab === 'ssl' && <SslTlsTab clientId={clientId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} />}
     </div>
   );
 }
@@ -972,6 +975,285 @@ function DirectoryUsersPanel({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── SSL/TLS Tab ──────────────────────────────────────────────────────────────
+
+const TEXTAREA_CLASS =
+  'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
+function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
+  readonly clientId: string;
+  readonly domainId: string;
+  readonly sslAutoRenew: number;
+}) {
+  const { data: certData, isLoading, isError, error } = useSslCert(clientId, domainId);
+  const uploadCert = useUploadSslCert(clientId, domainId);
+  const deleteCert = useDeleteSslCert(clientId, domainId);
+
+  const [showUploadForm, setShowUploadForm] = useState(false);
+  const [certificate, setCertificate] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [caBundle, setCaBundle] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  const cert = certData?.data ?? null;
+  const hasCustomCert = Boolean(cert);
+  const isAutoTls = sslAutoRenew === 1;
+
+  const tlsMode = hasCustomCert ? 'custom' : isAutoTls ? 'auto' : 'none';
+
+  const handleUpload = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!certificate.trim() || !privateKey.trim()) return;
+    try {
+      await uploadCert.mutateAsync({
+        certificate: certificate.trim(),
+        private_key: privateKey.trim(),
+        ca_bundle: caBundle.trim() || undefined,
+      });
+      setCertificate('');
+      setPrivateKey('');
+      setCaBundle('');
+      setShowUploadForm(false);
+    } catch {
+      // error shown via uploadCert.error
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      await deleteCert.mutateAsync();
+      setDeleteConfirm(false);
+    } catch {
+      // error shown via deleteCert.error
+    }
+  };
+
+  return (
+    <div className="space-y-6" data-testid="ssl-tls-tab">
+      {/* TLS Mode Indicator */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">TLS Mode</h2>
+        </div>
+        <div className="px-5 py-4">
+          <div className="flex items-center gap-3">
+            <span className={clsx(
+              'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium',
+              tlsMode === 'auto' && 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300',
+              tlsMode === 'custom' && 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300',
+              tlsMode === 'none' && 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+            )} data-testid="tls-mode-badge">
+              <ShieldCheck size={14} />
+              {tlsMode === 'auto' && 'Automatic (Let\'s Encrypt)'}
+              {tlsMode === 'custom' && 'Custom Certificate'}
+              {tlsMode === 'none' && 'No TLS'}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+            {tlsMode === 'auto' && 'TLS certificates are automatically provisioned and renewed via Let\'s Encrypt. Upload a custom certificate to override.'}
+            {tlsMode === 'custom' && 'A custom TLS certificate has been uploaded. Delete it to revert to automatic provisioning.'}
+            {tlsMode === 'none' && 'TLS is not configured for this domain. Enable auto-TLS or upload a custom certificate.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Current Certificate Status */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Certificate Status</h2>
+          {!hasCustomCert && (
+            <button
+              type="button"
+              onClick={() => setShowUploadForm((p) => !p)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600"
+              data-testid="upload-cert-toggle"
+            >
+              {showUploadForm ? <X size={14} /> : <Upload size={14} />}
+              {showUploadForm ? 'Cancel' : 'Upload Certificate'}
+            </button>
+          )}
+        </div>
+
+        {isLoading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 size={20} className="animate-spin text-brand-500" />
+          </div>
+        )}
+
+        {isError && !(error instanceof Error && 'status' in error && (error as { status: number }).status === 404) && (
+          <div className="px-5 py-6 text-center text-sm text-red-500 dark:text-red-400" data-testid="ssl-cert-error">
+            Failed to load certificate status.
+          </div>
+        )}
+
+        {!isLoading && hasCustomCert && cert && (
+          <div className="px-5 py-4 space-y-3" data-testid="ssl-cert-details">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Subject</dt>
+                <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100 font-mono">{cert.subject ?? 'N/A'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Issuer</dt>
+                <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100 font-mono">{cert.issuer ?? 'N/A'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Expires</dt>
+                <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
+                  {cert.expiresAt ? new Date(cert.expiresAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : 'N/A'}
+                  {cert.expiresAt && new Date(cert.expiresAt) < new Date() && (
+                    <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs font-medium text-red-700 dark:text-red-300">
+                      <AlertCircle size={10} />
+                      Expired
+                    </span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Uploaded</dt>
+                <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">
+                  {new Date(cert.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                </dd>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 border-t border-gray-100 dark:border-gray-700 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowUploadForm((p) => !p)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-brand-300 dark:border-brand-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30"
+                data-testid="replace-cert-button"
+              >
+                <Upload size={14} />
+                Replace Certificate
+              </button>
+              {deleteConfirm ? (
+                <div className="inline-flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={deleteCert.isPending}
+                    className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                    data-testid="confirm-delete-cert"
+                  >
+                    {deleteCert.isPending ? <Loader2 size={14} className="inline animate-spin" /> : 'Confirm Delete'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirm(false)}
+                    className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirm(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                  data-testid="delete-cert-button"
+                >
+                  <Trash2 size={14} />
+                  Delete Certificate
+                </button>
+              )}
+            </div>
+
+            {deleteCert.error && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="delete-cert-error">
+                <AlertCircle size={14} />
+                {deleteCert.error instanceof Error ? deleteCert.error.message : 'Failed to delete certificate'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isLoading && !hasCustomCert && !isError && !showUploadForm && (
+          <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="no-custom-cert">
+            {isAutoTls
+              ? 'Using automatic TLS via Let\'s Encrypt. Upload a custom certificate to override.'
+              : 'No TLS certificate configured. Upload a custom certificate to enable HTTPS.'}
+          </div>
+        )}
+
+        {/* Upload Form */}
+        {showUploadForm && (
+          <form onSubmit={handleUpload} className="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-5 space-y-4" data-testid="ssl-upload-form">
+            <div>
+              <label htmlFor="ssl-certificate" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                PEM Certificate *
+              </label>
+              <textarea
+                id="ssl-certificate"
+                rows={6}
+                value={certificate}
+                onChange={(e) => setCertificate(e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                className={TEXTAREA_CLASS}
+                required
+                data-testid="ssl-cert-input"
+              />
+            </div>
+            <div>
+              <label htmlFor="ssl-private-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Private Key *
+              </label>
+              <textarea
+                id="ssl-private-key"
+                rows={6}
+                value={privateKey}
+                onChange={(e) => setPrivateKey(e.target.value)}
+                placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                className={TEXTAREA_CLASS}
+                required
+                data-testid="ssl-key-input"
+              />
+            </div>
+            <div>
+              <label htmlFor="ssl-ca-bundle" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                CA Bundle <span className="text-gray-400 dark:text-gray-500">(optional)</span>
+              </label>
+              <textarea
+                id="ssl-ca-bundle"
+                rows={4}
+                value={caBundle}
+                onChange={(e) => setCaBundle(e.target.value)}
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                className={TEXTAREA_CLASS}
+                data-testid="ssl-ca-input"
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="submit"
+                disabled={uploadCert.isPending || !certificate.trim() || !privateKey.trim()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+                data-testid="submit-cert-upload"
+              >
+                {uploadCert.isPending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                Upload Certificate
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowUploadForm(false); setCertificate(''); setPrivateKey(''); setCaBundle(''); }}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              >
+                Cancel
+              </button>
+            </div>
+            {uploadCert.error && (
+              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="upload-cert-error">
+                <AlertCircle size={14} />
+                {uploadCert.error instanceof Error ? uploadCert.error.message : 'Failed to upload certificate'}
+              </div>
+            )}
+          </form>
+        )}
+      </div>
     </div>
   );
 }

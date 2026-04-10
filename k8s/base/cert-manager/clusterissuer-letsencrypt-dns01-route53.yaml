@@ -1,0 +1,31 @@
+# AWS Route53 DNS-01 solver (built-in cert-manager support)
+# Requires: Secret 'route53-credentials' in cert-manager namespace
+#   OR: IRSA (IAM Roles for Service Accounts) configured on cert-manager pod
+#
+# Create the secret (if not using IRSA):
+#   kubectl create secret generic route53-credentials \
+#     --namespace cert-manager \
+#     --from-literal=secret-access-key='YOUR_AWS_SECRET_KEY'
+#
+# IAM policy needs: route53:GetChange, route53:ChangeResourceRecordSets,
+#                    route53:ListHostedZonesByName, route53:ListHostedZones
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-route53
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "${ACME_EMAIL:-operator@example.com}"
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-route53-key
+    solvers:
+      - dns01:
+          route53:
+            region: us-east-1
+            accessKeyIDSecretRef:
+              name: route53-credentials
+              key: access-key-id
+            secretAccessKeySecretRef:
+              name: route53-credentials
+              key: secret-access-key

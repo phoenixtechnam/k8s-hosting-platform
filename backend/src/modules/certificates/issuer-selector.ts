@@ -11,18 +11,19 @@
  *   environment=development        → local-ca-issuer            (no ACME)
  *   environment=staging            → letsencrypt-staging-http01
  *   environment=production:
- *     wildcardRequested=true AND primary+PowerDNS
- *                                  → letsencrypt-prod-dns01-powerdns
+ *     wildcardRequested=true AND primary + DNS-01-capable provider
+ *                                  → letsencrypt-prod-dns01-<provider>
  *     everything else              → letsencrypt-prod-http01
  *
- * Wildcard certs are DNS-01 only (Let's Encrypt policy), and Phase 2c
- * only ships the RFC2136/PowerDNS solver. If a customer is primary
- * authority via Cloudflare/Route53/Hetzner, wildcard issuance isn't
- * possible yet and we fall back to per-hostname HTTP-01.
+ * Wildcard certs are DNS-01 only (Let's Encrypt policy). Supported
+ * DNS-01 solver providers: powerdns, cloudflare, route53, hetzner,
+ * cloudns. The issuer is selected dynamically based on the domain's
+ * primary DNS provider type.
  */
 
 import {
   canIssueWildcardCert,
+  DNS01_SOLVER_PROVIDERS,
   type DomainAuthorityInput,
   type DomainAuthorityServer,
 } from '../dns-servers/authority.js';
@@ -33,7 +34,7 @@ export type ChallengeType = 'dns01' | 'http01' | 'ca';
 export interface ConfiguredIssuers {
   readonly letsencryptProdHttp01: string;
   readonly letsencryptStagingHttp01: string;
-  readonly letsencryptProdDns01Powerdns: string;
+  readonly dns01Issuers: Readonly<Record<string, string>>;
   readonly localCaIssuer: string;
   readonly fallbackIssuer: string;
 }
@@ -77,9 +78,14 @@ export function selectIssuerForDomain(input: IssuerSelectorInput): IssuerSelecti
   };
 
   if (input.wildcardRequested && canIssueWildcardCert(authorityInput)) {
+    const dns01Server = input.activeServers.find(
+      (s) => s.enabled === 1 && s.role === 'primary' && DNS01_SOLVER_PROVIDERS.has(s.providerType),
+    );
+    const providerType = dns01Server?.providerType ?? 'powerdns';
+    const issuerName = input.issuers.dns01Issuers[providerType] ?? input.issuers.fallbackIssuer;
     return {
-      issuerName: input.issuers.letsencryptProdDns01Powerdns,
-      challengeType: 'dns01',
+      issuerName,
+      challengeType: 'dns01' as ChallengeType,
       wildcardCapable: true,
     };
   }

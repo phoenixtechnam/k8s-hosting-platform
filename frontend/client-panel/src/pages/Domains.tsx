@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Globe, Plus, X, Loader2, Shield } from 'lucide-react';
+import { Globe, Plus, X, Loader2, Shield, Lock } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import { useDomains, useCreateDomain } from '@/hooks/use-domains';
@@ -131,9 +131,9 @@ export default function Domains() {
                     </td>
                     <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 uppercase text-xs md:table-cell">{domain.dnsMode}</td>
                     <td className="hidden px-6 py-4 sm:table-cell">
-                      <span className={`inline-flex items-center gap-1 text-xs font-medium ${domain.sslAutoRenew ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`}>
-                        <Shield size={12} />
-                        {domain.sslAutoRenew ? 'Auto (TLS)' : 'Manual'}
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${domain.sslAutoRenew ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`} data-testid={`ssl-badge-${domain.id}`}>
+                        <Lock size={10} />
+                        {domain.sslAutoRenew ? 'Auto' : 'None'}
                       </span>
                     </td>
                     <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 lg:table-cell">

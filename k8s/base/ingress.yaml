@@ -6,7 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-production
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
     nginx.ingress.kubernetes.io/proxy-body-size: "64m"
 spec:
   ingressClassName: nginx

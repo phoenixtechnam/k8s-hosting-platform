@@ -25,6 +25,10 @@ resources:
   - clusterissuer-letsencrypt-http01.yaml
   - clusterissuer-letsencrypt-staging-http01.yaml
   - clusterissuer-letsencrypt-dns01-powerdns.yaml
+  - clusterissuer-letsencrypt-dns01-cloudflare.yaml
+  - clusterissuer-letsencrypt-dns01-route53.yaml
+  - clusterissuer-letsencrypt-dns01-hetzner.yaml
+  - clusterissuer-letsencrypt-dns01-cloudns.yaml
 
 labels:
   - pairs:

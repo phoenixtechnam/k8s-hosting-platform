@@ -101,8 +101,13 @@ function getConfiguredIssuers(): ConfiguredIssuers {
       process.env.CERT_ISSUER_PROD_HTTP01 ?? 'letsencrypt-prod-http01',
     letsencryptStagingHttp01:
       process.env.CERT_ISSUER_STAGING_HTTP01 ?? 'letsencrypt-staging-http01',
-    letsencryptProdDns01Powerdns:
-      process.env.CERT_ISSUER_PROD_DNS01_POWERDNS ?? 'letsencrypt-prod-dns01-powerdns',
+    dns01Issuers: {
+      powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS ?? 'letsencrypt-prod-dns01-powerdns',
+      cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE ?? 'letsencrypt-prod-dns01-cloudflare',
+      route53: process.env.CERT_ISSUER_DNS01_ROUTE53 ?? 'letsencrypt-prod-dns01-route53',
+      hetzner: process.env.CERT_ISSUER_DNS01_HETZNER ?? 'letsencrypt-prod-dns01-hetzner',
+      cloudns: process.env.CERT_ISSUER_DNS01_CLOUDNS ?? 'letsencrypt-prod-dns01-cloudns',
+    },
     localCaIssuer:
       process.env.CERT_ISSUER_LOCAL_CA ?? 'local-ca-issuer',
     fallbackIssuer:

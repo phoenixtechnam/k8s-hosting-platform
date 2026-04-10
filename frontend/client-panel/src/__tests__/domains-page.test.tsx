@@ -147,8 +147,8 @@ describe('Domains Page', () => {
       error: null,
     } as unknown as ReturnType<typeof useDomains>);
     renderWithProviders(<Domains />);
-    expect(screen.getByText('Auto (TLS)')).toBeInTheDocument();
-    expect(screen.getByText('Manual')).toBeInTheDocument();
+    expect(screen.getByText('Auto')).toBeInTheDocument();
+    expect(screen.getByText('None')).toBeInTheDocument();
   });
 
   it('shows table header columns', () => {

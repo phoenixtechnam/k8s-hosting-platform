@@ -100,10 +100,7 @@ describe('canIssueWildcardCert', () => {
     ).toBe(true);
   });
 
-  it('returns false for primary + Cloudflare (we have no cert-manager webhook for it yet)', () => {
-    // Phase 2c ships only the RFC2136/PowerDNS DNS-01 solver. Other providers
-    // CAN manage DNS records but don't have a cert-manager DNS-01 solver
-    // wired in this phase, so wildcard issuance is not possible yet.
+  it('returns true for primary + Cloudflare (DNS-01 solver configured)', () => {
     expect(
       canIssueWildcardCert({
         dnsMode: 'primary',
@@ -111,7 +108,40 @@ describe('canIssueWildcardCert', () => {
           { id: 's1', providerType: 'cloudflare', enabled: 1, role: 'primary' },
         ],
       }),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it('returns true for primary + Route53 (DNS-01 solver configured)', () => {
+    expect(
+      canIssueWildcardCert({
+        dnsMode: 'primary',
+        activeServers: [
+          { id: 's1', providerType: 'route53', enabled: 1, role: 'primary' },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true for primary + Hetzner (DNS-01 solver configured)', () => {
+    expect(
+      canIssueWildcardCert({
+        dnsMode: 'primary',
+        activeServers: [
+          { id: 's1', providerType: 'hetzner', enabled: 1, role: 'primary' },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it('returns true for primary + ClouDNS (DNS-01 solver configured)', () => {
+    expect(
+      canIssueWildcardCert({
+        dnsMode: 'primary',
+        activeServers: [
+          { id: 's1', providerType: 'cloudns', enabled: 1, role: 'primary' },
+        ],
+      }),
+    ).toBe(true);
   });
 
   it('returns false for cname mode (no authoritative writes)', () => {
@@ -145,13 +175,13 @@ describe('canIssueWildcardCert', () => {
     ).toBe(false);
   });
 
-  it('returns false when only non-powerdns providers exist even in primary mode', () => {
+  it('returns false when only non-dns01 providers exist in primary mode', () => {
     expect(
       canIssueWildcardCert({
         dnsMode: 'primary',
         activeServers: [
-          { id: 's1', providerType: 'hetzner', enabled: 1, role: 'primary' },
-          { id: 's2', providerType: 'route53', enabled: 1, role: 'primary' },
+          { id: 's1', providerType: 'rndc', enabled: 1, role: 'primary' },
+          { id: 's2', providerType: 'mock', enabled: 1, role: 'primary' },
         ],
       }),
     ).toBe(false);

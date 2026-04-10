@@ -5,7 +5,13 @@ describe('selectIssuerForDomain', () => {
   const defaults = {
     letsencryptProdHttp01: 'letsencrypt-prod-http01',
     letsencryptStagingHttp01: 'letsencrypt-staging-http01',
-    letsencryptProdDns01Powerdns: 'letsencrypt-prod-dns01-powerdns',
+    dns01Issuers: {
+      powerdns: 'letsencrypt-prod-dns01-powerdns',
+      cloudflare: 'letsencrypt-prod-dns01-cloudflare',
+      route53: 'letsencrypt-prod-dns01-route53',
+      hetzner: 'letsencrypt-prod-dns01-hetzner',
+      cloudns: 'letsencrypt-prod-dns01-cloudns',
+    },
     localCaIssuer: 'local-ca-issuer',
     fallbackIssuer: 'letsencrypt-prod-http01',
   };
@@ -84,9 +90,7 @@ describe('selectIssuerForDomain', () => {
     }
   });
 
-  it('falls back to HTTP-01 when wildcard requested but PowerDNS absent', () => {
-    // Customer is primary authority via Cloudflare (no DNS-01 solver wired
-    // in Phase 2c) — wildcard cannot be issued, fall back to per-hostname.
+  it('chooses DNS-01 wildcard issuer for Cloudflare primary provider', () => {
     const input: IssuerSelectorInput = {
       dnsMode: 'primary',
       activeServers: [
@@ -97,9 +101,89 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     const result = selectIssuerForDomain(input);
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudflare');
+    expect(result.challengeType).toBe('dns01');
+    expect(result.wildcardCapable).toBe(true);
+  });
+
+  it('chooses DNS-01 wildcard issuer for Route53 primary provider', () => {
+    const input: IssuerSelectorInput = {
+      dnsMode: 'primary',
+      activeServers: [
+        { id: 's1', providerType: 'route53', enabled: 1, role: 'primary' },
+      ],
+      wildcardRequested: true,
+      environment: 'production',
+      issuers: defaults,
+    };
+    const result = selectIssuerForDomain(input);
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-route53');
+    expect(result.challengeType).toBe('dns01');
+    expect(result.wildcardCapable).toBe(true);
+  });
+
+  it('chooses DNS-01 wildcard issuer for Hetzner primary provider', () => {
+    const input: IssuerSelectorInput = {
+      dnsMode: 'primary',
+      activeServers: [
+        { id: 's1', providerType: 'hetzner', enabled: 1, role: 'primary' },
+      ],
+      wildcardRequested: true,
+      environment: 'production',
+      issuers: defaults,
+    };
+    const result = selectIssuerForDomain(input);
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-hetzner');
+    expect(result.challengeType).toBe('dns01');
+    expect(result.wildcardCapable).toBe(true);
+  });
+
+  it('chooses DNS-01 wildcard issuer for ClouDNS primary provider', () => {
+    const input: IssuerSelectorInput = {
+      dnsMode: 'primary',
+      activeServers: [
+        { id: 's1', providerType: 'cloudns', enabled: 1, role: 'primary' },
+      ],
+      wildcardRequested: true,
+      environment: 'production',
+      issuers: defaults,
+    };
+    const result = selectIssuerForDomain(input);
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudns');
+    expect(result.challengeType).toBe('dns01');
+    expect(result.wildcardCapable).toBe(true);
+  });
+
+  it('falls back to HTTP-01 when wildcard requested but no DNS-01 provider present', () => {
+    const input: IssuerSelectorInput = {
+      dnsMode: 'primary',
+      activeServers: [
+        { id: 's1', providerType: 'rndc', enabled: 1, role: 'primary' },
+      ],
+      wildcardRequested: true,
+      environment: 'production',
+      issuers: defaults,
+    };
+    const result = selectIssuerForDomain(input);
     expect(result.issuerName).toBe('letsencrypt-prod-http01');
     expect(result.challengeType).toBe('http01');
     expect(result.wildcardCapable).toBe(false);
+  });
+
+  it('uses fallback issuer when provider type has no configured dns01 issuer', () => {
+    const input: IssuerSelectorInput = {
+      dnsMode: 'primary',
+      activeServers: [
+        { id: 's1', providerType: 'powerdns', enabled: 1, role: 'primary' },
+      ],
+      wildcardRequested: true,
+      environment: 'production',
+      issuers: { ...defaults, dns01Issuers: {} },
+    };
+    const result = selectIssuerForDomain(input);
+    expect(result.issuerName).toBe('letsencrypt-prod-http01'); // fallbackIssuer
+    expect(result.challengeType).toBe('dns01');
+    expect(result.wildcardCapable).toBe(true);
   });
 
   it('returns wildcard=false when wildcardRequested=false even with PowerDNS primary', () => {

@@ -1,0 +1,31 @@
+# Hetzner DNS-01 solver via webhook
+# Requires: cert-manager-webhook-hetzner installed
+#
+# Install:
+#   helm repo add cert-manager-webhook-hetzner https://vadimkim.github.io/cert-manager-webhook-hetzner
+#   helm install cert-manager-webhook-hetzner cert-manager-webhook-hetzner/cert-manager-webhook-hetzner \
+#     --namespace cert-manager
+#
+# Create the secret:
+#   kubectl create secret generic hetzner-dns-api-token \
+#     --namespace cert-manager \
+#     --from-literal=api-token='YOUR_HETZNER_DNS_TOKEN'
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-hetzner
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "${ACME_EMAIL:-operator@example.com}"
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-hetzner-key
+    solvers:
+      - dns01:
+          webhook:
+            groupName: dns.hetzner.cloud
+            solverName: hetzner
+            config:
+              secretName: hetzner-dns-api-token
+              zoneName: ""
+              apiUrl: https://dns.hetzner.com/api/v1
