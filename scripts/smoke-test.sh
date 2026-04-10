@@ -69,9 +69,21 @@ trap cleanup_smoke_clients EXIT
 # IMAP Phase 5: orphan-namespace startup warning. If there are many
 # client-smoke-test-* namespaces in k3s with no matching DB row,
 # alert the operator before adding more.
-K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
-ORPHAN_COUNT=$(docker exec "$K3S_CONTAINER" kubectl get ns --no-headers 2>/dev/null \
-  | awk '/client-smoke-test/ {n++} END {print n+0}' || echo "0")
+K3S_CONTAINER="${K3S_CONTAINER:-}"
+if [[ -z "$K3S_CONTAINER" ]]; then
+  # Auto-detect: try both naming patterns (docker-compose project prefix varies)
+  for _candidate in hosting-platform-k3s-server-1 k8s-hosting-platform-k3s-server-1; do
+    if docker inspect "$_candidate" >/dev/null 2>&1; then
+      K3S_CONTAINER="$_candidate"
+      break
+    fi
+  done
+fi
+ORPHAN_COUNT=0
+if [[ -n "$K3S_CONTAINER" ]]; then
+  ORPHAN_COUNT=$(docker exec "$K3S_CONTAINER" kubectl get ns --no-headers 2>/dev/null \
+    | awk '/client-smoke-test/ {n++} END {print n+0}' || echo "0")
+fi
 if (( ORPHAN_COUNT > 10 )); then
   echo "  ⚠ WARNING: $ORPHAN_COUNT orphaned client-smoke-test-* namespaces found in k3s."
   echo "    Run ./scripts/cleanup-orphaned-namespaces.sh to reclaim pod capacity."

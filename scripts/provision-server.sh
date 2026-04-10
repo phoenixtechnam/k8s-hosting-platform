@@ -302,6 +302,7 @@ install_k3s() {
         --write-kubeconfig-mode=644 \
         --cluster-cidr=10.42.0.0/16,fd42::/48 \
         --service-cidr=10.43.0.0/16,fd43::/112 \
+        --kubelet-arg=max-pods=250 \
         ${TLS_SANS}
 
     # Wait for k3s to be ready (API server)
