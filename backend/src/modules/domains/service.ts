@@ -184,6 +184,15 @@ export async function createDomain(db: Database, clientId: string, input: Create
     }
   }
 
+  // Auto-provision TLS certificate via cert-manager
+  if (k8s) {
+    try {
+      await ensureDomainCertificate(db, k8s, id);
+    } catch {
+      // Non-blocking — cert can be provisioned later via reconciler
+    }
+  }
+
   return created;
 }
 
