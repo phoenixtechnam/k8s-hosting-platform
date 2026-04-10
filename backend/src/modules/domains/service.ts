@@ -1,5 +1,5 @@
 import { eq, and, like, desc, asc, lt, gt, sql, inArray } from 'drizzle-orm';
-import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRoutes } from '../../db/schema.js';
+import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRoutes, sslCertificates } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
@@ -13,6 +13,58 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+
+const EXPIRING_THRESHOLD_DAYS = 30;
+
+/** Enrich domain rows with TLS cert summary from ssl_certificates. */
+async function enrichWithCertInfo(
+  db: Database,
+  rows: (typeof domains.$inferSelect)[],
+): Promise<(typeof domains.$inferSelect & {
+  tlsCertStatus: 'active' | 'expiring' | 'expired' | 'pending' | 'none';
+  tlsCertIssuer: string | null;
+  tlsCertExpiresAt: string | null;
+  tlsCertWildcard: boolean;
+})[]> {
+  if (rows.length === 0) return [];
+  const domainIds = rows.map((r) => r.id);
+  const certs = await db
+    .select({
+      domainId: sslCertificates.domainId,
+      issuer: sslCertificates.issuer,
+      subject: sslCertificates.subject,
+      expiresAt: sslCertificates.expiresAt,
+    })
+    .from(sslCertificates)
+    .where(inArray(sslCertificates.domainId, domainIds));
+
+  const certMap = new Map(certs.map((c) => [c.domainId, c]));
+  const now = new Date();
+  const expiringThreshold = new Date(now.getTime() + EXPIRING_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
+
+  return rows.map((row) => {
+    const cert = certMap.get(row.id);
+    if (!cert) {
+      return {
+        ...row,
+        tlsCertStatus: row.sslAutoRenew ? 'pending' as const : 'none' as const,
+        tlsCertIssuer: null,
+        tlsCertExpiresAt: null,
+        tlsCertWildcard: false,
+      };
+    }
+    const expired = cert.expiresAt ? cert.expiresAt < now : false;
+    const expiring = cert.expiresAt ? !expired && cert.expiresAt < expiringThreshold : false;
+    const isWildcard = cert.subject ? cert.subject.startsWith('*.') : false;
+    return {
+      ...row,
+      tlsCertStatus: (expired ? 'expired' : expiring ? 'expiring' : 'active') as 'active' | 'expiring' | 'expired',
+      tlsCertIssuer: cert.issuer ?? null,
+      tlsCertExpiresAt: cert.expiresAt ? cert.expiresAt.toISOString() : null,
+      tlsCertWildcard: isWildcard,
+    };
+  });
+}
 import type { DomainDeletePreview } from '@k8s-hosting/api-contracts';
 
 export async function createDomain(db: Database, clientId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
@@ -192,12 +244,13 @@ export async function listAllDomains(
   const countWhere = countConditions.length > 0 ? and(...countConditions) : undefined;
   const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(domains).where(countWhere);
 
+  const enriched = await enrichWithCertInfo(db, data);
   return {
-    data,
+    data: enriched,
     pagination: {
       cursor: nextCursor,
       has_more: hasMore,
-      page_size: data.length,
+      page_size: enriched.length,
       total_count: Number(countResult?.count ?? 0),
     },
   };
@@ -247,12 +300,13 @@ export async function listDomains(
 
   const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(domains).where(where);
 
+  const enriched = await enrichWithCertInfo(db, data);
   return {
-    data,
+    data: enriched,
     pagination: {
       cursor: nextCursor,
       has_more: hasMore,
-      page_size: data.length,
+      page_size: enriched.length,
       total_count: Number(countResult?.count ?? 0),
     },
   };

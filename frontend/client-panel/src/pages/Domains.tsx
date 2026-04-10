@@ -131,10 +131,7 @@ export default function Domains() {
                     </td>
                     <td className="hidden px-6 py-4 text-gray-600 dark:text-gray-400 uppercase text-xs md:table-cell">{domain.dnsMode}</td>
                     <td className="hidden px-6 py-4 sm:table-cell">
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${domain.sslAutoRenew ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`} data-testid={`ssl-badge-${domain.id}`}>
-                        <Lock size={10} />
-                        {domain.sslAutoRenew ? 'Auto' : 'None'}
-                      </span>
+                      <TlsBadge domain={domain} />
                     </td>
                     <td className="hidden px-6 py-4 text-gray-500 dark:text-gray-400 lg:table-cell">
                       {new Date(domain.createdAt).toLocaleDateString()}
@@ -249,5 +246,52 @@ function AddDomainModal({ clientId, onClose }: { readonly clientId: string; read
         </form>
       </div>
     </div>
+  );
+}
+
+function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: number; tlsCertStatus?: string; tlsCertIssuer?: string | null; tlsCertExpiresAt?: string | null; tlsCertWildcard?: boolean } }) {
+  const status = domain.tlsCertStatus ?? (domain.sslAutoRenew ? 'pending' : 'none');
+  const issuer = domain.tlsCertIssuer;
+  const expiry = domain.tlsCertExpiresAt ? new Date(domain.tlsCertExpiresAt) : null;
+  const isWildcard = domain.tlsCertWildcard ?? false;
+
+  const daysUntilExpiry = expiry ? Math.ceil((expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
+
+  const tooltip = [
+    `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`,
+    issuer ? `Issuer: ${issuer}` : null,
+    isWildcard ? 'Type: Wildcard' : 'Type: Single-hostname',
+    expiry ? `Expires: ${expiry.toLocaleDateString()} (${daysUntilExpiry}d)` : 'Expires: N/A',
+  ].filter(Boolean).join('\n');
+
+  const styles: Record<string, string> = {
+    active: 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300',
+    expiring: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
+    expired: 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300',
+    pending: 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300',
+    none: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+  };
+
+  const labels: Record<string, string> = {
+    active: 'Active',
+    expiring: `${daysUntilExpiry}d`,
+    expired: 'Expired',
+    pending: 'Pending',
+    none: 'None',
+  };
+
+  const shortIssuer = issuer?.includes("Let's Encrypt") ? 'LE' : issuer?.includes('DigiCert') ? 'DC' : issuer ? 'Custom' : '';
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium cursor-default ${styles[status] ?? styles.none}`}
+      title={tooltip}
+      data-testid={`ssl-badge-${domain.id}`}
+    >
+      <Lock size={10} />
+      {labels[status] ?? status}
+      {shortIssuer && status !== 'none' && status !== 'pending' && <span className="opacity-70">· {shortIssuer}</span>}
+      {isWildcard && status !== 'none' && status !== 'pending' && <span className="opacity-70">· WC</span>}
+    </span>
   );
 }

@@ -60,6 +60,11 @@ export const domainResponseSchema = z.object({
   deploymentId: z.string().nullable().optional(),
   dnsGroupId: z.string().nullable().optional(),
   sslAutoRenew: z.number(),
+  /** TLS certificate summary — enriched from ssl_certificates LEFT JOIN. */
+  tlsCertStatus: z.enum(['active', 'expiring', 'expired', 'pending', 'none']).optional(),
+  tlsCertIssuer: z.string().nullable().optional(),
+  tlsCertExpiresAt: z.string().nullable().optional(),
+  tlsCertWildcard: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
