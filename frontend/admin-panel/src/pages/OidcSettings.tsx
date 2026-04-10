@@ -1,13 +1,13 @@
 import { useState, type FormEvent } from 'react';
 import {
-  Shield, Loader2, AlertCircle, CheckCircle, Plus, Trash2, Plug, Edit,
-  Save, X, AlertTriangle, KeyRound,
+  Shield, ShieldCheck, Loader2, AlertCircle, CheckCircle, Plus, Trash2, Plug, Edit,
+  Save, X, AlertTriangle, KeyRound, Copy, RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   useOidcProviders, useCreateOidcProvider, useUpdateOidcProvider, useDeleteOidcProvider,
-  useTestOidcProvider, useOidcGlobalSettings, useSaveOidcGlobalSettings,
-  type OidcProvider,
+  useTestOidcProvider, useOidcGlobalSettings, useSaveOidcGlobalSettings, useRegenerateBreakGlass,
+  type OidcProvider, type OidcGlobalSettings,
 } from '@/hooks/use-oidc-settings';
 
 const INPUT_CLASS =
@@ -38,6 +38,11 @@ export default function OidcSettings() {
 
       {/* Issue #5: Providers ABOVE auth settings */}
       <ProvidersSection providers={providers} />
+      <IngressProtectionSection
+        settings={globalSettings}
+        hasAdminProvider={hasAdminProvider}
+        hasClientProvider={hasClientProvider}
+      />
       <GlobalSettingsSection
         settings={globalSettings}
         hasAdminProvider={hasAdminProvider}
@@ -50,7 +55,7 @@ export default function OidcSettings() {
 // ─── Global Settings (below providers) ───────────────────────────────────────
 
 function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }: {
-  readonly settings: { disableLocalAuthAdmin: boolean; disableLocalAuthClient: boolean; hasBreakGlassSecret: boolean } | undefined;
+  readonly settings: OidcGlobalSettings | undefined;
   readonly hasAdminProvider: boolean;
   readonly hasClientProvider: boolean;
 }) {
@@ -147,6 +152,167 @@ function GlobalSettingsSection({ settings, hasAdminProvider, hasClientProvider }
           </div>
         </div>
       )}
+    </form>
+  );
+}
+
+// ─── Ingress Protection Section ──────────────────────────────────────────────
+
+function IngressProtectionSection({ settings, hasAdminProvider, hasClientProvider }: {
+  readonly settings: OidcGlobalSettings | undefined;
+  readonly hasAdminProvider: boolean;
+  readonly hasClientProvider: boolean;
+}) {
+  const saveSettings = useSaveOidcGlobalSettings();
+  const regenerateBreakGlass = useRegenerateBreakGlass();
+  const [proxyAdmin, setProxyAdmin] = useState(settings?.proxyProtectAdmin ?? false);
+  const [proxyClient, setProxyClient] = useState(settings?.proxyProtectClient ?? false);
+  const [copied, setCopied] = useState(false);
+
+  const breakGlassPath = settings?.breakGlassPath ?? null;
+  const breakGlassUrl = breakGlassPath
+    ? `${window.location.origin}/${breakGlassPath}/`
+    : null;
+
+  const handleSaveProxy = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await saveSettings.mutateAsync({
+        proxy_protect_admin: proxyAdmin,
+        proxy_protect_client: proxyClient,
+      });
+    } catch { /* error shown */ }
+  };
+
+  const handleCopy = async () => {
+    if (!breakGlassUrl) return;
+    try {
+      await navigator.clipboard.writeText(breakGlassUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard unavailable */ }
+  };
+
+  const handleRegenerate = async () => {
+    try {
+      await regenerateBreakGlass.mutateAsync();
+    } catch { /* error shown */ }
+  };
+
+  return (
+    <form onSubmit={handleSaveProxy} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="ingress-protection-section">
+      <div className="flex items-center gap-2">
+        <ShieldCheck size={18} className="text-brand-500" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Ingress Protection</h2>
+      </div>
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Protect panel access with OAuth2 Proxy. Unauthenticated users cannot reach the panel without first authenticating via your OIDC provider.
+      </p>
+
+      <label className={clsx('flex items-start gap-3', !hasAdminProvider && 'opacity-50')} title={!hasAdminProvider ? 'Enable an admin-scoped OIDC provider first' : undefined}>
+        <input
+          type="checkbox"
+          checked={proxyAdmin}
+          onChange={(e) => setProxyAdmin(e.target.checked)}
+          disabled={!hasAdminProvider}
+          className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed"
+          data-testid="proxy-protect-admin-toggle"
+        />
+        <div>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect admin panel via OAuth2 Proxy</span>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {hasAdminProvider
+              ? 'When enabled, unauthenticated users cannot access the admin panel without first authenticating via your OIDC provider.'
+              : 'Enable an admin-scoped OIDC provider first.'}
+          </p>
+        </div>
+      </label>
+
+      <label className={clsx('flex items-start gap-3', !hasClientProvider && 'opacity-50')} title={!hasClientProvider ? 'Enable a client-scoped OIDC provider first' : undefined}>
+        <input
+          type="checkbox"
+          checked={proxyClient}
+          onChange={(e) => setProxyClient(e.target.checked)}
+          disabled={!hasClientProvider}
+          className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-500 disabled:cursor-not-allowed"
+          data-testid="proxy-protect-client-toggle"
+        />
+        <div>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Protect client panel via OAuth2 Proxy</span>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {hasClientProvider
+              ? 'When enabled, unauthenticated users cannot access the client panel without first authenticating via your OIDC provider.'
+              : 'Enable a client-scoped OIDC provider first.'}
+          </p>
+        </div>
+      </label>
+
+      {/* Break-glass path display — only visible when admin protection is enabled */}
+      {proxyAdmin && (
+        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3" data-testid="break-glass-path-section">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} className="text-amber-500 dark:text-amber-400" />
+            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Break-Glass Access Path</span>
+          </div>
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            This URL bypasses OAuth2 Proxy. Keep it secret. Use it only for emergency access.
+          </p>
+          {breakGlassUrl ? (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-900 px-3 py-2 text-xs font-mono text-gray-900 dark:text-gray-100 break-all" data-testid="break-glass-url">
+                {breakGlassUrl}
+              </code>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                title="Copy to clipboard"
+                data-testid="copy-break-glass-url"
+              >
+                {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
+              </button>
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={regenerateBreakGlass.isPending}
+                className="rounded-md border border-amber-300 dark:border-amber-700 p-2 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+                title="Regenerate break-glass path"
+                data-testid="regenerate-break-glass"
+              >
+                {regenerateBreakGlass.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-xs text-amber-700 dark:text-amber-400 italic">No break-glass path generated yet.</p>
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                disabled={regenerateBreakGlass.isPending}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+                data-testid="generate-break-glass"
+              >
+                {regenerateBreakGlass.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Generate
+              </button>
+            </div>
+          )}
+          {regenerateBreakGlass.isError && (
+            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+              <AlertCircle size={12} />
+              {regenerateBreakGlass.error instanceof Error ? regenerateBreakGlass.error.message : 'Failed to regenerate'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {saveSettings.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{saveSettings.error instanceof Error ? saveSettings.error.message : 'Failed'}</div>}
+      {saveSettings.isSuccess && <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400"><CheckCircle size={14} /> Saved.</div>}
+
+      <div className="flex justify-end">
+        <button type="submit" disabled={saveSettings.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="save-proxy-settings">
+          {saveSettings.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
+        </button>
+      </div>
     </form>
   );
 }

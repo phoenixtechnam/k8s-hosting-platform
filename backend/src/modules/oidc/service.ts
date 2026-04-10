@@ -37,14 +37,30 @@ async function fetchJwks(jwksUri: string): Promise<Jwks> {
 
 // ─── Global Settings ─────────────────────────────────────────────────────────
 
+export function generateBreakGlassPath(): string {
+  return `bg-${crypto.randomBytes(16).toString('hex')}`;
+}
+
 export async function getGlobalSettings(db: Database) {
   const rows = await db.select().from(oidcGlobalSettings);
-  if (rows.length === 0) return { disableLocalAuthAdmin: false, disableLocalAuthClient: false, hasBreakGlassSecret: false };
+  if (rows.length === 0) {
+    return {
+      disableLocalAuthAdmin: false,
+      disableLocalAuthClient: false,
+      hasBreakGlassSecret: false,
+      protectAdminViaProxy: false,
+      protectClientViaProxy: false,
+      breakGlassPath: null as string | null,
+    };
+  }
   const row = rows[0];
   return {
     disableLocalAuthAdmin: Boolean(row.disableLocalAuthAdmin),
     disableLocalAuthClient: Boolean(row.disableLocalAuthClient),
     hasBreakGlassSecret: Boolean(row.breakGlassSecretHash),
+    protectAdminViaProxy: row.protectAdminViaProxy === 1,
+    protectClientViaProxy: row.protectClientViaProxy === 1,
+    breakGlassPath: row.breakGlassPath ?? null,
   };
 }
 
@@ -52,6 +68,9 @@ export interface SaveGlobalSettingsInput {
   readonly disable_local_auth_admin?: boolean;
   readonly disable_local_auth_client?: boolean;
   readonly break_glass_secret?: string;
+  readonly protect_admin_via_proxy?: boolean;
+  readonly protect_client_via_proxy?: boolean;
+  readonly break_glass_path?: string | null;
 }
 
 export async function saveGlobalSettings(db: Database, input: SaveGlobalSettingsInput) {
@@ -61,6 +80,17 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
   if (input.disable_local_auth_admin !== undefined) updateValues.disableLocalAuthAdmin = input.disable_local_auth_admin ? 1 : 0;
   if (input.disable_local_auth_client !== undefined) updateValues.disableLocalAuthClient = input.disable_local_auth_client ? 1 : 0;
   if (input.break_glass_secret) updateValues.breakGlassSecretHash = await bcrypt.hash(input.break_glass_secret, 12);
+
+  // Handle proxy protection fields
+  if (input.protect_admin_via_proxy !== undefined) {
+    updateValues.protectAdminViaProxy = input.protect_admin_via_proxy ? 1 : 0;
+  }
+  if (input.protect_client_via_proxy !== undefined) {
+    updateValues.protectClientViaProxy = input.protect_client_via_proxy ? 1 : 0;
+  }
+  if (input.break_glass_path !== undefined) {
+    updateValues.breakGlassPath = input.break_glass_path;
+  }
 
   // Validate: can't disable admin local auth without a break-glass secret
   if (input.disable_local_auth_admin) {
@@ -72,6 +102,31 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
     const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
     if (adminProviders.length === 0) {
       throw new ApiError('NO_ADMIN_PROVIDER', 'At least one enabled admin OIDC provider is required before disabling local auth', 400);
+    }
+  }
+
+  // Validate: can't enable proxy protection without at least one OIDC provider for that panel
+  const wantsAdminProxy = input.protect_admin_via_proxy ?? (rows[0]?.protectAdminViaProxy === 1);
+  const wantsClientProxy = input.protect_client_via_proxy ?? (rows[0]?.protectClientViaProxy === 1);
+
+  if (wantsAdminProxy) {
+    const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
+    if (adminProviders.length === 0) {
+      throw new ApiError('NO_ADMIN_PROVIDER', 'At least one enabled admin OIDC provider is required before enabling proxy protection for admin panel', 400);
+    }
+  }
+  if (wantsClientProxy) {
+    const clientProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'client'), eq(oidcProviders.enabled, 1)));
+    if (clientProviders.length === 0) {
+      throw new ApiError('NO_CLIENT_PROVIDER', 'At least one enabled client OIDC provider is required before enabling proxy protection for client panel', 400);
+    }
+  }
+
+  // Auto-generate break-glass path when admin proxy is enabled and no path exists
+  if (wantsAdminProxy) {
+    const existingPath = input.break_glass_path !== undefined ? input.break_glass_path : rows[0]?.breakGlassPath;
+    if (!existingPath) {
+      updateValues.breakGlassPath = generateBreakGlassPath();
     }
   }
 
@@ -403,6 +458,24 @@ export async function handleBackchannelLogout(db: Database, logoutToken: string)
   return { loggedOutUsers: matchingUsers.length };
 }
 
+// ─── Break-Glass Path Regeneration ───────────────────────────────────────────
+
+export async function regenerateBreakGlassPath(db: Database): Promise<string> {
+  const rows = await db.select().from(oidcGlobalSettings);
+  const newPath = generateBreakGlassPath();
+
+  if (rows.length > 0) {
+    await db.update(oidcGlobalSettings).set({ breakGlassPath: newPath }).where(eq(oidcGlobalSettings.id, rows[0].id));
+  } else {
+    await db.insert(oidcGlobalSettings).values({
+      id: crypto.randomUUID(),
+      breakGlassPath: newPath,
+    } as typeof oidcGlobalSettings.$inferInsert);
+  }
+
+  return newPath;
+}
+
 // ─── Auth Status Checks ──────────────────────────────────────────────────────
 
 export async function isLocalAuthDisabled(db: Database, panel: 'admin' | 'client' = 'admin'): Promise<boolean> {
@@ -417,9 +490,11 @@ export async function getAuthStatus(db: Database, panel: 'admin' | 'client') {
     .orderBy(asc(oidcProviders.displayOrder));
 
   const localAuthDisabled = panel === 'admin' ? globalSettings.disableLocalAuthAdmin : globalSettings.disableLocalAuthClient;
+  const proxyProtected = panel === 'admin' ? globalSettings.protectAdminViaProxy : globalSettings.protectClientViaProxy;
 
   return {
     localAuthEnabled: !localAuthDisabled,
+    proxyProtected,
     providers: providers.map((p) => ({
       id: p.id,
       displayName: p.displayName,

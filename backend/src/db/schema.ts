@@ -98,6 +98,9 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   disableLocalAuthAdmin: integer('disable_local_auth_admin').notNull().default(0),
   disableLocalAuthClient: integer('disable_local_auth_client').notNull().default(0),
   breakGlassSecretHash: varchar('break_glass_secret_hash', { length: 255 }),
+  protectAdminViaProxy: integer('protect_admin_via_proxy').notNull().default(0),
+  protectClientViaProxy: integer('protect_client_via_proxy').notNull().default(0),
+  breakGlassPath: varchar('break_glass_path', { length: 100 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });

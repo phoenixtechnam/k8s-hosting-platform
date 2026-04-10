@@ -8,6 +8,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
 interface AuthStatus {
   readonly localAuthEnabled: boolean;
+  readonly proxyProtectionEnabled?: boolean;
   readonly providers: readonly { id: string; displayName: string }[];
 }
 
@@ -18,7 +19,7 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
 
-  const { login, error, setTokenAndUser } = useAuth();
+  const { login, error, setTokenAndUser, token: existingToken } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -44,6 +45,21 @@ export default function Login() {
       } catch { /* ignore */ }
     }
   }, [searchParams, navigate, setTokenAndUser]);
+
+  // Auto-login: if OIDC-only (or proxy-protected) and single provider, redirect automatically
+  const shouldAutoLogin = !isEmergency && !existingToken && authStatus !== null
+    && (!authStatus.localAuthEnabled || authStatus.proxyProtectionEnabled)
+    && authStatus.providers.length === 1;
+
+  useEffect(() => {
+    if (!shouldAutoLogin) return;
+    const provider = authStatus!.providers[0];
+    const callbackUrl = `${window.location.origin}/login`;
+    const timer = setTimeout(() => {
+      window.location.href = `${API_BASE}/api/v1/auth/oidc/authorize/${provider.id}?redirect_uri=${encodeURIComponent(callbackUrl)}`;
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [shouldAutoLogin, authStatus]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -75,6 +91,16 @@ export default function Login() {
   const showLocalAuth = authStatus?.localAuthEnabled ?? true;
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
+
+  // Show spinner while auto-redirecting to SSO
+  if (shouldAutoLogin) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800">
+        <Loader2 className="h-8 w-8 animate-spin text-white" />
+        <p className="mt-4 text-white/80 text-sm">Signing in via SSO...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand-500 to-accent-500 p-4">

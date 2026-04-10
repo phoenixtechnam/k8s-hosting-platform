@@ -4,6 +4,8 @@ import * as service from './service.js';
 import type { SaveProviderInput, SaveGlobalSettingsInput } from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { syncProxyIngressAnnotations } from './ingress-proxy-manager.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // In-memory PKCE state store (Phase 1). Replace with Redis in production.
 const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; providerId: string; expiresAt: number }>();
@@ -204,6 +206,44 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const input = request.body as unknown as SaveGlobalSettingsInput;
     const settings = await service.saveGlobalSettings(app.db, input);
+
+    // Sync K8s Ingress annotations when proxy settings change
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8s = createK8sClients(kubeconfigPath);
+      await syncProxyIngressAnnotations(app.db, k8s, {
+        protectAdminViaProxy: settings.protectAdminViaProxy,
+        protectClientViaProxy: settings.protectClientViaProxy,
+        breakGlassPath: settings.breakGlassPath,
+      });
+    } catch (err) {
+      app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations — K8s may be unavailable');
+    }
+
     return success(settings);
+  });
+
+  // ─── Admin: Regenerate Break-Glass Path ───────────────────────────────────
+
+  app.post('/admin/oidc/regenerate-break-glass', {
+    onRequest: [authenticate, requireRole('super_admin')],
+  }, async (_request) => {
+    const newPath = await service.regenerateBreakGlassPath(app.db);
+
+    // Update K8s Ingress with the new break-glass path
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8s = createK8sClients(kubeconfigPath);
+      const settings = await service.getGlobalSettings(app.db);
+      await syncProxyIngressAnnotations(app.db, k8s, {
+        protectAdminViaProxy: settings.protectAdminViaProxy,
+        protectClientViaProxy: settings.protectClientViaProxy,
+        breakGlassPath: newPath,
+      });
+    } catch (err) {
+      app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations after break-glass regeneration');
+    }
+
+    return success({ breakGlassPath: newPath });
   });
 }

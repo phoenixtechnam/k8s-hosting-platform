@@ -21,6 +21,9 @@ export interface OidcGlobalSettings {
   readonly disableLocalAuthAdmin: boolean;
   readonly disableLocalAuthClient: boolean;
   readonly hasBreakGlassSecret: boolean;
+  readonly proxyProtectAdmin: boolean;
+  readonly proxyProtectClient: boolean;
+  readonly breakGlassPath: string | null;
 }
 
 export interface OidcTestResult {
@@ -103,6 +106,8 @@ interface SaveGlobalSettingsInput {
   readonly disable_local_auth_admin?: boolean;
   readonly disable_local_auth_client?: boolean;
   readonly break_glass_secret?: string;
+  readonly proxy_protect_admin?: boolean;
+  readonly proxy_protect_client?: boolean;
 }
 
 export function useSaveOidcGlobalSettings() {
@@ -111,6 +116,17 @@ export function useSaveOidcGlobalSettings() {
     mutationFn: (input: SaveGlobalSettingsInput) =>
       apiFetch<{ data: OidcGlobalSettings }>('/api/v1/admin/oidc/settings', {
         method: 'PUT', body: JSON.stringify(input),
+      }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['oidc-global-settings'] }); },
+  });
+}
+
+export function useRegenerateBreakGlass() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { breakGlassPath: string } }>('/api/v1/admin/oidc/regenerate-break-glass', {
+        method: 'POST',
       }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['oidc-global-settings'] }); },
   });

@@ -147,7 +147,7 @@ describe('Domains Page', () => {
       error: null,
     } as unknown as ReturnType<typeof useDomains>);
     renderWithProviders(<Domains />);
-    expect(screen.getByText('Auto')).toBeInTheDocument();
+    expect(screen.getByText('Pending')).toBeInTheDocument();
     expect(screen.getByText('None')).toBeInTheDocument();
   });
 
