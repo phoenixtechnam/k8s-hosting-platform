@@ -36,7 +36,10 @@ import type { CreateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/a
 
 // Pinned image — operators can override via STALWART_IMAPSYNC_IMAGE
 // env var if they need a different mirror or local image.
-export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.296';
+// The Docker Hub image only publishes `latest` — there is no
+// version-tagged release. Pin to latest and track upstream
+// releases manually.
+export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:latest';
 
 // imapsync supports --passfile1 / --passfile2 to read passwords from
 // a file. We mount the per-job Secret as env vars and have the
