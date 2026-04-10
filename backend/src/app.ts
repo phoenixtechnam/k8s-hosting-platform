@@ -7,7 +7,7 @@ import fastifySwaggerUi from '@fastify/swagger-ui';
 import { errorHandler } from './middleware/error-handler.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
-import { registerAuth } from './middleware/auth.js';
+import { registerAuth, authenticate, requireRole } from './middleware/auth.js';
 import { createCacheMiddleware, cacheOnSendHook } from './middleware/cache.js';
 import { clientRoutes } from './modules/clients/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
@@ -144,8 +144,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
   });
 
-  // Health check — lightweight status with real K8s/Redis connectivity
+  // Unauthenticated liveness probe for Docker/K8s health checks
+  app.get('/api/v1/healthz', async () => ({ status: 'ok' }));
+
+  // Detailed status — requires auth (exposes infrastructure state)
   app.get('/api/v1/admin/status', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'read_only')],
     preHandler: createCacheMiddleware(10_000),
     schema: {
       tags: ['Admin'],

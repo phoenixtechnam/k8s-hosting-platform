@@ -3,8 +3,8 @@ import {
   Users, Plus, Loader2, AlertCircle, Trash2, X, Info,
   Edit2, Power, PowerOff, KeyRound, CheckCircle,
 } from 'lucide-react';
-import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useCanManage } from '@/hooks/use-can-manage';
 import {
   useSubUsers,
   useCreateSubUser,
@@ -36,11 +36,10 @@ const ROLE_BADGE_CLASSES: Record<SubUserRole, string> = {
 
 export default function SubUsers() {
   const { clientId } = useClientContext();
-  const authUser = useAuth((s) => s.user);
   // Phase 1: only client_admin (and impersonating staff) can mutate
   // the team. client_user has READ access but should not see buttons
   // that would 403 on click. Backend still enforces this.
-  const canManage = authUser?.role === 'client_admin';
+  const canManage = useCanManage();
   const { data: response, isLoading, isError } = useSubUsers(clientId);
   const createUser = useCreateSubUser(clientId);
   const updateUser = useUpdateSubUser(clientId);

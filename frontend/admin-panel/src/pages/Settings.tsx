@@ -38,7 +38,7 @@ export default function Settings() {
         ) : (
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {platformConfig.map(({ label, value }) => (
-              <div key={label}><dt className="text-sm font-medium text-gray-500">{label}</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{value}</dd></div>
+              <div key={label}><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">{label}</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{value}</dd></div>
             ))}
           </dl>
         )}
@@ -54,10 +54,10 @@ export default function Settings() {
         ) : version ? (
           <div className="space-y-4">
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div><dt className="text-sm font-medium text-gray-500">Current Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="current-version">{version.currentVersion}</dd></div>
-              <div><dt className="text-sm font-medium text-gray-500">Latest Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="latest-version">{version.latestVersion ?? '—'}</dd></div>
-              <div><dt className="text-sm font-medium text-gray-500">Environment</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="environment">{version.environment}</dd></div>
-              <div><dt className="text-sm font-medium text-gray-500">Last Checked</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{version.lastCheckedAt ? new Date(version.lastCheckedAt).toLocaleString() : '—'}</dd></div>
+              <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Current Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="current-version">{version.currentVersion}</dd></div>
+              <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Latest Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="latest-version">{version.latestVersion ?? '—'}</dd></div>
+              <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Environment</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="environment">{version.environment}</dd></div>
+              <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Last Checked</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{version.lastCheckedAt ? new Date(version.lastCheckedAt).toLocaleString() : '—'}</dd></div>
             </dl>
 
             <div className="flex flex-wrap items-center gap-4 border-t border-gray-100 dark:border-gray-700 pt-4">

@@ -85,6 +85,7 @@ vi.mock('../hooks/use-email', () => ({
   useCancelImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePurgeImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResyncImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useUpdateImapSyncJob: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useMailRateLimit: vi.fn(() => ({
     data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
     isLoading: false,

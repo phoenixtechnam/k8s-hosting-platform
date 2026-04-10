@@ -37,7 +37,12 @@ export const useAuth = create<AuthState>((set) => ({
         const user = JSON.parse(userJson) as AuthUser;
         set({ token, user, isAuthenticated: true, isLoading: false });
 
-        apiFetch<{ data: { id: string } }>('/api/v1/auth/me')
+        apiFetch<{ data: { id: string; email: string; fullName: string; role: string; clientId?: string } }>('/api/v1/auth/me')
+          .then((res) => {
+            const freshUser = res.data;
+            localStorage.setItem('auth_user', JSON.stringify(freshUser));
+            set({ user: freshUser });
+          })
           .catch(() => {
             localStorage.removeItem('auth_token');
             localStorage.removeItem('auth_user');

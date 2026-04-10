@@ -63,13 +63,13 @@ export default function App() {
             <Route path="security" element={<Security />} />
             <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Settings />} />
-            <Route path="settings/oidc" element={<OidcSettings />} />
+            <Route path="settings/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcSettings /></ProtectedRoute>} />
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
-            <Route path="settings/backups" element={<BackupSettings />} />
-            <Route path="settings/users" element={<AdminUsers />} />
-            <Route path="settings/export-import" element={<ExportImport />} />
+            <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
+            <Route path="settings/users" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AdminUsers /></ProtectedRoute>} />
+            <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
             <Route path="monitoring/health" element={<HealthDashboard />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />

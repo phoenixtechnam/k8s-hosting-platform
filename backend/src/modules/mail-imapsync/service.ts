@@ -21,7 +21,7 @@
  */
 
 import crypto from 'crypto';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray, lt, sql } from 'drizzle-orm';
 import type { V1Job, V1Secret } from '@kubernetes/client-node';
 import {
   imapSyncJobs,
@@ -32,7 +32,12 @@ import { ApiError } from '../../shared/errors.js';
 import { encrypt } from '../oidc/crypto.js';
 import { notifyClientImapsyncTerminal } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
-import type { CreateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/api-contracts';
+import type { CreateImapSyncJobInput, UpdateImapSyncJobInput, ImapSyncJobResponse } from '@k8s-hosting/api-contracts';
+import {
+  MAX_ACTIVE_IMAPSYNC_JOBS,
+  MAX_TOTAL_IMAPSYNC_JOBS,
+  IMAPSYNC_JOB_RETENTION_DAYS,
+} from '@k8s-hosting/api-contracts';
 
 // Pinned image — operators can override via STALWART_IMAPSYNC_IMAGE
 // env var if they need a different mirror or local image.
@@ -427,19 +432,13 @@ export async function deleteTerminalJob(
 }
 
 /**
- * Round-4 Phase 1: replay an existing IMAPSync job by creating a
- * new pending row that copies all source-server fields from the
- * original. The encrypted source password is reused as-is so the
- * client doesn't have to re-enter it. The new row gets a fresh id
- * and starts in `pending` state — the route handler is responsible
- * for creating the K8s Job afterwards (same flow as create).
+ * Re-sync a terminal IMAPSync job by resetting it in-place. Clears
+ * all progress/log/error fields and sets status back to 'pending'.
+ * Reuses the same row ID. Returns the raw row for K8s Job creation.
  *
- * Concurrency check (partial unique index on mailbox_id WHERE
- * status IN ('pending','running')) is enforced inside the insert.
- *
- * Returns the freshly-loaded ImapSyncJob row (raw, NOT
- * rowToResponse — the route adds the master/destination details
- * via the same buildJobManifest path as createImapSyncJob).
+ * Concurrency check: the partial unique index on mailbox_id WHERE
+ * status IN ('pending','running') prevents a resync if another job
+ * is already active for the same mailbox.
  */
 export async function resyncImapSyncJob(
   db: Database,
@@ -470,40 +469,143 @@ export async function resyncImapSyncJob(
     );
   }
 
-  const newId = crypto.randomUUID();
+  // Check active job limit per client
+  await enforceActiveJobLimit(db, clientId);
+
   const now = new Date();
-  try {
-    const [row] = await db
-      .insert(imapSyncJobs)
-      .values({
-        id: newId,
-        clientId: original.clientId,
-        mailboxId: original.mailboxId,
-        sourceHost: original.sourceHost,
-        sourcePort: original.sourcePort,
-        sourceUsername: original.sourceUsername,
-        // The original password is already at-rest encrypted with
-        // OIDC_ENCRYPTION_KEY. Copy verbatim — don't decrypt+re-encrypt.
-        sourcePasswordEncrypted: original.sourcePasswordEncrypted,
-        sourceSsl: original.sourceSsl,
-        options: original.options,
-        status: 'pending',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    return row as ImapSyncJob;
-  } catch (err: unknown) {
-    const pgErr = err as { code?: string; message?: string };
-    if (pgErr.code === '23505') {
-      throw new ApiError(
-        'IMAPSYNC_ALREADY_RUNNING',
-        'An IMAPSync job is already running for this mailbox',
-        409,
-      );
-    }
-    throw err;
+  const newK8sJobName = `imapsync-${jobId}-${now.getTime()}`;
+  const [row] = await db
+    .update(imapSyncJobs)
+    .set({
+      status: 'pending',
+      k8sJobName: newK8sJobName,
+      logTail: null,
+      errorMessage: null,
+      messagesTotal: null,
+      messagesTransferred: null,
+      currentFolder: null,
+      lastProgressAt: null,
+      podPhase: null,
+      podMessage: null,
+      startedAt: null,
+      finishedAt: null,
+      updatedAt: now,
+    })
+    .where(eq(imapSyncJobs.id, jobId))
+    .returning();
+  return row as ImapSyncJob;
+}
+
+/**
+ * Enforce the per-client active job limit. Throws 429 if the
+ * client already has MAX_ACTIVE_IMAPSYNC_JOBS pending/running.
+ */
+export async function enforceActiveJobLimit(
+  db: Database,
+  clientId: string,
+): Promise<void> {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(imapSyncJobs)
+    .where(
+      and(
+        eq(imapSyncJobs.clientId, clientId),
+        inArray(imapSyncJobs.status, ['pending', 'running']),
+      ),
+    );
+  if (count >= MAX_ACTIVE_IMAPSYNC_JOBS) {
+    throw new ApiError(
+      'IMAPSYNC_ACTIVE_LIMIT',
+      `Maximum ${MAX_ACTIVE_IMAPSYNC_JOBS} active sync jobs per client`,
+      429,
+    );
   }
+}
+
+/**
+ * Enforce the per-client total job limit. Throws 429 if the client
+ * already has MAX_TOTAL_IMAPSYNC_JOBS rows.
+ */
+export async function enforceTotalJobLimit(
+  db: Database,
+  clientId: string,
+): Promise<void> {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(imapSyncJobs)
+    .where(eq(imapSyncJobs.clientId, clientId));
+  if (count >= MAX_TOTAL_IMAPSYNC_JOBS) {
+    throw new ApiError(
+      'IMAPSYNC_TOTAL_LIMIT',
+      `Maximum ${MAX_TOTAL_IMAPSYNC_JOBS} sync jobs per client — delete old jobs to create new ones`,
+      429,
+    );
+  }
+}
+
+/**
+ * Update a terminal job's source settings. Only allowed for jobs
+ * in succeeded/failed/cancelled status. Re-encrypts the password
+ * if provided.
+ */
+export async function updateImapSyncJob(
+  db: Database,
+  encryptionKey: string,
+  clientId: string,
+  jobId: string,
+  input: UpdateImapSyncJobInput,
+): Promise<ImapSyncJobResponse> {
+  const [row] = await db
+    .select()
+    .from(imapSyncJobs)
+    .where(and(eq(imapSyncJobs.id, jobId), eq(imapSyncJobs.clientId, clientId)));
+  if (!row) {
+    throw new ApiError('IMAPSYNC_JOB_NOT_FOUND', 'IMAPSync job not found', 404);
+  }
+  if (row.status !== 'succeeded' && row.status !== 'failed' && row.status !== 'cancelled') {
+    throw new ApiError(
+      'INVALID_STATE',
+      `Cannot edit a job in '${row.status}' state — wait for it to finish or cancel it first`,
+      409,
+    );
+  }
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.source_host !== undefined) updates.sourceHost = input.source_host;
+  if (input.source_port !== undefined) updates.sourcePort = input.source_port;
+  if (input.source_username !== undefined) updates.sourceUsername = input.source_username;
+  if (input.source_password !== undefined) {
+    updates.sourcePasswordEncrypted = encrypt(input.source_password, encryptionKey);
+  }
+  if (input.source_ssl !== undefined) updates.sourceSsl = input.source_ssl ? 1 : 0;
+  if (input.options !== undefined) updates.options = input.options;
+
+  const [updated] = await db
+    .update(imapSyncJobs)
+    .set(updates)
+    .where(eq(imapSyncJobs.id, jobId))
+    .returning();
+  return rowToResponse(updated as ImapSyncJob);
+}
+
+/**
+ * Delete terminal jobs older than IMAPSYNC_JOB_RETENTION_DAYS.
+ * Returns the number of rows deleted.
+ */
+export async function cleanupExpiredJobs(db: Database): Promise<number> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - IMAPSYNC_JOB_RETENTION_DAYS);
+
+  const deleted = await db
+    .delete(imapSyncJobs)
+    .where(
+      and(
+        inArray(imapSyncJobs.status, ['succeeded', 'failed', 'cancelled']),
+        lt(imapSyncJobs.finishedAt, cutoff),
+      ),
+    )
+    .returning({ id: imapSyncJobs.id });
+  return deleted.length;
 }
 
 /**

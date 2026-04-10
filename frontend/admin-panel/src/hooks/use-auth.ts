@@ -38,7 +38,12 @@ export const useAuth = create<AuthState>((set) => ({
         set({ token, user, isAuthenticated: true, isLoading: false });
 
         // Verify token is still valid with backend (async, non-blocking)
-        apiFetch<{ data: { id: string; email: string; fullName: string; role: string } }>('/api/v1/auth/me')
+        apiFetch<{ data: { id: string; email: string; fullName: string; role: string; clientId?: string } }>('/api/v1/auth/me')
+          .then((res) => {
+            const freshUser = res.data;
+            localStorage.setItem('auth_user', JSON.stringify(freshUser));
+            set({ user: freshUser });
+          })
           .catch(() => {
             // Token invalid — clear and redirect (handled by api-client 401 handler)
             // Guard: localStorage may not exist if test environment was torn down

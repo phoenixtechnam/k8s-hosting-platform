@@ -7,16 +7,34 @@ import { ApiError } from '../../shared/errors.js';
 
 // In-memory PKCE state store (Phase 1). Replace with Redis in production.
 const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; providerId: string; expiresAt: number }>();
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of pkceStore) {
-    if (val.expiresAt < now) pkceStore.delete(key);
-  }
-}, 300_000);
+const MAX_PKCE_ENTRIES = 1000;
 
 export async function oidcRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+  // Prune expired entries every 5 minutes; cap size to prevent DoS.
+  const pkceCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, val] of pkceStore) {
+      if (val.expiresAt < now) pkceStore.delete(key);
+    }
+    // Hard cap — if store exceeds limit, drop oldest entries
+    if (pkceStore.size > MAX_PKCE_ENTRIES) {
+      const excess = pkceStore.size - MAX_PKCE_ENTRIES;
+      let deleted = 0;
+      for (const key of pkceStore.keys()) {
+        if (deleted >= excess) break;
+        pkceStore.delete(key);
+        deleted++;
+      }
+    }
+  }, 300_000);
+  app.addHook('onClose', () => clearInterval(pkceCleanupTimer));
+  const resolveEncryptionKey = (): string => {
+    const k = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY;
+    if (k && k.length >= 32) return k;
+    if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
+    throw new Error('OIDC_ENCRYPTION_KEY is required (oidc routes)');
+  };
+  const encryptionKey = resolveEncryptionKey();
 
   // ─── Public: Auth status (login page) ──────────────────────────────────────
 

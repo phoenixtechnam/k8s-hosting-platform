@@ -417,7 +417,7 @@ export function useImapSyncJobs(clientId?: string) {
       const hasRunning = query.state.data?.data?.some(
         (j) => j.status === 'running' || j.status === 'pending',
       );
-      return hasRunning ? 5000 : false;
+      return hasRunning ? 10_000 : false;
     },
   });
 }
@@ -461,13 +461,8 @@ export function usePurgeImapSyncJob(clientId: string) {
   });
 }
 
-// Round-4 Phase 1: re-sync a terminal job. Creates a new pending
-// row that copies the original source server / port / username /
-// encrypted password / options. The K8s Job is created server-side.
-//
-// Review MEDIUM-2: no request body — the route reads no JSON input.
-// apiFetch only sets Content-Type when `options.body` exists, so
-// omitting body keeps the request lean.
+// Re-sync a terminal job. Resets the existing row in-place and
+// creates a new K8s Job. Returns the same job with status=running.
 export function useResyncImapSyncJob(clientId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -475,6 +470,33 @@ export function useResyncImapSyncJob(clientId: string) {
       apiFetch<{ data: ImapSyncJob }>(
         `/api/v1/clients/${clientId}/mail/imapsync/${jobId}/resync`,
         { method: 'POST' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
+  });
+}
+
+export interface UpdateImapSyncJobInput {
+  readonly source_host?: string;
+  readonly source_port?: number;
+  readonly source_username?: string;
+  readonly source_password?: string;
+  readonly source_ssl?: boolean;
+  readonly options?: {
+    readonly automap?: boolean;
+    readonly noFolderSizes?: boolean;
+    readonly dryRun?: boolean;
+    readonly excludeFolders?: readonly string[];
+  };
+}
+
+// Update source settings on a terminal (non-running) job.
+export function useUpdateImapSyncJob(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, input }: { jobId: string; input: UpdateImapSyncJobInput }) =>
+      apiFetch<{ data: ImapSyncJob }>(
+        `/api/v1/clients/${clientId}/mail/imapsync/${jobId}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['imapsync-jobs', clientId] }),
   });

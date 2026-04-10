@@ -44,6 +44,7 @@ import {
   useCancelImapSyncJob,
   usePurgeImapSyncJob,
   useResyncImapSyncJob,
+  useUpdateImapSyncJob,
   useMailRateLimit,
   useMailboxUsage,
   type Mailbox,
@@ -1755,12 +1756,13 @@ function ImapSyncPanel({
   const { data: jobsRes, isLoading } = useImapSyncJobs(clientId);
   const create = useCreateImapSyncJob(clientId);
   const cancel = useCancelImapSyncJob(clientId);
-  // Round-4 Phase 1: re-sync + purge for terminal jobs.
   const purge = usePurgeImapSyncJob(clientId);
   const resync = useResyncImapSyncJob(clientId);
+  const update = useUpdateImapSyncJob(clientId);
   const [showForm, setShowForm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const jobs = jobsRes?.data ?? [];
+  const activeCount = jobs.filter(j => j.status === 'pending' || j.status === 'running').length;
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1792,11 +1794,15 @@ function ImapSyncPanel({
         <div className="flex items-center gap-2">
           <Download size={16} className="text-brand-500" />
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Migrate from external IMAP</h3>
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            {jobs.length}/10 jobs · {activeCount}/3 active
+          </span>
         </div>
         <button
           type="button"
           onClick={() => setShowForm(s => !s)}
-          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+          disabled={jobs.length >= 10}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
           data-testid="imapsync-toggle-form"
         >
           {showForm ? 'Cancel' : 'New migration'}
@@ -1847,7 +1853,7 @@ function ImapSyncPanel({
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={create.isPending}
+              disabled={create.isPending || activeCount >= 3}
               className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               data-testid="imapsync-submit"
             >
@@ -1872,6 +1878,8 @@ function ImapSyncPanel({
           purgePending={purge.isPending}
           onResync={() => resync.mutate(j.id)}
           resyncPending={resync.isPending}
+          onUpdate={(input) => update.mutate({ jobId: j.id, input })}
+          updatePending={update.isPending}
         />
       ))}
     </div>
@@ -1886,6 +1894,8 @@ function ImapSyncJobRow({
   purgePending,
   onResync,
   resyncPending,
+  onUpdate,
+  updatePending,
 }: {
   readonly job: ImapSyncJob;
   readonly onCancel: () => void;
@@ -1894,11 +1904,11 @@ function ImapSyncJobRow({
   readonly purgePending: boolean;
   readonly onResync: () => void;
   readonly resyncPending: boolean;
+  readonly onUpdate: (input: Record<string, unknown>) => void;
+  readonly updatePending: boolean;
 }) {
-  // Round-4 Phase 3: Logs collapsed by default (per user request).
-  // Click "View logs" to expand the panel. Progress bar is shown
-  // outside the collapse for running jobs.
   const [showLog, setShowLog] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
   const isActive = job.status === 'pending' || job.status === 'running';
   const isTerminal = job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled';
 
@@ -1935,6 +1945,14 @@ function ImapSyncJobRow({
             <>
               <button
                 type="button"
+                onClick={() => setShowEdit(s => !s)}
+                className="rounded border border-gray-200 dark:border-gray-600 px-2 py-0.5 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                data-testid={`imapsync-edit-${job.id}`}
+              >
+                <Edit2 size={10} className="inline" /> Edit
+              </button>
+              <button
+                type="button"
                 onClick={onResync}
                 disabled={resyncPending}
                 className="rounded border border-brand-200 dark:border-brand-700 px-2 py-0.5 text-brand-700 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20 disabled:opacity-50"
@@ -1960,8 +1978,74 @@ function ImapSyncJobRow({
         {job.finishedAt && ` · Finished ${new Date(job.finishedAt).toLocaleString()}`}
       </div>
 
+      {showEdit && isTerminal && (
+        <form
+          className="mt-2 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 space-y-2 text-xs"
+          data-testid={`imapsync-edit-form-${job.id}`}
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const input: Record<string, unknown> = {};
+            const host = String(fd.get('source_host') ?? '');
+            if (host && host !== job.sourceHost) input.source_host = host;
+            const port = parseInt(String(fd.get('source_port') ?? ''), 10);
+            if (!isNaN(port) && port !== job.sourcePort) input.source_port = port;
+            const user = String(fd.get('source_username') ?? '');
+            if (user && user !== job.sourceUsername) input.source_username = user;
+            const pass = String(fd.get('source_password') ?? '');
+            if (pass) input.source_password = pass;
+            const ssl = fd.get('source_ssl') === 'on';
+            if (ssl !== job.sourceSsl) input.source_ssl = ssl;
+            const opts: Record<string, boolean> = {};
+            opts.automap = fd.get('automap') === 'on';
+            opts.dryRun = fd.get('dry_run') === 'on';
+            input.options = opts;
+            onUpdate(input);
+            setShowEdit(false);
+          }}
+        >
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source host</span>
+              <input name="source_host" defaultValue={job.sourceHost} required className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source port</span>
+              <input name="source_port" type="number" defaultValue={job.sourcePort} required className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">Source username</span>
+              <input name="source_username" defaultValue={job.sourceUsername} required className={INPUT_CLASS} />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-gray-500 dark:text-gray-400">New password (leave empty to keep)</span>
+              <input name="source_password" type="password" className={INPUT_CLASS} autoComplete="new-password" placeholder="(unchanged)" />
+            </label>
+          </div>
+          <div className="flex items-center gap-4 pt-1">
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="source_ssl" defaultChecked={job.sourceSsl} /> SSL
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="automap" defaultChecked={(job.options as Record<string, unknown>)?.automap === true} /> Automap
+            </label>
+            <label className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-300">
+              <input type="checkbox" name="dry_run" defaultChecked={(job.options as Record<string, unknown>)?.dryRun === true} /> Dry run
+            </label>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setShowEdit(false)} className="rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Cancel
+            </button>
+            <button type="submit" disabled={updatePending} className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+              {updatePending && <Loader2 size={12} className="animate-spin" />}
+              Save changes
+            </button>
+          </div>
+        </form>
+      )}
+
       {/*
-        Round-4 Phase 3: progress bar for running jobs. When the
         parser has reported counts, render a determinate bar with
         "N / total · folder". Otherwise show an indeterminate
         "Starting…" hint so the user knows the job hasn't frozen.
@@ -2015,11 +2099,7 @@ function ImapSyncJobRow({
           ) : (
             <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
               <Loader2 size={12} className="animate-spin" />
-              <span>
-                {job.status === 'pending'
-                  ? 'Waiting for the migration job to start…'
-                  : 'Discovering folders — progress will appear shortly'}
-              </span>
+              <span>Starting migration... detailed status logs will be available soon.</span>
             </div>
           )}
         </div>

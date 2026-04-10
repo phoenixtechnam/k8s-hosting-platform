@@ -37,6 +37,25 @@ export const createImapSyncJobSchema = z
 
 export type CreateImapSyncJobInput = z.infer<typeof createImapSyncJobSchema>;
 
+/** PATCH — update source settings on a terminal (non-running) job. */
+export const updateImapSyncJobSchema = z
+  .object({
+    source_host: z.string().min(1).max(255).optional(),
+    source_port: z.number().int().min(1).max(65535).optional(),
+    source_username: z.string().min(1).max(255).optional(),
+    source_password: z.string().min(1).max(1024).optional(),
+    source_ssl: z.boolean().optional(),
+    options: imapSyncOptionsSchema.optional(),
+  })
+  .strict();
+
+export type UpdateImapSyncJobInput = z.infer<typeof updateImapSyncJobSchema>;
+
+/** Concurrency / capacity limits for IMAP sync jobs. */
+export const MAX_ACTIVE_IMAPSYNC_JOBS = 3;
+export const MAX_TOTAL_IMAPSYNC_JOBS = 10;
+export const IMAPSYNC_JOB_RETENTION_DAYS = 30;
+
 // Status returned to the API. Includes everything except the
 // password (encrypted or otherwise) — that field never leaves the
 // server.

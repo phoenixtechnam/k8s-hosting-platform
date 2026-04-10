@@ -19,7 +19,7 @@ import { authenticate, requireRole, requireClientAccess } from '../../middleware
 import { mailboxes } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { createImapSyncJobSchema } from '@k8s-hosting/api-contracts';
+import { createImapSyncJobSchema, updateImapSyncJobSchema } from '@k8s-hosting/api-contracts';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';
@@ -124,6 +124,10 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
         503,
       );
     }
+
+    // Enforce per-client limits before inserting.
+    await service.enforceTotalJobLimit(app.db, clientId);
+    await service.enforceActiveJobLimit(app.db, clientId);
 
     // 1. Insert pending row (mailbox ownership + concurrency check
     //    enforced inside service.createImapSyncJob).
@@ -379,10 +383,9 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     reply.status(204).send();
   });
 
-  // Round-4 Phase 1: POST — re-sync a terminal job. Creates a NEW
-  // pending row that copies the original source server, port,
-  // username, encrypted password, ssl flag, and options. The new
-  // row goes through the same K8s Job creation flow as create.
+  // POST — re-sync a terminal job. Resets the existing row in-place
+  // (clears progress, logs, errors) and creates a new K8s Job using
+  // the same job row ID with a timestamped K8s Job name.
   app.post('/clients/:clientId/mail/imapsync/:jobId/resync', {
     onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
   }, async (request, reply) => {
@@ -409,29 +412,28 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // 1. Replicate the row (concurrency check enforced by partial unique index).
-    const newRow = await service.resyncImapSyncJob(app.db, clientId, jobId);
+    // 1. Reset the row in-place (status, limits, concurrency checked inside).
+    const resetRow = await service.resyncImapSyncJob(app.db, clientId, jobId);
+    const k8sJobName = resetRow.k8sJobName!;
 
     // 2. Look up the destination mailbox address (still needed for SSO).
     const [mb] = await app.db
       .select({ fullAddress: mailboxes.fullAddress })
       .from(mailboxes)
-      .where(eq(mailboxes.id, newRow.mailboxId));
+      .where(eq(mailboxes.id, resetRow.mailboxId));
     if (!mb) {
-      await service.markFailed(app.db, newRow.id, 'Mailbox disappeared between resync and start');
+      await service.markFailed(app.db, resetRow.id, 'Mailbox disappeared between resync and start');
       throw new ApiError('MAILBOX_NOT_FOUND', 'Mailbox not found', 404);
     }
 
-    // 3. Decrypt the source password from the new row (which is a
-    //    verbatim copy of the original encrypted blob) so we can
-    //    pass cleartext to the K8s Secret.
+    // 3. Decrypt the stored source password for the K8s Secret.
     let sourcePasswordCleartext: string;
     try {
-      sourcePasswordCleartext = decrypt(newRow.sourcePasswordEncrypted, resolvedEncryptionKey);
+      sourcePasswordCleartext = decrypt(resetRow.sourcePasswordEncrypted, resolvedEncryptionKey);
     } catch (err) {
       await service.markFailed(
         app.db,
-        newRow.id,
+        resetRow.id,
         `Failed to decrypt stored source password: ${err instanceof Error ? err.message : String(err)}`,
       );
       throw new ApiError(
@@ -441,27 +443,32 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    // 4. Build + create the K8s Secret + Job. Same flow as create.
+    // 4. Build + create the K8s Secret + Job with the timestamped name.
     const secret = service.buildJobSecret({
-      jobId: newRow.id,
+      jobId: k8sJobName.replace('imapsync-', ''),
       namespace: mailNamespace(),
       sourcePassword: sourcePasswordCleartext,
       destPassword: resolvedMasterSecret,
     });
-    const job = service.buildJobManifest({
-      jobId: newRow.id,
-      secretName: `imapsync-${newRow.id}`,
+    // Override the secret name to match the timestamped k8s job name
+    secret.metadata!.name = k8sJobName;
+
+    const jobManifest = service.buildJobManifest({
+      jobId: k8sJobName.replace('imapsync-', ''),
+      secretName: k8sJobName,
       namespace: mailNamespace(),
       mailboxAddress: mb.fullAddress,
-      sourceHost: newRow.sourceHost,
-      sourcePort: newRow.sourcePort,
-      sourceUsername: newRow.sourceUsername,
-      sourceSsl: newRow.sourceSsl === 1,
+      sourceHost: resetRow.sourceHost,
+      sourcePort: resetRow.sourcePort,
+      sourceUsername: resetRow.sourceUsername,
+      sourceSsl: resetRow.sourceSsl === 1,
       destHost: stalwartImapHost(),
       destPort: stalwartImapPort(),
-      options: (newRow.options ?? {}) as Record<string, unknown>,
+      options: (resetRow.options ?? {}) as Record<string, unknown>,
       image: imapsyncImage(),
     });
+    // Override the manifest name to match the timestamped name
+    jobManifest.metadata!.name = k8sJobName;
 
     try {
       await (k8s.core as unknown as {
@@ -469,16 +476,16 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       }).createNamespacedSecret({ namespace: mailNamespace(), body: secret });
       const createdJob = await (k8s.batch as unknown as {
         createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string; name?: string } }>;
-      }).createNamespacedJob({ namespace: mailNamespace(), body: job });
+      }).createNamespacedJob({ namespace: mailNamespace(), body: jobManifest });
 
-      const ownerJobName = createdJob.metadata?.name ?? `imapsync-${newRow.id}`;
+      const ownerJobName = createdJob.metadata?.name ?? k8sJobName;
       const ownerJobUid = createdJob.metadata?.uid;
       if (ownerJobUid) {
         try {
           await (k8s.core as unknown as {
             patchNamespacedSecret: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
           }).patchNamespacedSecret({
-            name: `imapsync-${newRow.id}`,
+            name: k8sJobName,
             namespace: mailNamespace(),
             body: [
               {
@@ -499,31 +506,23 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
           });
         } catch (patchErr) {
           app.log.warn(
-            { err: patchErr, jobId: newRow.id },
+            { err: patchErr, jobId: resetRow.id },
             'mail-imapsync: failed to patch resync Secret with ownerReference',
           );
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await service.markFailed(app.db, newRow.id, `K8s create failed: ${msg}`);
-      // Best-effort cleanup
+      await service.markFailed(app.db, resetRow.id, `K8s create failed: ${msg}`);
       try {
         await (k8s.batch as unknown as {
           deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<void>;
-        }).deleteNamespacedJob({
-          name: `imapsync-${newRow.id}`,
-          namespace: mailNamespace(),
-          propagationPolicy: 'Background',
-        });
+        }).deleteNamespacedJob({ name: k8sJobName, namespace: mailNamespace(), propagationPolicy: 'Background' });
       } catch { /* ignore */ }
       try {
         await (k8s.core as unknown as {
           deleteNamespacedSecret: (args: { name: string; namespace: string }) => Promise<void>;
-        }).deleteNamespacedSecret({
-          name: `imapsync-${newRow.id}`,
-          namespace: mailNamespace(),
-        });
+        }).deleteNamespacedSecret({ name: k8sJobName, namespace: mailNamespace() });
       } catch { /* ignore */ }
       throw new ApiError(
         'IMAPSYNC_K8S_CREATE_FAILED',
@@ -532,8 +531,41 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    await service.markRunning(app.db, newRow.id, `imapsync-${newRow.id}`);
-    const updated = await service.getImapSyncJob(app.db, clientId, newRow.id);
-    reply.status(201).send(success(updated));
+    await service.markRunning(app.db, resetRow.id, k8sJobName);
+    const updated = await service.getImapSyncJob(app.db, clientId, resetRow.id);
+    return success(updated);
+  });
+
+  // PATCH — update source settings on a terminal job.
+  app.patch('/clients/:clientId/mail/imapsync/:jobId', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+  }, async (request) => {
+    const { clientId, jobId } = request.params as { clientId: string; jobId: string };
+    const parsed = updateImapSyncJobSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const firstError = parsed.error.errors[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+
+    let resolvedEncryptionKey: string;
+    try {
+      resolvedEncryptionKey = encryptionKey();
+    } catch (err) {
+      throw new ApiError(
+        'IMAPSYNC_NOT_CONFIGURED',
+        err instanceof Error ? err.message : 'Server is missing required configuration',
+        503,
+      );
+    }
+
+    const updated = await service.updateImapSyncJob(
+      app.db, resolvedEncryptionKey, clientId, jobId, parsed.data,
+    );
+    return success(updated);
   });
 }

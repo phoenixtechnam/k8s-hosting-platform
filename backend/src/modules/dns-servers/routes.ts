@@ -5,8 +5,14 @@ import type { CreateDnsServerInput, CreateProviderGroupInput, UpdateProviderGrou
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
+const encryptionKey = (): string => {
+  const k = process.env.OIDC_ENCRYPTION_KEY;
+  if (k && k.length >= 32) return k;
+  if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
+  throw new Error('OIDC_ENCRYPTION_KEY is required (dns-servers routes)');
+};
+
 export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
-  const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
@@ -24,7 +30,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
     if (!input.display_name || !input.provider_type || !input.connection_config) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'display_name, provider_type, and connection_config are required', 400);
     }
-    const server = await service.createDnsServer(app.db, input, encryptionKey);
+    const server = await service.createDnsServer(app.db, input, encryptionKey());
     reply.status(201).send(success(server));
   });
 
@@ -32,7 +38,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   app.patch('/admin/dns-servers/:id', async (request) => {
     const { id } = request.params as { id: string };
     const input = request.body as unknown as Partial<CreateDnsServerInput>;
-    const updated = await service.updateDnsServer(app.db, id, input, encryptionKey);
+    const updated = await service.updateDnsServer(app.db, id, input, encryptionKey());
     return success(updated);
   });
 
@@ -46,7 +52,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/admin/dns-servers/:id/test
   app.post('/admin/dns-servers/:id/test', async (request) => {
     const { id } = request.params as { id: string };
-    const result = await service.testDnsServerConnection(app.db, id, encryptionKey);
+    const result = await service.testDnsServerConnection(app.db, id, encryptionKey());
     return success(result);
   });
 
@@ -54,7 +60,7 @@ export async function dnsServerRoutes(app: FastifyInstance): Promise<void> {
   app.get('/admin/dns-servers/:id/zones', async (request) => {
     const { id } = request.params as { id: string };
     const server = await service.getDnsServerById(app.db, id);
-    const provider = service.getProviderForServer(server, encryptionKey);
+    const provider = service.getProviderForServer(server, encryptionKey());
     const zones = await provider.listZones();
     return success(zones);
   });

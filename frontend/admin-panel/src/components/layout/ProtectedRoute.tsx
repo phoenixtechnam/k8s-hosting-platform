@@ -3,7 +3,12 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
-export default function ProtectedRoute({ children }: { readonly children: React.ReactNode }) {
+interface ProtectedRouteProps {
+  readonly children: React.ReactNode;
+  readonly allowedRoles?: readonly string[];
+}
+
+export default function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
   const { isAuthenticated, isLoading, initialize, user } = useAuth();
   const location = useLocation();
 
@@ -29,6 +34,16 @@ export default function ProtectedRoute({ children }: { readonly children: React.
       <div className="flex h-screen flex-col items-center justify-center gap-4 p-8">
         <p className="text-lg font-medium text-gray-900 dark:text-gray-100">Access Denied</p>
         <p className="text-sm text-gray-500 dark:text-gray-400">This panel is for administrators only. Please use the client portal.</p>
+      </div>
+    );
+  }
+
+  // Role-based access control
+  if (allowedRoles && user?.role && !allowedRoles.includes(user.role)) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 p-8">
+        <p className="text-lg font-medium text-gray-900 dark:text-gray-100">Access Denied</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">You do not have permission to access this page.</p>
       </div>
     );
   }

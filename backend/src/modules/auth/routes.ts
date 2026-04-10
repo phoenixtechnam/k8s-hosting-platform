@@ -7,7 +7,16 @@ import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
 
 // In-memory token denylist (Phase 1). Replace with Redis in production.
-const tokenDenylist = new Set<string>();
+// Map stores token → expiry timestamp for TTL-based eviction.
+const tokenDenylist = new Map<string, number>();
+
+// Prune expired entries every 10 minutes
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [token, exp] of tokenDenylist) {
+    if (exp < now) tokenDenylist.delete(token);
+  }
+}, 600_000);
 
 export function isTokenDenied(token: string): boolean {
   return tokenDenylist.has(token);
@@ -215,9 +224,10 @@ export async function authRoutes(app: FastifyInstance) {
   // POST /auth/logout — revoke current token
   app.post('/auth/logout', async (request, reply) => {
     await request.jwtVerify();
+    const decoded = request.user as { exp?: number };
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
-      tokenDenylist.add(authHeader.slice(7));
+      tokenDenylist.set(authHeader.slice(7), decoded.exp ?? Math.floor(Date.now() / 1000) + 3600);
     }
     return reply.send({ data: { message: 'Logged out successfully' } });
   });
@@ -239,9 +249,10 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     // Revoke old token
+    const decoded = request.user as { exp?: number };
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
-      tokenDenylist.add(authHeader.slice(7));
+      tokenDenylist.set(authHeader.slice(7), decoded.exp ?? Math.floor(Date.now() / 1000) + 3600);
     }
 
     // Issue new token

@@ -54,8 +54,22 @@ function createMockDb() {
   const insertValuesFn = vi.fn().mockReturnValue({ returning: insertReturningFn });
   const insertFn = vi.fn().mockReturnValue({ values: insertValuesFn });
 
-  const updateWhere = vi.fn().mockImplementation(() => updateImpl());
-  const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+  let updateReturning: unknown[] = [];
+  const updateReturningFn = vi.fn().mockImplementation(async () => {
+    await updateImpl();
+    return updateReturning;
+  });
+  const updateWhereFn = vi.fn().mockImplementation(() => {
+    // Support both `.where()` (no returning) and `.where().returning()` chains
+    const result = { returning: updateReturningFn };
+    // Also make it thenable for the plain .where() case (no returning)
+    Object.assign(result, {
+      then: (onFulfilled: (v: unknown) => unknown) =>
+        updateImpl().then(() => onFulfilled(undefined)),
+    });
+    return result;
+  });
+  const updateSet = vi.fn().mockReturnValue({ where: updateWhereFn });
   const updateFn = vi.fn().mockReturnValue({ set: updateSet });
 
   const deleteWhere = vi.fn().mockImplementation(() => deleteImpl());
@@ -68,6 +82,7 @@ function createMockDb() {
     delete: deleteFn,
     _insertValuesFn: insertValuesFn,
     _updateSet: updateSet,
+    _setUpdateReturning: (val: unknown[]) => { updateReturning = val; },
   } as unknown as ReturnType<typeof createMockDb>;
 }
 
@@ -446,25 +461,24 @@ describe('resyncImapSyncJob', () => {
     updatedAt: new Date(),
   };
 
-  it('inserts a new pending row that copies the source server, port, username, encrypted password, and options', async () => {
-    selectResults = [[ORIGINAL]];
-    insertImpl = async () => undefined;
-    insertReturning = [{ ...ORIGINAL, id: 'job-new', status: 'pending' }];
+  it('resets the existing row in-place to pending status', async () => {
+    // 1st select: find original, 2nd select: count active (limit check)
+    selectResults = [[ORIGINAL], [{ count: 0 }]];
     const db = createMockDb();
+    (db as unknown as { _setUpdateReturning: (v: unknown[]) => void })._setUpdateReturning([
+      { ...ORIGINAL, status: 'pending', logTail: null, errorMessage: null },
+    ]);
 
     const result = await service.resyncImapSyncJob(db as never, 'c1', 'job-orig');
 
-    expect(result.id).toBe('job-new');
     expect(result.status).toBe('pending');
-    // The values passed into .insert(...).values(...) include the
-    // original encrypted password, NOT a fresh encrypt of clear text.
-    const values = (db as unknown as { _insertValuesFn: { mock: { calls: [unknown[]][] } } })._insertValuesFn.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(values.sourcePasswordEncrypted).toBe(ORIGINAL.sourcePasswordEncrypted);
-    expect(values.sourceHost).toBe(ORIGINAL.sourceHost);
-    expect(values.sourcePort).toBe(ORIGINAL.sourcePort);
-    expect(values.sourceUsername).toBe(ORIGINAL.sourceUsername);
-    expect(values.sourceSsl).toBe(1);
-    expect(values.status).toBe('pending');
+    // Verify the update was called with reset fields
+    const setArgs = (db as unknown as { _updateSet: { mock: { calls: [Record<string, unknown>][] } } })._updateSet.mock.calls[0]?.[0];
+    expect(setArgs.status).toBe('pending');
+    expect(setArgs.logTail).toBeNull();
+    expect(setArgs.errorMessage).toBeNull();
+    expect(setArgs.messagesTotal).toBeNull();
+    expect(setArgs.messagesTransferred).toBeNull();
   });
 
   it('throws INVALID_STATE when the original is still running', async () => {
@@ -491,16 +505,12 @@ describe('resyncImapSyncJob', () => {
       .rejects.toMatchObject({ code: 'IMAPSYNC_JOB_NOT_FOUND', status: 404 });
   });
 
-  it('throws IMAPSYNC_ALREADY_RUNNING on partial-unique-index violation', async () => {
-    selectResults = [[ORIGINAL]];
-    insertImpl = async () => {
-      const err = new Error('duplicate key') as Error & { code?: string };
-      err.code = '23505';
-      throw err;
-    };
+  it('throws IMAPSYNC_ACTIVE_LIMIT when 3 jobs are already active', async () => {
+    // 1st select: find original, 2nd select: count active = 3 (at limit)
+    selectResults = [[ORIGINAL], [{ count: 3 }]];
     const db = createMockDb();
 
     await expect(service.resyncImapSyncJob(db as never, 'c1', 'job-orig'))
-      .rejects.toMatchObject({ code: 'IMAPSYNC_ALREADY_RUNNING', status: 409 });
+      .rejects.toMatchObject({ code: 'IMAPSYNC_ACTIVE_LIMIT', status: 429 });
   });
 });

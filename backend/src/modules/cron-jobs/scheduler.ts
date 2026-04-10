@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -49,8 +49,12 @@ export function startWebcronScheduler(db: Database): NodeJS.Timeout {
         if (nextRun > now) continue;
         if (job.lastRunStatus === 'running') continue;
 
-        // Mark as running
-        await db.update(cronJobs).set({ lastRunStatus: 'running' }).where(eq(cronJobs.id, job.id));
+        // Atomic conditional update — only mark running if not already running (prevents TOCTOU race)
+        const [updated] = await db.update(cronJobs)
+          .set({ lastRunStatus: 'running' })
+          .where(and(eq(cronJobs.id, job.id), sql`${cronJobs.lastRunStatus} != 'running'`))
+          .returning({ id: cronJobs.id });
+        if (!updated) continue; // Another tick already claimed this job
 
         // Execute asynchronously
         executeWebcron(db, job).catch(err => {

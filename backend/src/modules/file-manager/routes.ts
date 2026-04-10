@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
 import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema } from '@k8s-hosting/api-contracts';
 import { clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
@@ -22,6 +22,8 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requireClientRoleByMethod());
+  app.addHook('onRequest', requireClientAccess());
 
   // Register content type parser for binary uploads — do NOT buffer the body.
   // The upload-raw route streams request.raw directly to the sidecar.

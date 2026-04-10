@@ -120,8 +120,10 @@ AUTH_HEADER="Authorization: Bearer ${TOKEN}"
 # ─── Health ────────────────────────────────────────────────────────────────────
 
 log "── Health ──"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/admin/status")
-check_status "GET /admin/status" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/healthz")
+check_status "GET /healthz (unauthenticated)" "200" "$STATUS"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/status")
+check_status "GET /admin/status (authenticated)" "200" "$STATUS"
 
 # ─── Clients (same params as frontend) ─────────────────────────────────────────
 

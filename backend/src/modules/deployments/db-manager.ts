@@ -47,6 +47,18 @@ function validateIdentifier(value: string, label: string): void {
   }
 }
 
+// ─── Shell / Mongo Escaping ──────────────────────────────────────────────────
+
+/** Escape a string for safe interpolation inside single-quoted shell arguments. */
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/** Escape a string for safe interpolation inside double-quoted JavaScript/mongosh strings. */
+function mongoEscapeString(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 // ─── K8s Pod Exec ─────────────────────────────────────────────────────────────
 
 function loadKubeConfig(kubeconfigPath?: string): KubeConfig {
@@ -747,7 +759,7 @@ async function mongoCreateDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string, user = 'root',
 ): Promise<void> {
   await mongoExec(kp, ns, pod, cn, pw,
-    `db = db.getSiblingDB("${dbName}"); db.createCollection("_init")`,
+    `db = db.getSiblingDB("${mongoEscapeString(dbName)}"); db.createCollection("_init")`,
     user,
   );
 }
@@ -756,7 +768,7 @@ async function mongoDropDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string, user = 'root',
 ): Promise<void> {
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${dbName}").dropDatabase()`,
+    `db.getSiblingDB("${mongoEscapeString(dbName)}").dropDatabase()`,
     user,
   );
 }
@@ -765,7 +777,7 @@ async function mongoListCollections(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, database: string, user = 'root',
 ): Promise<readonly string[]> {
   const out = await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${database}").getCollectionNames().filter(c=>c!=='_init').join("\\n")`,
+    `db.getSiblingDB("${mongoEscapeString(database)}").getCollectionNames().filter(c=>c!=='_init').join("\\n")`,
     user,
   );
   return out.split('\n').filter(Boolean);
@@ -790,7 +802,7 @@ async function mongoCreateUser(
 ): Promise<void> {
   const db = database ?? 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${db}").createUser({user:"${username}",pwd:"${password}",roles:[{role:"readWrite",db:"${db}"}]})`,
+    `db.getSiblingDB("${mongoEscapeString(db)}").createUser({user:"${mongoEscapeString(username)}",pwd:"${mongoEscapeString(password)}",roles:[{role:"readWrite",db:"${mongoEscapeString(db)}"}]})`,
     rootUser,
   );
 }
@@ -800,12 +812,12 @@ async function mongoDropUser(
 ): Promise<void> {
   // Find the user's database first — users may be created on specific databases, not admin
   const dbName = await mongoExec(kp, ns, pod, cn, pw,
-    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${username}"}); u ? u.db : "admin"`,
+    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${mongoEscapeString(username)}"}); u ? u.db : "admin"`,
     rootUser,
   );
   const targetDb = dbName.trim() || 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${targetDb}").dropUser("${username}")`,
+    `db.getSiblingDB("${mongoEscapeString(targetDb)}").dropUser("${mongoEscapeString(username)}")`,
     rootUser,
   );
 }
@@ -816,12 +828,12 @@ async function mongoSetPassword(
 ): Promise<void> {
   // Find the user's database first
   const dbName = await mongoExec(kp, ns, pod, cn, pw,
-    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${username}"}); u ? u.db : "admin"`,
+    `var u = db.getSiblingDB("admin").system.users.findOne({user:"${mongoEscapeString(username)}"}); u ? u.db : "admin"`,
     rootUser,
   );
   const targetDb = dbName.trim() || 'admin';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${targetDb}").changeUserPassword("${username}","${newPassword}")`,
+    `db.getSiblingDB("${mongoEscapeString(targetDb)}").changeUserPassword("${mongoEscapeString(username)}","${mongoEscapeString(newPassword)}")`,
     rootUser,
   );
 }
@@ -835,7 +847,7 @@ async function mongoExecuteQuery(
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `db = db.getSiblingDB("${database}"); EJSON.stringify(${query})`,
+    `db = db.getSiblingDB("${mongoEscapeString(database)}"); EJSON.stringify(${query})`,
     ctx.rootUsername,
   );
   const elapsed = Date.now() - startTime;
@@ -867,7 +879,7 @@ async function mongoDescribeCollection(
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `EJSON.stringify(Object.keys(db.getSiblingDB("${database}").getCollection("${collection}").findOne() || {}))`,
+    `EJSON.stringify(Object.keys(db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").findOne() || {}))`,
     ctx.rootUsername,
   );
 
@@ -904,13 +916,13 @@ async function mongoBrowseCollection(
   let sortExpr = '{}';
   if (options.orderBy) {
     validateTableName(options.orderBy);
-    sortExpr = `{"${options.orderBy}":${orderDir}}`;
+    sortExpr = `{"${mongoEscapeString(options.orderBy)}":${orderDir}}`;
   }
 
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `EJSON.stringify(db.getSiblingDB("${database}").getCollection("${collection}").find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
+    `EJSON.stringify(db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
     ctx.rootUsername,
   );
   const start = Date.now();
@@ -944,7 +956,7 @@ async function mongoCountDocuments(
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword,
-    `db.getSiblingDB("${database}").getCollection("${collection}").countDocuments()`,
+    `db.getSiblingDB("${mongoEscapeString(database)}").getCollection("${mongoEscapeString(collection)}").countDocuments()`,
     ctx.rootUsername,
   );
   return parseInt(out.trim(), 10) || 0;
@@ -1883,31 +1895,31 @@ export async function importSqlFromPvcFile(
         ['cp', fmSrcPath, fmSqlPath]);
     } else if (ext === '.sql.gz' || ext === '.gz') {
       await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `gunzip -c '${fmSrcPath}' > '${fmSqlPath}'`]);
+        ['sh', '-c', `gunzip -c ${shellEscape(fmSrcPath)} > ${shellEscape(fmSqlPath)}`]);
     } else if (ext === '.tar.gz' || ext === '.tgz' || ext === '.tar' || ext === '.zip') {
       // Extract archive and detect content type.
       // PostgreSQL rules: .sql → psql, .tar/.dump/.backup → pg_restore
       // MariaDB/MySQL: only .sql files are supported
       const extractCmd = ext === '.zip'
-        ? `unzip -o '${fmSrcPath}' -d /tmp/_imp > /dev/null`
+        ? `unzip -o ${shellEscape(fmSrcPath)} -d /tmp/_imp > /dev/null`
         : ext === '.tar'
-          ? `tar xf '${fmSrcPath}' -C /tmp/_imp`
-          : `tar xzf '${fmSrcPath}' -C /tmp/_imp`;
+          ? `tar xf ${shellEscape(fmSrcPath)} -C /tmp/_imp`
+          : `tar xzf ${shellEscape(fmSrcPath)} -C /tmp/_imp`;
 
       // Extract, then detect: SQL (has .sql files), PGDUMP (has .tar/.dump/.backup), or EMPTY
       const detectResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
         ['sh', '-c',
           `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; ${extractCmd}\n` +
           `if [ "$(find /tmp/_imp -name '*.sql' -type f | wc -l)" -gt 0 ]; then\n` +
-          `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > '${fmSqlPath}'\n` +
+          `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > ${shellEscape(fmSqlPath)}\n` +
           `  echo SQL\n` +
           `elif [ "$(find /tmp/_imp \\( -name '*.tar' -o -name '*.dump' -o -name '*.backup' \\) -type f | wc -l)" -gt 0 ]; then\n` +
           `  f=$(find /tmp/_imp \\( -name '*.tar' -o -name '*.dump' -o -name '*.backup' \\) -type f | head -1)\n` +
-          `  cp "$f" '${fmDestDir}/${pgRestoreFileName}'\n` +
+          `  cp "$f" ${shellEscape(`${fmDestDir}/${pgRestoreFileName}`)}\n` +
           `  echo PGDUMP\n` +
           `elif [ "$(find /tmp/_imp -type f | wc -l)" -gt 0 ]; then\n` +
           `  f=$(find /tmp/_imp -type f | head -1)\n` +
-          `  cp "$f" '${fmDestDir}/${pgRestoreFileName}'\n` +
+          `  cp "$f" ${shellEscape(`${fmDestDir}/${pgRestoreFileName}`)}\n` +
           `  echo PGDUMP\n` +
           `else\n` +
           `  echo EMPTY\n` +
@@ -1936,12 +1948,12 @@ export async function importSqlFromPvcFile(
     // Verify the extracted file has content (archives may contain no .sql files)
     if (!isPgRestore && ext !== '.sql') {
       const sizeResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `stat -c '%s' '${fmSqlPath}' 2>/dev/null || echo 0`]);
+        ['sh', '-c', `stat -c '%s' ${shellEscape(fmSqlPath)} 2>/dev/null || echo 0`]);
       const fileSize = parseInt(sizeResult.stdout.trim(), 10) || 0;
       if (fileSize === 0) {
         // Clean up empty file
         await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-          ['sh', '-c', `rm -f '${fmSqlPath}'`]).catch(() => {});
+          ['sh', '-c', `rm -f ${shellEscape(fmSqlPath)}`]).catch(() => {});
         return {
           success: false,
           error: 'No SQL content found in the archive. Ensure the archive contains .sql files.',
@@ -1959,7 +1971,7 @@ export async function importSqlFromPvcFile(
       // fails because sh itself succeeds even when the inner command is not found.
       const dbCli = ctx.engine === 'mysql' ? 'mysql' : 'mariadb';
       result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `cat '${importPath}' | ${dbCli} -u root -p'${ctx.rootPassword}' '${database}'`]);
+        ['sh', '-c', `cat ${shellEscape(importPath)} | ${dbCli} -u root -p${shellEscape(ctx.rootPassword)} ${shellEscape(database)}`]);
       // Clean up import file after import (best-effort)
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -1969,10 +1981,10 @@ export async function importSqlFromPvcFile(
         // in containerized environments. Only exit 2+ indicates fatal errors.
         // --no-owner --no-privileges avoids most warnings from dumps made on different servers.
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges -d '${database}' '${importPath}' 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
+          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges -d ${shellEscape(database)} ${shellEscape(importPath)} 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
       } else {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat '${importPath}' | psql -U postgres '${database}'`]);
+          ['sh', '-c', `cat ${shellEscape(importPath)} | psql -U postgres ${shellEscape(database)}`]);
       }
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -2031,7 +2043,7 @@ export async function importSqlFromPvcFile(
         const fmPod = ((fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? []).find(p => p.status?.phase === 'Running');
         if (fmPod?.metadata?.name) {
           await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
-            ['sh', '-c', `rm -f '/data/${cleanSubPath}/${importFileName}' '/data/${cleanSubPath}/${sqlFileName}'`]);
+            ['sh', '-c', `rm -f ${shellEscape(`/data/${cleanSubPath}/${importFileName}`)} ${shellEscape(`/data/${cleanSubPath}/${sqlFileName}`)}`]);
         }
       }
     } catch { /* cleanup is best-effort */ }
@@ -2071,13 +2083,13 @@ export async function exportDatabaseToPvc(
     const dumpCli = ctx.engine === 'mysql' ? 'mysqldump' : 'mariadb-dump';
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `${dumpCli} -u root -p'${ctx.rootPassword}' --routines --triggers '${database}' > '${exportPath}'`],
+      ['sh', '-c', `${dumpCli} -u root -p${shellEscape(ctx.rootPassword)} --routines --triggers ${shellEscape(database)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'postgresql') {
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `pg_dump -U postgres '${database}' > '${exportPath}'`],
+      ['sh', '-c', `pg_dump -U postgres ${shellEscape(database)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else {
@@ -2102,7 +2114,7 @@ export async function exportDatabaseToPvc(
   if (fmPod?.metadata?.name) {
     await execInPod(
       ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
-      ['sh', '-c', `mkdir -p /data/exports && mv '/data/${cleanSubPath}/${outputFileName}' '/data/exports/${outputFileName}'`],
+      ['sh', '-c', `mkdir -p /data/exports && mv ${shellEscape(`/data/${cleanSubPath}/${outputFileName}`)} ${shellEscape(`/data/exports/${outputFileName}`)}`],
     );
   }
 

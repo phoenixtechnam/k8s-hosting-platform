@@ -9,11 +9,14 @@
 import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import { reconcileImapSyncJobs } from './reconciler.js';
+import { cleanupExpiredJobs } from './service.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 const DEFAULT_INTERVAL_SECONDS = 30;
 const INITIAL_DELAY_MS = 30_000;
+// Run expired job cleanup once per hour (every N reconciler ticks).
+const CLEANUP_INTERVAL_TICKS = 120; // ~1 hour at 30s interval
 
 async function readIntSetting(
   db: Database,
@@ -41,6 +44,7 @@ export function startImapSyncReconciler(
 ): NodeJS.Timeout {
   console.log('[mail-imapsync-scheduler] Starting reconciler');
 
+  let tickCount = 0;
   const runCycle = async () => {
     try {
       const result = await reconcileImapSyncJobs(db, k8s);
@@ -54,6 +58,22 @@ export function startImapSyncReconciler(
         '[mail-imapsync-scheduler] cycle error:',
         err instanceof Error ? err.message : String(err),
       );
+    }
+
+    // Periodic cleanup of expired terminal jobs (30+ days old).
+    tickCount += 1;
+    if (tickCount % CLEANUP_INTERVAL_TICKS === 0) {
+      try {
+        const deleted = await cleanupExpiredJobs(db);
+        if (deleted > 0) {
+          console.log(`[mail-imapsync-scheduler] cleaned up ${deleted} expired job(s)`);
+        }
+      } catch (err) {
+        console.warn(
+          '[mail-imapsync-scheduler] cleanup error:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
   };
 

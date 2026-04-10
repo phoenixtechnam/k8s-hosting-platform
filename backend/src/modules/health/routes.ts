@@ -14,7 +14,12 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.get('/admin/health', {
     onRequest: [requireRole('super_admin', 'admin', 'read_only')],
   }, async () => {
-    const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+    const encKey = (() => {
+      const k = process.env.OIDC_ENCRYPTION_KEY;
+      if (k && k.length >= 32) return k;
+      if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return '0'.repeat(64);
+      throw new Error('OIDC_ENCRYPTION_KEY is required (health routes)');
+    })();
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     let k8sCore;
     try {
@@ -23,7 +28,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     } catch {
       // kubeconfig missing or invalid — checkKubernetes will report degraded
     }
-    const result = await runAllChecks(app.db, encryptionKey, k8sCore);
+    const result = await runAllChecks(app.db, encKey, k8sCore);
     return success(result);
   });
 

@@ -38,7 +38,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   };
 
   // GET /api/v1/admin/domains — list all domains across all clients
-  app.get('/admin/domains', async (request) => {
+  app.get('/admin/domains', {
+    onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
+  }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
     const search = typeof query.search === 'string' ? query.search : undefined;
