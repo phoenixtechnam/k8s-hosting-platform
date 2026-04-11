@@ -746,21 +746,19 @@ function WafLogSection({ clientId, routeId }: {
           {logs.map((log, idx) => (
             <div
               key={log.id}
-              className={clsx('flex items-center gap-2 px-4 py-1.5 font-mono text-[11px] whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
+              className={clsx('flex items-center gap-1.5 px-4 py-1.5 font-mono text-[11px] whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
               data-testid={`waf-log-entry-${log.id}`}
             >
-              <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
+              <span className="text-gray-500 w-[110px] shrink-0">{formatTs(log.createdAt)}</span>
+              <span className="text-gray-400 w-[100px] shrink-0">{log.sourceIp ?? '-'}</span>
+              <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase w-[62px] justify-center shrink-0', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
                 {log.severity}
               </span>
-              <span className="text-blue-400 font-bold">{log.ruleId}</span>
-              <span className="text-gray-500">·</span>
-              <span className="text-gray-300 truncate max-w-[280px]" title={log.message}>{log.message}</span>
-              <span className="text-gray-500">·</span>
-              <span className="text-green-400">{log.requestMethod ?? 'GET'} {(log.requestUri ?? '/').slice(0, 30)}{(log.requestUri ?? '').length > 30 ? '...' : ''}</span>
-              <span className="text-gray-500">·</span>
-              <span className="text-gray-400">{log.sourceIp ?? '-'}</span>
-              <span className="text-gray-500">·</span>
-              <span className="text-gray-500">{formatTs(log.createdAt)}</span>
+              <span className="text-blue-400 font-bold w-[52px] shrink-0">{log.ruleId}</span>
+              {(() => { const m = log.message.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/); const s = m ? (m[1] || m[2]) : null; return s ? <span className="text-amber-400 w-[52px] shrink-0">Score:{s}</span> : null; })()}
+              <span className="text-green-400 flex-1 truncate" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
+                {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
+              </span>
             </div>
           ))}
         </div>
