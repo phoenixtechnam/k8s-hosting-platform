@@ -88,7 +88,20 @@ export async function createRoute(
   clientId: string,
   hostname: string,
   deploymentId?: string | null,
+  path?: string,
 ) {
+  // Validate path
+  const routePath = path ?? '/';
+  if (!routePath.startsWith('/')) {
+    throw new ApiError('VALIDATION_ERROR', 'Path must start with /', 400);
+  }
+  if (routePath.includes('..')) {
+    throw new ApiError('VALIDATION_ERROR', 'Path must not contain ".."', 400);
+  }
+  if (routePath.length > 255) {
+    throw new ApiError('VALIDATION_ERROR', 'Path must be 255 characters or fewer', 400);
+  }
+
   // Verify domain ownership
   const [domain] = await db
     .select()
@@ -119,6 +132,7 @@ export async function createRoute(
     id,
     domainId,
     hostname,
+    path: routePath,
     deploymentId: deploymentId ?? null,
     ingressCname,
     nodeHostname: null, // uses default node

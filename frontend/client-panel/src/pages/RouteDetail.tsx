@@ -84,7 +84,9 @@ export default function RouteDetail() {
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <span className="text-gray-500 dark:text-gray-400">Routes</span>
         <span className="text-gray-300 dark:text-gray-600">/</span>
-        <span className="font-medium text-gray-900 dark:text-gray-100">{route.hostname}</span>
+        <span className="font-medium text-gray-900 dark:text-gray-100">
+          {route.hostname}{route.path && route.path !== '/' ? route.path : ''}
+        </span>
       </div>
 
       {/* Header */}
@@ -98,7 +100,7 @@ export default function RouteDetail() {
           Back
         </Link>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
-          {route.hostname}
+          {route.hostname}{route.path && route.path !== '/' ? route.path : ''}
         </h1>
         <span className={clsx(
           'inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium',
@@ -174,6 +176,9 @@ function RedirectsTab({ clientId, routeId, route }: {
       data-testid="redirects-form"
     >
       <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redirect Settings</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Control how traffic is redirected for this route. Changes take effect immediately via NGINX Ingress annotations.
+      </p>
 
       {/* Force HTTPS */}
       <label className="flex items-center justify-between" data-testid="force-https-row">
@@ -307,6 +312,9 @@ function SecurityTab({ clientId, routeId, route }: {
 
   return (
     <div className="space-y-6" data-testid="security-tab">
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Configure access control and protection for this route. All settings are enforced at the NGINX Ingress level before requests reach your application.
+      </p>
       <form
         onSubmit={handleSave}
         className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-6"
@@ -840,6 +848,10 @@ function AdvancedTab({ clientId, routeId, route }: {
   };
 
   return (
+    <div className="space-y-6">
+    <p className="text-xs text-gray-500 dark:text-gray-400">
+      Configure response headers and error handling. Response headers are added to every response from this route.
+    </p>
     <form
       onSubmit={handleSave}
       className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-6"
@@ -891,11 +903,11 @@ function AdvancedTab({ clientId, routeId, route }: {
         </p>
       </section>
 
-      {/* Proxy Headers */}
+      {/* Response Headers */}
       <section className="space-y-3" data-testid="proxy-headers-section">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-2">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            Additional Proxy Headers
+            Response Headers
           </h3>
           <button
             type="button"
@@ -958,7 +970,7 @@ function AdvancedTab({ clientId, routeId, route }: {
           </div>
         )}
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Custom HTTP headers sent from the ingress to your application. Common uses: security headers (X-Frame-Options, Content-Security-Policy), custom routing headers. No spaces in header names, no newlines in values. Maximum 50 headers.
+          HTTP headers added to every response. Common security headers: X-Frame-Options (clickjacking protection), X-Content-Type-Options (MIME sniffing prevention), Content-Security-Policy (XSS/injection prevention).
         </p>
       </section>
 
@@ -981,5 +993,6 @@ function AdvancedTab({ clientId, routeId, route }: {
         </button>
       </div>
     </form>
+    </div>
   );
 }

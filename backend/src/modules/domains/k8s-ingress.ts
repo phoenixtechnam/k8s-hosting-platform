@@ -137,7 +137,7 @@ export async function reconcileIngress(
           host: route.hostname,
           http: {
             paths: [{
-              path: '/',
+              path: route.path || '/',
               pathType: 'Prefix',
               backend: {
                 service: { name: serviceName, port: { number: 8080 } },

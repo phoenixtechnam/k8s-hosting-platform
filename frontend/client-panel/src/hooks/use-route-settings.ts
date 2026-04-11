@@ -32,6 +32,7 @@ export interface RouteDetailResponse {
   readonly id: string;
   readonly domainId: string;
   readonly hostname: string;
+  readonly path: string;
   readonly deploymentId: string | null;
   readonly ingressCname: string;
   readonly nodeHostname: string | null;

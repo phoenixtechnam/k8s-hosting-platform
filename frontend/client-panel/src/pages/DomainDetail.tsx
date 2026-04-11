@@ -464,7 +464,9 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
     if (!newHostname) return;
-    createRoute.mutate({ hostname: newHostname }, {
+    const form = e.target as HTMLFormElement;
+    const pathValue = (form.elements.namedItem('path') as HTMLInputElement)?.value || '/';
+    createRoute.mutate({ hostname: newHostname, path: pathValue }, {
       onSuccess: () => setNewHostname(''),
     });
   };
@@ -496,12 +498,18 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
           No routes configured yet. Add a hostname below to start routing traffic to your workloads.
         </div>
-      ) : (
+      ) : (() => {
+        const showPathColumn = routes.some((r) => {
+          const rPath = (r as Record<string, unknown>).path as string | undefined;
+          return rPath && rPath !== '/';
+        });
+        return (
         <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
           <table className="w-full text-sm" data-testid="routes-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Hostname</th>
+                {showPathColumn && <th className="px-4 py-3">Path</th>}
                 <th className="px-4 py-3">CNAME Target</th>
                 <th className="px-4 py-3">Deployment</th>
                 <th className="px-4 py-3">TLS</th>
@@ -523,6 +531,11 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                       ) : null}
                     </Link>
                   </td>
+                  {showPathColumn && (
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
+                      {((route as Record<string, unknown>).path as string) || '/'}
+                    </td>
+                  )}
                   <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
                   <td className="px-4 py-3">
                     <select
@@ -588,7 +601,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
 
       <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
         <div className="flex-1">
@@ -601,6 +615,15 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             className={INPUT_CLASS}
             data-testid="new-hostname-input"
           />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <span>Path</span>
+          </label>
+          <input type="text" name="path" defaultValue="/" placeholder="/" className={INPUT_CLASS} data-testid="new-route-path-input" />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            URL path prefix for this route. Use "/" for all traffic, or "/api/" to route only API requests. Must start with "/".
+          </p>
         </div>
         <button
           type="submit"

@@ -584,6 +584,7 @@ export const ingressRoutes = pgTable('ingress_routes', {
     .notNull()
     .references(() => domains.id, { onDelete: 'cascade' }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
+  path: varchar('path', { length: 255 }).notNull().default('/'),
   deploymentId: varchar('deployment_id', { length: 36 }),
   ingressCname: varchar('ingress_cname', { length: 255 }).notNull(),
   nodeHostname: varchar('node_hostname', { length: 255 }),

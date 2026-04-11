@@ -15,6 +15,7 @@ export const ingressRouteResponseSchema = z.object({
   id: uuidField,
   domainId: z.string(),
   hostname: z.string(),
+  path: z.string(),
   deploymentId: z.string().nullable(),
   ingressCname: z.string(),
   nodeHostname: z.string().nullable(),
@@ -49,6 +50,7 @@ export const ingressRouteResponseSchema = z.object({
 
 export const createIngressRouteSchema = z.object({
   hostname: z.string().min(1).max(255),
+  path: z.string().min(1).max(255).optional(),
   deployment_id: uuidField.nullable().optional(),
 });
 
@@ -85,7 +87,16 @@ export const updateSecuritySettingsSchema = z.object({
 export const updateAdvancedSettingsSchema = z.object({
   custom_error_codes: z.string().max(255).nullable().optional(),
   custom_error_path: z.string().max(255).nullable().optional(),
-  additional_headers: z.record(z.string().max(255), z.string().max(4096)).nullable().optional(),
+  additional_headers: z.record(
+    z.string().max(255).regex(/^[a-zA-Z0-9\-_]+$/, 'Header name must contain only alphanumeric characters, hyphens, and underscores'),
+    z.string().max(4096).refine(
+      (val) => !/[\n\r{}`]/.test(val),
+      { message: 'Header value must not contain newlines, curly braces, or backticks' },
+    ),
+  ).refine(
+    (val) => val === null || val === undefined || Object.keys(val).length <= 50,
+    { message: 'Maximum 50 headers allowed' },
+  ).nullable().optional(),
 });
 
 // ─── Auth Users ─────────────────────────────────────────────────────────────

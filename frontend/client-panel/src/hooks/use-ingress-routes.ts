@@ -22,7 +22,7 @@ export function useCreateIngressRoute(clientId: string | undefined, domainId: st
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: { hostname: string; deployment_id?: string | null }) =>
+    mutationFn: (input: { hostname: string; path?: string; deployment_id?: string | null }) =>
       apiFetch<{ data: IngressRouteResponse }>(
         `/api/v1/clients/${clientId}/domains/${domainId}/routes`,
         { method: 'POST', body: JSON.stringify(input) },

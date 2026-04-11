@@ -165,6 +165,53 @@ async function deleteProxyHeadersConfigMap(
  * Returns annotations that should be applied to the Ingress resource.
  * The caller (reconciler) merges these with any existing annotations.
  */
+// ─── Header Validation Constants ─────────────────────────────────────────
+
+const MAX_HEADERS = 50;
+const MAX_HEADER_VALUE_LENGTH = 4096;
+
+/**
+ * Validate and sanitise a single header name.
+ * Only alphanumeric characters, hyphens, and underscores are allowed.
+ */
+function sanitiseHeaderName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9\-_]/g, '');
+}
+
+/**
+ * Validate and sanitise a single header value.
+ * Strips newlines, carriage returns, curly braces, and backticks
+ * to prevent NGINX configuration injection. Semicolons are allowed
+ * (valid in header values like X-XSS-Protection: 1; mode=block).
+ */
+function sanitiseHeaderValue(value: string): string {
+  return value.replace(/[\n\r{}`]/g, '');
+}
+
+/**
+ * Build a configuration-snippet with add_header directives from a
+ * record of response headers.
+ *
+ * Returns the snippet string, or null if no valid headers remain.
+ */
+export function buildHeaderSnippet(
+  headers: Record<string, string>,
+): string | null {
+  const entries = Object.entries(headers).slice(0, MAX_HEADERS);
+  if (entries.length === 0) return null;
+
+  const lines = entries
+    .map(([name, value]) => {
+      const safeName = sanitiseHeaderName(name);
+      const safeValue = sanitiseHeaderValue(value).slice(0, MAX_HEADER_VALUE_LENGTH);
+      if (!safeName) return null;
+      return `add_header ${safeName} "${safeValue}" always;`;
+    })
+    .filter(Boolean);
+
+  return lines.length > 0 ? lines.join('\n') : null;
+}
+
 export function buildAnnotationsFromRoute(
   route: {
     forceHttps: number;
@@ -182,10 +229,11 @@ export function buildAnnotationsFromRoute(
     wafExcludedRules: string | null;
     customErrorCodes: string | null;
     customErrorPath: string | null;
+    additionalHeaders?: Record<string, string> | null;
   },
   routeId: string,
-  namespace?: string,
-  proxyHeadersCmName?: string | null,
+  _namespace?: string,
+  _proxyHeadersCmName?: string | null,
 ): Record<string, string> {
   const annotations: Record<string, string> = {};
 
@@ -254,9 +302,16 @@ export function buildAnnotationsFromRoute(
     annotations['nginx.ingress.kubernetes.io/default-backend'] = route.customErrorPath;
   }
 
-  // ── Proxy Headers ──
-  if (proxyHeadersCmName && namespace) {
-    annotations['nginx.ingress.kubernetes.io/proxy-set-headers'] = `${namespace}/${proxyHeadersCmName}`;
+  // ── Response Headers via configuration-snippet ──
+  if (route.additionalHeaders && Object.keys(route.additionalHeaders).length > 0) {
+    const snippet = buildHeaderSnippet(route.additionalHeaders);
+    if (snippet) {
+      // Append to existing configuration-snippet if WAF rules already set one
+      const existing = annotations['nginx.ingress.kubernetes.io/configuration-snippet'];
+      annotations['nginx.ingress.kubernetes.io/configuration-snippet'] = existing
+        ? `${existing}\n${snippet}`
+        : snippet;
+    }
   }
 
   return annotations;
@@ -271,7 +326,7 @@ export function buildAnnotationsFromRoute(
  * 1. Loads the route with all settings
  * 2. Resolves the client namespace
  * 3. Syncs the basic-auth K8s Secret (if basic auth is enabled)
- * 4. Syncs the proxy-headers ConfigMap (if additional headers are set)
+ * 4. Cleans up legacy proxy-headers ConfigMap (now replaced by configuration-snippet)
  * 5. Returns the annotation map for the ingress reconciler to apply
  *
  * NOTE: This does NOT directly patch the Ingress. The ingress reconciler
@@ -305,16 +360,12 @@ export async function syncRouteAnnotations(
     }
   }
 
-  // 4. Sync proxy-headers ConfigMap
-  let proxyHeadersCmName: string | null = null;
-  if (route.additionalHeaders && Object.keys(route.additionalHeaders).length > 0) {
-    proxyHeadersCmName = await syncProxyHeadersConfigMap(k8s, namespace, routeId, route.additionalHeaders);
-  } else {
-    await deleteProxyHeadersConfigMap(k8s, namespace, routeId);
-  }
+  // 4. Clean up legacy proxy-headers ConfigMap (replaced by configuration-snippet).
+  // Safe to call unconditionally — ignores 404.
+  await deleteProxyHeadersConfigMap(k8s, namespace, routeId);
 
   // 5. Build and return the annotation map
-  return buildAnnotationsFromRoute(route, routeId, namespace, proxyHeadersCmName);
+  return buildAnnotationsFromRoute(route, routeId);
 }
 
 /**

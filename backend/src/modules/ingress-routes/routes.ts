@@ -104,14 +104,15 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     }
 
-    const route = await createRoute(app.db, domainId, clientId, parsed.data.hostname, parsed.data.deployment_id);
+    const body = parsed.data as { hostname: string; path?: string; deployment_id?: string | null };
+    const route = await createRoute(app.db, domainId, clientId, body.hostname, body.deployment_id, body.path ?? '/');
     await triggerReconcile(clientId);
 
     // Phase 2c: delegate cert provisioning to the central certificates
     // module. It picks the right ClusterIssuer based on the domain's
     // dnsMode + DNS provider, issues a wildcard when possible, and
     // writes a single Certificate CR per domain (not per-route).
-    if (parsed.data.deployment_id) {
+    if (body.deployment_id) {
       const k8s = getK8s();
       if (k8s) {
         try {
