@@ -359,6 +359,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }, 60_000); // Every 60 seconds
       app.addHook('onClose', () => clearInterval(certReconcileInterval));
 
+      // WAF log scraper — reads ModSecurity events from NGINX Ingress Controller logs
+      try {
+        const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        const { createK8sClients: createK8sForWaf } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const k8sForWaf = createK8sForWaf(kubePath);
+        if (k8sForWaf) {
+          const { startWafLogScraper } = await import('./modules/ingress-routes/waf-log-scraper.js');
+          const wafScraperTimer = startWafLogScraper(app.db, k8sForWaf);
+          app.addHook('onClose', () => clearInterval(wafScraperTimer));
+        }
+      } catch (err) {
+        app.log.warn({ err }, 'WAF log scraper not started');
+      }
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }
