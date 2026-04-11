@@ -50,13 +50,14 @@ CREATE TABLE waf_logs (
   id varchar(36) PRIMARY KEY,
   route_id varchar(36) NOT NULL REFERENCES ingress_routes(id) ON DELETE CASCADE,
   client_id varchar(36) NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-  timestamp timestamp NOT NULL DEFAULT now(),
-  rule_id varchar(20),
-  severity varchar(20),
-  message text,
-  request_uri varchar(1000),
-  remote_addr varchar(50),
-  action varchar(20)
+  rule_id varchar(50) NOT NULL,
+  severity varchar(20) NOT NULL,
+  message text NOT NULL,
+  request_uri text,
+  request_method varchar(10),
+  source_ip varchar(45),
+  matched_data text,
+  created_at timestamp NOT NULL DEFAULT now()
 );
 
 CREATE INDEX waf_logs_route_idx ON waf_logs(route_id, timestamp);

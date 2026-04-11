@@ -24,8 +24,8 @@ export interface RouteSecuritySettings {
 
 export interface RouteAdvancedSettings {
   readonly customErrorCodes: string | null;
-  readonly customErrorPagesPath: string | null;
-  readonly proxyHeaders: readonly { readonly name: string; readonly value: string }[];
+  readonly customErrorPath: string | null;
+  readonly additionalHeaders: Record<string, string> | null;
 }
 
 export interface RouteDetailResponse {
@@ -54,8 +54,8 @@ export interface RouteDetailResponse {
   readonly wafAnomalyThreshold: number;
   readonly wafExcludedRuleIds: string | null;
   readonly customErrorCodes: string | null;
-  readonly customErrorPagesPath: string | null;
-  readonly proxyHeaders: readonly { readonly name: string; readonly value: string }[];
+  readonly customErrorPath: string | null;
+  readonly additionalHeaders: Record<string, string> | null;
 }
 
 export interface RouteAuthUser {
@@ -151,8 +151,8 @@ export function useUpdateRouteAdvanced(clientId: string | undefined, routeId: st
   return useMutation({
     mutationFn: (input: {
       readonly custom_error_codes?: string | null;
-      readonly custom_error_pages_path?: string | null;
-      readonly proxy_headers?: readonly { readonly name: string; readonly value: string }[];
+      readonly custom_error_path?: string | null;
+      readonly additional_headers?: Record<string, string> | null;
     }) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(clientId!, routeId!)}/advanced`,

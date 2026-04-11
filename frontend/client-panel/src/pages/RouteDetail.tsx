@@ -787,9 +787,9 @@ function AdvancedTab({ clientId, routeId, route }: {
   const updateAdvanced = useUpdateRouteAdvanced(clientId, routeId);
 
   const [customErrorCodes, setCustomErrorCodes] = useState(route.customErrorCodes ?? '');
-  const [customErrorPagesPath, setCustomErrorPagesPath] = useState(route.customErrorPagesPath ?? '');
+  const [customErrorPath, setCustomErrorPath] = useState(route.customErrorPath ?? '');
   const [headers, setHeaders] = useState<readonly { readonly name: string; readonly value: string }[]>(
-    route.proxyHeaders.length > 0 ? route.proxyHeaders : [],
+    route.additionalHeaders ? Object.entries(route.additionalHeaders).map(([name, value]) => ({ name, value })) : [],
   );
   const [dirty, setDirty] = useState(false);
 
@@ -828,10 +828,12 @@ function AdvancedTab({ clientId, routeId, route }: {
     if (headerError) return;
     const filteredHeaders = headers.filter((h) => h.name.trim() !== '');
     try {
+      const headersObj: Record<string, string> = {};
+      for (const h of filteredHeaders) headersObj[h.name] = h.value;
       await updateAdvanced.mutateAsync({
         custom_error_codes: customErrorCodes || null,
-        custom_error_pages_path: customErrorPagesPath || null,
-        proxy_headers: filteredHeaders,
+        custom_error_path: customErrorPath || null,
+        additional_headers: Object.keys(headersObj).length > 0 ? headersObj : null,
       });
       setDirty(false);
     } catch { /* error via updateAdvanced.error */ }
@@ -875,8 +877,8 @@ function AdvancedTab({ clientId, routeId, route }: {
               type="text"
               className={INPUT_CLASS + ' mt-1'}
               placeholder=".platform/errors/"
-              value={customErrorPagesPath}
-              onChange={(e) => { setCustomErrorPagesPath(e.target.value); markDirty(); }}
+              value={customErrorPath}
+              onChange={(e) => { setCustomErrorPath(e.target.value); markDirty(); }}
               data-testid="error-pages-path-input"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
