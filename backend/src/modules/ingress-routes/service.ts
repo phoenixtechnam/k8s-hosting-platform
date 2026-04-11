@@ -93,6 +93,11 @@ export function getWwwCompanionHostname(
   if (wwwRedirect === 'add-www' && !hostname.startsWith('www.')) {
     return `www.${hostname}`;
   }
+  if (wwwRedirect === 'remove-www' && !hostname.startsWith('www.')) {
+    // The route is test-ingress.local with remove-www
+    // Need www.test-ingress.local to resolve so the redirect can happen
+    return `www.${hostname}`;
+  }
   if (wwwRedirect === 'remove-www' && hostname.startsWith('www.')) {
     return hostname.replace(/^www\./, '');
   }
@@ -131,6 +136,18 @@ export async function createRoute(
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
   }
 
+  // Validate hostname belongs to domain
+  // hostname must be either:
+  // - the domain name itself (apex): "example.com"
+  // - a subdomain: "*.example.com" where * is non-empty
+  if (hostname !== domain.domainName && !hostname.endsWith(`.${domain.domainName}`)) {
+    throw new ApiError(
+      'INVALID_HOSTNAME',
+      `Hostname '${hostname}' must be '${domain.domainName}' or a subdomain of it (e.g., www.${domain.domainName})`,
+      400,
+    );
+  }
+
   // Check for duplicate hostname
   const [existing] = await db
     .select({ id: ingressRoutes.id })
@@ -162,32 +179,22 @@ export async function createRoute(
 
   // Auto-create DNS records for PRIMARY domains
   if (domain.dnsMode === 'primary') {
+    const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
     try {
-      if (apex) {
-        // Apex: create A record (CNAME not allowed at apex per RFC 1034)
+      // Always create A record (simpler, no CNAME limitations)
+      await syncRecordToProviders(db, domain.domainName, 'create', {
+        type: 'A',
+        name: recordName,
+        content: settings.ingressDefaultIpv4,
+        ttl: 300,
+      });
+      // Also add AAAA if IPv6 configured
+      const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+      if (ipv6) {
         await syncRecordToProviders(db, domain.domainName, 'create', {
-          type: 'A',
-          name: '@',
-          content: settings.ingressDefaultIpv4,
-          ttl: 300,
-        });
-        // Also add AAAA if IPv6 configured
-        const ipv6 = await getSetting(db, 'ingress_default_ipv6');
-        if (ipv6) {
-          await syncRecordToProviders(db, domain.domainName, 'create', {
-            type: 'AAAA',
-            name: '@',
-            content: ipv6,
-            ttl: 300,
-          });
-        }
-      } else {
-        // Subdomain: create CNAME → ingressCname
-        const subdomain = hostname.replace(`.${domain.domainName}`, '');
-        await syncRecordToProviders(db, domain.domainName, 'create', {
-          type: 'CNAME',
-          name: subdomain,
-          content: ingressCname,
+          type: 'AAAA',
+          name: recordName,
+          content: ipv6,
           ttl: 300,
         });
       }
@@ -283,9 +290,9 @@ export async function listRoutesForClient(db: Database, clientId: string) {
 /**
  * Auto-provision DNS records for a hostname under a domain.
  *
- * For primary-mode domains this creates A/AAAA (apex) or CNAME (subdomain)
- * records via the configured DNS providers. Non-blocking — failures are
- * swallowed so callers are never disrupted.
+ * For primary-mode domains this creates A/AAAA records (both apex and
+ * subdomain) via the configured DNS providers. Non-blocking — failures
+ * are swallowed so callers are never disrupted.
  */
 export async function autoProvisionRouteDns(
   db: Database,
@@ -298,31 +305,22 @@ export async function autoProvisionRouteDns(
   const settings = await getIngressSettings(db);
   const apex = isApexHostname(hostname, domain.domainName);
 
+  const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
+
   try {
-    if (apex) {
+    // Always create A record (simpler, no CNAME limitations at apex or subdomain)
+    await syncRecordToProviders(db, domain.domainName, 'create', {
+      type: 'A',
+      name: recordName,
+      content: settings.ingressDefaultIpv4,
+      ttl: 300,
+    });
+    const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+    if (ipv6) {
       await syncRecordToProviders(db, domain.domainName, 'create', {
-        type: 'A',
-        name: '@',
-        content: settings.ingressDefaultIpv4,
-        ttl: 300,
-      });
-      const ipv6 = await getSetting(db, 'ingress_default_ipv6');
-      if (ipv6) {
-        await syncRecordToProviders(db, domain.domainName, 'create', {
-          type: 'AAAA',
-          name: '@',
-          content: ipv6,
-          ttl: 300,
-        });
-      }
-    } else {
-      const slug = hostnameToSlug(hostname);
-      const ingressCname = `${slug}.${settings.ingressBaseDomain}`;
-      const subdomain = hostname.replace(`.${domain.domainName}`, '');
-      await syncRecordToProviders(db, domain.domainName, 'create', {
-        type: 'CNAME',
-        name: subdomain,
-        content: ingressCname,
+        type: 'AAAA',
+        name: recordName,
+        content: ipv6,
         ttl: 300,
       });
     }
@@ -336,8 +334,8 @@ export async function autoProvisionRouteDns(
 /**
  * Remove DNS records that were auto-provisioned when the route was created.
  *
- * For primary-mode domains this deletes the A/AAAA (apex) or CNAME (subdomain)
- * record from both the external DNS provider and the local dns_records table.
+ * For primary-mode domains this deletes the A/AAAA records from both the
+ * external DNS provider and the local dns_records table.
  */
 export async function autoDeleteRouteDns(
   db: Database,
@@ -359,32 +357,20 @@ export async function autoDeleteRouteDns(
   // 3. Delete from external DNS provider(s)
   const settings = await getIngressSettings(db);
 
-  if (apex) {
-    // Apex routes get A (and optionally AAAA) records
-    await syncRecordToProviders(db, domain.domainName, 'delete', {
-      type: 'A',
-      name: '@',
-      content: settings.ingressDefaultIpv4,
-      id: 'auto', // provider uses name|type|content composite key
-    }, domainId);
+  // All routes (apex and subdomain) now use A records
+  await syncRecordToProviders(db, domain.domainName, 'delete', {
+    type: 'A',
+    name: recordName,
+    content: settings.ingressDefaultIpv4,
+    id: 'auto', // provider uses name|type|content composite key
+  }, domainId);
 
-    const ipv6 = await getSetting(db, 'ingress_default_ipv6');
-    if (ipv6) {
-      await syncRecordToProviders(db, domain.domainName, 'delete', {
-        type: 'AAAA',
-        name: '@',
-        content: ipv6,
-        id: 'auto',
-      }, domainId);
-    }
-  } else {
-    // Subdomain routes get a CNAME record
-    const slug = hostnameToSlug(hostname);
-    const ingressCname = `${slug}.${settings.ingressBaseDomain}`;
+  const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+  if (ipv6) {
     await syncRecordToProviders(db, domain.domainName, 'delete', {
-      type: 'CNAME',
+      type: 'AAAA',
       name: recordName,
-      content: ingressCname,
+      content: ipv6,
       id: 'auto',
     }, domainId);
   }
@@ -396,10 +382,8 @@ export async function autoDeleteRouteDns(
     .where(and(eq(dnsRecords.domainId, domainId), eq(dnsRecords.recordName, recordName)));
 
   for (const rec of localRecords) {
-    // Only delete records that match what auto-provisioning would have created
-    const isAutoApex = apex && (rec.recordType === 'A' || rec.recordType === 'AAAA');
-    const isAutoCname = !apex && rec.recordType === 'CNAME';
-    if (isAutoApex || isAutoCname) {
+    // Only delete records that match what auto-provisioning would have created (A/AAAA)
+    if (rec.recordType === 'A' || rec.recordType === 'AAAA') {
       await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
     }
   }

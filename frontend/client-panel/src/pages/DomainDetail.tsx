@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
@@ -48,6 +48,14 @@ export default function DomainDetail() {
   const { data: domainsData, isLoading } = useDomains(clientId ?? undefined);
   const domain = domainsData?.data?.find((d) => d.id === domainId);
 
+  // If the user was on the DNS tab and the domain switches to CNAME mode
+  // (e.g. after a migration), fall back to the routing tab.
+  useEffect(() => {
+    if (domain && activeTab === 'dns' && domain.dnsMode === 'cname') {
+      setActiveTab('routing');
+    }
+  }, [activeTab, domain?.dnsMode, domain]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20" data-testid="domain-detail-loading">
@@ -67,9 +75,12 @@ export default function DomainDetail() {
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'routing', label: 'Routing', icon: <Network size={14} /> },
-    { key: 'dns', label: 'DNS Records', icon: <Globe size={14} /> },
+    // DNS Records tab is only relevant for primary/secondary modes — CNAME
+    // domains delegate DNS entirely so there is nothing to manage here.
+    ...(domain.dnsMode !== 'cname' ? [{ key: 'dns' as Tab, label: 'DNS Records', icon: <Globe size={14} /> }] : []),
     { key: 'ssl', label: 'SSL/TLS', icon: <ShieldCheck size={14} /> },
   ];
+
 
   return (
     <div className="space-y-6" data-testid="domain-detail-page">
@@ -86,6 +97,17 @@ export default function DomainDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           {domain.domainName}
         </h1>
+        <span
+          className={clsx(
+            'inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium',
+            domain.dnsMode === 'primary' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+            domain.dnsMode === 'cname' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
+            'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+          )}
+          data-testid="domain-dns-mode-badge"
+        >
+          {domain.dnsMode === 'primary' ? 'Primary DNS' : domain.dnsMode === 'cname' ? 'CNAME Mode' : 'Secondary'}
+        </span>
         {(() => {
           const dnsGroupId = (domain as Record<string, unknown>).dnsGroupId as string | null | undefined;
           const groupName = dnsGroupId ? groups.find((g) => g.id === dnsGroupId)?.name : null;
@@ -452,7 +474,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const updateRoute = useUpdateIngressRoute(clientId, domainId);
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
 
-  const [newHostname, setNewHostname] = useState('');
+  const [subdomain, setSubdomain] = useState('');
+  const [subdomainError, setSubdomainError] = useState<string | null>(null);
   // Round-4 Phase A: confirm-before-delete pattern for ingress routes.
   // Previously a single click deleted the route immediately, which
   // could drop live traffic. Now clicking the trash icon arms a
@@ -462,13 +485,29 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
 
+  /** Validate a single DNS label (subdomain part). */
+  const validateSubdomain = (value: string): string | null => {
+    if (!value) return null; // empty = apex, valid
+    if (value.length > 63) return 'Max 63 characters';
+    if (/[^a-zA-Z0-9-]/.test(value)) return 'Only letters, numbers, and hyphens allowed';
+    if (value.startsWith('-') || value.endsWith('-')) return 'Cannot start or end with a hyphen';
+    return null;
+  };
+
+  const handleSubdomainChange = (value: string) => {
+    setSubdomain(value);
+    setSubdomainError(validateSubdomain(value));
+  };
+
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
-    if (!newHostname) return;
+    const error = validateSubdomain(subdomain);
+    if (error) { setSubdomainError(error); return; }
+    const hostname = subdomain ? `${subdomain}.${domainName}` : domainName;
     const form = e.target as HTMLFormElement;
     const pathValue = (form.elements.namedItem('path') as HTMLInputElement)?.value || '/';
-    createRoute.mutate({ hostname: newHostname, path: pathValue }, {
-      onSuccess: () => setNewHostname(''),
+    createRoute.mutate({ hostname, path: pathValue }, {
+      onSuccess: () => { setSubdomain(''); setSubdomainError(null); },
     });
   };
 
@@ -564,7 +603,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                       data-testid={`route-tls-badge-${route.id}`}
                     >
                       {route.tlsMode !== 'none' && <Lock size={10} />}
-                      {route.tlsMode === 'auto' ? 'Let\'s Encrypt' : route.tlsMode === 'custom' ? 'Custom Cert' : 'No TLS'}
+                      {route.tlsMode === 'auto' ? 'Auto (TLS)' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
                     </span>
                   </td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
@@ -615,14 +654,23 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
         <div className="flex-1">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Hostname</label>
-          <input
-            type="text"
-            value={newHostname}
-            onChange={(e) => setNewHostname(e.target.value)}
-            placeholder={isCname ? domainName : `subdomain.${domainName}`}
-            className={INPUT_CLASS}
-            data-testid="new-hostname-input"
-          />
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              value={subdomain}
+              onChange={(e) => handleSubdomainChange(e.target.value)}
+              placeholder="(apex)"
+              className={clsx(INPUT_CLASS, 'w-32', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
+              data-testid="new-subdomain-input"
+            />
+            <span className="text-sm text-gray-500 dark:text-gray-400">.{domainName}</span>
+          </div>
+          {subdomainError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
+          )}
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Enter subdomain (e.g., 'www', 'app') or leave empty for the root domain.
+          </p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -635,7 +683,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
         </div>
         <button
           type="submit"
-          disabled={!newHostname || createRoute.isPending}
+          disabled={!!subdomainError || createRoute.isPending}
           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}

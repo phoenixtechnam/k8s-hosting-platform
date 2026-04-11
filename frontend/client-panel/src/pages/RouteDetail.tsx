@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useDomains } from '@/hooks/use-domains';
 import {
   useRouteDetail,
   useUpdateRouteRedirects,
@@ -38,6 +39,11 @@ export default function RouteDetail() {
 
   const { data: routeData, isLoading, isError } = useRouteDetail(clientId ?? undefined, routeId);
   const route = routeData?.data;
+
+  // Fetch parent domain to determine DNS mode (needed for www redirect hint).
+  const { data: domainsData } = useDomains(clientId ?? undefined);
+  const parentDomain = domainsData?.data?.find((d) => d.id === domainId);
+  const dnsMode = parentDomain?.dnsMode;
 
   if (isLoading) {
     return (
@@ -140,7 +146,7 @@ export default function RouteDetail() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'redirects' && <RedirectsTab clientId={clientId!} routeId={routeId!} route={route} />}
+      {activeTab === 'redirects' && <RedirectsTab clientId={clientId!} routeId={routeId!} route={route} dnsMode={dnsMode} />}
       {activeTab === 'security' && <SecurityTab clientId={clientId!} routeId={routeId!} route={route} />}
       {activeTab === 'protected-dirs' && <ProtectedDirsSection clientId={clientId!} routeId={routeId!} />}
       {activeTab === 'advanced' && <AdvancedTab clientId={clientId!} routeId={routeId!} route={route} />}
@@ -150,10 +156,11 @@ export default function RouteDetail() {
 
 // ─── Redirects Tab ──────────────────────────────────────────────────────────
 
-function RedirectsTab({ clientId, routeId, route }: {
+function RedirectsTab({ clientId, routeId, route, dnsMode }: {
   readonly clientId: string;
   readonly routeId: string;
   readonly route: RouteDetailResponse;
+  readonly dnsMode: string | undefined;
 }) {
   const updateRedirects = useUpdateRouteRedirects(clientId, routeId);
 
@@ -248,6 +255,14 @@ function RedirectsTab({ clientId, routeId, route }: {
           <Info size={14} className="mt-0.5 shrink-0" />
           <span>
             Both <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">{route.hostname}</code> and <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">{route.hostname.replace(/^www\./, '')}</code> are configured automatically. Traffic to the www version will be redirected to the bare domain.
+          </span>
+        </div>
+      )}
+      {dnsMode === 'cname' && wwwRedirect !== 'none' && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300" data-testid="www-redirect-cname-warning">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            www redirect requires primary DNS mode to auto-configure DNS records. For CNAME mode, configure the www DNS record externally at your DNS provider.
           </span>
         </div>
       )}

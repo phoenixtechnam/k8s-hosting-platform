@@ -27,6 +27,10 @@ const MOCK_DOMAIN = {
   id: 'd1', clientId: 'c1', domainName: 'example.com', status: 'active',
   dnsMode: 'cname', sslAutoRenew: 1, createdAt: '2026-01-10T00:00:00Z',
 };
+const MOCK_DOMAIN_PRIMARY = {
+  ...MOCK_DOMAIN,
+  dnsMode: 'primary',
+};
 const MOCK_DNS = [
   { id: 'r1', domainId: 'd1', recordType: 'A', recordName: '@', recordValue: '1.2.3.4', ttl: 3600, priority: null, weight: null, port: null, updatedAt: '2026-01-10T00:00:00Z' },
 ];
@@ -81,13 +85,16 @@ function setupMocks() {
 beforeEach(() => vi.clearAllMocks());
 
 describe('Client DomainDetail page', () => {
-  it('renders domain name and tabs', async () => {
+  it('renders domain name and tabs (CNAME mode hides DNS tab)', async () => {
     setupMocks();
     render(<DomainDetail />, { wrapper: createWrapper() });
     await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toHaveTextContent('example.com'));
     expect(screen.getByTestId('tab-routing')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-dns')).toBeInTheDocument();
+    // DNS tab is hidden for CNAME mode domains
+    expect(screen.queryByTestId('tab-dns')).not.toBeInTheDocument();
     expect(screen.getByTestId('tab-ssl')).toBeInTheDocument();
+    // DNS mode badge should be visible
+    expect(screen.getByTestId('domain-dns-mode-badge')).toHaveTextContent('CNAME Mode');
   });
 
   it('shows domain not found for invalid domain', async () => {
@@ -121,22 +128,33 @@ describe('Client DomainDetail page', () => {
   });
 });
 
+function setupMocksPrimary() {
+  mockApiFetch.mockImplementation((url: string) => {
+    if (url.includes('/delete-preview'))
+      return Promise.resolve({ data: MOCK_DELETE_PREVIEW });
+    if (url.includes('/domains') && !url.includes('/dns-records'))
+      return Promise.resolve({ data: [MOCK_DOMAIN_PRIMARY], pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
+    if (url.includes('/dns-records')) return Promise.resolve({ data: MOCK_DNS });
+    return Promise.resolve({ data: [] });
+  });
+}
+
 describe('Client DNS tab', () => {
   const switchToDns = async () => {
     await waitFor(() => expect(screen.getByTestId('tab-dns')).toBeInTheDocument());
     await userEvent.setup().click(screen.getByTestId('tab-dns'));
   };
 
-  it('renders DNS records', async () => {
-    setupMocks();
+  it('renders DNS records (primary mode)', async () => {
+    setupMocksPrimary();
     render(<DomainDetail />, { wrapper: createWrapper() });
     await switchToDns();
     await waitFor(() => expect(screen.getByTestId('dns-records-table')).toBeInTheDocument());
     expect(screen.getByText('1.2.3.4')).toBeInTheDocument();
   });
 
-  it('shows add form on button click', async () => {
-    setupMocks();
+  it('shows add form on button click (primary mode)', async () => {
+    setupMocksPrimary();
     const user = userEvent.setup();
     render(<DomainDetail />, { wrapper: createWrapper() });
     await switchToDns();
