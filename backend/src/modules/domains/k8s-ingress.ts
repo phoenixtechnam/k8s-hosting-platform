@@ -105,7 +105,9 @@ export async function reconcileIngress(
   const clientDeployments = await db.select().from(deployments).where(eq(deployments.clientId, clientId));
   const deploymentMap = new Map<string, string>();
   for (const d of clientDeployments) {
-    deploymentMap.set(d.id, d.name);
+    // K8s service name is {name}-{resourceSuffix} (see k8s-deployer.ts:k8sResourceName)
+    const k8sServiceName = d.resourceSuffix ? `${d.name}-${d.resourceSuffix}` : d.name;
+    deploymentMap.set(d.id, k8sServiceName);
   }
 
   // Build rules from ingress_routes (single source of truth), tracking
@@ -138,7 +140,7 @@ export async function reconcileIngress(
               path: '/',
               pathType: 'Prefix',
               backend: {
-                service: { name: serviceName, port: { number: 80 } },
+                service: { name: serviceName, port: { number: 8080 } },
               },
             }],
           },
