@@ -70,7 +70,7 @@ export default function RouteDetail() {
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'redirects', label: 'Redirects', icon: <ArrowLeftRight size={14} /> },
     { key: 'security', label: 'Security', icon: <Shield size={14} /> },
-    { key: 'protected-dirs', label: 'Protected Dirs', icon: <FolderLock size={14} /> },
+    { key: 'protected-dirs', label: 'Protected Directories', icon: <FolderLock size={14} /> },
     { key: 'advanced', label: 'Advanced', icon: <Settings size={14} /> },
   ];
 
@@ -770,7 +770,7 @@ function ProtectedDirsSection({ clientId, routeId }: {
             </div>
             <div>
               <label htmlFor="new-dir-realm" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Realm
+                Realm Name
               </label>
               <input
                 id="new-dir-realm"
@@ -923,7 +923,7 @@ function ProtectedDirDetail({ clientId, routeId, dir }: {
         </div>
         <div>
           <label htmlFor={`dir-realm-${dir.id}`} className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Realm
+            Realm Name
           </label>
           <input
             id={`dir-realm-${dir.id}`}
