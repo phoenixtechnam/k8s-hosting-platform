@@ -742,53 +742,96 @@ function WafLogSection({ clientId, routeId }: {
       ) : logs.length === 0 ? (
         <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
       ) : (
-        <div className="overflow-x-auto rounded-b-xl" data-testid="waf-log-entries">
-          <table className="w-full font-mono text-[11px] bg-gray-950">
-            <thead>
-              <tr className="border-b border-gray-800 text-gray-500 text-left">
-                <th className="px-3 py-2 w-[110px]">Time</th>
-                <th className="px-3 py-2 w-[100px]">Source IP</th>
-                <th className="px-3 py-2 w-[62px]">Level</th>
-                <th className="px-3 py-2 min-w-[220px]">Rule</th>
-                <th className="px-3 py-2 w-[60px]">Score</th>
-                <th className="px-3 py-2">Request</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log, idx) => {
-                const scoreMatch = log.message.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/);
-                const score = scoreMatch ? (scoreMatch[1] || scoreMatch[2]) : null;
-                const isBlockRule = log.ruleId === '949110';
-                const ruleName = isBlockRule ? 'Anomaly Threshold' : log.message;
-                return (
-                  <tr
-                    key={log.id}
-                    className={clsx('whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
-                    data-testid={`waf-log-entry-${log.id}`}
-                  >
-                    <td className="px-3 py-1.5 text-gray-500">{formatTs(log.createdAt)}</td>
-                    <td className="px-3 py-1.5 text-gray-400">{log.sourceIp ?? '-'}</td>
-                    <td className="px-3 py-1.5">
-                      <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
-                        {log.severity}
-                      </span>
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <span className="text-blue-400 font-bold">{log.ruleId}</span>
-                      <span className="text-gray-500 mx-1">-</span>
-                      <span className="text-gray-300 truncate" title={log.message}>{ruleName.slice(0, 40)}{ruleName.length > 40 ? '...' : ''}</span>
-                    </td>
-                    <td className="px-3 py-1.5 text-amber-400 font-bold">{score ?? ''}</td>
-                    <td className="px-3 py-1.5 text-green-400 truncate max-w-[300px]" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
-                      {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <WafLogTable logs={logs} />
       )}
+    </div>
+  );
+}
+
+type SortKey = 'createdAt' | 'sourceIp' | 'severity' | 'ruleId' | 'score' | 'request';
+type SortDir = 'asc' | 'desc';
+
+function getScore(msg: string): number | null {
+  const m = msg.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/);
+  return m ? parseInt(m[1] || m[2], 10) : null;
+}
+
+function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
+  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('desc'); }
+  };
+
+  const sorted = [...logs].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    switch (sortKey) {
+      case 'createdAt': return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      case 'sourceIp': return dir * (a.sourceIp ?? '').localeCompare(b.sourceIp ?? '');
+      case 'severity': { const order: Record<string, number> = { critical: 0, warning: 1, info: 2 }; return dir * ((order[a.severity] ?? 3) - (order[b.severity] ?? 3)); }
+      case 'ruleId': return dir * a.ruleId.localeCompare(b.ruleId);
+      case 'score': return dir * ((getScore(a.message) ?? -1) - (getScore(b.message) ?? -1));
+      case 'request': return dir * ((a.requestUri ?? '').localeCompare(b.requestUri ?? ''));
+      default: return 0;
+    }
+  });
+
+  const SortHeader = ({ label, k, className }: { label: string; k: SortKey; className?: string }) => (
+    <th
+      className={clsx('px-2 py-2 cursor-pointer select-none hover:text-gray-300 transition-colors', className)}
+      onClick={() => toggleSort(k)}
+    >
+      {label} {sortKey === k ? (sortDir === 'asc' ? '▲' : '▼') : ''}
+    </th>
+  );
+
+  return (
+    <div className="overflow-x-auto rounded-b-xl" data-testid="waf-log-entries">
+      <table className="w-full font-mono text-[11px] bg-gray-950">
+        <thead>
+          <tr className="border-b border-gray-800 text-gray-500 text-left">
+            <SortHeader label="Time" k="createdAt" className="w-[110px]" />
+            <SortHeader label="IP" k="sourceIp" className="w-[80px]" />
+            <SortHeader label="Level" k="severity" className="w-[62px]" />
+            <SortHeader label="Rule" k="ruleId" />
+            <SortHeader label="Score" k="score" className="w-[48px]" />
+            <SortHeader label="Request" k="request" />
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((log, idx) => {
+            const score = getScore(log.message);
+            const isBlockRule = log.ruleId === '949110';
+            const ruleName = isBlockRule ? 'Anomaly Threshold' : log.message;
+            return (
+              <tr
+                key={log.id}
+                className={clsx(idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
+                data-testid={`waf-log-entry-${log.id}`}
+              >
+                <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{formatTs(log.createdAt)}</td>
+                <td className="px-2 py-1.5 text-gray-400 whitespace-nowrap">{log.sourceIp ?? '-'}</td>
+                <td className="px-2 py-1.5">
+                  <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
+                    {log.severity}
+                  </span>
+                </td>
+                <td className="px-2 py-1.5" title={log.message}>
+                  <span className="text-blue-400 font-bold">{log.ruleId}</span>
+                  <span className="text-gray-600 mx-1">-</span>
+                  <span className="text-gray-300">{ruleName}</span>
+                </td>
+                <td className="px-2 py-1.5 text-amber-400 font-bold whitespace-nowrap">{score ?? ''}</td>
+                <td className="px-2 py-1.5 text-green-400 truncate max-w-[400px]" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
+                  {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
