@@ -16,14 +16,20 @@ import {
   updateRedirectSettings,
   updateSecuritySettings,
   updateAdvancedSettings,
-  listAuthUsers,
-  createAuthUser,
-  deleteAuthUser,
-  toggleAuthUser,
-  changeAuthUserPassword,
   listWafLogs,
   mapRouteToResponse,
 } from './settings-service.js';
+import {
+  listProtectedDirs,
+  createProtectedDir,
+  updateProtectedDir,
+  deleteProtectedDir,
+  listDirUsers,
+  createDirUser,
+  deleteDirUser,
+  toggleDirUser,
+  changeDirUserPassword,
+} from './protected-dirs-service.js';
 import { syncRouteAnnotations } from './annotation-sync.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
@@ -34,6 +40,8 @@ import {
   updateRedirectSettingsSchema,
   updateSecuritySettingsSchema,
   updateAdvancedSettingsSchema,
+  createRouteProtectedDirSchema,
+  updateRouteProtectedDirSchema,
   createAuthUserSchema,
   toggleAuthUserSchema,
   changeAuthUserPasswordSchema,
@@ -247,93 +255,164 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     return success(updated);
   });
 
-  // ─── Auth Users ───────────────────────────────────────────────────────────
+  // ─── Protected Directories ──────────────────────────────────────────────
 
-  // GET /api/v1/clients/:clientId/routes/:routeId/auth-users
-  app.get('/clients/:clientId/routes/:routeId/auth-users', {
+  // GET /api/v1/clients/:clientId/routes/:routeId/protected-dirs
+  app.get('/clients/:clientId/routes/:routeId/protected-dirs', {
     onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
-      tags: ['Ingress Route Auth'],
-      summary: 'List basic-auth users for a route',
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'List protected directories for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
     const { routeId } = request.params as { routeId: string };
-    const users = await listAuthUsers(app.db, routeId);
-    return success(users);
+    const dirs = await listProtectedDirs(app.db, routeId);
+    return success(dirs);
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users
-  app.post('/clients/:clientId/routes/:routeId/auth-users', {
+  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs
+  app.post('/clients/:clientId/routes/:routeId/protected-dirs', {
     onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
-      tags: ['Ingress Route Auth'],
-      summary: 'Create a basic-auth user for a route',
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Create a protected directory for a route',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const parsed = createRouteProtectedDirSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const dir = await createProtectedDir(app.db, routeId, clientId, parsed.data);
+    await triggerAnnotationSync(routeId, clientId);
+    reply.status(201).send(success(dir));
+  });
+
+  // PATCH /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId
+  app.patch('/clients/:clientId/routes/:routeId/protected-dirs/:dirId', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Update a protected directory',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
+    const parsed = updateRouteProtectedDirSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const updated = await updateProtectedDir(app.db, dirId, routeId, clientId, parsed.data);
+    await triggerAnnotationSync(routeId, clientId);
+    return success(updated);
+  });
+
+  // DELETE /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId
+  app.delete('/clients/:clientId/routes/:routeId/protected-dirs/:dirId', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Delete a protected directory',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
+    await deleteProtectedDir(app.db, dirId, routeId, clientId);
+    await triggerAnnotationSync(routeId, clientId);
+    reply.status(204).send();
+  });
+
+  // ─── Directory-Scoped Auth Users ──────────────────────────────────────────
+
+  // GET /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users
+  app.get('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'List auth users for a protected directory',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { dirId } = request.params as { dirId: string };
+    const users = await listDirUsers(app.db, dirId);
+    return success(users);
+  });
+
+  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users
+  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Create an auth user for a protected directory',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
     const parsed = createAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     }
 
-    const user = await createAuthUser(app.db, routeId, parsed.data.username, parsed.data.password);
+    const user = await createDirUser(app.db, dirId, parsed.data.username, parsed.data.password);
     await triggerAnnotationSync(routeId, clientId);
     reply.status(201).send(success(user));
   });
 
-  // DELETE /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId
-  app.delete('/clients/:clientId/routes/:routeId/auth-users/:userId', {
+  // DELETE /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId
+  app.delete('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId', {
     onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
-      tags: ['Ingress Route Auth'],
-      summary: 'Delete a basic-auth user from a route',
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Delete an auth user from a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
-    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
-    await deleteAuthUser(app.db, routeId, userId);
+    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
+    await deleteDirUser(app.db, dirId, userId);
     await triggerAnnotationSync(routeId, clientId);
     reply.status(204).send();
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId/toggle
-  app.post('/clients/:clientId/routes/:routeId/auth-users/:userId/toggle', {
+  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle
+  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/toggle', {
     onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
-      tags: ['Ingress Route Auth'],
-      summary: 'Enable/disable a basic-auth user',
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Enable/disable an auth user in a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
+    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
     const parsed = toggleAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     }
 
-    await toggleAuthUser(app.db, routeId, userId, parsed.data.enabled);
+    await toggleDirUser(app.db, dirId, userId, parsed.data.enabled);
     await triggerAnnotationSync(routeId, clientId);
     return success({ message: 'User toggled' });
   });
 
-  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId/change-password
-  app.post('/clients/:clientId/routes/:routeId/auth-users/:userId/change-password', {
+  // POST /api/v1/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password
+  app.post('/clients/:clientId/routes/:routeId/protected-dirs/:dirId/users/:userId/change-password', {
     onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
-      tags: ['Ingress Route Auth'],
-      summary: 'Change password for a basic-auth user',
+      tags: ['Ingress Route Protected Dirs'],
+      summary: 'Change password for an auth user in a protected directory',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
+    const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
     const parsed = changeAuthUserPasswordSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     }
 
-    await changeAuthUserPassword(app.db, routeId, userId, parsed.data.password);
+    await changeDirUserPassword(app.db, dirId, userId, parsed.data.password);
     await triggerAnnotationSync(routeId, clientId);
     return success({ message: 'Password changed' });
   });

@@ -10,7 +10,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, routeAuthUsers, domains, clients } from '../../db/schema.js';
+import { ingressRoutes, routeProtectedDirs, routeAuthUsers, domains, clients } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -40,66 +40,88 @@ function isK8s409(err: unknown): boolean {
  * expects $2y$ — they are algorithmically identical, so we
  * swap the prefix for compatibility.
  */
+/**
+ * Sync htpasswd Secrets for all enabled protected directories on a route.
+ *
+ * Creates one Secret per protected directory that has enabled users.
+ * Deletes Secrets for directories with no enabled users.
+ */
 export async function syncAuthSecret(
   db: Database,
   k8s: K8sClients,
   namespace: string,
   routeId: string,
 ): Promise<void> {
-  const users = await db
+  // Find all enabled protected dirs for this route
+  const dirs = await db
     .select()
-    .from(routeAuthUsers)
-    .where(and(eq(routeAuthUsers.routeId, routeId), eq(routeAuthUsers.enabled, 1)));
+    .from(routeProtectedDirs)
+    .where(and(eq(routeProtectedDirs.routeId, routeId), eq(routeProtectedDirs.enabled, 1)));
 
-  const secretName = `route-auth-${routeId}`;
+  for (const dir of dirs) {
+    const users = await db
+      .select()
+      .from(routeAuthUsers)
+      .where(and(eq(routeAuthUsers.dirId, dir.id), eq(routeAuthUsers.enabled, 1)));
 
-  if (users.length === 0) {
-    // No enabled users — delete Secret if it exists
-    try {
-      await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
+    const secretName = `route-auth-${dir.id}`;
+
+    if (users.length === 0) {
+      // No enabled users — delete Secret if it exists
+      try {
+        await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
+      } catch (err: unknown) {
+        if (!isK8s404(err)) throw err;
+      }
+      continue;
     }
-    return;
-  }
 
-  // Build htpasswd content: "user:$2y$10$hash\n"
-  const htpasswdLines = users.map((u) => {
-    // Swap $2b$ → $2y$ for Apache/NGINX compatibility
-    const apacheHash = u.passwordHash.replace(/^\$2b\$/, '$2y$');
-    return `${u.username}:${apacheHash}`;
-  });
-  const htpasswdContent = htpasswdLines.join('\n') + '\n';
+    // Build htpasswd content: "user:$2y$10$hash\n"
+    const htpasswdLines = users.map((u) => {
+      // Swap $2b$ → $2y$ for Apache/NGINX compatibility
+      const apacheHash = u.passwordHash.replace(/^\$2b\$/, '$2y$');
+      return `${u.username}:${apacheHash}`;
+    });
+    const htpasswdContent = htpasswdLines.join('\n') + '\n';
 
-  const secretBody = {
-    apiVersion: 'v1',
-    kind: 'Secret',
-    metadata: {
-      name: secretName,
-      namespace,
-      labels: {
-        'app.kubernetes.io/managed-by': 'hosting-platform',
-        'hosting-platform/route-id': routeId,
-      },
-    },
-    type: 'Opaque',
-    data: {
-      auth: Buffer.from(htpasswdContent).toString('base64'),
-    },
-  };
-
-  try {
-    await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
-  } catch (err: unknown) {
-    if (isK8s409(err)) {
-      await k8s.core.replaceNamespacedSecret({
+    const secretBody = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
         name: secretName,
         namespace,
-        body: secretBody,
-      });
-    } else {
-      throw err;
+        labels: {
+          'app.kubernetes.io/managed-by': 'hosting-platform',
+          'hosting-platform/route-id': routeId,
+          'hosting-platform/dir-id': dir.id,
+        },
+      },
+      type: 'Opaque',
+      data: {
+        auth: Buffer.from(htpasswdContent).toString('base64'),
+      },
+    };
+
+    try {
+      await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
+    } catch (err: unknown) {
+      if (isK8s409(err)) {
+        await k8s.core.replaceNamespacedSecret({
+          name: secretName,
+          namespace,
+          body: secretBody,
+        });
+      } else {
+        throw err;
+      }
     }
+  }
+
+  // Also clean up the legacy route-level secret if it exists
+  try {
+    await k8s.core.deleteNamespacedSecret({ name: `route-auth-${routeId}`, namespace });
+  } catch (err: unknown) {
+    if (!isK8s404(err)) throw err;
   }
 }
 
@@ -218,8 +240,6 @@ export function buildAnnotationsFromRoute(
     forceHttps: number;
     wwwRedirect: string;
     redirectUrl: string | null;
-    basicAuthEnabled: number;
-    basicAuthRealm: string | null;
     ipAllowlist: string | null;
     rateLimitRps: number | null;
     rateLimitConnections: number | null;
@@ -253,12 +273,9 @@ export function buildAnnotationsFromRoute(
     annotations['nginx.ingress.kubernetes.io/permanent-redirect'] = route.redirectUrl;
   }
 
-  // ── Basic Auth ──
-  if (route.basicAuthEnabled) {
-    annotations['nginx.ingress.kubernetes.io/auth-type'] = 'basic';
-    annotations['nginx.ingress.kubernetes.io/auth-secret'] = `route-auth-${routeId}`;
-    annotations['nginx.ingress.kubernetes.io/auth-realm'] = route.basicAuthRealm || 'Restricted';
-  }
+  // Note: Basic auth annotations are now handled per-directory in the
+  // ingress reconciler via protected dirs. The route-level annotation
+  // builder no longer sets auth-type/auth-secret/auth-realm.
 
   // ── IP Allowlist ──
   if (route.ipAllowlist) {
@@ -349,17 +366,8 @@ export async function syncRouteAnnotations(
   if (!client?.kubernetesNamespace) return {};
   const namespace = client.kubernetesNamespace;
 
-  // 3. Sync basic-auth Secret
-  if (route.basicAuthEnabled) {
-    await syncAuthSecret(db, k8s, namespace, routeId);
-  } else {
-    // Clean up Secret if auth was disabled
-    try {
-      await k8s.core.deleteNamespacedSecret({ name: `route-auth-${routeId}`, namespace });
-    } catch (err: unknown) {
-      if (!isK8s404(err)) throw err;
-    }
-  }
+  // 3. Sync basic-auth Secrets for all protected directories on this route
+  await syncAuthSecret(db, k8s, namespace, routeId);
 
   // 4. Clean up legacy proxy-headers ConfigMap (replaced by configuration-snippet).
   // Safe to call unconditionally — ignores 404.

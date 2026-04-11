@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, X, Shield, Settings,
-  ArrowLeftRight, ShieldAlert, Save,
+  ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -11,13 +11,18 @@ import {
   useUpdateRouteRedirects,
   useUpdateRouteSecurity,
   useUpdateRouteAdvanced,
-  useRouteAuthUsers,
-  useCreateRouteAuthUser,
-  useDeleteRouteAuthUser,
-  useToggleRouteAuthUser,
+  useProtectedDirs,
+  useCreateProtectedDir,
+  useUpdateProtectedDir,
+  useDeleteProtectedDir,
+  useDirUsers,
+  useCreateDirUser,
+  useDeleteDirUser,
+  useToggleDirUser,
   useRouteWafLogs,
   type RouteDetailResponse,
-  type RouteAuthUser,
+  type ProtectedDir,
+  type DirUser,
   type WafLogEntry,
 } from '@/hooks/use-route-settings';
 
@@ -277,8 +282,6 @@ function SecurityTab({ clientId, routeId, route }: {
 }) {
   const updateSecurity = useUpdateRouteSecurity(clientId, routeId);
 
-  const [basicAuthEnabled, setBasicAuthEnabled] = useState(route.basicAuthEnabled);
-  const [basicAuthRealm, setBasicAuthRealm] = useState(route.basicAuthRealm);
   const [ipAllowlist, setIpAllowlist] = useState(route.ipAllowlist ?? '');
   const [rateLimitRps, setRateLimitRps] = useState(String(route.rateLimitRps ?? ''));
   const [rateLimitConnections, setRateLimitConnections] = useState(String(route.rateLimitConnections ?? ''));
@@ -295,8 +298,6 @@ function SecurityTab({ clientId, routeId, route }: {
     e.preventDefault();
     try {
       await updateSecurity.mutateAsync({
-        basic_auth_enabled: basicAuthEnabled,
-        basic_auth_realm: basicAuthRealm,
         ip_allowlist: ipAllowlist || null,
         rate_limit_rps: rateLimitRps ? Number(rateLimitRps) : null,
         rate_limit_connections: rateLimitConnections ? Number(rateLimitConnections) : null,
@@ -320,55 +321,6 @@ function SecurityTab({ clientId, routeId, route }: {
         className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-6"
         data-testid="security-form"
       >
-        {/* Basic Auth */}
-        <section className="space-y-4" data-testid="basic-auth-section">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
-            Basic Authentication
-          </h3>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Require username and password before accessing this route. Uses HTTP Basic Auth at the ingress level — works with any backend application.
-          </p>
-
-          <label className="flex items-center justify-between" data-testid="basic-auth-enabled-row">
-            <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={basicAuthEnabled}
-              onClick={() => { setBasicAuthEnabled(!basicAuthEnabled); markDirty(); }}
-              className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                basicAuthEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-              )}
-              data-testid="basic-auth-toggle"
-            >
-              <span className={clsx(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                basicAuthEnabled ? 'translate-x-5' : 'translate-x-0',
-              )} />
-            </button>
-          </label>
-
-          <div>
-            <label htmlFor="basic-auth-realm" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Realm
-            </label>
-            <input
-              id="basic-auth-realm"
-              type="text"
-              className={INPUT_CLASS + ' mt-1 max-w-sm'}
-              value={basicAuthRealm}
-              onChange={(e) => { setBasicAuthRealm(e.target.value); markDirty(); }}
-              data-testid="basic-auth-realm-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              The name shown in the browser's login dialog (e.g., 'Admin Area').
-            </p>
-          </div>
-
-          <AuthUsersSection clientId={clientId} routeId={routeId} />
-        </section>
-
         {/* IP Allowlist */}
         <section className="space-y-3" data-testid="ip-allowlist-section">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
@@ -563,91 +515,135 @@ function SecurityTab({ clientId, routeId, route }: {
         </div>
       </form>
 
+      <ProtectedDirsSection clientId={clientId} routeId={routeId} />
+
       <WafLogSection clientId={clientId} routeId={routeId} />
     </div>
   );
 }
 
-// ─── Auth Users Section ─────────────────────────────────────────────────────
+// ─── Protected Directories Section ──────────────────────────────────────────
 
-function AuthUsersSection({ clientId, routeId }: {
+function ProtectedDirsSection({ clientId, routeId }: {
   readonly clientId: string;
   readonly routeId: string;
 }) {
-  const { data: usersData, isLoading } = useRouteAuthUsers(clientId, routeId);
-  const createUser = useCreateRouteAuthUser(clientId, routeId);
-  const deleteUser = useDeleteRouteAuthUser(clientId, routeId);
-  const toggleUser = useToggleRouteAuthUser(clientId, routeId);
+  const { data: dirsData, isLoading } = useProtectedDirs(clientId, routeId);
+  const createDir = useCreateProtectedDir(clientId, routeId);
+  const deleteDir = useDeleteProtectedDir(clientId, routeId);
 
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  const [newPath, setNewPath] = useState('');
+  const [newRealm, setNewRealm] = useState('Restricted');
+  const [pathError, setPathError] = useState<string | null>(null);
+  const [expandedDirId, setExpandedDirId] = useState<string | null>(null);
 
-  const users = usersData?.data ?? [];
+  const dirs = dirsData?.data ?? [];
 
-  const handleAddUser = async (e: FormEvent) => {
+  const validatePath = (value: string): string | null => {
+    if (!value.startsWith('/')) return 'Path must start with /';
+    if (/\s/.test(value)) return 'Path must not contain spaces';
+    return null;
+  };
+
+  const handleAddDir = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newUsername || !newPassword) return;
+    const error = validatePath(newPath);
+    if (error) {
+      setPathError(error);
+      return;
+    }
     try {
-      await createUser.mutateAsync({ username: newUsername, password: newPassword });
-      setNewUsername('');
-      setNewPassword('');
+      await createDir.mutateAsync({ path: newPath, realm: newRealm || 'Restricted' });
+      setNewPath('');
+      setNewRealm('Restricted');
+      setPathError(null);
       setShowAddForm(false);
-    } catch { /* error via createUser.error */ }
+    } catch { /* error via createDir.error */ }
   };
 
   return (
-    <div className="space-y-3" data-testid="auth-users-section">
+    <div
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4"
+      data-testid="protected-dirs-section"
+    >
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Users</span>
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <FolderLock size={16} />
+            Password-Protected Directories
+          </h3>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Protect specific URL paths with HTTP Basic Auth. Each directory has its own
+            users and realm. Protection is enforced at the NGINX Ingress level — works
+            with any backend application.
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => setShowAddForm(!showAddForm)}
           className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
-          data-testid="add-auth-user-button"
+          data-testid="add-protected-dir-button"
         >
           {showAddForm ? <X size={12} /> : <Plus size={12} />}
-          {showAddForm ? 'Cancel' : 'Add User'}
+          {showAddForm ? 'Cancel' : 'Add Protected Directory'}
         </button>
       </div>
 
       {showAddForm && (
         <div
-          className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 p-3"
-          data-testid="add-auth-user-form"
+          className="rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 p-3 space-y-3"
+          data-testid="add-protected-dir-form"
         >
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <input
-              type="text"
-              placeholder="Username"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              className={INPUT_CLASS}
-              data-testid="auth-user-username-input"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className={INPUT_CLASS}
-              data-testid="auth-user-password-input"
-            />
-            <button
-              type="button"
-              onClick={handleAddUser}
-              disabled={!newUsername || !newPassword || createUser.isPending}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              data-testid="submit-auth-user"
-            >
-              {createUser.isPending && <Loader2 size={14} className="animate-spin" />}
-              Add
-            </button>
+            <div>
+              <label htmlFor="new-dir-path" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Path
+              </label>
+              <input
+                id="new-dir-path"
+                type="text"
+                placeholder="/admin/"
+                value={newPath}
+                onChange={(e) => { setNewPath(e.target.value); setPathError(null); }}
+                className={clsx(INPUT_CLASS, 'font-mono', pathError && 'border-red-400 dark:border-red-500')}
+                data-testid="protected-dir-path-input"
+              />
+              {pathError && (
+                <p className="mt-1 text-xs text-red-600 dark:text-red-400">{pathError}</p>
+              )}
+            </div>
+            <div>
+              <label htmlFor="new-dir-realm" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Realm
+              </label>
+              <input
+                id="new-dir-realm"
+                type="text"
+                placeholder="Restricted"
+                value={newRealm}
+                onChange={(e) => setNewRealm(e.target.value)}
+                className={INPUT_CLASS}
+                data-testid="protected-dir-realm-input"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={handleAddDir}
+                disabled={!newPath || createDir.isPending}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                data-testid="submit-protected-dir"
+              >
+                {createDir.isPending && <Loader2 size={14} className="animate-spin" />}
+                Create
+              </button>
+            </div>
           </div>
-          {createUser.error && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+          {createDir.error && (
+            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
               <AlertCircle size={12} />
-              {createUser.error instanceof Error ? createUser.error.message : 'Failed to add user'}
+              {createDir.error instanceof Error ? createDir.error.message : 'Failed to create directory'}
             </div>
           )}
         </div>
@@ -656,51 +652,279 @@ function AuthUsersSection({ clientId, routeId }: {
       {isLoading ? (
         <div className="flex items-center gap-2 py-2">
           <Loader2 size={14} className="animate-spin text-blue-600" />
-          <span className="text-xs text-gray-500">Loading users...</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">Loading directories...</span>
         </div>
-      ) : users.length === 0 ? (
-        <p className="text-xs text-gray-500 dark:text-gray-400">No authentication users configured.</p>
+      ) : dirs.length === 0 ? (
+        <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="protected-dirs-empty">
+          No protected directories configured.
+        </p>
       ) : (
         <div className="divide-y divide-gray-100 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700">
-          {users.map((user) => (
-            <div
-              key={user.id}
-              className="flex items-center justify-between px-3 py-2"
-              data-testid={`auth-user-row-${user.username}`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{user.username}</span>
-                <span className={clsx(
-                  'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
-                  user.enabled
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                    : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
-                )}>
-                  {user.enabled ? 'enabled' : 'disabled'}
-                </span>
+          {dirs.map((dir) => (
+            <div key={dir.id} data-testid={`protected-dir-row-${dir.id}`}>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm font-medium text-gray-900 dark:text-gray-100">{dir.path}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">&quot;{dir.realm}&quot;</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {dir.userCount} {dir.userCount === 1 ? 'user' : 'users'}
+                  </span>
+                  <span className={clsx(
+                    'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
+                    dir.enabled
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                      : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+                  )}>
+                    {dir.enabled ? 'enabled' : 'disabled'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedDirId(expandedDirId === dir.id ? null : dir.id)}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    data-testid={`edit-protected-dir-${dir.id}`}
+                  >
+                    {expandedDirId === dir.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteDir.mutate(dir.id)}
+                    className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                    data-testid={`delete-protected-dir-${dir.id}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => toggleUser.mutate({ userId: user.id, enabled: !user.enabled })}
-                  className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  data-testid={`toggle-auth-user-${user.username}`}
-                >
-                  {user.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteUser.mutate(user.id)}
-                  className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-                  data-testid={`delete-auth-user-${user.username}`}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
+              {expandedDirId === dir.id && (
+                <ProtectedDirDetail clientId={clientId} routeId={routeId} dir={dir} />
+              )}
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Protected Directory Detail (Expanded Inline) ───────────────────────────
+
+function ProtectedDirDetail({ clientId, routeId, dir }: {
+  readonly clientId: string;
+  readonly routeId: string;
+  readonly dir: ProtectedDir;
+}) {
+  const updateDir = useUpdateProtectedDir(clientId, routeId, dir.id);
+  const { data: usersData, isLoading: usersLoading } = useDirUsers(clientId, routeId, dir.id);
+  const createUser = useCreateDirUser(clientId, routeId, dir.id);
+  const deleteUser = useDeleteDirUser(clientId, routeId, dir.id);
+  const toggleUser = useToggleDirUser(clientId, routeId, dir.id);
+
+  const [realm, setRealm] = useState(dir.realm);
+  const [enabled, setEnabled] = useState(dir.enabled);
+  const [dirDirty, setDirDirty] = useState(false);
+
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+
+  const users = usersData?.data ?? [];
+
+  const handleSaveDir = async () => {
+    try {
+      await updateDir.mutateAsync({ realm, enabled });
+      setDirDirty(false);
+    } catch { /* error via updateDir.error */ }
+  };
+
+  const handleAddUser = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!newUsername || !newPassword) return;
+    try {
+      await createUser.mutateAsync({ username: newUsername, password: newPassword });
+      setNewUsername('');
+      setNewPassword('');
+      setShowAddUser(false);
+    } catch { /* error via createUser.error */ }
+  };
+
+  return (
+    <div
+      className="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 space-y-4"
+      data-testid={`protected-dir-detail-${dir.id}`}
+    >
+      {/* Directory settings */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Path</label>
+          <input
+            type="text"
+            value={dir.path}
+            disabled
+            className={clsx(INPUT_CLASS, 'font-mono bg-gray-100 dark:bg-gray-800 cursor-not-allowed')}
+            data-testid={`dir-path-readonly-${dir.id}`}
+          />
+        </div>
+        <div>
+          <label htmlFor={`dir-realm-${dir.id}`} className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Realm
+          </label>
+          <input
+            id={`dir-realm-${dir.id}`}
+            type="text"
+            value={realm}
+            onChange={(e) => { setRealm(e.target.value); setDirDirty(true); }}
+            className={INPUT_CLASS}
+            data-testid={`dir-realm-input-${dir.id}`}
+          />
+        </div>
+        <div className="flex items-end justify-between gap-2">
+          <label className="flex items-center gap-2" data-testid={`dir-enabled-row-${dir.id}`}>
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Enabled</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enabled}
+              onClick={() => { setEnabled(!enabled); setDirDirty(true); }}
+              className={clsx(
+                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+              )}
+              data-testid={`dir-enabled-toggle-${dir.id}`}
+            >
+              <span className={clsx(
+                'pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform',
+                enabled ? 'translate-x-4' : 'translate-x-0',
+              )} />
+            </button>
+          </label>
+          <button
+            type="button"
+            disabled={!dirDirty || updateDir.isPending}
+            onClick={handleSaveDir}
+            className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid={`save-dir-settings-${dir.id}`}
+          >
+            {updateDir.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            Save
+          </button>
+        </div>
+      </div>
+
+      {updateDir.error && (
+        <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+          <AlertCircle size={12} />
+          {updateDir.error instanceof Error ? updateDir.error.message : 'Failed to update directory'}
+        </div>
+      )}
+
+      {/* Users */}
+      <div className="space-y-3" data-testid={`dir-users-section-${dir.id}`}>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Users</span>
+          <button
+            type="button"
+            onClick={() => setShowAddUser(!showAddUser)}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600"
+            data-testid={`add-dir-user-button-${dir.id}`}
+          >
+            {showAddUser ? <X size={12} /> : <Plus size={12} />}
+            {showAddUser ? 'Cancel' : 'Add User'}
+          </button>
+        </div>
+
+        {showAddUser && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 p-2.5" data-testid={`add-dir-user-form-${dir.id}`}>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <input
+                type="text"
+                placeholder="Username"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                className={INPUT_CLASS}
+                data-testid={`dir-user-username-input-${dir.id}`}
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className={INPUT_CLASS}
+                data-testid={`dir-user-password-input-${dir.id}`}
+              />
+              <button
+                type="button"
+                onClick={handleAddUser}
+                disabled={!newUsername || !newPassword || createUser.isPending}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                data-testid={`submit-dir-user-${dir.id}`}
+              >
+                {createUser.isPending && <Loader2 size={12} className="animate-spin" />}
+                Add
+              </button>
+            </div>
+            {createUser.error && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                <AlertCircle size={12} />
+                {createUser.error instanceof Error ? createUser.error.message : 'Failed to add user'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {usersLoading ? (
+          <div className="flex items-center gap-2 py-2">
+            <Loader2 size={12} className="animate-spin text-blue-600" />
+            <span className="text-xs text-gray-500 dark:text-gray-400">Loading users...</span>
+          </div>
+        ) : users.length === 0 ? (
+          <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`dir-users-empty-${dir.id}`}>
+            No users configured for this directory.
+          </p>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700">
+            {users.map((user) => (
+              <div
+                key={user.id}
+                className="flex items-center justify-between px-3 py-1.5"
+                data-testid={`dir-user-row-${user.id}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{user.username}</span>
+                  <span className={clsx(
+                    'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
+                    user.enabled
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                      : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+                  )}>
+                    {user.enabled ? 'enabled' : 'disabled'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleUser.mutate({ userId: user.id, enabled: !user.enabled })}
+                    className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    data-testid={`toggle-dir-user-${user.id}`}
+                  >
+                    {user.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteUser.mutate(user.id)}
+                    className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+                    data-testid={`delete-dir-user-${user.id}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

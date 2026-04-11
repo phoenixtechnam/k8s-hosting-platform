@@ -6,12 +6,9 @@
  */
 
 import { eq, and, desc, sql } from 'drizzle-orm';
-import bcrypt from 'bcrypt';
-import { ingressRoutes, routeAuthUsers, wafLogs, domains } from '../../db/schema.js';
+import { ingressRoutes, wafLogs, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
-
-const SALT_ROUNDS = 10;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -42,7 +39,6 @@ export function mapRouteToResponse(row: typeof ingressRoutes.$inferSelect) {
   return {
     ...row,
     forceHttps: Boolean(row.forceHttps),
-    basicAuthEnabled: Boolean(row.basicAuthEnabled),
     wafEnabled: Boolean(row.wafEnabled),
     wafOwaspCrs: Boolean(row.wafOwaspCrs),
     createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
@@ -88,8 +84,6 @@ export async function updateSecuritySettings(
   await verifyRouteOwnership(db, routeId, clientId);
 
   const updateValues: Record<string, unknown> = {};
-  if (input.basic_auth_enabled !== undefined) updateValues.basicAuthEnabled = input.basic_auth_enabled ? 1 : 0;
-  if (input.basic_auth_realm !== undefined) updateValues.basicAuthRealm = input.basic_auth_realm;
   if (input.ip_allowlist !== undefined) updateValues.ipAllowlist = input.ip_allowlist;
   if (input.rate_limit_rps !== undefined) updateValues.rateLimitRps = input.rate_limit_rps;
   if (input.rate_limit_connections !== undefined) updateValues.rateLimitConnections = input.rate_limit_connections;
@@ -130,116 +124,6 @@ export async function updateAdvancedSettings(
   }
 
   return fetchUpdatedRoute(db, routeId);
-}
-
-// ─── Basic Auth Users CRUD ──────────────────────────────────────────────────
-
-export async function listAuthUsers(db: Database, routeId: string) {
-  const users = await db
-    .select({
-      id: routeAuthUsers.id,
-      routeId: routeAuthUsers.routeId,
-      username: routeAuthUsers.username,
-      enabled: routeAuthUsers.enabled,
-      createdAt: routeAuthUsers.createdAt,
-    })
-    .from(routeAuthUsers)
-    .where(eq(routeAuthUsers.routeId, routeId));
-
-  return users.map((u) => ({ ...u, enabled: Boolean(u.enabled) }));
-}
-
-export async function createAuthUser(
-  db: Database,
-  routeId: string,
-  username: string,
-  password: string,
-) {
-  // Check for duplicate username on this route
-  const [existing] = await db
-    .select({ id: routeAuthUsers.id })
-    .from(routeAuthUsers)
-    .where(and(eq(routeAuthUsers.routeId, routeId), eq(routeAuthUsers.username, username)));
-
-  if (existing) {
-    throw new ApiError('AUTH_USER_EXISTS', `User '${username}' already exists on this route`, 409);
-  }
-
-  const id = crypto.randomUUID();
-  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-
-  await db.insert(routeAuthUsers).values({
-    id,
-    routeId,
-    username,
-    passwordHash,
-  });
-
-  const [created] = await db
-    .select({
-      id: routeAuthUsers.id,
-      routeId: routeAuthUsers.routeId,
-      username: routeAuthUsers.username,
-      enabled: routeAuthUsers.enabled,
-      createdAt: routeAuthUsers.createdAt,
-    })
-    .from(routeAuthUsers)
-    .where(eq(routeAuthUsers.id, id));
-
-  return { ...created, enabled: Boolean(created.enabled) };
-}
-
-export async function deleteAuthUser(db: Database, routeId: string, userId: string) {
-  const [user] = await db
-    .select()
-    .from(routeAuthUsers)
-    .where(and(eq(routeAuthUsers.id, userId), eq(routeAuthUsers.routeId, routeId)));
-
-  if (!user) {
-    throw new ApiError('AUTH_USER_NOT_FOUND', `Auth user '${userId}' not found on route`, 404);
-  }
-
-  await db.delete(routeAuthUsers).where(eq(routeAuthUsers.id, userId));
-}
-
-export async function toggleAuthUser(
-  db: Database,
-  routeId: string,
-  userId: string,
-  enabled: boolean,
-) {
-  const [user] = await db
-    .select()
-    .from(routeAuthUsers)
-    .where(and(eq(routeAuthUsers.id, userId), eq(routeAuthUsers.routeId, routeId)));
-
-  if (!user) {
-    throw new ApiError('AUTH_USER_NOT_FOUND', `Auth user '${userId}' not found on route`, 404);
-  }
-
-  await db
-    .update(routeAuthUsers)
-    .set({ enabled: enabled ? 1 : 0 })
-    .where(eq(routeAuthUsers.id, userId));
-}
-
-export async function changeAuthUserPassword(
-  db: Database,
-  routeId: string,
-  userId: string,
-  newPassword: string,
-) {
-  const [user] = await db
-    .select()
-    .from(routeAuthUsers)
-    .where(and(eq(routeAuthUsers.id, userId), eq(routeAuthUsers.routeId, routeId)));
-
-  if (!user) {
-    throw new ApiError('AUTH_USER_NOT_FOUND', `Auth user '${userId}' not found on route`, 404);
-  }
-
-  const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  await db.update(routeAuthUsers).set({ passwordHash }).where(eq(routeAuthUsers.id, userId));
 }
 
 // ─── WAF Logs ───────────────────────────────────────────────────────────────

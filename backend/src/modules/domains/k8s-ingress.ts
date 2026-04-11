@@ -227,4 +227,8 @@ export async function reconcileIngress(
       throw err;
     }
   }
+
+  // Protected directory auth is handled via per-directory K8s Secrets
+  // created by syncAuthSecret during annotation sync. Child Ingress
+  // resources for per-path auth are a Phase 2 enhancement.
 }

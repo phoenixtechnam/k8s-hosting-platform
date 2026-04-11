@@ -10,8 +10,6 @@ export interface RouteRedirectSettings {
 }
 
 export interface RouteSecuritySettings {
-  readonly basicAuthEnabled: boolean;
-  readonly basicAuthRealm: string;
   readonly ipAllowlist: string | null;
   readonly rateLimitRps: number | null;
   readonly rateLimitConnections: number | null;
@@ -44,8 +42,6 @@ export interface RouteDetailResponse {
   readonly forceHttps: boolean;
   readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
   readonly customRedirectUrl: string | null;
-  readonly basicAuthEnabled: boolean;
-  readonly basicAuthRealm: string;
   readonly ipAllowlist: string | null;
   readonly rateLimitRps: number | null;
   readonly rateLimitConnections: number | null;
@@ -59,9 +55,19 @@ export interface RouteDetailResponse {
   readonly additionalHeaders: Record<string, string> | null;
 }
 
-export interface RouteAuthUser {
+export interface ProtectedDir {
   readonly id: string;
   readonly routeId: string;
+  readonly path: string;
+  readonly realm: string;
+  readonly enabled: boolean;
+  readonly userCount: number;
+  readonly createdAt: string;
+}
+
+export interface DirUser {
+  readonly id: string;
+  readonly dirId: string;
   readonly username: string;
   readonly enabled: boolean;
   readonly createdAt: string;
@@ -122,8 +128,6 @@ export function useUpdateRouteSecurity(clientId: string | undefined, routeId: st
 
   return useMutation({
     mutationFn: (input: {
-      readonly basic_auth_enabled?: boolean;
-      readonly basic_auth_realm?: string;
       readonly ip_allowlist?: string | null;
       readonly rate_limit_rps?: number | null;
       readonly rate_limit_connections?: number | null;
@@ -164,60 +168,128 @@ export function useUpdateRouteAdvanced(clientId: string | undefined, routeId: st
   });
 }
 
-// ─── Auth Users ─────────────────────────────────────────────────────────────
+// ─── Protected Directories ──────────────────────────────────────────────────
 
-export function useRouteAuthUsers(clientId: string | undefined, routeId: string | undefined) {
+function protectedDirsBasePath(clientId: string, routeId: string) {
+  return `${routeBasePath(clientId, routeId)}/protected-dirs`;
+}
+
+export function useProtectedDirs(clientId: string | undefined, routeId: string | undefined) {
   return useQuery({
-    queryKey: ['route-auth-users', clientId, routeId],
+    queryKey: ['protected-dirs', clientId, routeId],
     queryFn: () =>
-      apiFetch<{ data: readonly RouteAuthUser[] }>(
-        `${routeBasePath(clientId!, routeId!)}/auth-users`,
+      apiFetch<{ data: readonly ProtectedDir[] }>(
+        protectedDirsBasePath(clientId!, routeId!),
       ),
     enabled: Boolean(clientId && routeId),
   });
 }
 
-export function useCreateRouteAuthUser(clientId: string | undefined, routeId: string | undefined) {
+export function useCreateProtectedDir(clientId: string | undefined, routeId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: { readonly username: string; readonly password: string }) =>
-      apiFetch<{ data: RouteAuthUser }>(
-        `${routeBasePath(clientId!, routeId!)}/auth-users`,
+    mutationFn: (input: { readonly path: string; readonly realm: string }) =>
+      apiFetch<{ data: ProtectedDir }>(
+        protectedDirsBasePath(clientId!, routeId!),
         { method: 'POST', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['route-auth-users', clientId, routeId] });
+      queryClient.invalidateQueries({ queryKey: ['protected-dirs', clientId, routeId] });
     },
   });
 }
 
-export function useDeleteRouteAuthUser(clientId: string | undefined, routeId: string | undefined) {
+export function useUpdateProtectedDir(clientId: string | undefined, routeId: string | undefined, dirId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { readonly realm?: string; readonly enabled?: boolean }) =>
+      apiFetch<{ data: ProtectedDir }>(
+        `${protectedDirsBasePath(clientId!, routeId!)}/${dirId}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['protected-dirs', clientId, routeId] });
+    },
+  });
+}
+
+export function useDeleteProtectedDir(clientId: string | undefined, routeId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (dirId: string) =>
+      apiFetch<void>(
+        `${protectedDirsBasePath(clientId!, routeId!)}/${dirId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['protected-dirs', clientId, routeId] });
+    },
+  });
+}
+
+// ─── Directory Users ────────────────────────────────────────────────────────
+
+function dirUsersBasePath(clientId: string, routeId: string, dirId: string) {
+  return `${protectedDirsBasePath(clientId, routeId)}/${dirId}/users`;
+}
+
+export function useDirUsers(clientId: string | undefined, routeId: string | undefined, dirId: string) {
+  return useQuery({
+    queryKey: ['dir-users', clientId, routeId, dirId],
+    queryFn: () =>
+      apiFetch<{ data: readonly DirUser[] }>(
+        dirUsersBasePath(clientId!, routeId!, dirId),
+      ),
+    enabled: Boolean(clientId && routeId && dirId),
+  });
+}
+
+export function useCreateDirUser(clientId: string | undefined, routeId: string | undefined, dirId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { readonly username: string; readonly password: string }) =>
+      apiFetch<{ data: DirUser }>(
+        dirUsersBasePath(clientId!, routeId!, dirId),
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dir-users', clientId, routeId, dirId] });
+      queryClient.invalidateQueries({ queryKey: ['protected-dirs', clientId, routeId] });
+    },
+  });
+}
+
+export function useDeleteDirUser(clientId: string | undefined, routeId: string | undefined, dirId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (userId: string) =>
       apiFetch<void>(
-        `${routeBasePath(clientId!, routeId!)}/auth-users/${userId}`,
+        `${dirUsersBasePath(clientId!, routeId!, dirId)}/${userId}`,
         { method: 'DELETE' },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['route-auth-users', clientId, routeId] });
+      queryClient.invalidateQueries({ queryKey: ['dir-users', clientId, routeId, dirId] });
+      queryClient.invalidateQueries({ queryKey: ['protected-dirs', clientId, routeId] });
     },
   });
 }
 
-export function useToggleRouteAuthUser(clientId: string | undefined, routeId: string | undefined) {
+export function useToggleDirUser(clientId: string | undefined, routeId: string | undefined, dirId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({ userId, enabled }: { readonly userId: string; readonly enabled: boolean }) =>
-      apiFetch<{ data: RouteAuthUser }>(
-        `${routeBasePath(clientId!, routeId!)}/auth-users/${userId}/toggle`,
+      apiFetch<{ data: DirUser }>(
+        `${dirUsersBasePath(clientId!, routeId!, dirId)}/${userId}/toggle`,
         { method: 'POST', body: JSON.stringify({ enabled }) },
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['route-auth-users', clientId, routeId] });
+      queryClient.invalidateQueries({ queryKey: ['dir-users', clientId, routeId, dirId] });
     },
   });
 }

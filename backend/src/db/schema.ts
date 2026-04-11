@@ -596,8 +596,6 @@ export const ingressRoutes = pgTable('ingress_routes', {
   wwwRedirect: wwwRedirectEnum('www_redirect').notNull().default('none'),
   redirectUrl: varchar('redirect_url', { length: 2048 }),
   // ── Security settings ──
-  basicAuthEnabled: integer('basic_auth_enabled').notNull().default(0),
-  basicAuthRealm: varchar('basic_auth_realm', { length: 255 }).default('Restricted'),
   ipAllowlist: text('ip_allowlist'),
   rateLimitRps: integer('rate_limit_rps'),
   rateLimitConnections: integer('rate_limit_connections'),
@@ -621,20 +619,36 @@ export const ingressRoutes = pgTable('ingress_routes', {
 
 export type IngressRoute = typeof ingressRoutes.$inferSelect;
 
+// ─── Route Protected Directories ───
+
+export const routeProtectedDirs = pgTable('route_protected_dirs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  routeId: varchar('route_id', { length: 36 }).notNull()
+    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  path: varchar('path', { length: 255 }).notNull(),
+  realm: varchar('realm', { length: 255 }).notNull().default('Restricted'),
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('route_protected_dirs_route_idx').on(table.routeId),
+  uniqueIndex('route_protected_dirs_route_path').on(table.routeId, table.path),
+]);
+
 // ─── Route Auth Users ───
 
 export const routeAuthUsers = pgTable('route_auth_users', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  routeId: varchar('route_id', { length: 36 })
+  dirId: varchar('dir_id', { length: 36 })
     .notNull()
-    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+    .references(() => routeProtectedDirs.id, { onDelete: 'cascade' }),
   username: varchar('username', { length: 255 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   enabled: integer('enabled').notNull().default(1),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
-  uniqueIndex('route_auth_users_route_username_unique').on(table.routeId, table.username),
-  index('route_auth_users_route_idx').on(table.routeId),
+  uniqueIndex('route_auth_users_dir_username').on(table.dirId, table.username),
+  index('route_auth_users_dir_idx').on(table.dirId),
 ]);
 
 // ─── WAF Logs ───

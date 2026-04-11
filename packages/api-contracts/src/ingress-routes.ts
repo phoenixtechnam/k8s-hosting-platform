@@ -27,8 +27,6 @@ export const ingressRouteResponseSchema = z.object({
   wwwRedirect: z.enum(['none', 'add-www', 'remove-www']),
   redirectUrl: z.string().nullable(),
   // Security settings
-  basicAuthEnabled: z.number(),
-  basicAuthRealm: z.string().nullable(),
   ipAllowlist: z.string().nullable(),
   rateLimitRps: z.number().nullable(),
   rateLimitConnections: z.number().nullable(),
@@ -69,8 +67,6 @@ export const updateRedirectSettingsSchema = z.object({
 });
 
 export const updateSecuritySettingsSchema = z.object({
-  basic_auth_enabled: z.boolean().optional(),
-  basic_auth_realm: z.string().min(1).max(255).optional(),
   ip_allowlist: z.string().max(2000).nullable().optional().refine(
     (val) => val === null || val === undefined || isValidCidrList(val),
     { message: 'ip_allowlist must be comma-separated CIDRs (e.g. 10.0.0.0/8,192.168.0.0/16)' },
@@ -99,11 +95,39 @@ export const updateAdvancedSettingsSchema = z.object({
   ).nullable().optional(),
 });
 
-// ─── Auth Users ─────────────────────────────────────────────────────────────
+// ─── Protected Directories ──────────────────────────────────────────────────
+
+export const routeProtectedDirResponseSchema = z.object({
+  id: uuidField,
+  routeId: z.string(),
+  path: z.string(),
+  realm: z.string(),
+  enabled: z.boolean(),
+  userCount: z.number(),
+  createdAt: z.string(),
+});
+
+export const createRouteProtectedDirSchema = z.object({
+  path: z.string().min(1).max(255)
+    .regex(/^\//, 'Path must start with /')
+    .refine((val) => !val.includes('..'), { message: 'Path must not contain ..' }),
+  realm: z.string().min(1).max(255).optional(),
+});
+
+export const updateRouteProtectedDirSchema = z.object({
+  path: z.string().min(1).max(255)
+    .regex(/^\//, 'Path must start with /')
+    .refine((val) => !val.includes('..'), { message: 'Path must not contain ..' })
+    .optional(),
+  realm: z.string().min(1).max(255).optional(),
+  enabled: z.boolean().optional(),
+});
+
+// ─── Auth Users (scoped to protected directory) ─────────────────────────────
 
 export const routeAuthUserResponseSchema = z.object({
   id: uuidField,
-  routeId: z.string(),
+  dirId: z.string(),
   username: z.string(),
   enabled: z.boolean(),
   createdAt: z.string(),
@@ -170,6 +194,9 @@ export type UpdateIngressRouteInput = z.infer<typeof updateIngressRouteSchema>;
 export type UpdateRedirectSettingsInput = z.infer<typeof updateRedirectSettingsSchema>;
 export type UpdateSecuritySettingsInput = z.infer<typeof updateSecuritySettingsSchema>;
 export type UpdateAdvancedSettingsInput = z.infer<typeof updateAdvancedSettingsSchema>;
+export type RouteProtectedDirResponse = z.infer<typeof routeProtectedDirResponseSchema>;
+export type CreateRouteProtectedDirInput = z.infer<typeof createRouteProtectedDirSchema>;
+export type UpdateRouteProtectedDirInput = z.infer<typeof updateRouteProtectedDirSchema>;
 export type RouteAuthUserResponse = z.infer<typeof routeAuthUserResponseSchema>;
 export type CreateAuthUserInput = z.infer<typeof createAuthUserSchema>;
 export type ToggleAuthUserInput = z.infer<typeof toggleAuthUserSchema>;
