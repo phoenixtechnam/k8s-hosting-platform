@@ -114,10 +114,12 @@ export async function createRoute(
   deploymentId?: string | null,
   path?: string,
 ) {
-  // Validate path — default to "/" when empty or undefined
-  const routePath = path && path.trim() !== '' ? path : '/';
-  if (!routePath.startsWith('/')) {
-    throw new ApiError('VALIDATION_ERROR', 'Path must start with /', 400);
+  // Normalize path — default to "/", ensure leading and trailing slashes
+  let routePath = path && path.trim() !== '' ? path.trim() : '/';
+  if (!routePath.startsWith('/')) routePath = `/${routePath}`;
+  if (routePath !== '/' && !routePath.endsWith('/')) routePath = `${routePath}/`;
+  if (routePath.length > 255) {
+    throw new ApiError('VALIDATION_ERROR', 'Path must be 255 characters or less', 400);
   }
   if (routePath.includes('..')) {
     throw new ApiError('VALIDATION_ERROR', 'Path must not contain ".."', 400);
