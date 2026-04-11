@@ -74,7 +74,7 @@ export default function DomainDetail() {
   }
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
-    { key: 'routing', label: 'Routing', icon: <Network size={14} /> },
+    { key: 'routing', label: 'Ingress Routes', icon: <Network size={14} /> },
     // DNS Records tab is only relevant for primary/secondary modes — CNAME
     // domains delegate DNS entirely so there is nothing to manage here.
     ...(domain.dnsMode !== 'cname' ? [{ key: 'dns' as Tab, label: 'DNS Records', icon: <Globe size={14} /> }] : []),
@@ -663,45 +663,50 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
         );
       })()}
 
-      <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
-        <div className="flex-1">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Ingress Route</label>
-          <div className="flex items-center gap-1">
-            <input
-              type="text"
-              value={subdomain}
-              onChange={(e) => handleSubdomainChange(e.target.value)}
-              placeholder="(apex)"
-              className={clsx(INPUT_CLASS, 'w-32', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
-              data-testid="new-subdomain-input"
-            />
-            <span className="text-sm text-gray-500 dark:text-gray-400">.{domainName}</span>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="add-route-section">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">Add Ingress Route</h3>
+        <form onSubmit={handleAddRoute} className="space-y-4" data-testid="add-route-form">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hostname</label>
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={subdomain}
+                  onChange={(e) => handleSubdomainChange(e.target.value)}
+                  placeholder="(root)"
+                  className={clsx(INPUT_CLASS, 'flex-1', subdomainError && 'border-red-400 dark:border-red-600 focus:border-red-500 focus:ring-red-500')}
+                  data-testid="new-subdomain-input"
+                />
+                <span className="text-sm font-mono text-gray-400 dark:text-gray-500 shrink-0">.{domainName}</span>
+              </div>
+              {subdomainError && (
+                <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
+              )}
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Path Prefix</label>
+              <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                URL path for this route, e.g. &quot;/api/&quot; or leave empty to route all requests.
+              </p>
+            </div>
           </div>
-          {subdomainError && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
-          )}
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Enter subdomain (e.g., 'my-app') or leave empty to use the root domain. DNS records will be created automatically.
-          </p>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            <span>Path Prefix</span>
-          </label>
-          <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            URL path for this route, e.g. "/api/" or leave empty to route all requests.
-          </p>
-        </div>
-        <button
-          type="submit"
-          disabled={!!subdomainError || createRoute.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-          Add Route
-        </button>
-      </form>
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={!!subdomainError || createRoute.isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {createRoute.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              Create Route
+            </button>
+          </div>
+        </form>
+      </div>
 
       {createRoute.error && (
         <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
