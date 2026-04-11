@@ -205,7 +205,8 @@ export function buildHeaderSnippet(
       const safeName = sanitiseHeaderName(name);
       const safeValue = sanitiseHeaderValue(value).slice(0, MAX_HEADER_VALUE_LENGTH);
       if (!safeName) return null;
-      return `add_header ${safeName} "${safeValue}" always;`;
+      // Hide the global default first, then set our value — prevents duplicates
+      return `proxy_hide_header ${safeName};\nadd_header ${safeName} "${safeValue}" always;`;
     })
     .filter(Boolean);
 
