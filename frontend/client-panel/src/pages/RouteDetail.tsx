@@ -742,25 +742,51 @@ function WafLogSection({ clientId, routeId }: {
       ) : logs.length === 0 ? (
         <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
       ) : (
-        <div className="overflow-x-auto rounded-b-xl bg-gray-950" data-testid="waf-log-entries">
-          {logs.map((log, idx) => (
-            <div
-              key={log.id}
-              className={clsx('flex items-center gap-1.5 px-4 py-1.5 font-mono text-[11px] whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
-              data-testid={`waf-log-entry-${log.id}`}
-            >
-              <span className="text-gray-500 w-[110px] shrink-0">{formatTs(log.createdAt)}</span>
-              <span className="text-gray-400 w-[100px] shrink-0">{log.sourceIp ?? '-'}</span>
-              <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase w-[62px] justify-center shrink-0', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
-                {log.severity}
-              </span>
-              <span className="text-blue-400 font-bold w-[52px] shrink-0">{log.ruleId}</span>
-              {(() => { const m = log.message.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/); const s = m ? (m[1] || m[2]) : null; return s ? <span className="text-amber-400 w-[52px] shrink-0">Score:{s}</span> : null; })()}
-              <span className="text-green-400 flex-1 truncate" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
-                {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
-              </span>
-            </div>
-          ))}
+        <div className="overflow-x-auto rounded-b-xl" data-testid="waf-log-entries">
+          <table className="w-full font-mono text-[11px] bg-gray-950">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-500 text-left">
+                <th className="px-3 py-2 w-[110px]">Time</th>
+                <th className="px-3 py-2 w-[100px]">Source IP</th>
+                <th className="px-3 py-2 w-[62px]">Level</th>
+                <th className="px-3 py-2 min-w-[220px]">Rule</th>
+                <th className="px-3 py-2 w-[60px]">Score</th>
+                <th className="px-3 py-2">Request</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log, idx) => {
+                const scoreMatch = log.message.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/);
+                const score = scoreMatch ? (scoreMatch[1] || scoreMatch[2]) : null;
+                const isBlockRule = log.ruleId === '949110';
+                const ruleName = isBlockRule ? 'Anomaly Threshold' : log.message;
+                return (
+                  <tr
+                    key={log.id}
+                    className={clsx('whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
+                    data-testid={`waf-log-entry-${log.id}`}
+                  >
+                    <td className="px-3 py-1.5 text-gray-500">{formatTs(log.createdAt)}</td>
+                    <td className="px-3 py-1.5 text-gray-400">{log.sourceIp ?? '-'}</td>
+                    <td className="px-3 py-1.5">
+                      <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
+                        {log.severity}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <span className="text-blue-400 font-bold">{log.ruleId}</span>
+                      <span className="text-gray-500 mx-1">-</span>
+                      <span className="text-gray-300 truncate" title={log.message}>{ruleName.slice(0, 40)}{ruleName.length > 40 ? '...' : ''}</span>
+                    </td>
+                    <td className="px-3 py-1.5 text-amber-400 font-bold">{score ?? ''}</td>
+                    <td className="px-3 py-1.5 text-green-400 truncate max-w-[300px]" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
+                      {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
