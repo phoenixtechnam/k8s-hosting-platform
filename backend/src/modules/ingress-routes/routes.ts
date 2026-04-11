@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { clients } from '../../db/schema.js';
+import { clients, domains, ingressRoutes } from '../../db/schema.js';
 import {
   createRoute,
   updateRoute,
@@ -166,6 +166,24 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ─── Route-level Settings ─────────────────────────────────────────────────
+
+  // GET /api/v1/clients/:clientId/routes/:routeId — single route detail
+  app.get('/clients/:clientId/routes/:routeId', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Routes'],
+      summary: 'Get a single ingress route with all settings',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const [route] = await app.db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
+    if (!route) throw new ApiError('ROUTE_NOT_FOUND', 'Ingress route not found', 404);
+    // Verify ownership via domain → client
+    const [domain] = await app.db.select().from(domains).where(and(eq(domains.id, route.domainId), eq(domains.clientId, clientId)));
+    if (!domain) throw new ApiError('ROUTE_NOT_FOUND', 'Ingress route not found', 404);
+    return success(route);
+  });
 
   // PATCH /api/v1/clients/:clientId/routes/:routeId/redirects
   app.patch('/clients/:clientId/routes/:routeId/redirects', {
