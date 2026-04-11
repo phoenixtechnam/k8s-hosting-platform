@@ -128,28 +128,54 @@ export async function reconcileIngress(
     hostname: string;
   }
 
-  const rulesWithDomain: RuleWithDomain[] = updatedRoutes
-    .map((route): RuleWithDomain | null => {
-      const serviceName = deploymentMap.get(route.deploymentId!);
-      if (!serviceName) return null;
-      return {
-        rule: {
-          host: route.hostname,
-          http: {
-            paths: [{
-              path: route.path || '/',
-              pathType: 'Prefix',
-              backend: {
-                service: { name: serviceName, port: { number: 8080 } },
-              },
-            }],
+  const rulesWithDomain: RuleWithDomain[] = [];
+  for (const route of updatedRoutes) {
+    const serviceName = deploymentMap.get(route.deploymentId!);
+    if (!serviceName) continue;
+
+    const primaryRule = {
+      host: route.hostname,
+      http: {
+        paths: [{
+          path: route.path || '/',
+          pathType: 'Prefix' as const,
+          backend: {
+            service: { name: serviceName, port: { number: 8080 } },
           },
+        }],
+      },
+    };
+
+    rulesWithDomain.push({
+      rule: primaryRule,
+      domainId: route.domainId,
+      hostname: route.hostname,
+    });
+
+    // Add companion host rule for www redirect so NGINX can handle
+    // both hostnames without needing a second route.
+    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
+      rulesWithDomain.push({
+        rule: {
+          host: `www.${route.hostname}`,
+          http: primaryRule.http,
         },
         domainId: route.domainId,
-        hostname: route.hostname,
-      };
-    })
-    .filter((r): r is RuleWithDomain => r !== null);
+        hostname: `www.${route.hostname}`,
+      });
+    }
+    if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
+      const bareHostname = route.hostname.replace(/^www\./, '');
+      rulesWithDomain.push({
+        rule: {
+          host: bareHostname,
+          http: primaryRule.http,
+        },
+        domainId: route.domainId,
+        hostname: bareHostname,
+      });
+    }
+  }
 
   if (rulesWithDomain.length === 0) {
     try {

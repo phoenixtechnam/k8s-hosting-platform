@@ -8,6 +8,11 @@
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { ingressRoutes, wafLogs, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import {
+  autoProvisionRouteDns,
+  autoDeleteRouteDns,
+  getWwwCompanionHostname,
+} from './service.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -59,7 +64,7 @@ export async function updateRedirectSettings(
   clientId: string,
   input: Record<string, unknown>,
 ) {
-  await verifyRouteOwnership(db, routeId, clientId);
+  const route = await verifyRouteOwnership(db, routeId, clientId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.force_https !== undefined) updateValues.forceHttps = input.force_https ? 1 : 0;
@@ -68,6 +73,32 @@ export async function updateRedirectSettings(
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));
+  }
+
+  // Handle companion DNS when wwwRedirect changes
+  if (input.www_redirect !== undefined && input.www_redirect !== route.wwwRedirect) {
+    const newWww = input.www_redirect as string;
+    const oldWww = route.wwwRedirect;
+
+    // Delete old companion DNS if the previous setting had one
+    const oldCompanion = getWwwCompanionHostname(route.hostname, oldWww);
+    if (oldCompanion) {
+      try {
+        await autoDeleteRouteDns(db, route.domainId, oldCompanion);
+      } catch {
+        // Non-blocking
+      }
+    }
+
+    // Provision new companion DNS if the new setting needs one
+    const newCompanion = getWwwCompanionHostname(route.hostname, newWww);
+    if (newCompanion) {
+      try {
+        await autoProvisionRouteDns(db, route.domainId, newCompanion);
+      } catch {
+        // Non-blocking
+      }
+    }
   }
 
   return fetchUpdatedRoute(db, routeId);

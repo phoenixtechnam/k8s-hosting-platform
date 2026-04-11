@@ -80,6 +80,25 @@ export function isApexHostname(hostname: string, domainName: string): boolean {
   return hostname.toLowerCase() === domainName.toLowerCase();
 }
 
+// ─── www Companion Hostname ──────────────────────────────────────────────────
+
+/**
+ * Compute the companion hostname for a www redirect, if any.
+ * Returns null when no companion is needed.
+ */
+export function getWwwCompanionHostname(
+  hostname: string,
+  wwwRedirect: string | null | undefined,
+): string | null {
+  if (wwwRedirect === 'add-www' && !hostname.startsWith('www.')) {
+    return `www.${hostname}`;
+  }
+  if (wwwRedirect === 'remove-www' && hostname.startsWith('www.')) {
+    return hostname.replace(/^www\./, '');
+  }
+  return null;
+}
+
 // ─── Route CRUD ─────────────────────────────────────────────────────────────
 
 export async function createRoute(
@@ -233,6 +252,16 @@ export async function deleteRoute(db: Database, routeId: string) {
   } catch {
     // Non-blocking — DNS cleanup failure shouldn't block route deletion
   }
+
+  // Also delete the companion DNS record if www redirect was active
+  const companionHostname = getWwwCompanionHostname(route.hostname, route.wwwRedirect);
+  if (companionHostname) {
+    try {
+      await autoDeleteRouteDns(db, route.domainId, companionHostname);
+    } catch {
+      // Non-blocking
+    }
+  }
 }
 
 export async function listRoutesForDomain(db: Database, domainId: string) {
@@ -249,6 +278,59 @@ export async function listRoutesForClient(db: Database, clientId: string) {
   return allRoutes.filter(r => domainIds.includes(r.domainId));
 }
 
+// ─── Auto-DNS Provisioning ───────────────────────────────────────────────────
+
+/**
+ * Auto-provision DNS records for a hostname under a domain.
+ *
+ * For primary-mode domains this creates A/AAAA (apex) or CNAME (subdomain)
+ * records via the configured DNS providers. Non-blocking — failures are
+ * swallowed so callers are never disrupted.
+ */
+export async function autoProvisionRouteDns(
+  db: Database,
+  domainId: string,
+  hostname: string,
+): Promise<void> {
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domain || domain.dnsMode !== 'primary') return;
+
+  const settings = await getIngressSettings(db);
+  const apex = isApexHostname(hostname, domain.domainName);
+
+  try {
+    if (apex) {
+      await syncRecordToProviders(db, domain.domainName, 'create', {
+        type: 'A',
+        name: '@',
+        content: settings.ingressDefaultIpv4,
+        ttl: 300,
+      });
+      const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+      if (ipv6) {
+        await syncRecordToProviders(db, domain.domainName, 'create', {
+          type: 'AAAA',
+          name: '@',
+          content: ipv6,
+          ttl: 300,
+        });
+      }
+    } else {
+      const slug = hostnameToSlug(hostname);
+      const ingressCname = `${slug}.${settings.ingressBaseDomain}`;
+      const subdomain = hostname.replace(`.${domain.domainName}`, '');
+      await syncRecordToProviders(db, domain.domainName, 'create', {
+        type: 'CNAME',
+        name: subdomain,
+        content: ingressCname,
+        ttl: 300,
+      });
+    }
+  } catch {
+    // Non-blocking — DNS provisioning failure should not break callers
+  }
+}
+
 // ─── Auto-DNS Cleanup ───────────────────────────────────────────────────────
 
 /**
@@ -257,7 +339,7 @@ export async function listRoutesForClient(db: Database, clientId: string) {
  * For primary-mode domains this deletes the A/AAAA (apex) or CNAME (subdomain)
  * record from both the external DNS provider and the local dns_records table.
  */
-async function autoDeleteRouteDns(
+export async function autoDeleteRouteDns(
   db: Database,
   domainId: string,
   hostname: string,

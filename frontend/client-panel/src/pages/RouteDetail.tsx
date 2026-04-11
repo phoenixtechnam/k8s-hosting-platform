@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, AlertCircle, AlertTriangle, Plus, Trash2, X, Shield, Settings,
+  ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
   ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -236,20 +236,18 @@ function RedirectsTab({ clientId, routeId, route }: {
 
       {/* www redirect hints */}
       {wwwRedirect === 'add-www' && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300" data-testid="www-redirect-hint-add">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-300" data-testid="www-redirect-hint-add">
+          <Info size={14} className="mt-0.5 shrink-0" />
           <span>
-            This redirect sends traffic from <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname}</code> to <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">www.{route.hostname}</code>.
-            Make sure you also have a route for <code className="font-mono font-bold">www.{route.hostname}</code> pointing to your deployment.
+            Both <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">{route.hostname}</code> and <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">www.{route.hostname}</code> are configured automatically. Traffic to the non-www version will be redirected to www.
           </span>
         </div>
       )}
       {wwwRedirect === 'remove-www' && route.hostname.startsWith('www.') && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300" data-testid="www-redirect-hint-remove">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-300" data-testid="www-redirect-hint-remove">
+          <Info size={14} className="mt-0.5 shrink-0" />
           <span>
-            This redirect sends traffic from <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname}</code> to <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname.replace(/^www\./, '')}</code>.
-            Make sure you also have a route for <code className="font-mono font-bold">{route.hostname.replace(/^www\./, '')}</code> pointing to your deployment.
+            Both <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">{route.hostname}</code> and <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">{route.hostname.replace(/^www\./, '')}</code> are configured automatically. Traffic to the www version will be redirected to the bare domain.
           </span>
         </div>
       )}
