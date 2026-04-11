@@ -22,6 +22,7 @@ import {
   toggleAuthUser,
   changeAuthUserPassword,
   listWafLogs,
+  mapRouteToResponse,
 } from './settings-service.js';
 import { syncRouteAnnotations } from './annotation-sync.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
@@ -182,7 +183,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     // Verify ownership via domain → client
     const [domain] = await app.db.select().from(domains).where(and(eq(domains.id, route.domainId), eq(domains.clientId, clientId)));
     if (!domain) throw new ApiError('ROUTE_NOT_FOUND', 'Ingress route not found', 404);
-    return success(route);
+    return success(mapRouteToResponse(route));
   });
 
   // PATCH /api/v1/clients/:clientId/routes/:routeId/redirects

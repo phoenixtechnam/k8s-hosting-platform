@@ -179,7 +179,7 @@ function RedirectsTab({ clientId, routeId, route }: {
       <label className="flex items-center justify-between" data-testid="force-https-row">
         <div>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Force HTTPS</span>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Redirect HTTP to HTTPS</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Redirects all HTTP requests to HTTPS. Requires a valid SSL certificate.</p>
         </div>
         <button
           type="button"
@@ -217,6 +217,9 @@ function RedirectsTab({ clientId, routeId, route }: {
           <option value="add-www">Add www</option>
           <option value="remove-www">Remove www</option>
         </select>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          Controls whether the domain redirects between www and non-www versions. 'Add www' redirects example.com to www.example.com. 'Remove www' does the reverse.
+        </p>
       </div>
 
       {/* Custom Redirect URL */}
@@ -234,7 +237,7 @@ function RedirectsTab({ clientId, routeId, route }: {
           data-testid="custom-redirect-url-input"
         />
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          301 redirect to another URL. Leave empty to disable.
+          Permanently redirects (301) all traffic for this route to the specified URL. Useful for domain migrations or parking pages. Leave empty to disable.
         </p>
       </div>
 
@@ -314,6 +317,9 @@ function SecurityTab({ clientId, routeId, route }: {
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
             Basic Authentication
           </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Require username and password before accessing this route. Uses HTTP Basic Auth at the ingress level — works with any backend application.
+          </p>
 
           <label className="flex items-center justify-between" data-testid="basic-auth-enabled-row">
             <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
@@ -347,6 +353,9 @@ function SecurityTab({ clientId, routeId, route }: {
               onChange={(e) => { setBasicAuthRealm(e.target.value); markDirty(); }}
               data-testid="basic-auth-realm-input"
             />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              The name shown in the browser's login dialog (e.g., 'Admin Area').
+            </p>
           </div>
 
           <AuthUsersSection clientId={clientId} routeId={routeId} />
@@ -367,7 +376,7 @@ function SecurityTab({ clientId, routeId, route }: {
               data-testid="ip-allowlist-input"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Comma-separated CIDR ranges. Leave empty for no restriction.
+              Comma-separated list of CIDR ranges. Only requests from these IP ranges will be allowed. Example: 10.0.0.0/8, 192.168.1.0/24
             </p>
           </div>
         </section>
@@ -391,6 +400,9 @@ function SecurityTab({ clientId, routeId, route }: {
                 onChange={(e) => { setRateLimitRps(e.target.value); markDirty(); }}
                 data-testid="rate-limit-rps-input"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Maximum number of requests per second from a single IP address.
+              </p>
             </div>
             <div>
               <label htmlFor="rate-limit-connections" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -405,6 +417,9 @@ function SecurityTab({ clientId, routeId, route }: {
                 onChange={(e) => { setRateLimitConnections(e.target.value); markDirty(); }}
                 data-testid="rate-limit-connections-input"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Maximum number of concurrent connections from a single IP address.
+              </p>
             </div>
             <div>
               <label htmlFor="rate-limit-burst" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -419,6 +434,9 @@ function SecurityTab({ clientId, routeId, route }: {
                 onChange={(e) => { setRateLimitBurst(e.target.value); markDirty(); }}
                 data-testid="rate-limit-burst-input"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Allows temporary bursts above the rate limit. A value of 5 with 10 rps allows bursts up to 50 requests.
+              </p>
             </div>
           </div>
         </section>
@@ -429,45 +447,55 @@ function SecurityTab({ clientId, routeId, route }: {
             WAF (Web Application Firewall)
           </h3>
 
-          <label className="flex items-center justify-between">
-            <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={wafEnabled}
-              onClick={() => { setWafEnabled(!wafEnabled); markDirty(); }}
-              className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                wafEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-              )}
-              data-testid="waf-enabled-toggle"
-            >
-              <span className={clsx(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                wafEnabled ? 'translate-x-5' : 'translate-x-0',
-              )} />
-            </button>
-          </label>
+          <div>
+            <label className="flex items-center justify-between">
+              <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wafEnabled}
+                onClick={() => { setWafEnabled(!wafEnabled); markDirty(); }}
+                className={clsx(
+                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                  wafEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+                )}
+                data-testid="waf-enabled-toggle"
+              >
+                <span className={clsx(
+                  'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
+                  wafEnabled ? 'translate-x-5' : 'translate-x-0',
+                )} />
+              </button>
+            </label>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              ModSecurity Web Application Firewall protects against common web attacks (SQL injection, XSS, etc.).
+            </p>
+          </div>
 
-          <label className="flex items-center justify-between">
-            <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={wafOwaspCoreRules}
-              onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markDirty(); }}
-              className={clsx(
-                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-              )}
-              data-testid="waf-owasp-toggle"
-            >
-              <span className={clsx(
-                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                wafOwaspCoreRules ? 'translate-x-5' : 'translate-x-0',
-              )} />
-            </button>
-          </label>
+          <div>
+            <label className="flex items-center justify-between">
+              <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wafOwaspCoreRules}
+                onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markDirty(); }}
+                className={clsx(
+                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                  wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+                )}
+                data-testid="waf-owasp-toggle"
+              >
+                <span className={clsx(
+                  'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
+                  wafOwaspCoreRules ? 'translate-x-5' : 'translate-x-0',
+                )} />
+              </button>
+            </label>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              OWASP Core Rule Set provides pre-configured rules for common attack patterns. Disable only if causing false positives.
+            </p>
+          </div>
 
           <div>
             <label htmlFor="waf-anomaly-threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -483,6 +511,9 @@ function SecurityTab({ clientId, routeId, route }: {
               className="mt-2 w-full max-w-sm accent-blue-600"
               data-testid="waf-anomaly-threshold-slider"
             />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Lower values are stricter (more blocking). Default 10 is a good balance. Set higher (20-50) for applications with complex forms that trigger false positives.
+            </p>
           </div>
 
           <div>
@@ -498,6 +529,9 @@ function SecurityTab({ clientId, routeId, route }: {
               onChange={(e) => { setWafExcludedRuleIds(e.target.value); markDirty(); }}
               data-testid="waf-excluded-rules-input"
             />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Comma-separated ModSecurity rule IDs to skip. Use the WAF log below to identify rules causing false positives. Example: 942100, 941100
+            </p>
           </div>
         </section>
 
@@ -828,6 +862,9 @@ function AdvancedTab({ clientId, routeId, route }: {
               onChange={(e) => { setCustomErrorCodes(e.target.value); markDirty(); }}
               data-testid="error-codes-input"
             />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Comma-separated HTTP status codes to intercept. When these errors occur, NGINX serves the custom error page instead of the default.
+            </p>
           </div>
           <div>
             <label htmlFor="error-pages-path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -842,6 +879,9 @@ function AdvancedTab({ clientId, routeId, route }: {
               onChange={(e) => { setCustomErrorPagesPath(e.target.value); markDirty(); }}
               data-testid="error-pages-path-input"
             />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Path within your file storage where custom error pages are stored. Create files like 404.html, 500.html in this directory.
+            </p>
           </div>
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -916,7 +956,7 @@ function AdvancedTab({ clientId, routeId, route }: {
           </div>
         )}
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          No spaces in header names, no newlines in values. Maximum 50 headers.
+          Custom HTTP headers sent from the ingress to your application. Common uses: security headers (X-Frame-Options, Content-Security-Policy), custom routing headers. No spaces in header names, no newlines in values. Maximum 50 headers.
         </p>
       </section>
 

@@ -38,9 +38,21 @@ async function verifyRouteOwnership(db: Database, routeId: string, clientId: str
   return route;
 }
 
+export function mapRouteToResponse(row: typeof ingressRoutes.$inferSelect) {
+  return {
+    ...row,
+    forceHttps: Boolean(row.forceHttps),
+    basicAuthEnabled: Boolean(row.basicAuthEnabled),
+    wafEnabled: Boolean(row.wafEnabled),
+    wafOwaspCrs: Boolean(row.wafOwaspCrs),
+    createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
+  };
+}
+
 async function fetchUpdatedRoute(db: Database, routeId: string) {
   const [updated] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
-  return updated;
+  return mapRouteToResponse(updated);
 }
 
 // ─── Redirect Settings ──────────────────────────────────────────────────────
