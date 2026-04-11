@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import { authenticate, requireRole, requireClientAccess } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { clients } from '../../db/schema.js';
@@ -12,10 +12,31 @@ import {
   getIngressSettings,
   updateIngressSettings,
 } from './service.js';
+import {
+  updateRedirectSettings,
+  updateSecuritySettings,
+  updateAdvancedSettings,
+  listAuthUsers,
+  createAuthUser,
+  deleteAuthUser,
+  toggleAuthUser,
+  changeAuthUserPassword,
+  listWafLogs,
+} from './settings-service.js';
+import { syncRouteAnnotations } from './annotation-sync.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { createIngressRouteSchema, updateIngressRouteSchema } from '@k8s-hosting/api-contracts';
+import {
+  createIngressRouteSchema,
+  updateIngressRouteSchema,
+  updateRedirectSettingsSchema,
+  updateSecuritySettingsSchema,
+  updateAdvancedSettingsSchema,
+  createAuthUserSchema,
+  toggleAuthUserSchema,
+  changeAuthUserPasswordSchema,
+} from '@k8s-hosting/api-contracts';
 
 export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   const getK8s = () => {
@@ -40,11 +61,22 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
+  const triggerAnnotationSync = async (routeId: string, clientId: string) => {
+    const k8s = getK8s();
+    if (!k8s) return;
+    try {
+      await syncRouteAnnotations(app.db, k8s, routeId, clientId);
+      await triggerReconcile(clientId);
+    } catch {
+      // Non-blocking — annotation sync failure should not break the settings update
+    }
+  };
+
   // ─── Client-scoped routes ─────────────────────────────────────────────────
 
   // GET /api/v1/clients/:clientId/domains/:domainId/routes
   app.get('/clients/:clientId/domains/:domainId/routes', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'client_admin', 'client_user'), requireClientAccess()],
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'List ingress routes for a domain',
@@ -58,7 +90,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
   // POST /api/v1/clients/:clientId/domains/:domainId/routes
   app.post('/clients/:clientId/domains/:domainId/routes', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Create an ingress route for a hostname under this domain',
@@ -96,7 +128,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/clients/:clientId/domains/:domainId/routes/:routeId
   app.patch('/clients/:clientId/domains/:domainId/routes/:routeId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Update an ingress route (assign workload, change TLS mode)',
@@ -120,7 +152,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
   // DELETE /api/v1/clients/:clientId/domains/:domainId/routes/:routeId
   app.delete('/clients/:clientId/domains/:domainId/routes/:routeId', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin'), requireClientAccess()],
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
     schema: {
       tags: ['Ingress Routes'],
       summary: 'Delete an ingress route',
@@ -131,6 +163,177 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     await deleteRoute(app.db, routeId);
     await triggerReconcile(clientId);
     reply.status(204).send();
+  });
+
+  // ─── Route-level Settings ─────────────────────────────────────────────────
+
+  // PATCH /api/v1/clients/:clientId/routes/:routeId/redirects
+  app.patch('/clients/:clientId/routes/:routeId/redirects', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Settings'],
+      summary: 'Update redirect settings for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const parsed = updateRedirectSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const updated = await updateRedirectSettings(app.db, routeId, clientId, parsed.data);
+    await triggerAnnotationSync(routeId, clientId);
+    return success(updated);
+  });
+
+  // PATCH /api/v1/clients/:clientId/routes/:routeId/security
+  app.patch('/clients/:clientId/routes/:routeId/security', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Settings'],
+      summary: 'Update security settings for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const parsed = updateSecuritySettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const updated = await updateSecuritySettings(app.db, routeId, clientId, parsed.data);
+    await triggerAnnotationSync(routeId, clientId);
+    return success(updated);
+  });
+
+  // PATCH /api/v1/clients/:clientId/routes/:routeId/advanced
+  app.patch('/clients/:clientId/routes/:routeId/advanced', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Settings'],
+      summary: 'Update advanced settings for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const parsed = updateAdvancedSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const updated = await updateAdvancedSettings(app.db, routeId, clientId, parsed.data);
+    await triggerAnnotationSync(routeId, clientId);
+    return success(updated);
+  });
+
+  // ─── Auth Users ───────────────────────────────────────────────────────────
+
+  // GET /api/v1/clients/:clientId/routes/:routeId/auth-users
+  app.get('/clients/:clientId/routes/:routeId/auth-users', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Auth'],
+      summary: 'List basic-auth users for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { routeId } = request.params as { routeId: string };
+    const users = await listAuthUsers(app.db, routeId);
+    return success(users);
+  });
+
+  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users
+  app.post('/clients/:clientId/routes/:routeId/auth-users', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Auth'],
+      summary: 'Create a basic-auth user for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { clientId, routeId } = request.params as { clientId: string; routeId: string };
+    const parsed = createAuthUserSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    const user = await createAuthUser(app.db, routeId, parsed.data.username, parsed.data.password);
+    await triggerAnnotationSync(routeId, clientId);
+    reply.status(201).send(success(user));
+  });
+
+  // DELETE /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId
+  app.delete('/clients/:clientId/routes/:routeId/auth-users/:userId', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Auth'],
+      summary: 'Delete a basic-auth user from a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
+    await deleteAuthUser(app.db, routeId, userId);
+    await triggerAnnotationSync(routeId, clientId);
+    reply.status(204).send();
+  });
+
+  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId/toggle
+  app.post('/clients/:clientId/routes/:routeId/auth-users/:userId/toggle', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Auth'],
+      summary: 'Enable/disable a basic-auth user',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
+    const parsed = toggleAuthUserSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    await toggleAuthUser(app.db, routeId, userId, parsed.data.enabled);
+    await triggerAnnotationSync(routeId, clientId);
+    return success({ message: 'User toggled' });
+  });
+
+  // POST /api/v1/clients/:clientId/routes/:routeId/auth-users/:userId/change-password
+  app.post('/clients/:clientId/routes/:routeId/auth-users/:userId/change-password', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route Auth'],
+      summary: 'Change password for a basic-auth user',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId, routeId, userId } = request.params as { clientId: string; routeId: string; userId: string };
+    const parsed = changeAuthUserPasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    }
+
+    await changeAuthUserPassword(app.db, routeId, userId, parsed.data.password);
+    await triggerAnnotationSync(routeId, clientId);
+    return success({ message: 'Password changed' });
+  });
+
+  // ─── WAF Logs ─────────────────────────────────────────────────────────────
+
+  // GET /api/v1/clients/:clientId/routes/:routeId/waf-logs
+  app.get('/clients/:clientId/routes/:routeId/waf-logs', {
+    onRequest: [authenticate, requireClientRoleByMethod(), requireClientAccess()],
+    schema: {
+      tags: ['Ingress Route WAF'],
+      summary: 'List WAF logs for a route',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { routeId } = request.params as { routeId: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Number(query.limit), 100) : 50;
+    const logs = await listWafLogs(app.db, routeId, limit);
+    return success(logs);
   });
 
   // ─── Admin: Ingress Settings ──────────────────────────────────────────────

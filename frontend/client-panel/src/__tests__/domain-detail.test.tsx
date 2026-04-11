@@ -30,17 +30,7 @@ const MOCK_DOMAIN = {
 const MOCK_DNS = [
   { id: 'r1', domainId: 'd1', recordType: 'A', recordName: '@', recordValue: '1.2.3.4', ttl: 3600, priority: null, weight: null, port: null, updatedAt: '2026-01-10T00:00:00Z' },
 ];
-const MOCK_HOSTING = {
-  id: 'h1', domainId: 'd1', redirectWww: false, redirectHttps: true,
-  forwardExternal: null, webrootPath: '/var/www/html', hostingEnabled: true,
-  createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z',
-};
-const MOCK_DIRS = [
-  { id: 'dir1', domainId: 'd1', path: '/secret', realm: 'Private', createdAt: '2026-01-10T00:00:00Z', updatedAt: '2026-01-10T00:00:00Z' },
-];
-const MOCK_USERS = [
-  { id: 'u1', directoryId: 'dir1', username: 'alice', enabled: true, createdAt: '2026-01-10T00:00:00Z' },
-];
+// Hosting and Protected Directories mock data removed — tabs moved to RouteDetail.
 
 function createWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -81,12 +71,9 @@ function setupMocks() {
   mockApiFetch.mockImplementation((url: string) => {
     if (url.includes('/delete-preview'))
       return Promise.resolve({ data: MOCK_DELETE_PREVIEW });
-    if (url.includes('/domains') && !url.includes('/dns-records') && !url.includes('/hosting-settings') && !url.includes('/protected-directories'))
+    if (url.includes('/domains') && !url.includes('/dns-records'))
       return Promise.resolve({ data: [MOCK_DOMAIN], pagination: { total_count: 1, cursor: null, has_more: false, page_size: 50 } });
     if (url.includes('/dns-records')) return Promise.resolve({ data: MOCK_DNS });
-    if (url.includes('/hosting-settings')) return Promise.resolve({ data: MOCK_HOSTING });
-    if (url.includes('/protected-directories') && url.includes('/users')) return Promise.resolve({ data: MOCK_USERS });
-    if (url.includes('/protected-directories')) return Promise.resolve({ data: MOCK_DIRS });
     return Promise.resolve({ data: [] });
   });
 }
@@ -98,9 +85,9 @@ describe('Client DomainDetail page', () => {
     setupMocks();
     render(<DomainDetail />, { wrapper: createWrapper() });
     await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toHaveTextContent('example.com'));
+    expect(screen.getByTestId('tab-routing')).toBeInTheDocument();
     expect(screen.getByTestId('tab-dns')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-hosting')).toBeInTheDocument();
-    expect(screen.getByTestId('tab-protected')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-ssl')).toBeInTheDocument();
   });
 
   it('shows domain not found for invalid domain', async () => {
@@ -159,49 +146,4 @@ describe('Client DNS tab', () => {
   });
 });
 
-describe('Client Hosting tab', () => {
-  it('renders hosting settings form', async () => {
-    setupMocks();
-    const user = userEvent.setup();
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('tab-hosting')).toBeInTheDocument());
-    await user.click(screen.getByTestId('tab-hosting'));
-    await waitFor(() => expect(screen.getByTestId('hosting-settings-form')).toBeInTheDocument());
-    expect(screen.getByTestId('redirect-https-toggle')).toBeChecked();
-    expect(screen.getByTestId('webroot-path-input')).toHaveValue('/var/www/html');
-  });
-
-  it('save button disabled until change', async () => {
-    setupMocks();
-    const user = userEvent.setup();
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('tab-hosting')).toBeInTheDocument());
-    await user.click(screen.getByTestId('tab-hosting'));
-    await waitFor(() => expect(screen.getByTestId('save-hosting-settings')).toBeDisabled());
-    await user.click(screen.getByTestId('redirect-www-toggle'));
-    expect(screen.getByTestId('save-hosting-settings')).toBeEnabled();
-  });
-});
-
-describe('Client Protected dirs tab', () => {
-  it('renders protected directories', async () => {
-    setupMocks();
-    const user = userEvent.setup();
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('tab-protected')).toBeInTheDocument());
-    await user.click(screen.getByTestId('tab-protected'));
-    await waitFor(() => expect(screen.getByText('/secret')).toBeInTheDocument());
-  });
-
-  it('expanding dir shows users', async () => {
-    setupMocks();
-    const user = userEvent.setup();
-    render(<DomainDetail />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('tab-protected')).toBeInTheDocument());
-    await user.click(screen.getByTestId('tab-protected'));
-    await waitFor(() => expect(screen.getByTestId('dir-row-dir1')).toBeInTheDocument());
-    await user.click(screen.getByTestId('dir-row-dir1'));
-    await waitFor(() => expect(screen.getByTestId('dir-users-dir1')).toBeInTheDocument());
-    expect(screen.getByText('alice')).toBeInTheDocument();
-  });
-});
+// Hosting and Protected Directories test suites removed — tabs moved to RouteDetail.

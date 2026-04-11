@@ -54,6 +54,7 @@ export const upgradeStatusEnum = pgEnum('upgrade_status', [
 export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'batch', 'forced']);
 export const catalogVersionStatusEnum = pgEnum('catalog_version_status', ['available', 'deprecated', 'eol']);
 export const panelScopeEnum = pgEnum('panel_scope', ['admin', 'client']);
+export const wwwRedirectEnum = pgEnum('www_redirect', ['none', 'add-www', 'remove-www']);
 
 // ─── Admin & Shared Tables ───
 
@@ -589,6 +590,26 @@ export const ingressRoutes = pgTable('ingress_routes', {
   isApex: integer('is_apex').notNull().default(0),
   tlsMode: tlsModeEnum().notNull().default('auto'),
   status: ingressStatusEnum().notNull().default('pending'),
+  // ── Redirect settings ──
+  forceHttps: integer('force_https').notNull().default(1),
+  wwwRedirect: wwwRedirectEnum('www_redirect').notNull().default('none'),
+  redirectUrl: varchar('redirect_url', { length: 2048 }),
+  // ── Security settings ──
+  basicAuthEnabled: integer('basic_auth_enabled').notNull().default(0),
+  basicAuthRealm: varchar('basic_auth_realm', { length: 255 }).default('Restricted'),
+  ipAllowlist: text('ip_allowlist'),
+  rateLimitRps: integer('rate_limit_rps'),
+  rateLimitConnections: integer('rate_limit_connections'),
+  rateLimitBurstMultiplier: numeric('rate_limit_burst_multiplier', { precision: 4, scale: 1 }),
+  // ── WAF settings ──
+  wafEnabled: integer('waf_enabled').notNull().default(0),
+  wafOwaspCrs: integer('waf_owasp_crs').notNull().default(0),
+  wafAnomalyThreshold: integer('waf_anomaly_threshold').notNull().default(10),
+  wafExcludedRules: text('waf_excluded_rules'),
+  // ── Advanced settings ──
+  customErrorCodes: varchar('custom_error_codes', { length: 255 }),
+  customErrorPath: varchar('custom_error_path', { length: 255 }),
+  additionalHeaders: jsonb('additional_headers').$type<Record<string, string>>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
@@ -598,6 +619,46 @@ export const ingressRoutes = pgTable('ingress_routes', {
 ]);
 
 export type IngressRoute = typeof ingressRoutes.$inferSelect;
+
+// ─── Route Auth Users ───
+
+export const routeAuthUsers = pgTable('route_auth_users', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  routeId: varchar('route_id', { length: 36 })
+    .notNull()
+    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  username: varchar('username', { length: 255 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('route_auth_users_route_username_unique').on(table.routeId, table.username),
+  index('route_auth_users_route_idx').on(table.routeId),
+]);
+
+// ─── WAF Logs ───
+
+export const wafLogs = pgTable('waf_logs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  routeId: varchar('route_id', { length: 36 })
+    .notNull()
+    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  ruleId: varchar('rule_id', { length: 50 }).notNull(),
+  severity: varchar('severity', { length: 20 }).notNull(),
+  message: text('message').notNull(),
+  requestUri: text('request_uri'),
+  requestMethod: varchar('request_method', { length: 10 }),
+  sourceIp: varchar('source_ip', { length: 45 }),
+  matchedData: text('matched_data'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('waf_logs_route_idx').on(table.routeId),
+  index('waf_logs_client_idx').on(table.clientId),
+  index('waf_logs_created_idx').on(table.createdAt),
+]);
 
 // ─── SSH Keys ───
 

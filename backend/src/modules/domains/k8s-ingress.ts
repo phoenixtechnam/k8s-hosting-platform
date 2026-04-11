@@ -21,6 +21,7 @@ import { ingressRoutes, deployments, domains } from '../../db/schema.js';
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
+import { syncAllRouteAnnotations } from '../ingress-routes/annotation-sync.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -189,11 +190,24 @@ export async function reconcileIngress(
     }
   }
 
+  // Sync route-level annotations (redirect, security, WAF, advanced).
+  // This also creates/updates K8s Secrets (basic auth) and ConfigMaps
+  // (proxy headers) in the client namespace.
+  let routeAnnotations: Record<string, string> = {};
+  try {
+    routeAnnotations = await syncAllRouteAnnotations(db, k8s, clientId, domainIds);
+  } catch {
+    // Non-blocking — annotation sync failure should not prevent
+    // the Ingress from being created/updated.
+  }
+
   const ingressBody = {
     metadata: {
       name: ingressName,
       namespace,
-      annotations: {} as Record<string, string>,
+      annotations: {
+        ...routeAnnotations,
+      },
     },
     spec: {
       ingressClassName: 'nginx',

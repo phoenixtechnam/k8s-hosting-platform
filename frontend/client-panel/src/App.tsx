@@ -13,6 +13,7 @@ import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
+import RouteDetail from '@/pages/RouteDetail';
 import SubUsers from '@/pages/SubUsers';
 import DatabaseManager from '@/pages/DatabaseManager';
 import SshKeys from '@/pages/SshKeys';
@@ -48,6 +49,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="domains" element={<Domains />} />
             <Route path="domains/:domainId" element={<DomainDetail />} />
+            <Route path="domains/:domainId/routes/:routeId" element={<RouteDetail />} />
             <Route path="applications" element={<Applications />} />
             <Route path="cron-jobs" element={<CronJobs />} />
             <Route path="files" element={<Files />} />
