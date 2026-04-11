@@ -6,7 +6,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, domains, platformSettings } from '../../db/schema.js';
+import { ingressRoutes, domains, platformSettings, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders } from '../dns-records/service.js';
 import type { Database } from '../../db/index.js';
@@ -226,6 +226,13 @@ export async function deleteRoute(db: Database, routeId: string) {
     throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found`, 404);
   }
   await db.delete(ingressRoutes).where(eq(ingressRoutes.id, routeId));
+
+  // Auto-delete DNS records that were provisioned for this route
+  try {
+    await autoDeleteRouteDns(db, route.domainId, route.hostname);
+  } catch {
+    // Non-blocking — DNS cleanup failure shouldn't block route deletion
+  }
 }
 
 export async function listRoutesForDomain(db: Database, domainId: string) {
@@ -240,4 +247,78 @@ export async function listRoutesForClient(db: Database, clientId: string) {
 
   const allRoutes = await db.select().from(ingressRoutes);
   return allRoutes.filter(r => domainIds.includes(r.domainId));
+}
+
+// ─── Auto-DNS Cleanup ───────────────────────────────────────────────────────
+
+/**
+ * Remove DNS records that were auto-provisioned when the route was created.
+ *
+ * For primary-mode domains this deletes the A/AAAA (apex) or CNAME (subdomain)
+ * record from both the external DNS provider and the local dns_records table.
+ */
+async function autoDeleteRouteDns(
+  db: Database,
+  domainId: string,
+  hostname: string,
+): Promise<void> {
+  // 1. Check if domain is primary mode
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domain || domain.dnsMode !== 'primary') return;
+
+  // 2. Determine the record name relative to the domain
+  //    hostname: "app.example.com", domainName: "example.com" → "app"
+  //    hostname: "example.com",     domainName: "example.com" → "@" (apex)
+  const apex = hostname.toLowerCase() === domain.domainName.toLowerCase();
+  const recordName = apex
+    ? '@'
+    : hostname.replace(`.${domain.domainName}`, '');
+
+  // 3. Delete from external DNS provider(s)
+  const settings = await getIngressSettings(db);
+
+  if (apex) {
+    // Apex routes get A (and optionally AAAA) records
+    await syncRecordToProviders(db, domain.domainName, 'delete', {
+      type: 'A',
+      name: '@',
+      content: settings.ingressDefaultIpv4,
+      id: 'auto', // provider uses name|type|content composite key
+    }, domainId);
+
+    const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+    if (ipv6) {
+      await syncRecordToProviders(db, domain.domainName, 'delete', {
+        type: 'AAAA',
+        name: '@',
+        content: ipv6,
+        id: 'auto',
+      }, domainId);
+    }
+  } else {
+    // Subdomain routes get a CNAME record
+    const slug = hostnameToSlug(hostname);
+    const ingressCname = `${slug}.${settings.ingressBaseDomain}`;
+    await syncRecordToProviders(db, domain.domainName, 'delete', {
+      type: 'CNAME',
+      name: recordName,
+      content: ingressCname,
+      id: 'auto',
+    }, domainId);
+  }
+
+  // 4. Remove matching records from local dns_records table
+  const localRecords = await db
+    .select()
+    .from(dnsRecords)
+    .where(and(eq(dnsRecords.domainId, domainId), eq(dnsRecords.recordName, recordName)));
+
+  for (const rec of localRecords) {
+    // Only delete records that match what auto-provisioning would have created
+    const isAutoApex = apex && (rec.recordType === 'A' || rec.recordType === 'AAAA');
+    const isAutoCname = !apex && rec.recordType === 'CNAME';
+    if (isAutoApex || isAutoCname) {
+      await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
+    }
+  }
 }

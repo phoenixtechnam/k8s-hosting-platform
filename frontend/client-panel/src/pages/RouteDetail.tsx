@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, AlertCircle, Plus, Trash2, X, Shield, Settings,
+  ArrowLeft, Loader2, AlertCircle, AlertTriangle, Plus, Trash2, X, Shield, Settings,
   ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -233,6 +233,26 @@ function RedirectsTab({ clientId, routeId, route }: {
           Controls whether the domain redirects between www and non-www versions. 'Add www' redirects example.com to www.example.com. 'Remove www' does the reverse.
         </p>
       </div>
+
+      {/* www redirect hints */}
+      {wwwRedirect === 'add-www' && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300" data-testid="www-redirect-hint-add">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            This redirect sends traffic from <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname}</code> to <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">www.{route.hostname}</code>.
+            Make sure you also have a route for <code className="font-mono font-bold">www.{route.hostname}</code> pointing to your deployment.
+          </span>
+        </div>
+      )}
+      {wwwRedirect === 'remove-www' && route.hostname.startsWith('www.') && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300" data-testid="www-redirect-hint-remove">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            This redirect sends traffic from <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname}</code> to <code className="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">{route.hostname.replace(/^www\./, '')}</code>.
+            Make sure you also have a route for <code className="font-mono font-bold">{route.hostname.replace(/^www\./, '')}</code> pointing to your deployment.
+          </span>
+        </div>
+      )}
 
       {/* Custom Redirect URL */}
       <div data-testid="custom-redirect-row">
