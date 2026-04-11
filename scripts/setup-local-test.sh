@@ -106,7 +106,7 @@ create_cluster() {
   log "  kubectl get pods -A"
   log ""
   log "To install platform components:"
-  log "  ./scripts/install-platform.sh --kubeconfig \$(k3d kubeconfig write ${CLUSTER_NAME})"
+  log "  ./scripts/bootstrap.sh --domain localhost --env dev --skip-hardening --skip-vpn"
   log ""
   log "To delete:"
   log "  ./scripts/setup-local-test.sh --delete"

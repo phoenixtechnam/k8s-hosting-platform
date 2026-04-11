@@ -2,25 +2,40 @@
 set -euo pipefail
 
 # bootstrap.sh — One-command server setup for the k8s hosting platform.
-# Run directly on a fresh Debian 12/13 or Ubuntu 22.04+ server.
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform/main/scripts/bootstrap.sh | bash
-#   # or after cloning:
-#   ./scripts/bootstrap.sh
-#
-# Options:
-#   --role <server|worker> Node role (default: server)
-#   --server <IP>          Control plane IP (required for --role worker)
-#   --token <TOKEN>        k3s join token (required for --role worker)
-#   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
-#   --domain <FQDN>        Base domain for the platform (required, e.g. phoenix-host.net)
-#   --with-monitoring      Install Prometheus/Grafana/Loki (~2.5GB RAM)
-#   --skip-flux            Skip Flux v2 GitOps controller
-#   --skip-hardening       Skip SSH hardening + firewall (e.g. already done)
-#   --env <dev|production>      Environment (default: production)
-#   --skip-vpn             Skip WireGuard + NetBird client install
-#   --help                 Show this help message
+# Run directly on a fresh Debian 12/13 or Ubuntu 22.04+ server,
+# or remotely from your workstation via --remote.
+
+# ─── Remote execution mode ──────────────────────────────────────────────────
+REMOTE_HOST=""
+SSH_KEY=""
+SSH_USER="root"
+
+# Parse --remote, --ssh-key, --ssh-user from args before main arg parsing
+REMAINING_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --remote)   REMOTE_HOST="$2"; shift 2 ;;
+    --ssh-key)  SSH_KEY="$2"; shift 2 ;;
+    --ssh-user) SSH_USER="$2"; shift 2 ;;
+    *)          REMAINING_ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${REMAINING_ARGS[@]}"
+
+if [[ -n "$REMOTE_HOST" ]]; then
+  echo "════════════════════════════════════════════════"
+  echo "  Remote Bootstrap — $REMOTE_HOST"
+  echo "════════════════════════════════════════════════"
+  SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+  [[ -n "$SSH_KEY" ]] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
+
+  echo "Copying bootstrap script to $REMOTE_HOST..."
+  scp $SSH_OPTS "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
+
+  echo "Executing bootstrap on $REMOTE_HOST..."
+  ssh $SSH_OPTS "${SSH_USER}@${REMOTE_HOST}" "chmod +x /tmp/bootstrap.sh && /tmp/bootstrap.sh $*"
+  exit $?
+fi
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -42,7 +57,40 @@ REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 usage() {
-  sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  cat <<'HELPTEXT'
+Usage: bootstrap.sh [OPTIONS]
+
+Server provisioning and platform installation for k8s-hosting-platform.
+
+OPTIONS:
+  --domain <FQDN>       Base domain (required for server role)
+  --role <server|worker> Node role (default: server)
+  --env <dev|production> Environment (default: production)
+  --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
+  --with-monitoring      Install Prometheus + Loki
+  --skip-flux            Skip Flux v2 GitOps
+  --skip-hardening       Skip SSH/firewall hardening
+  --skip-vpn             Skip WireGuard + NetBird
+
+REMOTE MODE:
+  --remote <host>        Run on remote server via SSH
+  --ssh-key <path>       SSH private key for remote mode
+  --ssh-user <user>      SSH user (default: root)
+
+WORKER MODE:
+  --server <ip>          Control plane IP (required for worker role)
+  --token <token>        k3s join token (required for worker role)
+
+EXAMPLES:
+  # Direct on server:
+  ./bootstrap.sh --domain phoenix-host.net --env production
+
+  # Remote from workstation:
+  ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/.ssh/id_rsa --domain phoenix-host.net
+
+  # Add worker node:
+  ./bootstrap.sh --remote 1.2.3.5 --ssh-key ~/.ssh/id_rsa --role worker --server 1.2.3.4 --token K10abc...
+HELPTEXT
   exit 0
 }
 

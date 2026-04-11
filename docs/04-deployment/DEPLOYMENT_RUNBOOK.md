@@ -1,10 +1,10 @@
 # Deployment Runbook
 
 **Status:** Phase 1
-**Last Updated:** March 29, 2026
+**Last Updated:** April 11, 2026
 **Owner:** Platform Team
 
-This document provides step-by-step instructions for first-time deployment of the K8s hosting platform on a Hetzner VPS running k3s.
+This document provides step-by-step instructions for first-time deployment of the K8s hosting platform on a Hetzner VPS running k3s. All provisioning and installation is handled by a single script: `scripts/bootstrap.sh`.
 
 ---
 
@@ -46,156 +46,81 @@ A    mail.your-domain.com       -> <VPS_IP>
 
 ### Required Tools (Local Machine)
 
+For **remote mode** (Option B below), you only need SSH access. For post-deployment management:
+
 ```bash
 # Install kubectl
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 chmod +x kubectl && sudo mv kubectl /usr/local/bin/
 
-# Install kustomize
-curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-sudo mv kustomize /usr/local/bin/
-
 # Install kubeseal (Sealed Secrets CLI)
 KUBESEAL_VERSION=0.27.0
 curl -OL "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz"
 tar -xvzf kubeseal-*.tar.gz kubeseal && sudo mv kubeseal /usr/local/bin/
-
-# Install Helm
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 ```
 
 ---
 
-## 2. Bootstrap k3s Cluster
+## 2. Deployment
 
-SSH into the Hetzner VPS and run the bootstrap script:
+`scripts/bootstrap.sh` is the single entry point for all deployment tasks. It handles server hardening (SSH, firewall, fail2ban), k3s + Calico CNI installation, Helm charts (NGINX Ingress, cert-manager, Sealed Secrets), Flux v2 GitOps, platform secrets, and Kustomize manifest application.
+
+Run `./scripts/bootstrap.sh --help` for the full list of options.
+
+### Option A: Run directly on the server
 
 ```bash
 ssh root@<VPS_IP>
 
-# Clone the platform repository
-git clone https://github.com/your-org/k8s-hosting-platform.git
+# Either clone and run:
+git clone https://github.com/phoenixtechnam/k8s-hosting-platform.git
 cd k8s-hosting-platform
+./scripts/bootstrap.sh --domain phoenix-host.net --env production
 
-# Run bootstrap (installs k3s without default flannel, uses Calico CNI)
-./scripts/bootstrap.sh
+# Or one-liner:
+curl -fsSL https://raw.githubusercontent.com/phoenixtechnam/k8s-hosting-platform/main/scripts/bootstrap.sh \
+  | bash -s -- --domain phoenix-host.net --env production
 ```
 
-If the bootstrap script is not yet available, install k3s manually:
+### Option B: Run from your workstation (remote mode)
 
 ```bash
-# Install k3s without default CNI (we use Calico)
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
-  --disable=traefik \
-  --flannel-backend=none \
-  --disable-network-policy \
-  --write-kubeconfig-mode=644 \
-  --tls-san=<VPS_IP> \
-  --tls-san=api.your-domain.com" sh -
+./scripts/bootstrap.sh \
+  --remote <VPS_IP> \
+  --ssh-key ~/.ssh/id_rsa \
+  --domain phoenix-host.net \
+  --env production
+```
 
-# Verify k3s is running
-systemctl status k3s
+This copies the script to the server via SCP and executes it over SSH.
+
+### Adding a worker node
+
+```bash
+./scripts/bootstrap.sh \
+  --remote <worker-ip> \
+  --ssh-key ~/.ssh/id_rsa \
+  --role worker \
+  --server <control-plane-ip> \
+  --token <k3s-token>
+```
+
+Retrieve the join token from the control plane: `cat /var/lib/rancher/k3s/server/node-token`
+
+### Copy kubeconfig to your local machine
+
+After bootstrap completes, copy the kubeconfig for remote `kubectl` access:
+
+```bash
+scp root@<VPS_IP>:/etc/rancher/k3s/k3s.yaml ./kubeconfig.yaml
+sed -i "s/127.0.0.1/<VPS_IP>/g" kubeconfig.yaml
+export KUBECONFIG=./kubeconfig.yaml
 kubectl get nodes
 ```
 
-Copy the kubeconfig to your local machine:
-
-```bash
-# On the VPS
-cat /etc/rancher/k3s/k3s.yaml
-
-# On your local machine, save the output and update the server address
-mkdir -p ~/.kube
-# Paste kubeconfig and replace 127.0.0.1 with <VPS_IP> or NetBird mesh IP
-```
-
 ---
 
-## 3. Install Platform Dependencies
-
-### 3.1 Calico CNI
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
-
-# Wait for Calico pods
-kubectl -n kube-system wait --for=condition=ready pod -l k8s-app=calico-node --timeout=120s
-```
-
-### 3.2 NGINX Ingress Controller
-
-```bash
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
-helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --create-namespace \
-  --set controller.kind=DaemonSet \
-  --set controller.hostPort.enabled=true \
-  --set controller.service.type=ClusterIP \
-  --set controller.config.enable-modsecurity=true \
-  --set controller.config.enable-owasp-modsecurity-crs=true
-
-# Verify
-kubectl -n ingress-nginx wait --for=condition=ready pod -l app.kubernetes.io/component=controller --timeout=120s
-```
-
-### 3.3 cert-manager
-
-```bash
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  --set crds.enabled=true
-
-# Wait for cert-manager
-kubectl -n cert-manager wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=120s
-
-# Create Let's Encrypt ClusterIssuer
-cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-production
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: admin@your-domain.com
-    privateKeySecretRef:
-      name: letsencrypt-production-key
-    solvers:
-      - http01:
-          ingress:
-            class: nginx
-EOF
-```
-
-### 3.4 Sealed Secrets
-
-```bash
-helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets
-helm repo update
-
-helm install sealed-secrets sealed-secrets/sealed-secrets \
-  --namespace kube-system
-
-# Verify
-kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=sealed-secrets --timeout=60s
-```
-
-### 3.5 Create Platform Namespace
-
-```bash
-kubectl apply -f k8s/base/namespaces.yaml
-```
-
----
-
-## 4. Configure DNS
+## 3. Configure DNS
 
 ### Option A: PowerDNS via API (Recommended)
 
@@ -218,41 +143,9 @@ If using an external DNS provider (Cloudflare, Route53, Hetzner DNS):
 
 ---
 
-## 5. Deploy Platform Services
-
-### 5.1 Create Secrets
-
-Create database credentials and other secrets using Sealed Secrets:
+## 4. Run Database Migrations
 
 ```bash
-# Create the platform-db-credentials secret
-kubectl create secret generic platform-db-credentials \
-  --namespace platform \
-  --from-literal=database-url="mysql://platform:PASSWORD@mariadb.platform.svc.cluster.local:3306/platform" \
-  --from-literal=db-host="mariadb.platform.svc.cluster.local" \
-  --from-literal=db-user="platform" \
-  --from-literal=db-password="PASSWORD" \
-  --dry-run=client -o yaml | kubeseal --format yaml > k8s/overlays/dev/sealed-db-credentials.yaml
-
-kubectl apply -f k8s/overlays/dev/sealed-db-credentials.yaml
-```
-
-### 5.2 Deploy with Kustomize
-
-```bash
-# Deploy dev overlay (includes all base manifests + dev patches)
-kubectl apply -k k8s/overlays/dev/
-
-# Watch rollout
-kubectl -n platform rollout status deployment/platform-api --timeout=120s
-kubectl -n platform rollout status deployment/admin-panel --timeout=120s
-kubectl -n platform rollout status deployment/client-panel --timeout=120s
-```
-
-### 5.3 Run Database Migrations
-
-```bash
-# Port-forward to the API pod and run migrations
 kubectl -n platform exec deployment/platform-api -- npm run db:migrate
 
 # Verify migration status
@@ -261,9 +154,9 @@ kubectl -n platform exec deployment/platform-api -- npm run db:migrate -- --stat
 
 ---
 
-## 6. Verify Deployment
+## 5. Verify Deployment
 
-### 6.1 Run Smoke Tests
+### 5.1 Run Smoke Tests
 
 ```bash
 ./scripts/smoke-test.sh
@@ -276,7 +169,7 @@ The smoke test script validates:
 - Database connectivity
 - Redis connectivity
 
-### 6.2 Manual Verification
+### 5.2 Manual Verification
 
 ```bash
 # Check all pods are running
@@ -300,7 +193,7 @@ curl -s -o /dev/null -w "%{http_code}" https://client.your-domain.com/
 
 ---
 
-## 7. Create First Admin User
+## 6. Create First Admin User
 
 ### Option A: Via CLI (Recommended for First Setup)
 
@@ -327,7 +220,7 @@ After creating the admin user, log in at `https://admin.your-domain.com` and cha
 
 ---
 
-## 8. Configure OIDC (Optional)
+## 7. Configure OIDC (Optional)
 
 If Dex OIDC is running (provided by the infrastructure project), configure it in the admin panel:
 
@@ -345,9 +238,9 @@ Repeat for the client panel if needed with a separate Dex client ID.
 
 ---
 
-## 9. Deploy Email Stack (Stalwart + Roundcube)
+## 8. Deploy Email Stack (Stalwart + Roundcube)
 
-### 9.1 Deploy Stalwart Mail Server
+### 8.1 Deploy Stalwart Mail Server
 
 ```bash
 # Apply the Stalwart StatefulSet, Service, and ConfigMap
@@ -360,7 +253,7 @@ kubectl -n platform-system wait --for=condition=ready pod -l app=stalwart-mail -
 kubectl -n platform-system get svc stalwart-mail
 ```
 
-### 9.2 Configure DNS for Email
+### 8.2 Configure DNS for Email
 
 Add the following DNS records for each email domain:
 
@@ -371,7 +264,7 @@ TXT   default._domainkey    -> (DKIM public key from admin panel)
 TXT   _dmarc.example.com   -> "v=DMARC1; p=quarantine; rua=mailto:dmarc@your-domain.com"
 ```
 
-### 9.3 Deploy Roundcube Webmail
+### 8.3 Deploy Roundcube Webmail
 
 ```bash
 # Apply the Roundcube Deployment, Service, and Ingress
@@ -384,7 +277,7 @@ kubectl -n platform-system wait --for=condition=ready pod -l app=roundcube --tim
 curl -s -o /dev/null -w "%{http_code}" https://webmail.your-domain.com/
 ```
 
-### 9.4 Test Email Flow
+### 8.4 Test Email Flow
 
 ```bash
 # Send a test email (from the VPS or a machine with SMTP access)
@@ -399,7 +292,7 @@ swaks --to test@example.com \
 
 ---
 
-## 10. Configure SMTP Relay (Optional)
+## 9. Configure SMTP Relay (Optional)
 
 For improved email deliverability, configure an SMTP relay service:
 
@@ -444,7 +337,7 @@ kubectl -n platform-system rollout restart statefulset/stalwart-mail
 
 ---
 
-## 11. Post-Deployment Checklist
+## 10. Post-Deployment Checklist
 
 ### Security
 
