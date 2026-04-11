@@ -707,16 +707,16 @@ function AuthUsersSection({ clientId, routeId }: {
 
 // ─── WAF Log Section ────────────────────────────────────────────────────────
 
-const SEVERITY_STYLES: Record<WafLogEntry['severity'], string> = {
-  CRITICAL: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  WARNING: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  INFO: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+const SEV_STYLE: Record<string, string> = {
+  critical: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  info: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
 };
 
-const ACTION_STYLES: Record<WafLogEntry['action'], string> = {
-  BLOCKED: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  LOGGED: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-};
+function formatTs(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
 
 function WafLogSection({ clientId, routeId }: {
   readonly clientId: string;
@@ -726,57 +726,41 @@ function WafLogSection({ clientId, routeId }: {
   const logs = logsData?.data ?? [];
 
   return (
-    <div
-      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm"
-      data-testid="waf-log-section"
-    >
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="waf-log-section">
       <div className="border-b border-gray-100 dark:border-gray-700 px-5 py-4">
         <h3 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
           <ShieldAlert size={16} />
           WAF Log
         </h3>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          ModSecurity WAF events for this route. Shows the last 50 blocked or logged requests. Use rule IDs from this log to add exclusions above.
+        </p>
       </div>
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 size={20} className="animate-spin text-blue-600" />
-        </div>
+        <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>
       ) : logs.length === 0 ? (
-        <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">
-          No WAF events recorded.
-        </div>
+        <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
       ) : (
-        <div className="divide-y divide-gray-100 dark:divide-gray-700" data-testid="waf-log-entries">
+        <div className="overflow-x-auto rounded-b-xl bg-gray-950" data-testid="waf-log-entries">
           {logs.map((log, idx) => (
             <div
               key={log.id}
-              className={clsx(
-                'px-5 py-3 font-mono text-xs',
-                idx % 2 === 0 ? 'bg-white dark:bg-gray-800' : 'bg-gray-50 dark:bg-gray-900/50',
-              )}
+              className={clsx('flex items-center gap-2 px-4 py-1.5 font-mono text-[11px] whitespace-nowrap', idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
               data-testid={`waf-log-entry-${log.id}`}
             >
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-gray-500 dark:text-gray-400">
-                  {new Date(log.timestamp).toLocaleString()}
-                </span>
-                <span className="text-gray-400 dark:text-gray-500">|</span>
-                <span className="font-medium text-gray-900 dark:text-gray-100">{log.ruleId}</span>
-                <span className="text-gray-400 dark:text-gray-500">|</span>
-                <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', ACTION_STYLES[log.action])}>
-                  {log.action}
-                </span>
-              </div>
-              <div className="mt-1 text-gray-700 dark:text-gray-300">
-                {log.method} {log.path} | {log.matchMessage}
-              </div>
-              <div className="mt-1 flex items-center gap-2">
-                <span className="text-gray-500 dark:text-gray-400">{log.clientIp}</span>
-                <span className="text-gray-400 dark:text-gray-500">|</span>
-                <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-xs font-medium', SEVERITY_STYLES[log.severity])}>
-                  {log.severity}
-                </span>
-              </div>
+              <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
+                {log.severity}
+              </span>
+              <span className="text-blue-400 font-bold">{log.ruleId}</span>
+              <span className="text-gray-500">·</span>
+              <span className="text-gray-300 truncate max-w-[280px]" title={log.message}>{log.message}</span>
+              <span className="text-gray-500">·</span>
+              <span className="text-green-400">{log.requestMethod ?? 'GET'} {(log.requestUri ?? '/').slice(0, 30)}{(log.requestUri ?? '').length > 30 ? '...' : ''}</span>
+              <span className="text-gray-500">·</span>
+              <span className="text-gray-400">{log.sourceIp ?? '-'}</span>
+              <span className="text-gray-500">·</span>
+              <span className="text-gray-500">{formatTs(log.createdAt)}</span>
             </div>
           ))}
         </div>

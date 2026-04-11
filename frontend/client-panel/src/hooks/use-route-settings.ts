@@ -70,14 +70,13 @@ export interface RouteAuthUser {
 export interface WafLogEntry {
   readonly id: string;
   readonly routeId: string;
-  readonly timestamp: string;
   readonly ruleId: string;
-  readonly action: 'BLOCKED' | 'LOGGED';
-  readonly method: string;
-  readonly path: string;
-  readonly matchMessage: string;
-  readonly clientIp: string;
-  readonly severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  readonly severity: string;
+  readonly message: string;
+  readonly requestUri: string | null;
+  readonly requestMethod: string | null;
+  readonly sourceIp: string | null;
+  readonly createdAt: string;
 }
 
 // ─── Route Detail ───────────────────────────────────────────────────────────
