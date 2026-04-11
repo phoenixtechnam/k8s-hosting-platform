@@ -146,35 +146,33 @@ export async function reconcileIngress(
       },
     };
 
-    rulesWithDomain.push({
-      rule: primaryRule,
-      domainId: route.domainId,
-      hostname: route.hostname,
-    });
-
-    // Add companion host rule for www redirect so NGINX can handle
-    // both hostnames without needing a second route.
+    // For www redirect: only add the DESTINATION hostname as a rule.
+    // NGINX's from-to-www-redirect annotation auto-creates a redirect
+    // server block for the missing source hostname.
     if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
+      // Replace primary hostname with www variant — NGINX redirects non-www automatically
       rulesWithDomain.push({
-        rule: {
-          host: `www.${route.hostname}`,
-          http: primaryRule.http,
-        },
+        rule: { host: `www.${route.hostname}`, http: primaryRule.http },
         domainId: route.domainId,
         hostname: `www.${route.hostname}`,
       });
-    }
-    if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
+    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
+      // Replace www hostname with bare variant — NGINX redirects www automatically
       const bareHostname = route.hostname.replace(/^www\./, '');
       rulesWithDomain.push({
-        rule: {
-          host: bareHostname,
-          http: primaryRule.http,
-        },
+        rule: { host: bareHostname, http: primaryRule.http },
         domainId: route.domainId,
         hostname: bareHostname,
       });
+    } else {
+      // No www redirect — use the primary hostname as-is
+      rulesWithDomain.push({
+        rule: primaryRule,
+        domainId: route.domainId,
+        hostname: route.hostname,
+      });
     }
+
   }
 
   if (rulesWithDomain.length === 0) {

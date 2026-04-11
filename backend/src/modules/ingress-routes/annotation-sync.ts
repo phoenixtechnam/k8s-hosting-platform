@@ -313,11 +313,13 @@ export function buildAnnotationsFromRoute(
   }
 
   // ── Custom Errors ──
+  // Only set custom-http-errors if error codes are configured.
+  // default-backend requires a K8s Service name (not a file path) —
+  // customErrorPath stores a file path for future use but is NOT
+  // a valid default-backend value. Omitting default-backend means
+  // NGINX uses the global default backend for error responses.
   if (route.customErrorCodes) {
     annotations['nginx.ingress.kubernetes.io/custom-http-errors'] = route.customErrorCodes;
-  }
-  if (route.customErrorPath) {
-    annotations['nginx.ingress.kubernetes.io/default-backend'] = route.customErrorPath;
   }
 
   // ── Response Headers via configuration-snippet ──
