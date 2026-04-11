@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
-  CheckCircle, Network, Pencil, Check, RefreshCw,
+  CheckCircle, Network, Pencil, Check, RefreshCw, Lock,
   ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Upload, ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -550,13 +550,17 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                     </select>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={clsx(
-                      'inline-flex rounded-full px-2 py-0.5 text-xs font-medium',
-                      route.tlsMode === 'auto' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' :
-                      route.tlsMode === 'custom' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' :
-                      'bg-gray-100 dark:bg-gray-700 text-gray-500',
-                    )}>
-                      {route.tlsMode}
+                    <span
+                      className={clsx(
+                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+                        route.tlsMode === 'auto' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' :
+                        route.tlsMode === 'custom' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' :
+                        'bg-gray-100 dark:bg-gray-700 text-gray-500',
+                      )}
+                      data-testid={`route-tls-badge-${route.id}`}
+                    >
+                      {route.tlsMode !== 'none' && <Lock size={10} />}
+                      {route.tlsMode === 'auto' ? 'Auto' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
                     </span>
                   </td>
                   <td className="px-4 py-3">

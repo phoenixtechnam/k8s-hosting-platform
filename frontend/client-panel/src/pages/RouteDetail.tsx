@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, X, Shield, Settings,
-  ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, FolderLock,
+  ArrowLeftRight, ShieldAlert, Save, ChevronDown, ChevronUp, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -29,7 +29,7 @@ import {
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-type Tab = 'redirects' | 'security' | 'advanced';
+type Tab = 'redirects' | 'security' | 'protected-dirs' | 'advanced';
 
 export default function RouteDetail() {
   const { domainId, routeId } = useParams<{ domainId: string; routeId: string }>();
@@ -64,6 +64,7 @@ export default function RouteDetail() {
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'redirects', label: 'Redirects', icon: <ArrowLeftRight size={14} /> },
     { key: 'security', label: 'Security', icon: <Shield size={14} /> },
+    { key: 'protected-dirs', label: 'Protected Dirs', icon: <FolderLock size={14} /> },
     { key: 'advanced', label: 'Advanced', icon: <Settings size={14} /> },
   ];
 
@@ -141,6 +142,7 @@ export default function RouteDetail() {
       {/* Tab content */}
       {activeTab === 'redirects' && <RedirectsTab clientId={clientId!} routeId={routeId!} route={route} />}
       {activeTab === 'security' && <SecurityTab clientId={clientId!} routeId={routeId!} route={route} />}
+      {activeTab === 'protected-dirs' && <ProtectedDirsSection clientId={clientId!} routeId={routeId!} />}
       {activeTab === 'advanced' && <AdvancedTab clientId={clientId!} routeId={routeId!} route={route} />}
     </div>
   );
@@ -281,34 +283,89 @@ function SecurityTab({ clientId, routeId, route }: {
   readonly route: RouteDetailResponse;
 }) {
   const updateSecurity = useUpdateRouteSecurity(clientId, routeId);
+  const { data: logsData, isLoading: wafLogsLoading } = useRouteWafLogs(clientId, routeId);
+  const wafLogs = logsData?.data ?? [];
 
-  const [ipAllowlist, setIpAllowlist] = useState(route.ipAllowlist ?? '');
-  const [rateLimitRps, setRateLimitRps] = useState(String(route.rateLimitRps ?? ''));
-  const [rateLimitConnections, setRateLimitConnections] = useState(String(route.rateLimitConnections ?? ''));
-  const [rateLimitBurst, setRateLimitBurst] = useState(String(route.rateLimitBurst ?? ''));
+  /* ── WAF state ── */
   const [wafEnabled, setWafEnabled] = useState(route.wafEnabled);
   const [wafOwaspCoreRules, setWafOwaspCoreRules] = useState(route.wafOwaspCoreRules);
   const [wafAnomalyThreshold, setWafAnomalyThreshold] = useState(route.wafAnomalyThreshold);
   const [wafExcludedRuleIds, setWafExcludedRuleIds] = useState(route.wafExcludedRuleIds ?? '');
-  const [dirty, setDirty] = useState(false);
+  const [wafDirty, setWafDirty] = useState(false);
+  const [showWafLog, setShowWafLog] = useState(false);
+  const markWafDirty = () => setWafDirty(true);
 
-  const markDirty = () => setDirty(true);
+  /* ── IP Allowlist state ── */
+  const [ipAllowlist, setIpAllowlist] = useState(route.ipAllowlist ?? '');
+  const [ipDirty, setIpDirty] = useState(false);
+  const markIpDirty = () => setIpDirty(true);
 
-  const handleSave = async (e: FormEvent) => {
+  /* ── Rate Limiting state ── */
+  const [rateLimitRps, setRateLimitRps] = useState(String(route.rateLimitRps ?? ''));
+  const [rateLimitConnections, setRateLimitConnections] = useState(String(route.rateLimitConnections ?? ''));
+  const [rateLimitBurst, setRateLimitBurst] = useState(String(route.rateLimitBurst ?? ''));
+  const [rateDirty, setRateDirty] = useState(false);
+  const markRateDirty = () => setRateDirty(true);
+
+  /* ── Separate save error states ── */
+  const [wafSaveError, setWafSaveError] = useState<string | null>(null);
+  const [ipSaveError, setIpSaveError] = useState<string | null>(null);
+  const [rateSaveError, setRateSaveError] = useState<string | null>(null);
+  const [wafSaving, setWafSaving] = useState(false);
+  const [ipSaving, setIpSaving] = useState(false);
+  const [rateSaving, setRateSaving] = useState(false);
+
+  const handleSaveWaf = async (e: FormEvent) => {
     e.preventDefault();
+    setWafSaveError(null);
+    setWafSaving(true);
     try {
       await updateSecurity.mutateAsync({
-        ip_allowlist: ipAllowlist || null,
-        rate_limit_rps: rateLimitRps ? Number(rateLimitRps) : null,
-        rate_limit_connections: rateLimitConnections ? Number(rateLimitConnections) : null,
-        rate_limit_burst: rateLimitBurst ? Number(rateLimitBurst) : null,
         waf_enabled: wafEnabled,
         waf_owasp_core_rules: wafOwaspCoreRules,
         waf_anomaly_threshold: wafAnomalyThreshold,
         waf_excluded_rule_ids: wafExcludedRuleIds || null,
       });
-      setDirty(false);
-    } catch { /* error via updateSecurity.error */ }
+      setWafDirty(false);
+    } catch (err) {
+      setWafSaveError(err instanceof Error ? err.message : 'Failed to save WAF settings');
+    } finally {
+      setWafSaving(false);
+    }
+  };
+
+  const handleSaveIp = async (e: FormEvent) => {
+    e.preventDefault();
+    setIpSaveError(null);
+    setIpSaving(true);
+    try {
+      await updateSecurity.mutateAsync({
+        ip_allowlist: ipAllowlist || null,
+      });
+      setIpDirty(false);
+    } catch (err) {
+      setIpSaveError(err instanceof Error ? err.message : 'Failed to save IP allowlist');
+    } finally {
+      setIpSaving(false);
+    }
+  };
+
+  const handleSaveRate = async (e: FormEvent) => {
+    e.preventDefault();
+    setRateSaveError(null);
+    setRateSaving(true);
+    try {
+      await updateSecurity.mutateAsync({
+        rate_limit_rps: rateLimitRps ? Number(rateLimitRps) : null,
+        rate_limit_connections: rateLimitConnections ? Number(rateLimitConnections) : null,
+        rate_limit_burst: rateLimitBurst ? Number(rateLimitBurst) : null,
+      });
+      setRateDirty(false);
+    } catch (err) {
+      setRateSaveError(err instanceof Error ? err.message : 'Failed to save rate limiting settings');
+    } finally {
+      setRateSaving(false);
+    }
   };
 
   return (
@@ -316,208 +373,273 @@ function SecurityTab({ clientId, routeId, route }: {
       <p className="text-xs text-gray-500 dark:text-gray-400">
         Configure access control and protection for this route. All settings are enforced at the NGINX Ingress level before requests reach your application.
       </p>
+
+      {/* ── WAF Card ── */}
       <form
-        onSubmit={handleSave}
-        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-6"
-        data-testid="security-form"
+        onSubmit={handleSaveWaf}
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4"
+        data-testid="waf-form"
       >
-        {/* IP Allowlist */}
-        <section className="space-y-3" data-testid="ip-allowlist-section">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
-            IP Allowlist
-          </h3>
-          <div>
-            <input
-              type="text"
-              className={INPUT_CLASS}
-              placeholder="192.168.1.0/24, 10.0.0.0/8"
-              value={ipAllowlist}
-              onChange={(e) => { setIpAllowlist(e.target.value); markDirty(); }}
-              data-testid="ip-allowlist-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Comma-separated list of CIDR ranges. Only requests from these IP ranges will be allowed. Example: 10.0.0.0/8, 192.168.1.0/24
-            </p>
-          </div>
-        </section>
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="waf-section">
+          WAF (Web Application Firewall)
+        </h3>
 
-        {/* Rate Limiting */}
-        <section className="space-y-3" data-testid="rate-limiting-section">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
-            Rate Limiting
-          </h3>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div>
-              <label htmlFor="rate-limit-rps" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Requests/sec
-              </label>
-              <input
-                id="rate-limit-rps"
-                type="number"
-                min="0"
-                className={INPUT_CLASS + ' mt-1'}
-                value={rateLimitRps}
-                onChange={(e) => { setRateLimitRps(e.target.value); markDirty(); }}
-                data-testid="rate-limit-rps-input"
-              />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Maximum number of requests per second from a single IP address.
-              </p>
-            </div>
-            <div>
-              <label htmlFor="rate-limit-connections" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Connections
-              </label>
-              <input
-                id="rate-limit-connections"
-                type="number"
-                min="0"
-                className={INPUT_CLASS + ' mt-1'}
-                value={rateLimitConnections}
-                onChange={(e) => { setRateLimitConnections(e.target.value); markDirty(); }}
-                data-testid="rate-limit-connections-input"
-              />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Maximum number of concurrent connections from a single IP address.
-              </p>
-            </div>
-            <div>
-              <label htmlFor="rate-limit-burst" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Burst multiplier
-              </label>
-              <input
-                id="rate-limit-burst"
-                type="number"
-                min="0"
-                className={INPUT_CLASS + ' mt-1'}
-                value={rateLimitBurst}
-                onChange={(e) => { setRateLimitBurst(e.target.value); markDirty(); }}
-                data-testid="rate-limit-burst-input"
-              />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Allows temporary bursts above the rate limit. A value of 5 with 10 rps allows bursts up to 50 requests.
-              </p>
-            </div>
-          </div>
-        </section>
+        <div>
+          <label className="flex items-center justify-between">
+            <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={wafEnabled}
+              onClick={() => { setWafEnabled(!wafEnabled); markWafDirty(); }}
+              className={clsx(
+                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                wafEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+              )}
+              data-testid="waf-enabled-toggle"
+            >
+              <span className={clsx(
+                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
+                wafEnabled ? 'translate-x-5' : 'translate-x-0',
+              )} />
+            </button>
+          </label>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            ModSecurity Web Application Firewall protects against common web attacks (SQL injection, XSS, etc.).
+          </p>
+        </div>
 
-        {/* WAF */}
-        <section className="space-y-4" data-testid="waf-section">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
-            WAF (Web Application Firewall)
-          </h3>
+        <div>
+          <label className="flex items-center justify-between">
+            <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={wafOwaspCoreRules}
+              onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markWafDirty(); }}
+              className={clsx(
+                'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+              )}
+              data-testid="waf-owasp-toggle"
+            >
+              <span className={clsx(
+                'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
+                wafOwaspCoreRules ? 'translate-x-5' : 'translate-x-0',
+              )} />
+            </button>
+          </label>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            OWASP Core Rule Set provides pre-configured rules for common attack patterns. Disable only if causing false positives.
+          </p>
+        </div>
 
-          <div>
-            <label className="flex items-center justify-between">
-              <span className="text-sm text-gray-700 dark:text-gray-300">Enabled</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={wafEnabled}
-                onClick={() => { setWafEnabled(!wafEnabled); markDirty(); }}
-                className={clsx(
-                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                  wafEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-                )}
-                data-testid="waf-enabled-toggle"
-              >
-                <span className={clsx(
-                  'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                  wafEnabled ? 'translate-x-5' : 'translate-x-0',
-                )} />
-              </button>
-            </label>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              ModSecurity Web Application Firewall protects against common web attacks (SQL injection, XSS, etc.).
-            </p>
-          </div>
+        <div>
+          <label htmlFor="waf-anomaly-threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Anomaly Threshold: {wafAnomalyThreshold}
+          </label>
+          <input
+            id="waf-anomaly-threshold"
+            type="range"
+            min="1"
+            max="50"
+            value={wafAnomalyThreshold}
+            onChange={(e) => { setWafAnomalyThreshold(Number(e.target.value)); markWafDirty(); }}
+            className="mt-2 w-full max-w-sm accent-blue-600"
+            data-testid="waf-anomaly-threshold-slider"
+          />
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Lower values are stricter (more blocking). Default 10 is a good balance. Set higher (20-50) for applications with complex forms that trigger false positives.
+          </p>
+        </div>
 
-          <div>
-            <label className="flex items-center justify-between">
-              <span className="text-sm text-gray-700 dark:text-gray-300">OWASP Core Rules</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={wafOwaspCoreRules}
-                onClick={() => { setWafOwaspCoreRules(!wafOwaspCoreRules); markDirty(); }}
-                className={clsx(
-                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                  wafOwaspCoreRules ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
-                )}
-                data-testid="waf-owasp-toggle"
-              >
-                <span className={clsx(
-                  'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform',
-                  wafOwaspCoreRules ? 'translate-x-5' : 'translate-x-0',
-                )} />
-              </button>
-            </label>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              OWASP Core Rule Set provides pre-configured rules for common attack patterns. Disable only if causing false positives.
-            </p>
-          </div>
+        <div>
+          <label htmlFor="waf-excluded-rules" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Excluded Rule IDs
+          </label>
+          <input
+            id="waf-excluded-rules"
+            type="text"
+            className={INPUT_CLASS + ' mt-1'}
+            placeholder="942100, 942200"
+            value={wafExcludedRuleIds}
+            onChange={(e) => { setWafExcludedRuleIds(e.target.value); markWafDirty(); }}
+            data-testid="waf-excluded-rules-input"
+          />
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Comma-separated ModSecurity rule IDs to skip. Use the WAF log below to identify rules causing false positives. Example: 942100, 941100
+          </p>
+        </div>
 
-          <div>
-            <label htmlFor="waf-anomaly-threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Anomaly Threshold: {wafAnomalyThreshold}
-            </label>
-            <input
-              id="waf-anomaly-threshold"
-              type="range"
-              min="1"
-              max="50"
-              value={wafAnomalyThreshold}
-              onChange={(e) => { setWafAnomalyThreshold(Number(e.target.value)); markDirty(); }}
-              className="mt-2 w-full max-w-sm accent-blue-600"
-              data-testid="waf-anomaly-threshold-slider"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Lower values are stricter (more blocking). Default 10 is a good balance. Set higher (20-50) for applications with complex forms that trigger false positives.
-            </p>
-          </div>
-
-          <div>
-            <label htmlFor="waf-excluded-rules" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Excluded Rule IDs
-            </label>
-            <input
-              id="waf-excluded-rules"
-              type="text"
-              className={INPUT_CLASS + ' mt-1'}
-              placeholder="942100, 942200"
-              value={wafExcludedRuleIds}
-              onChange={(e) => { setWafExcludedRuleIds(e.target.value); markDirty(); }}
-              data-testid="waf-excluded-rules-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Comma-separated ModSecurity rule IDs to skip. Use the WAF log below to identify rules causing false positives. Example: 942100, 941100
-            </p>
-          </div>
-        </section>
-
-        {updateSecurity.error && (
-          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="security-save-error">
+        {wafSaveError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="waf-save-error">
             <AlertCircle size={14} />
-            {updateSecurity.error instanceof Error ? updateSecurity.error.message : 'Failed to save security settings'}
+            {wafSaveError}
           </div>
         )}
 
         <div className="flex justify-end">
           <button
             type="submit"
-            disabled={!dirty || updateSecurity.isPending}
+            disabled={!wafDirty || wafSaving}
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            data-testid="save-security"
+            data-testid="save-waf"
           >
-            {updateSecurity.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            {wafSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save
+          </button>
+        </div>
+
+        {/* Collapsible WAF Log */}
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+          <button
+            type="button"
+            onClick={() => setShowWafLog(!showWafLog)}
+            className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"
+            data-testid="toggle-waf-log"
+          >
+            {showWafLog ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            WAF Log ({wafLogs.length} events)
+          </button>
+          {showWafLog && (
+            <div className="mt-3">
+              {wafLogsLoading ? (
+                <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>
+              ) : wafLogs.length === 0 ? (
+                <div className="py-4 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
+              ) : (
+                <WafLogTable logs={wafLogs} />
+              )}
+            </div>
+          )}
+        </div>
+      </form>
+
+      {/* ── IP Allowlist Card ── */}
+      <form
+        onSubmit={handleSaveIp}
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
+        data-testid="ip-allowlist-form"
+      >
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="ip-allowlist-section">
+          IP Allowlist
+        </h3>
+        <div>
+          <input
+            type="text"
+            className={INPUT_CLASS}
+            placeholder="192.168.1.0/24, 10.0.0.0/8"
+            value={ipAllowlist}
+            onChange={(e) => { setIpAllowlist(e.target.value); markIpDirty(); }}
+            data-testid="ip-allowlist-input"
+          />
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Comma-separated list of CIDR ranges. Only requests from these IP ranges will be allowed. Example: 10.0.0.0/8, 192.168.1.0/24
+          </p>
+        </div>
+
+        {ipSaveError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="ip-save-error">
+            <AlertCircle size={14} />
+            {ipSaveError}
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={!ipDirty || ipSaving}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid="save-ip-allowlist"
+          >
+            {ipSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
             Save
           </button>
         </div>
       </form>
 
-      <ProtectedDirsSection clientId={clientId} routeId={routeId} />
+      {/* ── Rate Limiting Card ── */}
+      <form
+        onSubmit={handleSaveRate}
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
+        data-testid="rate-limiting-form"
+      >
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="rate-limiting-section">
+          Rate Limiting
+        </h3>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div>
+            <label htmlFor="rate-limit-rps" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Requests/sec
+            </label>
+            <input
+              id="rate-limit-rps"
+              type="number"
+              min="0"
+              className={INPUT_CLASS + ' mt-1'}
+              value={rateLimitRps}
+              onChange={(e) => { setRateLimitRps(e.target.value); markRateDirty(); }}
+              data-testid="rate-limit-rps-input"
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Maximum number of requests per second from a single IP address.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="rate-limit-connections" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Connections
+            </label>
+            <input
+              id="rate-limit-connections"
+              type="number"
+              min="0"
+              className={INPUT_CLASS + ' mt-1'}
+              value={rateLimitConnections}
+              onChange={(e) => { setRateLimitConnections(e.target.value); markRateDirty(); }}
+              data-testid="rate-limit-connections-input"
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Maximum number of concurrent connections from a single IP address.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="rate-limit-burst" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Burst multiplier
+            </label>
+            <input
+              id="rate-limit-burst"
+              type="number"
+              min="0"
+              className={INPUT_CLASS + ' mt-1'}
+              value={rateLimitBurst}
+              onChange={(e) => { setRateLimitBurst(e.target.value); markRateDirty(); }}
+              data-testid="rate-limit-burst-input"
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Allows temporary bursts above the rate limit. A value of 5 with 10 rps allows bursts up to 50 requests.
+            </p>
+          </div>
+        </div>
 
-      <WafLogSection clientId={clientId} routeId={routeId} />
+        {rateSaveError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="rate-save-error">
+            <AlertCircle size={14} />
+            {rateSaveError}
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={!rateDirty || rateSaving}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid="save-rate-limiting"
+          >
+            {rateSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -662,8 +784,14 @@ function ProtectedDirsSection({ clientId, routeId }: {
         <div className="divide-y divide-gray-100 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700">
           {dirs.map((dir) => (
             <div key={dir.id} data-testid={`protected-dir-row-${dir.id}`}>
-              <div className="flex items-center justify-between px-3 py-2.5">
+              <button
+                type="button"
+                onClick={() => setExpandedDirId(expandedDirId === dir.id ? null : dir.id)}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors"
+                data-testid={`toggle-protected-dir-${dir.id}`}
+              >
                 <div className="flex items-center gap-3">
+                  {expandedDirId === dir.id ? <ChevronDown size={12} className="text-gray-400" /> : <ChevronRight size={12} className="text-gray-400" />}
                   <span className="font-mono text-sm font-medium text-gray-900 dark:text-gray-100">{dir.path}</span>
                   <span className="text-xs text-gray-500 dark:text-gray-400">&quot;{dir.realm}&quot;</span>
                   <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -679,25 +807,18 @@ function ProtectedDirsSection({ clientId, routeId }: {
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedDirId(expandedDirId === dir.id ? null : dir.id)}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    data-testid={`edit-protected-dir-${dir.id}`}
-                  >
-                    {expandedDirId === dir.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteDir.mutate(dir.id)}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); deleteDir.mutate(dir.id); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); deleteDir.mutate(dir.id); } }}
                     className="rounded-md p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
                     data-testid={`delete-protected-dir-${dir.id}`}
                   >
                     <Trash2 size={14} />
-                  </button>
+                  </span>
                 </div>
-              </div>
+              </button>
               {expandedDirId === dir.id && (
                 <ProtectedDirDetail clientId={clientId} routeId={routeId} dir={dir} />
               )}
@@ -942,36 +1063,6 @@ function formatTs(iso: string): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
-function WafLogSection({ clientId, routeId }: {
-  readonly clientId: string;
-  readonly routeId: string;
-}) {
-  const { data: logsData, isLoading } = useRouteWafLogs(clientId, routeId);
-  const logs = logsData?.data ?? [];
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="waf-log-section">
-      <div className="border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-        <h3 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
-          <ShieldAlert size={16} />
-          WAF Log
-        </h3>
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          ModSecurity WAF events for this route. Shows the last 50 blocked or logged requests. Use rule IDs from this log to add exclusions above.
-        </p>
-      </div>
-
-      {isLoading ? (
-        <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>
-      ) : logs.length === 0 ? (
-        <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
-      ) : (
-        <WafLogTable logs={logs} />
-      )}
-    </div>
-  );
-}
-
 type SortKey = 'createdAt' | 'sourceIp' | 'severity' | 'ruleId' | 'score' | 'request';
 type SortDir = 'asc' | 'desc';
 
@@ -1069,30 +1160,38 @@ function AdvancedTab({ clientId, routeId, route }: {
 }) {
   const updateAdvanced = useUpdateRouteAdvanced(clientId, routeId);
 
+  /* ── Custom Error Pages state ── */
   const [customErrorCodes, setCustomErrorCodes] = useState(route.customErrorCodes ?? '');
   const [customErrorPath, setCustomErrorPath] = useState(route.customErrorPath ?? '');
+  const [errorDirty, setErrorDirty] = useState(false);
+  const [errorSaving, setErrorSaving] = useState(false);
+  const [errorSaveError, setErrorSaveError] = useState<string | null>(null);
+  const markErrorDirty = () => setErrorDirty(true);
+
+  /* ── Response Headers state ── */
   const [headers, setHeaders] = useState<readonly { readonly name: string; readonly value: string }[]>(
     route.additionalHeaders ? Object.entries(route.additionalHeaders).map(([name, value]) => ({ name, value })) : [],
   );
-  const [dirty, setDirty] = useState(false);
-
-  const markDirty = () => setDirty(true);
+  const [headersDirty, setHeadersDirty] = useState(false);
+  const [headersSaving, setHeadersSaving] = useState(false);
+  const [headersSaveError, setHeadersSaveError] = useState<string | null>(null);
+  const markHeadersDirty = () => setHeadersDirty(true);
 
   const handleAddHeader = () => {
     if (headers.length >= 50) return;
     setHeaders([...headers, { name: '', value: '' }]);
-    markDirty();
+    markHeadersDirty();
   };
 
   const handleUpdateHeader = (index: number, field: 'name' | 'value', val: string) => {
     const updated = headers.map((h, i) => (i === index ? { ...h, [field]: val } : h));
     setHeaders(updated);
-    markDirty();
+    markHeadersDirty();
   };
 
   const handleRemoveHeader = (index: number) => {
     setHeaders(headers.filter((_, i) => i !== index));
-    markDirty();
+    markHeadersDirty();
   };
 
   const validateHeaders = (): string | null => {
@@ -1106,35 +1205,56 @@ function AdvancedTab({ clientId, routeId, route }: {
 
   const headerError = validateHeaders();
 
-  const handleSave = async (e: FormEvent) => {
+  const handleSaveErrors = async (e: FormEvent) => {
+    e.preventDefault();
+    setErrorSaveError(null);
+    setErrorSaving(true);
+    try {
+      await updateAdvanced.mutateAsync({
+        custom_error_codes: customErrorCodes || null,
+        custom_error_path: customErrorPath || null,
+      });
+      setErrorDirty(false);
+    } catch (err) {
+      setErrorSaveError(err instanceof Error ? err.message : 'Failed to save error page settings');
+    } finally {
+      setErrorSaving(false);
+    }
+  };
+
+  const handleSaveHeaders = async (e: FormEvent) => {
     e.preventDefault();
     if (headerError) return;
+    setHeadersSaveError(null);
+    setHeadersSaving(true);
     const filteredHeaders = headers.filter((h) => h.name.trim() !== '');
     try {
       const headersObj: Record<string, string> = {};
       for (const h of filteredHeaders) headersObj[h.name] = h.value;
       await updateAdvanced.mutateAsync({
-        custom_error_codes: customErrorCodes || null,
-        custom_error_path: customErrorPath || null,
         additional_headers: Object.keys(headersObj).length > 0 ? headersObj : null,
       });
-      setDirty(false);
-    } catch { /* error via updateAdvanced.error */ }
+      setHeadersDirty(false);
+    } catch (err) {
+      setHeadersSaveError(err instanceof Error ? err.message : 'Failed to save response headers');
+    } finally {
+      setHeadersSaving(false);
+    }
   };
 
   return (
     <div className="space-y-6">
-    <p className="text-xs text-gray-500 dark:text-gray-400">
-      Configure response headers and error handling. Response headers are added to every response from this route.
-    </p>
-    <form
-      onSubmit={handleSave}
-      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-6"
-      data-testid="advanced-form"
-    >
-      {/* Custom Error Pages */}
-      <section className="space-y-3" data-testid="custom-error-pages-section">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Configure response headers and error handling. Response headers are added to every response from this route.
+      </p>
+
+      {/* ── Custom Error Pages Card ── */}
+      <form
+        onSubmit={handleSaveErrors}
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
+        data-testid="error-pages-form"
+      >
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100" data-testid="custom-error-pages-section">
           Custom Error Pages
         </h3>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -1148,7 +1268,7 @@ function AdvancedTab({ clientId, routeId, route }: {
               className={INPUT_CLASS + ' mt-1'}
               placeholder="404, 500, 503"
               value={customErrorCodes}
-              onChange={(e) => { setCustomErrorCodes(e.target.value); markDirty(); }}
+              onChange={(e) => { setCustomErrorCodes(e.target.value); markErrorDirty(); }}
               data-testid="error-codes-input"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1165,7 +1285,7 @@ function AdvancedTab({ clientId, routeId, route }: {
               className={INPUT_CLASS + ' mt-1'}
               placeholder=".platform/errors/"
               value={customErrorPath}
-              onChange={(e) => { setCustomErrorPath(e.target.value); markDirty(); }}
+              onChange={(e) => { setCustomErrorPath(e.target.value); markErrorDirty(); }}
               data-testid="error-pages-path-input"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1176,11 +1296,34 @@ function AdvancedTab({ clientId, routeId, route }: {
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Must be in your file storage. Pages are looked up as &lt;path&gt;/&lt;code&gt;.html.
         </p>
-      </section>
 
-      {/* Response Headers */}
-      <section className="space-y-3" data-testid="proxy-headers-section">
-        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-2">
+        {errorSaveError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="error-pages-save-error">
+            <AlertCircle size={14} />
+            {errorSaveError}
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={!errorDirty || errorSaving}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid="save-error-pages"
+          >
+            {errorSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save
+          </button>
+        </div>
+      </form>
+
+      {/* ── Response Headers Card ── */}
+      <form
+        onSubmit={handleSaveHeaders}
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3"
+        data-testid="response-headers-form"
+      >
+        <div className="flex items-center justify-between" data-testid="proxy-headers-section">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
             Response Headers
           </h3>
@@ -1247,27 +1390,26 @@ function AdvancedTab({ clientId, routeId, route }: {
         <p className="text-xs text-gray-500 dark:text-gray-400">
           HTTP headers added to every response. Common security headers: X-Frame-Options (clickjacking protection), X-Content-Type-Options (MIME sniffing prevention), Content-Security-Policy (XSS/injection prevention).
         </p>
-      </section>
 
-      {updateAdvanced.error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="advanced-save-error">
-          <AlertCircle size={14} />
-          {updateAdvanced.error instanceof Error ? updateAdvanced.error.message : 'Failed to save advanced settings'}
+        {headersSaveError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="headers-save-error">
+            <AlertCircle size={14} />
+            {headersSaveError}
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={!headersDirty || !!headerError || headersSaving}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            data-testid="save-response-headers"
+          >
+            {headersSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Save
+          </button>
         </div>
-      )}
-
-      <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={!dirty || !!headerError || updateAdvanced.isPending}
-          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          data-testid="save-advanced"
-        >
-          {updateAdvanced.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          Save
-        </button>
-      </div>
-    </form>
+      </form>
     </div>
   );
 }
