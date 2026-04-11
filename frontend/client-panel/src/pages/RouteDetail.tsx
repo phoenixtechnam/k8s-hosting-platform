@@ -85,7 +85,7 @@ export default function RouteDetail() {
           className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
           data-testid="breadcrumb-domain"
         >
-          {route.domainId}
+          {route.hostname.split('/')[0]}
         </Link>
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <span className="text-gray-500 dark:text-gray-400">Routes</span>

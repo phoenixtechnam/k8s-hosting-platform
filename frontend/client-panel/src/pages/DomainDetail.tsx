@@ -445,6 +445,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   readonly domainName: string;
   readonly dnsMode: string;
 }) {
+  const navigate = useNavigate();
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
   const { data: deploymentsData } = useDeployments(clientId);
   const createRoute = useCreateIngressRoute(clientId, domainId);
@@ -510,7 +511,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Hostname</th>
                 {showPathColumn && <th className="px-4 py-3">Path</th>}
-                <th className="px-4 py-3">CNAME Target</th>
+                {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
                 <th className="px-4 py-3">Deployment</th>
                 <th className="px-4 py-3">TLS</th>
                 <th className="px-4 py-3"></th>
@@ -518,26 +519,29 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {routes.map((route) => (
-                <tr key={route.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                <tr
+                  key={route.id}
+                  className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
+                  onClick={() => navigate(`/domains/${domainId}/routes/${route.id}`)}
+                  data-testid={`route-row-${route.id}`}
+                >
                   <td className="px-4 py-3">
-                    <Link
-                      to={`/domains/${domainId}/routes/${route.id}`}
-                      className="group flex items-center gap-2"
-                      data-testid={`route-link-${route.id}`}
-                    >
-                      <span className="font-medium text-blue-600 dark:text-blue-400 group-hover:underline">{route.hostname}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-blue-600 dark:text-blue-400">{route.hostname}</span>
                       {route.isApex ? (
                         <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
                       ) : null}
-                    </Link>
+                    </div>
                   </td>
                   {showPathColumn && (
                     <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
                       {((route as Record<string, unknown>).path as string) || '/'}
                     </td>
                   )}
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
-                  <td className="px-4 py-3">
+                  {dnsMode !== 'primary' && (
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
+                  )}
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={route.deploymentId ?? ''}
                       onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
@@ -560,10 +564,10 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                       data-testid={`route-tls-badge-${route.id}`}
                     >
                       {route.tlsMode !== 'none' && <Lock size={10} />}
-                      {route.tlsMode === 'auto' ? 'Auto' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
+                      {route.tlsMode === 'auto' ? 'Let\'s Encrypt' : route.tlsMode === 'custom' ? 'Custom Cert' : 'No TLS'}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     {deleteRouteConfirmId === route.id ? (
                       <div className="flex items-center gap-1">
                         <button
