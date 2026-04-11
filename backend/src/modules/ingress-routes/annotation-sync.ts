@@ -265,7 +265,10 @@ export function buildAnnotationsFromRoute(
     annotations['nginx.ingress.kubernetes.io/ssl-redirect'] = 'false';
   }
 
-  if (route.wwwRedirect === 'add-www') {
+  if (route.wwwRedirect === 'add-www' || route.wwwRedirect === 'remove-www') {
+    // from-to-www-redirect works bidirectionally: it redirects whichever
+    // hostname variant (www or non-www) is NOT in the Ingress rules to
+    // the one that IS. The reconciler controls which host is in the rules.
     annotations['nginx.ingress.kubernetes.io/from-to-www-redirect'] = 'true';
   }
 
