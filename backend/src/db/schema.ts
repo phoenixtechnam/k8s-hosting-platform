@@ -612,7 +612,7 @@ export const ingressRoutes = pgTable('ingress_routes', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
-  uniqueIndex('ingress_routes_hostname_unique').on(table.hostname),
+  uniqueIndex('ingress_routes_hostname_path_domain_unique').on(table.hostname, table.path, table.domainId),
   index('ingress_routes_domain_idx').on(table.domainId),
   index('ingress_routes_deployment_idx').on(table.deploymentId),
 ]);

@@ -481,6 +481,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   // could drop live traffic. Now clicking the trash icon arms a
   // "Confirm" state and a second click performs the delete.
   const [deleteRouteConfirmId, setDeleteRouteConfirmId] = useState<string | null>(null);
+  const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
 
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
@@ -504,15 +505,22 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
     const error = validateSubdomain(subdomain);
     if (error) { setSubdomainError(error); return; }
     const hostname = subdomain ? `${subdomain}.${domainName}` : domainName;
-    const form = e.target as HTMLFormElement;
-    const pathValue = (form.elements.namedItem('path') as HTMLInputElement)?.value || '/';
-    createRoute.mutate({ hostname, path: pathValue }, {
+    const fd = e.target as HTMLFormElement;
+    const pathValue = (fd.elements.namedItem('path') as HTMLInputElement)?.value?.trim();
+    // Send path only if non-empty; backend defaults to "/"
+    const path = pathValue || undefined;
+    createRoute.mutate({ hostname, path }, {
       onSuccess: () => { setSubdomain(''); setSubdomainError(null); },
     });
   };
 
-  const handleAssignDeployment = (routeId: string, deploymentId: string | null) => {
-    updateRoute.mutate({ routeId, deployment_id: deploymentId });
+  const handleAssignDeployment = async (routeId: string, deploymentId: string | null) => {
+    setAssigningRouteId(routeId);
+    try {
+      await updateRoute.mutateAsync({ routeId, deployment_id: deploymentId });
+    } finally {
+      setAssigningRouteId(null);
+    }
   };
 
   const isCname = dnsMode === 'cname';
@@ -523,7 +531,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
         {isCname ? (
           <p>Add a route for your domain and assign it to a deployed workload. Point your DNS to the CNAME target shown below.</p>
         ) : dnsMode === 'primary' ? (
-          <p>Add routes for your domain or subdomains. DNS records are created automatically for primary domains.</p>
+          <p>Create Ingress Routes to expose your apps to a domain name (FQDN) and allow public traffic flow.</p>
         ) : (
           <p>Add routes for hostnames that resolve to the platform. Assign each to a deployed workload.</p>
         )}
@@ -549,7 +557,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 <th className="px-4 py-3">Hostname</th>
-                {showPathColumn && <th className="px-4 py-3">Path</th>}
+                {showPathColumn && <th className="px-4 py-3">Path Prefix</th>}
                 {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
                 <th className="px-4 py-3">Deployment</th>
                 <th className="px-4 py-3">TLS</th>
@@ -581,16 +589,20 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
                     <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">{route.ingressCname}</td>
                   )}
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <select
-                      value={route.deploymentId ?? ''}
-                      onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
-                      className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none"
-                    >
-                      <option value="">Not assigned</option>
-                      {deployments.map((d) => (
-                        <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={route.deploymentId ?? ''}
+                        onChange={(e) => handleAssignDeployment(route.id, e.target.value || null)}
+                        disabled={assigningRouteId === route.id}
+                        className="rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                      >
+                        <option value="">Not assigned</option>
+                        {deployments.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
+                        ))}
+                      </select>
+                      {assigningRouteId === route.id && <Loader2 size={14} className="animate-spin text-blue-500" />}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -653,7 +665,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 
       <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
         <div className="flex-1">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Hostname</label>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Add Ingress Route</label>
           <div className="flex items-center gap-1">
             <input
               type="text"
@@ -669,16 +681,16 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="subdomain-error">{subdomainError}</p>
           )}
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Enter subdomain (e.g., 'www', 'app') or leave empty for the root domain.
+            Enter subdomain (e.g., 'my-app') or leave empty to use the root domain. DNS records will be created automatically.
           </p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            <span>Path</span>
+            <span>Path Prefix</span>
           </label>
-          <input type="text" name="path" defaultValue="/" placeholder="/" className={INPUT_CLASS} data-testid="new-route-path-input" />
+          <input type="text" name="path" placeholder="(all traffic)" className={INPUT_CLASS} data-testid="new-route-path-input" />
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            URL path prefix for this route. Use "/" for all traffic, or "/api/" to route only API requests. Must start with "/".
+            URL path for this route, e.g. "/api/" or leave empty to route all requests.
           </p>
         </div>
         <button

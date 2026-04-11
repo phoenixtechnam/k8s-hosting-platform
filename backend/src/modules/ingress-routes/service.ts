@@ -114,8 +114,8 @@ export async function createRoute(
   deploymentId?: string | null,
   path?: string,
 ) {
-  // Validate path
-  const routePath = path ?? '/';
+  // Validate path — default to "/" when empty or undefined
+  const routePath = path && path.trim() !== '' ? path : '/';
   if (!routePath.startsWith('/')) {
     throw new ApiError('VALIDATION_ERROR', 'Path must start with /', 400);
   }
@@ -148,14 +148,22 @@ export async function createRoute(
     );
   }
 
-  // Check for duplicate hostname
+  // Check for duplicate hostname+path combination
   const [existing] = await db
     .select({ id: ingressRoutes.id })
     .from(ingressRoutes)
-    .where(eq(ingressRoutes.hostname, hostname));
+    .where(and(
+      eq(ingressRoutes.hostname, hostname),
+      eq(ingressRoutes.path, routePath),
+      eq(ingressRoutes.domainId, domainId),
+    ));
 
   if (existing) {
-    throw new ApiError('ROUTE_EXISTS', `Route for '${hostname}' already exists`, 409);
+    throw new ApiError(
+      'DUPLICATE_ROUTE',
+      `Route for '${hostname}${routePath === '/' ? '' : routePath}' already exists`,
+      409,
+    );
   }
 
   const settings = await getIngressSettings(db);
