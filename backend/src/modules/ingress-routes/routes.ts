@@ -30,7 +30,7 @@ import {
   toggleDirUser,
   changeDirUserPassword,
 } from './protected-dirs-service.js';
-import { syncRouteAnnotations } from './annotation-sync.js';
+import { syncRouteAnnotations, deleteProtectedDirIngress } from './annotation-sync.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -322,6 +322,18 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
     await deleteProtectedDir(app.db, dirId, routeId, clientId);
+
+    // Explicitly delete the child Ingress + Secret for this directory
+    const k8s = getK8s();
+    if (k8s) {
+      const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId));
+      if (client?.kubernetesNamespace) {
+        try {
+          await deleteProtectedDirIngress(k8s, client.kubernetesNamespace, dirId);
+        } catch { /* Non-blocking */ }
+      }
+    }
+
     await triggerAnnotationSync(routeId, clientId);
     reply.status(204).send();
   });

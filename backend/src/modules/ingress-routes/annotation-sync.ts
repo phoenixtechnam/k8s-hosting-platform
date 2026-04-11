@@ -10,7 +10,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, routeProtectedDirs, routeAuthUsers, domains, clients } from '../../db/schema.js';
+import { ingressRoutes, routeProtectedDirs, routeAuthUsers, deployments, domains, clients } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -374,7 +374,12 @@ export async function syncRouteAnnotations(
   await deleteProxyHeadersConfigMap(k8s, namespace, routeId);
 
   // 5. Build and return the annotation map
-  return buildAnnotationsFromRoute(route, routeId);
+  const annotations = buildAnnotationsFromRoute(route, routeId);
+
+  // 6. Sync protected directory child Ingresses
+  await syncProtectedDirIngresses(db, k8s, routeId, clientId);
+
+  return annotations;
 }
 
 /**
@@ -406,4 +411,149 @@ export async function syncAllRouteAnnotations(
   }
 
   return merged;
+}
+
+// ─── Protected Directory Child Ingresses ────────────────────────────────────
+
+/**
+ * Create/update/delete child Ingress resources for protected directories.
+ * Each enabled directory with users gets its own Ingress with auth.
+ * Directories without users or disabled directories have their Ingress deleted.
+ */
+export async function syncProtectedDirIngresses(
+  db: Database,
+  k8s: K8sClients,
+  routeId: string,
+  clientId: string,
+): Promise<void> {
+  // 1. Load the parent route
+  const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
+  if (!route) return;
+
+  // 2. Resolve namespace
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client?.kubernetesNamespace) return;
+  const namespace = client.kubernetesNamespace;
+
+  // 3. Resolve deployment service name + port
+  let serviceName = 'default';
+  const servicePort = 8080;
+  if (route.deploymentId) {
+    const [dep] = await db.select().from(deployments).where(eq(deployments.id, route.deploymentId));
+    if (dep) {
+      serviceName = dep.resourceSuffix ? `${dep.name}-${dep.resourceSuffix}` : dep.name;
+    }
+  }
+
+  // 4. Build parent annotations (inherit everything)
+  const parentAnnotations = buildAnnotationsFromRoute(route, routeId);
+
+  // 5. Load all protected dirs for this route
+  const dirs = await db.select().from(routeProtectedDirs)
+    .where(eq(routeProtectedDirs.routeId, routeId));
+
+  // 6. Create/update/delete child Ingress per directory
+  for (const dir of dirs) {
+    const ingressName = `route-dir-${dir.id.slice(0, 8)}`;
+    const secretName = `route-auth-${dir.id}`;
+
+    const users = await db.select().from(routeAuthUsers)
+      .where(and(eq(routeAuthUsers.dirId, dir.id), eq(routeAuthUsers.enabled, 1)));
+
+    if (!dir.enabled || users.length === 0) {
+      // Delete child Ingress if disabled or no users
+      try {
+        await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+      } catch (e: unknown) {
+        if (!isK8s404(e)) throw e;
+      }
+      continue;
+    }
+
+    // Build child annotations: parent annotations + auth overrides
+    const childAnnotations: Record<string, string> = {
+      ...parentAnnotations,
+      'nginx.ingress.kubernetes.io/auth-type': 'basic',
+      'nginx.ingress.kubernetes.io/auth-secret': secretName,
+      'nginx.ingress.kubernetes.io/auth-realm': dir.realm || 'Restricted',
+    };
+
+    const ingressBody = {
+      apiVersion: 'networking.k8s.io/v1' as const,
+      kind: 'Ingress' as const,
+      metadata: {
+        name: ingressName,
+        namespace,
+        annotations: childAnnotations,
+        labels: {
+          'app.kubernetes.io/managed-by': 'hosting-platform',
+          'hosting-platform/route-id': routeId,
+          'hosting-platform/dir-id': dir.id,
+        },
+      },
+      spec: {
+        ingressClassName: 'nginx',
+        rules: [{
+          host: route.hostname,
+          http: {
+            paths: [{
+              path: dir.path,
+              pathType: 'Prefix' as const,
+              backend: {
+                service: { name: serviceName, port: { number: servicePort } },
+              },
+            }],
+          },
+        }],
+      },
+    };
+
+    // Create or replace
+    try {
+      await k8s.networking.createNamespacedIngress({ namespace, body: ingressBody });
+    } catch (err: unknown) {
+      if (isK8s409(err)) {
+        await k8s.networking.replaceNamespacedIngress({ name: ingressName, namespace, body: ingressBody });
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 7. Clean up orphaned child Ingresses (dirs that were deleted from DB)
+  try {
+    const allIngresses = await k8s.networking.listNamespacedIngress({ namespace });
+    const dirIds = new Set(dirs.map(d => d.id));
+    for (const ing of (allIngresses.items ?? [])) {
+      const dirLabel = ing.metadata?.labels?.['hosting-platform/dir-id'];
+      const routeLabel = ing.metadata?.labels?.['hosting-platform/route-id'];
+      if (routeLabel === routeId && dirLabel && !dirIds.has(dirLabel)) {
+        try {
+          await k8s.networking.deleteNamespacedIngress({ name: ing.metadata!.name!, namespace });
+        } catch { /* Non-fatal orphan cleanup */ }
+      }
+    }
+  } catch { /* Non-fatal — listing failure should not block sync */ }
+}
+
+/**
+ * Delete a specific protected directory's child Ingress and Secret.
+ */
+export async function deleteProtectedDirIngress(
+  k8s: K8sClients,
+  namespace: string,
+  dirId: string,
+): Promise<void> {
+  const ingressName = `route-dir-${dirId.slice(0, 8)}`;
+  const secretName = `route-auth-${dirId}`;
+  try {
+    await k8s.networking.deleteNamespacedIngress({ name: ingressName, namespace });
+  } catch (e: unknown) {
+    if (!isK8s404(e)) throw e;
+  }
+  try {
+    await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
+  } catch (e: unknown) {
+    if (!isK8s404(e)) throw e;
+  }
 }

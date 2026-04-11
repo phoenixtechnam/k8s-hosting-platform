@@ -228,7 +228,11 @@ export async function reconcileIngress(
     }
   }
 
-  // Protected directory auth is handled via per-directory K8s Secrets
-  // created by syncAuthSecret during annotation sync. Child Ingress
-  // resources for per-path auth are a Phase 2 enhancement.
+  // Sync protected directory child Ingresses for per-path auth
+  try {
+    const { syncProtectedDirIngresses } = await import('../ingress-routes/annotation-sync.js');
+    for (const route of updatedRoutes) {
+      await syncProtectedDirIngresses(db, k8s, route.id, clientId);
+    }
+  } catch { /* Non-blocking */ }
 }
