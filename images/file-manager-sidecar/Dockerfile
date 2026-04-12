@@ -3,7 +3,7 @@
 # runs inside a chroot at /data without needing /lib/ at the chroot root.
 FROM alpine:3.20 AS sftp-patcher
 RUN apk add --no-cache openssh-sftp-server patchelf
-RUN INTERP=$(ls /lib/ld-musl-*.so.1 | head -1) && \
+RUN INTERP=$(patchelf --print-interpreter /usr/lib/ssh/sftp-server) && \
     INTERP_NAME=$(basename "$INTERP") && \
     cp /usr/lib/ssh/sftp-server /tmp/sftp-server-chroot && \
     patchelf --set-interpreter "/.platform/sftp-jail/lib/$INTERP_NAME" \

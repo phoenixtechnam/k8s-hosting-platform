@@ -25,6 +25,21 @@ func TestBuildCommand_SFTP(t *testing.T) {
 			homePath: "",
 			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
 		},
+		{
+			name:     "traversal into .platform is sanitized to root",
+			homePath: "/../.platform",
+			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
+		},
+		{
+			name:     "double traversal sanitized to root",
+			homePath: "/../../etc",
+			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
+		},
+		{
+			name:     "relative traversal sanitized",
+			homePath: "../../etc/passwd",
+			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/etc/passwd"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

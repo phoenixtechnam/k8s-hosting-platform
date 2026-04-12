@@ -210,7 +210,8 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 		// The patched binary at /.platform/sftp-server has its ELF interpreter
 		// and rpath set to /.platform/sftp-jail/lib/ so it runs inside the chroot
 		// without needing /lib/ at the chroot root.
-		chrootHome := filepath.Clean("/" + strings.TrimPrefix(homePath, "/"))
+		// Sanitize homePath to prevent traversal into .platform/ jail internals.
+		chrootHome := sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
 		return []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", chrootHome}
 	case "scp":
 		if rawCmd != nil {

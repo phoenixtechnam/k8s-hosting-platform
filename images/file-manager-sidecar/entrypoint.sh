@@ -17,8 +17,8 @@ JAIL_BIN="/data/.platform/sftp-server"
 if [ -f "$SFTP_PATCHED" ]; then
   mkdir -p "$JAIL_LIB"
 
-  # Copy the patched sftp-server binary
-  cp -u "$SFTP_PATCHED" "$JAIL_BIN" 2>/dev/null || true
+  # Copy the patched sftp-server binary (fatal if this fails — jail is unusable)
+  cp -u "$SFTP_PATCHED" "$JAIL_BIN" || { echo "ERROR: failed to install sftp-server into jail"; exit 1; }
   chmod 555 "$JAIL_BIN" 2>/dev/null || true
 
   # Copy the musl dynamic linker and required shared libraries.

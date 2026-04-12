@@ -676,7 +676,7 @@ cmd_sftp_up() {
 
   # Build and import sftp-gateway image
   echo "  Building sftp-gateway image..."
-  docker build -t sftp-gateway:latest "${PROJECT_DIR}/images/sftp-gateway/" -q 2>/dev/null
+  docker build -t sftp-gateway:latest "${PROJECT_DIR}/images/sftp-gateway/" -q || { echo "  ERROR: sftp-gateway build failed"; return 1; }
   docker save sftp-gateway:latest | docker exec -i "$K3S_CONTAINER" ctr images import - 2>/dev/null
   echo "  sftp-gateway image imported into k3s"
 
