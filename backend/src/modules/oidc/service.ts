@@ -100,16 +100,17 @@ export async function saveGlobalSettings(db: Database, input: SaveGlobalSettings
     updateValues.breakGlassPath = input.break_glass_path;
   }
 
-  // Validate: can't disable admin local auth without a break-glass mechanism
+  // Validate + auto-provision when disabling admin local auth
   if (input.disable_local_auth_admin) {
-    const hasBreakGlass = rows[0]?.breakGlassSecretHash || rows[0]?.breakGlassPath;
-    if (!hasBreakGlass) {
-      throw new ApiError('BREAK_GLASS_REQUIRED', 'Generate a break-glass path before disabling admin local authentication', 400);
-    }
     // Verify at least one admin-scoped provider is enabled
     const adminProviders = await db.select().from(oidcProviders).where(and(eq(oidcProviders.panelScope, 'admin'), eq(oidcProviders.enabled, 1)));
     if (adminProviders.length === 0) {
       throw new ApiError('NO_ADMIN_PROVIDER', 'At least one enabled admin OIDC provider is required before disabling local auth', 400);
+    }
+    // Auto-generate break-glass path if none exists
+    const hasBreakGlass = rows[0]?.breakGlassSecretHash || rows[0]?.breakGlassPath || updateValues.breakGlassPath;
+    if (!hasBreakGlass) {
+      updateValues.breakGlassPath = generateBreakGlassPath();
     }
   }
 

@@ -67,7 +67,7 @@ function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }
   const [showCookieConfirm, setShowCookieConfirm] = useState(false);
 
   const canDisableClient = hasClientProvider;
-  const canDisableAdmin = hasAdminProvider && !!settings?.breakGlassPath;
+  const canDisableAdmin = hasAdminProvider;
 
   const breakGlassUrl = settings?.breakGlassPath
     ? `${window.location.origin}/${settings.breakGlassPath}/`
@@ -125,7 +125,7 @@ function AuthenticationSection({ settings, hasAdminProvider, hasClientProvider }
         <div>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Disable Local Auth for Admin Panel</span>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {canDisableAdmin ? 'Admins must use SSO. Break-glass URL available below.' : hasAdminProvider ? 'Generate a break-glass path first.' : 'Enable an admin-scoped OIDC provider first.'}
+            {canDisableAdmin ? 'Admins must use SSO. A break-glass URL will be generated automatically.' : 'Enable an admin-scoped OIDC provider first.'}
           </p>
         </div>
       </label>
