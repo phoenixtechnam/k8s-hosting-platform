@@ -95,6 +95,7 @@ packages/api-contracts/src/
   databases.ts        # Database CRUD schemas + response types
   workload-repos.ts   # Workload catalog repository management (ADR-025)
   container-images.ts # Container image definitions synced from catalog repos
+  sftp-users.ts       # SFTP user CRUD, connection info, audit log schemas
   index.ts            # Re-exports everything
 ```
 

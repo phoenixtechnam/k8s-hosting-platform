@@ -799,6 +799,82 @@ print(p.get('mailbox','') + '|' + str(p.get('exp',0) - p.get('iat',0)))
   fi
 fi
 
+# ─── SFTP Users ───────────────────────────────────────────────────────────────
+
+log "── SFTP Users ──"
+
+# SFTP smoke tests need a live client — create a dedicated one (the CRUD test
+# client is deleted before this section runs).
+SFTP_CREATE_CLIENT=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
+  -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"sftp-smoke-test-$(date +%s)\",\"company_email\":\"sftp-test@smoke.local\",\"plan_id\":\"${PLAN_ID}\",\"region_id\":\"${REGION_ID}\"}" \
+  "${API_URL}/api/v1/clients")
+SFTP_CLIENT_ID=$(echo "$SFTP_CREATE_CLIENT" | head -n -1 | jq -r '.data.id // empty')
+if [[ -n "$SFTP_CLIENT_ID" ]]; then
+  CREATED_CLIENT_IDS+=("$SFTP_CLIENT_ID")
+fi
+
+if [[ -n "$SFTP_CLIENT_ID" ]]; then
+  # Connection info
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
+    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/connection-info")
+  check_status "GET /sftp-users/connection-info" "200" "$STATUS"
+
+  # List (empty or populated)
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
+    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users")
+  check_status "GET /sftp-users (list)" "200" "$STATUS"
+
+  # Create
+  SFTP_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"smoke-sftp-$(date +%s)\"}" \
+    "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users")
+  SFTP_CREATE_CODE=$(echo "$SFTP_CREATE_RESPONSE" | tail -1)
+  SFTP_CREATE_BODY=$(echo "$SFTP_CREATE_RESPONSE" | head -n -1)
+  SFTP_USER_ID=$(echo "$SFTP_CREATE_BODY" | jq -r '.data.id // empty')
+  SFTP_PASSWORD=$(echo "$SFTP_CREATE_BODY" | jq -r '.data.password // empty')
+
+  if [[ "$SFTP_CREATE_CODE" == "200" || "$SFTP_CREATE_CODE" == "201" ]]; then
+    pass "POST /sftp-users (create) (HTTP $SFTP_CREATE_CODE)"
+  else
+    fail "POST /sftp-users (create)" "expected 200/201, got $SFTP_CREATE_CODE"
+  fi
+
+  if [[ -n "$SFTP_USER_ID" ]]; then
+    # Verify password was returned
+    if [[ -n "$SFTP_PASSWORD" ]]; then
+      pass "SFTP user creation returns password"
+    else
+      fail "SFTP user creation returns password" "no password in response"
+    fi
+
+    # Read single user
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
+      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
+    check_status "GET /sftp-users/:id (read)" "200" "$STATUS"
+
+    # Rotate password
+    ROTATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
+      -H "Content-Type: application/json" -d '{}' \
+      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}/rotate-password")
+    ROTATE_CODE=$(echo "$ROTATE_RESPONSE" | tail -1)
+    check_status "POST /sftp-users/:id/rotate-password" "200" "$ROTATE_CODE"
+
+    # Audit log
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
+      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-audit?limit=10")
+    check_status "GET /sftp-audit (audit log)" "200" "$STATUS"
+
+    # Delete
+    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" \
+      "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users/${SFTP_USER_ID}")
+    check_status "DELETE /sftp-users/:id" "204" "$STATUS"
+  fi
+else
+  log "⚠ Skipping SFTP tests — no client available"
+fi
+
 # ─── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""

@@ -693,6 +693,56 @@ export const sshKeys = pgTable('ssh_keys', {
   index('ssh_keys_client_idx').on(table.clientId),
 ]);
 
+// ─── SFTP Users ───
+
+export const sftpUsers = pgTable('sftp_users', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  username: varchar('username', { length: 100 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 255 }),
+  description: varchar('description', { length: 255 }),
+  enabled: integer('enabled').notNull().default(1),
+  homePath: varchar('home_path', { length: 512 }).notNull().default('/'),
+  allowWrite: integer('allow_write').notNull().default(1),
+  allowDelete: integer('allow_delete').notNull().default(0),
+  ipWhitelist: text('ip_whitelist'),
+  maxConcurrentSessions: integer('max_concurrent_sessions').notNull().default(3),
+  lastLoginAt: timestamp('last_login_at'),
+  lastLoginIp: varchar('last_login_ip', { length: 45 }),
+  expiresAt: timestamp('expires_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  uniqueIndex('sftp_users_username_unique').on(table.username),
+  index('sftp_users_client_idx').on(table.clientId),
+  index('sftp_users_expires_idx').on(table.expiresAt),
+]);
+
+// ─── SFTP Audit Log ───
+
+export const sftpAuditLog = pgTable('sftp_audit_log', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  sftpUserId: varchar('sftp_user_id', { length: 36 })
+    .references(() => sftpUsers.id, { onDelete: 'set null' }),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  event: varchar('event', { length: 50 }).notNull(), // CONNECT, DISCONNECT, FAILED_AUTH
+  sourceIp: varchar('source_ip', { length: 45 }).notNull(),
+  protocol: varchar('protocol', { length: 10 }).notNull().default('sftp'), // sftp, scp, rsync, ftps
+  sessionId: varchar('session_id', { length: 128 }),
+  durationSeconds: integer('duration_seconds'),
+  bytesTransferred: numeric('bytes_transferred', { precision: 18, scale: 0 }),
+  errorMessage: varchar('error_message', { length: 512 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('sftp_audit_client_idx').on(table.clientId, table.createdAt),
+  index('sftp_audit_user_idx').on(table.sftpUserId, table.createdAt),
+  index('sftp_audit_created_idx').on(table.createdAt),
+]);
+
 // ─── Subscription Billing Cycles ───
 
 export const subscriptionBillingCycles = pgTable('subscription_billing_cycles', {

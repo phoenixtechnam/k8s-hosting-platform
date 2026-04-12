@@ -45,6 +45,11 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     ports:
       - "${PORT_API:-2012}:3000"
     environment:
@@ -111,6 +116,11 @@ services:
       args:
         VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
         VITE_CLIENT_PANEL_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     ports:
       - "${PORT_ADMIN:-2010}:80"
     healthcheck:
@@ -125,6 +135,11 @@ services:
       dockerfile: frontend/client-panel/Dockerfile
       args:
         VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     ports:
       - "${PORT_CLIENT:-2011}:80"
     depends_on:
@@ -138,6 +153,11 @@ services:
 
   dex:
     image: ghcr.io/dexidp/dex:v2.39.1
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     ports:
       - "${PORT_DEX:-2015}:5556"
     volumes:
@@ -152,6 +172,11 @@ services:
 
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     command:
       - --http-address=0.0.0.0:4180
       - --upstream=static://200
@@ -187,6 +212,11 @@ services:
   k3s-server:
     image: rancher/k3s:v1.31.4-k3s1
     hostname: k8s-local  # Fixed so PV nodeAffinity stays stable across container restarts
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
     command:
       - server
       - --disable=traefik
@@ -196,7 +226,7 @@ services:
       - --tls-san=${DOCKER_HOST_NAME:-dind.local}
       - --tls-san=k3s-server
       - --node-name=k8s-local
-      - --kubelet-arg=max-pods=110
+      - --kubelet-arg=max-pods=50
     ports:
       - "${PORT_K3S_API:-2016}:6443"
       # Roundcube webmail (Phase 2b) — host 2017 → NodePort 30017 → pod 80
@@ -211,6 +241,8 @@ services:
       - "${PORT_MAIL_IMAPS:-2993}:30993"       # IMAPS implicit  (prod 993)
       - "${PORT_MAIL_POP3:-2110}:30110"        # POP3 STARTTLS   (prod 110)
       - "${PORT_MAIL_POP3S:-2995}:30995"       # POP3S implicit  (prod 995)
+      # SFTP Gateway — host 2222 → NodePort 30222 → sftp-gateway pod 2222
+      - "${PORT_SFTP:-2222}:30222"
     environment:
       K3S_TOKEN: ${K3S_TOKEN:-local-dev-k3s-token}
     volumes:

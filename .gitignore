@@ -60,5 +60,8 @@ e2e/.auth/
 # Dex OIDC local config (may contain client secrets)
 config/dex/
 
+# Test artifacts
+test-artifacts/
+
 # Claude Code IDE config
 .claude/

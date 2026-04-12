@@ -12,3 +12,5 @@ resources:
   - admin-deployment.yaml
   - client-deployment.yaml
   - ingress.yaml
+  - sftp-gateway.yaml
+  - sftp-gateway-netpol.yaml

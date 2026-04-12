@@ -1,3 +1,96 @@
+# SFTP Gateway — K8s Exec-based architecture (ADR-027)
+#
+# Accepts SFTP/SCP/rsync/FTPS connections, authenticates against the
+# platform backend, then execs sftp-server inside the client's
+# file-manager pod via the K8s API. No PVC mounts needed — fully
+# multi-node compatible.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sftp-gateway
+  namespace: platform-system
+  labels:
+    app: sftp-gateway
+---
+# Read-only ClusterRole: list/get pods across client-* namespaces to find
+# file-manager pods. Does NOT grant exec — that is scoped per-namespace
+# via Roles created by the provisioner when a client namespace is set up.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sftp-gateway-pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sftp-gateway-pod-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sftp-gateway-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: sftp-gateway
+    namespace: platform-system
+---
+# Per-namespace exec Role — the backend provisioner must create this Role
+# and RoleBinding in each client-* namespace when the namespace is created.
+# This template is applied by the provisioner, NOT directly by kustomize.
+# Kept here as documentation of the required permissions.
+#
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#   name: sftp-gateway-exec
+#   namespace: client-<id>
+# rules:
+#   - apiGroups: [""]
+#     resources: ["pods/exec"]
+#     verbs: ["create"]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: sftp-gateway-exec
+#   namespace: client-<id>
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: Role
+#   name: sftp-gateway-exec
+# subjects:
+#   - kind: ServiceAccount
+#     name: sftp-gateway
+#     namespace: platform-system
+#
+# TEMPORARY: Until the provisioner creates per-namespace Roles, a ClusterRole
+# is used. Remove this once per-namespace RBAC is provisioned automatically.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sftp-gateway-exec
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sftp-gateway-exec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sftp-gateway-exec
+subjects:
+  - kind: ServiceAccount
+    name: sftp-gateway
+    namespace: platform-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,17 +108,67 @@ spec:
       labels:
         app: sftp-gateway
     spec:
+      serviceAccountName: sftp-gateway
       containers:
-        - name: sftp
-          image: atmoz/sftp:latest
+        - name: gateway
+          image: sftp-gateway:latest
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 22
+            - containerPort: 2222
               name: sftp
+            - containerPort: 2121
+              name: ftps
+            - containerPort: 8080
+              name: health
+            # FTPS passive data ports (30000-30009)
+            - containerPort: 30000
+              name: ftps-pasv-0
+            - containerPort: 30001
+              name: ftps-pasv-1
+            - containerPort: 30002
+              name: ftps-pasv-2
+            - containerPort: 30003
+              name: ftps-pasv-3
+            - containerPort: 30004
+              name: ftps-pasv-4
+            - containerPort: 30005
+              name: ftps-pasv-5
+            - containerPort: 30006
+              name: ftps-pasv-6
+            - containerPort: 30007
+              name: ftps-pasv-7
+            - containerPort: 30008
+              name: ftps-pasv-8
+            - containerPort: 30009
+              name: ftps-pasv-9
+          env:
+            - name: BACKEND_URL
+              value: "http://backend.platform-system:3000"
+            - name: INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: PLATFORM_INTERNAL_SECRET
+            - name: SSH_HOST_KEY_PATH
+              value: "/etc/ssh/keys/ssh_host_ed25519_key"
+            - name: SSH_PORT
+              value: "2222"
+            - name: FTPS_PORT
+              value: "2121"
+            - name: FTPS_CERT_PATH
+              value: "/etc/tls/tls.crt"
+            - name: FTPS_KEY_PATH
+              value: "/etc/tls/tls.key"
+            - name: IDLE_TIMEOUT
+              value: "15m"
+            - name: MAX_CONNECTIONS
+              value: "200"
           volumeMounts:
-            - name: sftp-data
-              mountPath: /home
             - name: ssh-host-keys
               mountPath: /etc/ssh/keys
+              readOnly: true
+            - name: tls-certs
+              mountPath: /etc/tls
               readOnly: true
           resources:
             requests:
@@ -34,13 +177,27 @@ spec:
             limits:
               cpu: "200m"
               memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
       volumes:
-        - name: sftp-data
-          persistentVolumeClaim:
-            claimName: sftp-data-pvc
         - name: ssh-host-keys
           secret:
             secretName: sftp-host-keys
+            defaultMode: 0600
+        - name: tls-certs
+          secret:
+            secretName: sftp-tls-certs
+            optional: true
 ---
 apiVersion: v1
 kind: Service
@@ -53,16 +210,39 @@ spec:
     app: sftp-gateway
   ports:
     - port: 2222
-      targetPort: 22
+      targetPort: 2222
       name: sftp
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: sftp-data-pvc
-  namespace: platform-system
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 100Gi
+    - port: 2121
+      targetPort: 2121
+      name: ftps
+    # FTPS passive data ports
+    - port: 30000
+      targetPort: 30000
+      name: ftps-pasv-0
+    - port: 30001
+      targetPort: 30001
+      name: ftps-pasv-1
+    - port: 30002
+      targetPort: 30002
+      name: ftps-pasv-2
+    - port: 30003
+      targetPort: 30003
+      name: ftps-pasv-3
+    - port: 30004
+      targetPort: 30004
+      name: ftps-pasv-4
+    - port: 30005
+      targetPort: 30005
+      name: ftps-pasv-5
+    - port: 30006
+      targetPort: 30006
+      name: ftps-pasv-6
+    - port: 30007
+      targetPort: 30007
+      name: ftps-pasv-7
+    - port: 30008
+      targetPort: 30008
+      name: ftps-pasv-8
+    - port: 30009
+      targetPort: 30009
+      name: ftps-pasv-9

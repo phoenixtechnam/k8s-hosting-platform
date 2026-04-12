@@ -17,6 +17,7 @@ import RouteDetail from '@/pages/RouteDetail';
 import SubUsers from '@/pages/SubUsers';
 import DatabaseManager from '@/pages/DatabaseManager';
 import SshKeys from '@/pages/SshKeys';
+import SftpUsers from '@/pages/SftpUsers';
 import ResourceUsage from '@/pages/ResourceUsage';
 import Notifications from '@/pages/Notifications';
 import Placeholder from '@/pages/Placeholder';
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="users" element={<SubUsers />} />
             <Route path="settings" element={<Settings />} />
             <Route path="ssh-keys" element={<SshKeys />} />
+            <Route path="sftp" element={<SftpUsers />} />
             <Route path="resource-usage" element={<ResourceUsage />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="user-settings" element={<UserSettings />} />

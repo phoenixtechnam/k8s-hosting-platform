@@ -46,6 +46,7 @@ export * from './files.js';
 export * from './tls-settings.js';
 export * from './ingress-routes.js';
 export * from './ssh-keys.js';
+export * from './sftp-users.js';
 export * from './storage.js';
 export * from './mail-imapsync.js';
 export * from './sub-users.js';

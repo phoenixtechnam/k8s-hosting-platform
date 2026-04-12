@@ -97,6 +97,7 @@ cmd_up() {
   echo ""
   _rebuild_sidecar
   _check_k3s_health
+  _cleanup_stale_namespaces
   # If mail namespace exists, re-patch the postgres bridge IP (it changes
   # on every container recreate and Stalwart can't authenticate without it).
   _patch_postgres_bridge 2>/dev/null || true
@@ -135,6 +136,7 @@ cmd_rebuild() {
   _rebuild_sidecar
   # Verify k3s is still running (warn if not)
   _check_k3s_health
+  _cleanup_stale_namespaces
   _patch_postgres_bridge 2>/dev/null || true
   cmd_status
 }
@@ -149,6 +151,27 @@ _rebuild_sidecar() {
   docker build -t file-manager-sidecar:latest "${PROJECT_DIR}/images/file-manager-sidecar/" -q 2>/dev/null
   docker save file-manager-sidecar:latest | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
   echo "  Sidecar image imported into k3s"
+}
+
+_cleanup_stale_namespaces() {
+  local k3s_name
+  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
+  [[ -z "$k3s_name" ]] && return 0
+
+  local orphan_count
+  orphan_count=$(docker exec "$k3s_name" kubectl get ns --no-headers 2>/dev/null \
+    | awk '/^client-smoke-test-/ {n++} END {print n+0}')
+
+  if (( orphan_count > 5 )); then
+    echo "⚠  $orphan_count stale smoke-test namespaces found — cleaning up to prevent resource exhaustion..."
+    docker exec "$k3s_name" kubectl get ns --no-headers 2>/dev/null \
+      | awk '/^client-smoke-test-/ {print $1}' \
+      | while read -r ns; do
+          docker exec "$k3s_name" kubectl delete ns "$ns" --wait=false >/dev/null 2>&1 && echo "  ✓ deleted $ns" || true
+        done
+  elif (( orphan_count > 0 )); then
+    echo "  $orphan_count stale smoke-test namespace(s) found (run ./scripts/cleanup-orphaned-namespaces.sh to clean)"
+  fi
 }
 
 _check_k3s_health() {

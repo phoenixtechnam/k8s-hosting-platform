@@ -1,5 +1,5 @@
 FROM node:22-alpine3.20
-RUN apk add --no-cache git tar zip unzip sqlite
+RUN apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync
 WORKDIR /app
 COPY server.mjs .
 EXPOSE 8111
