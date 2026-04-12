@@ -131,17 +131,29 @@ describe('createSftpUser', () => {
     createSftpUser = mod.createSftpUser;
   });
 
-  it('should throw DUPLICATE_SFTP_USERNAME when username already taken', async () => {
-    // First select (duplicate check) returns existing row
-    const mockWhere = vi.fn().mockResolvedValue([{ id: 'existing' }]);
+  it('should auto-generate username and return password', async () => {
+    const createdRow = {
+      id: 'new-id', clientId: 'c1', username: 'a3f7c2e1',
+      passwordHash: '$2b$10$hash', description: null, enabled: 1,
+      homePath: '/', allowWrite: 1, allowDelete: 0, ipWhitelist: null,
+      maxConcurrentSessions: 3, lastLoginAt: null, lastLoginIp: null,
+      expiresAt: null, createdAt: new Date(), updatedAt: new Date(),
+    };
+    // First select (duplicate check) returns empty (no collision)
+    const mockWhere = vi.fn()
+      .mockResolvedValueOnce([]) // uniqueness check
+      .mockResolvedValueOnce([createdRow]); // fetch after insert
     const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockValues = vi.fn().mockResolvedValue(undefined);
     const mockDb = {
       select: vi.fn().mockReturnValue({ from: mockFrom }),
-      insert: vi.fn(),
+      insert: vi.fn().mockReturnValue({ values: mockValues }),
     };
 
-    await expect(createSftpUser(mockDb as any, 'c1', { username: 'taken-user' }))
-      .rejects.toThrow('already taken');
+    const result = await createSftpUser(mockDb as any, 'c1', {});
+    expect(result.username).toMatch(/^[0-9a-f]{8}$/);
+    expect(result.password).toBeDefined();
+    expect(result.password.length).toBe(24);
   });
 });
 

@@ -3,10 +3,6 @@ import { z } from 'zod';
 // ─── Input Schemas ──────────────────────────────────────────────────────────
 
 export const createSftpUserSchema = z.object({
-  username: z.string()
-    .min(3, 'Username must be at least 3 characters')
-    .max(64, 'Username must be 64 characters or fewer')
-    .regex(/^[a-z0-9][a-z0-9._-]*$/, 'Username must start with a letter/digit, contain only lowercase letters, digits, dots, hyphens, underscores'),
   description: z.string().max(255).optional(),
   home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').optional(),
   allow_write: z.boolean().optional(),
@@ -54,13 +50,18 @@ export const sftpUserResponseSchema = z.object({
 export const sftpConnectionInfoSchema = z.object({
   host: z.string(),
   port: z.number(),
+  ftps_port: z.number(),
   protocols: z.array(z.string()),
   username_format: z.string(),
   instructions: z.object({
     sftp: z.string(),
     scp: z.string(),
     rsync: z.string(),
+    ftps: z.string(),
+    sftp_key: z.string(),
+    scp_key: z.string(),
   }),
+  ssh_key_note: z.string(),
 });
 
 export const sftpAuditLogSchema = z.object({

@@ -62,15 +62,20 @@ export async function getSftpUser(db: Database, clientId: string, userId: string
   return mapSftpUserToResponse(row);
 }
 
-export async function createSftpUser(db: Database, clientId: string, input: CreateSftpUserInput) {
-  // Check for duplicate username (globally unique)
-  const [existing] = await db
-    .select()
-    .from(sftpUsers)
-    .where(eq(sftpUsers.username, input.username));
+function generateUsername(): string {
+  return crypto.randomBytes(4).toString('hex'); // 8 hex chars, e.g. "a3f7c2e1"
+}
 
-  if (existing) {
-    throw new ApiError('DUPLICATE_SFTP_USERNAME', `SFTP username '${input.username}' is already taken`, 409);
+export async function createSftpUser(db: Database, clientId: string, input: CreateSftpUserInput) {
+  // Auto-generate a unique 8-char hex username (clients cannot choose)
+  let username = generateUsername();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const [existing] = await db
+      .select()
+      .from(sftpUsers)
+      .where(eq(sftpUsers.username, username));
+    if (!existing) break;
+    username = generateUsername();
   }
 
   const plainPassword = generateSecurePassword(24);
@@ -80,7 +85,7 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
   await db.insert(sftpUsers).values({
     id,
     clientId,
-    username: input.username,
+    username,
     passwordHash,
     description: input.description ?? null,
     enabled: 1,
@@ -177,17 +182,23 @@ export async function getSftpConnectionInfo(db: Database) {
 
   const host = settingsMap.get('sftp_gateway_host') ?? 'sftp.platform.local';
   const port = Number(settingsMap.get('sftp_gateway_port') ?? '2222');
+  const ftpsPort = Number(settingsMap.get('sftp_gateway_ftps_port') ?? '2121');
 
   return {
     host,
     port,
-    protocols: ['sftp', 'scp', 'rsync'],
+    ftps_port: ftpsPort,
+    protocols: ['sftp', 'scp', 'rsync', 'ftps'],
     username_format: '<sftp_username>',
     instructions: {
       sftp: `sftp -P ${port} <username>@${host}`,
       scp: `scp -P ${port} file.txt <username>@${host}:/path/`,
       rsync: `rsync -e "ssh -p ${port}" file.txt <username>@${host}:/path/`,
+      ftps: `curl --ftp-ssl --insecure -T file.txt ftp://<username>:<password>@${host}:${ftpsPort}/`,
+      sftp_key: `sftp -P ${port} -i ~/.ssh/id_ed25519 <username>@${host}`,
+      scp_key: `scp -P ${port} -i ~/.ssh/id_ed25519 file.txt <username>@${host}:/path/`,
     },
+    ssh_key_note: 'SSH keys uploaded on the SSH Keys page can be used for password-less authentication with SFTP, SCP, and rsync. FTPS only supports password authentication.',
   };
 }
 

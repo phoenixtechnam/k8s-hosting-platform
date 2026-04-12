@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import {
-  HardDrive, Plus, Trash2, Loader2, AlertCircle, X, Copy, CheckCircle,
+  HardDrive, Plus, Trash2, Loader2, AlertCircle, X, Copy, Check,
   RefreshCw, Shield, Clock, KeyRound, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -19,14 +19,28 @@ const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-6
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
-  const onClick = () => {
-    navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const onClick = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for non-HTTPS contexts
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
   return (
     <button type="button" onClick={onClick} className="ml-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Copy">
-      {copied ? <CheckCircle size={14} className="text-green-500" /> : <Copy size={14} />}
+      {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
     </button>
   );
 }
@@ -49,34 +63,63 @@ function ConnectionInfoCard({ clientId }: { clientId: string }) {
       <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-2">
         <Shield size={16} /> Connection Details
       </h3>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-sm">
         <div>
           <span className="text-gray-500 dark:text-gray-400">Host</span>
           <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.host}<CopyButton value={info.host} /></div>
         </div>
         <div>
-          <span className="text-gray-500 dark:text-gray-400">Port</span>
+          <span className="text-gray-500 dark:text-gray-400">SSH Port</span>
           <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.port}<CopyButton value={String(info.port)} /></div>
+        </div>
+        <div>
+          <span className="text-gray-500 dark:text-gray-400">FTPS Port</span>
+          <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.ftps_port}<CopyButton value={String(info.ftps_port)} /></div>
         </div>
         <div>
           <span className="text-gray-500 dark:text-gray-400">Protocols</span>
           <div className="text-gray-900 dark:text-gray-100">{info.protocols.join(', ').toUpperCase()}</div>
         </div>
       </div>
+
+      {/* Password-based examples */}
       <div className="space-y-1 text-xs font-mono text-gray-600 dark:text-gray-400">
+        <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">Password authentication:</p>
         <div className="flex items-center gap-1">
-          <span className="text-gray-400">SFTP:</span> {info.instructions.sftp}
+          <span className="text-gray-400 w-12 flex-shrink-0">SFTP</span> {info.instructions.sftp}
           <CopyButton value={info.instructions.sftp} />
         </div>
         <div className="flex items-center gap-1">
-          <span className="text-gray-400">SCP:</span> {info.instructions.scp}
+          <span className="text-gray-400 w-12 flex-shrink-0">SCP</span> {info.instructions.scp}
           <CopyButton value={info.instructions.scp} />
         </div>
         <div className="flex items-center gap-1">
-          <span className="text-gray-400">rsync:</span> {info.instructions.rsync}
+          <span className="text-gray-400 w-12 flex-shrink-0">rsync</span> {info.instructions.rsync}
           <CopyButton value={info.instructions.rsync} />
         </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 w-12 flex-shrink-0">FTPS</span> {info.instructions.ftps}
+          <CopyButton value={info.instructions.ftps} />
+        </div>
       </div>
+
+      {/* Key-based examples */}
+      <div className="space-y-1 text-xs font-mono text-gray-600 dark:text-gray-400">
+        <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">SSH key authentication (SFTP, SCP, rsync only):</p>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 w-12 flex-shrink-0">SFTP</span> {info.instructions.sftp_key}
+          <CopyButton value={info.instructions.sftp_key} />
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-400 w-12 flex-shrink-0">SCP</span> {info.instructions.scp_key}
+          <CopyButton value={info.instructions.scp_key} />
+        </div>
+      </div>
+
+      {/* SSH key note */}
+      <p className="text-xs text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
+        <KeyRound size={12} /> {info.ssh_key_note}
+      </p>
     </div>
   );
 }
@@ -109,10 +152,10 @@ function AuditLogSection({ clientId }: { clientId: string }) {
               <table className="min-w-full text-xs">
                 <thead>
                   <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                    <th className="px-2 py-1.5">Event</th>
-                    <th className="px-2 py-1.5">Protocol</th>
-                    <th className="px-2 py-1.5">Source IP</th>
-                    <th className="px-2 py-1.5">Time</th>
+                    <th className="px-2 py-1.5 text-left">Event</th>
+                    <th className="px-2 py-1.5 text-left">Protocol</th>
+                    <th className="px-2 py-1.5 text-left">Source IP</th>
+                    <th className="px-2 py-1.5 text-left">Time</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -153,10 +196,9 @@ export default function SftpUsers() {
   const rotatePassword = useRotateSftpPassword(clientId ?? undefined);
 
   const [showForm, setShowForm] = useState(false);
-  const [username, setUsername] = useState('');
   const [description, setDescription] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [newPassword, setNewPassword] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState<{ password: string; username: string } | null>(null);
   const [rotateUserId, setRotateUserId] = useState<string | null>(null);
   const [rotatedPassword, setRotatedPassword] = useState<string | null>(null);
 
@@ -167,11 +209,10 @@ export default function SftpUsers() {
     e.preventDefault();
     try {
       const result = await createUser.mutateAsync({
-        username: username.trim(),
         description: description.trim() || undefined,
       });
-      setNewPassword((result.data as SftpUser & { password?: string }).password ?? null);
-      setUsername('');
+      const created = result.data as SftpUser & { password?: string };
+      setNewPassword({ password: created.password ?? '', username: created.username });
       setDescription('');
       setShowForm(false);
     } catch { /* surfaced via createUser.error */ }
@@ -203,7 +244,7 @@ export default function SftpUsers() {
       </div>
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
-        Manage SFTP users for file transfer access to your deployments. Supports SFTP, SCP, rsync, and FTPS protocols.
+        Manage file transfer users for your deployments. Supports SFTP, SCP, rsync (with password or SSH key), and FTPS (password only).
         Files uploaded here appear in the web file manager and vice versa.
       </p>
 
@@ -216,10 +257,18 @@ export default function SftpUsers() {
         <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">SFTP user created. Save this password — it won't be shown again.</p>
-              <div className="mt-2 flex items-center gap-2">
-                <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-3 py-1 text-sm font-mono text-amber-900 dark:text-amber-200">{newPassword}</code>
-                <CopyButton value={newPassword} />
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">User created. Save these credentials — the password won't be shown again.</p>
+              <div className="mt-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-amber-600 dark:text-amber-400 w-16">Username</span>
+                  <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-3 py-1 text-sm font-mono text-amber-900 dark:text-amber-200">{newPassword.username}</code>
+                  <CopyButton value={newPassword.username} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-amber-600 dark:text-amber-400 w-16">Password</span>
+                  <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-3 py-1 text-sm font-mono text-amber-900 dark:text-amber-200">{newPassword.password}</code>
+                  <CopyButton value={newPassword.password} />
+                </div>
               </div>
             </div>
             <button type="button" onClick={() => setNewPassword(null)} className="text-amber-400 hover:text-amber-600"><X size={16} /></button>
@@ -255,7 +304,7 @@ export default function SftpUsers() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
             data-testid="add-sftp-user-button"
           >
-            {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add SFTP User'}
+            {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Add User'}
           </button>
         )}
       </div>
@@ -263,32 +312,19 @@ export default function SftpUsers() {
       {/* Create form */}
       {showForm && (
         <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. deploy, dev, ci-pipeline"
-                className={INPUT_CLASS}
-                required
-                data-testid="sftp-username-input"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description (optional)</label>
-              <input
-                type="text"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g. CI/CD deployment user"
-                className={INPUT_CLASS}
-              />
-            </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description (optional)</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g. CI/CD deployment, backup sync"
+              className={INPUT_CLASS}
+            />
           </div>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            A secure password will be auto-generated. You can also authenticate with SSH keys from the SSH Keys page.
+            A unique username and secure password will be auto-generated.
+            You can also authenticate using SSH keys from the SSH Keys page (SFTP, SCP, rsync only).
           </p>
           {createUser.error && (
             <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
@@ -311,26 +347,29 @@ export default function SftpUsers() {
       ) : users.length === 0 ? (
         <div className="text-center py-12 text-gray-500 dark:text-gray-400">
           <HardDrive className="mx-auto mb-2 opacity-40" size={40} />
-          <p>No SFTP users yet. Create one to enable file transfer access.</p>
+          <p>No file transfer users yet. Create one to enable access.</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr>
-                <SortableHeader label="Username" sortKey="username" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Username" sortKey="username" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
+                <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
                 <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Description</th>
-                <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
                 {canManage && <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
               {users.map((user) => (
                 <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                  <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                    <KeyRound size={14} className="text-gray-400" />
-                    {user.username}
+                  <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
+                    <span className="flex items-center gap-2">
+                      <KeyRound size={14} className="text-gray-400" />
+                      {user.username}
+                      <CopyButton value={user.username} />
+                    </span>
                   </td>
                   <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
                   <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{user.description || '—'}</td>

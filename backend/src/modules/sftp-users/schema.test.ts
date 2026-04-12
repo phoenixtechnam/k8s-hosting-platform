@@ -2,18 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { createSftpUserSchema, updateSftpUserSchema, rotateSftpPasswordSchema } from './schema.js';
 
 describe('createSftpUserSchema', () => {
-  const validInput = {
-    username: 'deploy-user',
-  };
-
-  it('should accept valid minimal input', () => {
-    const result = createSftpUserSchema.safeParse(validInput);
+  it('should accept empty object (no required fields — username is auto-generated)', () => {
+    const result = createSftpUserSchema.safeParse({});
     expect(result.success).toBe(true);
   });
 
-  it('should accept full input', () => {
+  it('should accept full input with optional fields', () => {
     const result = createSftpUserSchema.safeParse({
-      ...validInput,
       description: 'Deploy automation user',
       home_path: '/web',
       allow_write: true,
@@ -25,58 +20,28 @@ describe('createSftpUserSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('should reject username shorter than 3 chars', () => {
-    const result = createSftpUserSchema.safeParse({ username: 'ab' });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject username longer than 64 chars', () => {
-    const result = createSftpUserSchema.safeParse({ username: 'a'.repeat(65) });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject username starting with hyphen', () => {
-    const result = createSftpUserSchema.safeParse({ username: '-deploy' });
-    expect(result.success).toBe(false);
-  });
-
-  it('should reject username with uppercase letters', () => {
-    const result = createSftpUserSchema.safeParse({ username: 'Deploy' });
-    expect(result.success).toBe(false);
-  });
-
-  it('should accept username with dots, hyphens, underscores', () => {
-    const result = createSftpUserSchema.safeParse({ username: 'deploy.user-1_prod' });
-    expect(result.success).toBe(true);
-  });
-
-  it('should reject missing username', () => {
-    const result = createSftpUserSchema.safeParse({});
-    expect(result.success).toBe(false);
-  });
-
   it('should reject max_concurrent_sessions above 20', () => {
-    const result = createSftpUserSchema.safeParse({ ...validInput, max_concurrent_sessions: 25 });
+    const result = createSftpUserSchema.safeParse({ max_concurrent_sessions: 25 });
     expect(result.success).toBe(false);
   });
 
   it('should reject max_concurrent_sessions below 1', () => {
-    const result = createSftpUserSchema.safeParse({ ...validInput, max_concurrent_sessions: 0 });
+    const result = createSftpUserSchema.safeParse({ max_concurrent_sessions: 0 });
     expect(result.success).toBe(false);
   });
 
   it('should accept nullable ip_whitelist', () => {
-    const result = createSftpUserSchema.safeParse({ ...validInput, ip_whitelist: null });
+    const result = createSftpUserSchema.safeParse({ ip_whitelist: null });
     expect(result.success).toBe(true);
   });
 
   it('should accept nullable expires_at', () => {
-    const result = createSftpUserSchema.safeParse({ ...validInput, expires_at: null });
+    const result = createSftpUserSchema.safeParse({ expires_at: null });
     expect(result.success).toBe(true);
   });
 
   it('should reject invalid expires_at format', () => {
-    const result = createSftpUserSchema.safeParse({ ...validInput, expires_at: 'not-a-date' });
+    const result = createSftpUserSchema.safeParse({ expires_at: 'not-a-date' });
     expect(result.success).toBe(false);
   });
 });
