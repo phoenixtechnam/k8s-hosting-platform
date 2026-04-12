@@ -24,6 +24,9 @@ set -euo pipefail
 #   ./scripts/local.sh webmail-down   Remove Roundcube from local k3s
 #   ./scripts/local.sh webmail-status Show Roundcube pod state
 #   ./scripts/local.sh webmail-logs   Tail Roundcube logs
+#   ./scripts/local.sh sftp-up     Deploy SFTP gateway to local k3s
+#   ./scripts/local.sh sftp-down   Remove SFTP gateway from local k3s
+#   ./scripts/local.sh sftp-status Show SFTP gateway pod/service state
 #   ./scripts/local.sh help        Show this help
 #
 # Environment:
@@ -93,7 +96,11 @@ _ensure_cookie_secret() {
 cmd_up() {
   echo "Building and starting local stack..."
   _ensure_cookie_secret
-  compose up -d --build
+  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
+  compose build backend
+  compose build admin-panel
+  compose build client-panel
+  compose up -d
   echo ""
   _rebuild_sidecar
   _check_k3s_health
@@ -118,7 +125,11 @@ cmd_reset() {
   fi
   echo "Starting fresh..."
   _ensure_cookie_secret
-  compose up -d --build
+  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
+  compose build backend
+  compose build admin-panel
+  compose build client-panel
+  compose up -d
   echo ""
   _rebuild_sidecar
   _patch_postgres_bridge 2>/dev/null || true
@@ -129,7 +140,10 @@ cmd_rebuild() {
   echo "Rebuilding app services (backend, admin-panel, client-panel)..."
   # Only rebuild app services — never touch k3s, PostgreSQL, or Redis
   # This prevents accidental removal of infrastructure containers
-  compose build backend admin-panel client-panel
+  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
+  compose build backend
+  compose build admin-panel
+  compose build client-panel
   compose up -d --no-deps backend admin-panel client-panel
   echo ""
   # Rebuild and reimport file-manager sidecar into k3s
@@ -138,6 +152,8 @@ cmd_rebuild() {
   _check_k3s_health
   _cleanup_stale_namespaces
   _patch_postgres_bridge 2>/dev/null || true
+  # Re-patch SFTP backend bridge (backend IP changes on container recreate)
+  _sftp_patch_backend_bridge 2>/dev/null || true
   cmd_status
 }
 
@@ -553,8 +569,175 @@ cmd_mail_test() {
   done
 }
 
+# ─── SFTP Gateway commands ───────────────────────────────────────────────────
+
+_sftp_ensure_host_key() {
+  # Generate SSH host key Secret if it doesn't exist
+  if ! _mail_k3s_exec kubectl get secret sftp-host-keys -n platform-system >/dev/null 2>&1; then
+    echo "  Generating SSH host key..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    ssh-keygen -t ed25519 -N "" -f "$tmpdir/ssh_host_ed25519_key" -q
+    docker cp "$tmpdir/ssh_host_ed25519_key" "${K3S_CONTAINER}:/tmp/sftp-hostkey"
+    _mail_k3s_exec kubectl create secret generic sftp-host-keys \
+      --from-file=ssh_host_ed25519_key=/tmp/sftp-hostkey \
+      -n platform-system
+    rm -rf "$tmpdir"
+    echo "  SSH host key Secret created"
+  fi
+}
+
+_sftp_ensure_tls_cert() {
+  # Create FTPS TLS certificate via cert-manager (local CA issuer)
+  if ! _mail_k3s_exec kubectl get certificate sftp-gateway-tls -n platform-system >/dev/null 2>&1; then
+    echo "  Creating FTPS TLS certificate..."
+    docker exec "$K3S_CONTAINER" sh -c 'cat > /tmp/sftp-tls-cert.yaml <<EOF
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sftp-gateway-tls
+  namespace: platform-system
+spec:
+  secretName: sftp-tls-certs
+  issuerRef:
+    name: local-ca-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - sftp.platform.local
+    - sftp.ingress.localhost
+  duration: 8760h
+  renewBefore: 720h
+EOF
+kubectl apply -f /tmp/sftp-tls-cert.yaml'
+    echo "  Waiting for certificate to be ready..."
+    _mail_k3s_exec kubectl wait --for=condition=Ready certificate/sftp-gateway-tls \
+      -n platform-system --timeout=60s 2>/dev/null || echo "  ⚠  Certificate not ready yet (FTPS will start once it is)"
+  fi
+}
+
+_sftp_patch_backend_bridge() {
+  # Create Service + Endpoints in platform-system that routes to the backend
+  # Docker container (same pattern as _patch_postgres_bridge for mail).
+  local backend_name backend_ip network_name
+  backend_name=$(docker ps --filter "name=hosting-platform-backend" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [[ -z "$backend_name" ]]; then
+    echo "  ⚠  Backend container not running — SFTP auth will fail"
+    return 1
+  fi
+  network_name="${COMPOSE_PROJECT_NAME:-hosting-platform}_default"
+  backend_ip=$(docker inspect "$backend_name" \
+    --format "{{with index .NetworkSettings.Networks \"${network_name}\"}}{{.IPAddress}}{{end}}" \
+    2>/dev/null)
+  if ! [[ "$backend_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "  ⚠  No valid IP for $backend_name on $network_name; got '$backend_ip'"
+    return 1
+  fi
+  echo "  Patching backend bridge → $backend_ip"
+  # Apply Service + Endpoints via temp file inside k3s container
+  docker exec "$K3S_CONTAINER" sh -c "cat > /tmp/backend-bridge.yaml <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: platform-system
+spec:
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: backend
+  namespace: platform-system
+subsets:
+- addresses:
+  - ip: ${backend_ip}
+  ports:
+  - port: 3000
+EOF
+kubectl apply -f /tmp/backend-bridge.yaml" 2>&1
+}
+
+cmd_sftp_up() {
+  echo "Deploying SFTP gateway to local k3s..."
+  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
+    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
+    return 1
+  fi
+  _repair_kubeconfig || true
+
+  # Ensure namespace exists
+  _mail_k3s_exec kubectl create namespace platform-system 2>/dev/null || true
+
+  # Ensure secrets
+  _sftp_ensure_host_key
+  _sftp_ensure_tls_cert
+
+  # Build and import sftp-gateway image
+  echo "  Building sftp-gateway image..."
+  docker build -t sftp-gateway:latest "${PROJECT_DIR}/images/sftp-gateway/" -q 2>/dev/null
+  docker save sftp-gateway:latest | docker exec -i "$K3S_CONTAINER" ctr images import - 2>/dev/null
+  echo "  sftp-gateway image imported into k3s"
+
+  # Apply manifests
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl apply -f /tmp/mail-k8s-sync/base/sftp-gateway.yaml
+  _mail_k3s_exec kubectl apply -f /tmp/mail-k8s-sync/base/sftp-gateway-netpol.yaml 2>/dev/null || true
+
+  # Create backend bridge
+  _sftp_patch_backend_bridge
+
+  echo ""
+  echo "Waiting for SFTP gateway pod to be ready..."
+  _mail_k3s_exec kubectl rollout status deployment/sftp-gateway -n platform-system --timeout=60s || {
+    echo "Pod did not become ready. Events:"
+    _mail_k3s_exec kubectl get events -n platform-system --sort-by=.lastTimestamp | tail -10
+    return 1
+  }
+  echo ""
+  cmd_sftp_status
+}
+
+cmd_sftp_down() {
+  echo "Removing SFTP gateway from local k3s..."
+  _mail_sync_manifests
+  _mail_k3s_exec kubectl delete -f /tmp/mail-k8s-sync/base/sftp-gateway.yaml --ignore-not-found=true
+  _mail_k3s_exec kubectl delete -f /tmp/mail-k8s-sync/base/sftp-gateway-netpol.yaml --ignore-not-found=true
+  _mail_k3s_exec kubectl delete svc backend -n platform-system --ignore-not-found=true
+  _mail_k3s_exec kubectl delete endpoints backend -n platform-system --ignore-not-found=true
+}
+
+cmd_sftp_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  SFTP Gateway — Local Dev"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  if ! _mail_k3s_exec kubectl get deployment sftp-gateway -n platform-system >/dev/null 2>&1; then
+    echo "  SFTP gateway not deployed. Run: ./scripts/local.sh sftp-up"
+    return
+  fi
+  echo "  Pod:"
+  _mail_k3s_exec kubectl get pods -n platform-system -l app=sftp-gateway -o wide 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Service:"
+  _mail_k3s_exec kubectl get svc sftp-gateway -n platform-system 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Backend bridge:"
+  _mail_k3s_exec kubectl get endpoints backend -n platform-system 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  TLS Certificate:"
+  _mail_k3s_exec kubectl get certificate sftp-gateway-tls -n platform-system 2>/dev/null | sed 's/^/    /' || echo "    not configured"
+  echo ""
+  echo "  Host endpoint:"
+  echo "    SFTP: ${DOCKER_HOST_NAME}:${PORT_SFTP:-2222}"
+  echo ""
+  echo "  Protocols: SFTP, SCP, rsync (+ FTPS if TLS cert is ready)"
+  echo "════════════════════════════════════════════════"
+}
+
 cmd_help() {
-  sed -n '3,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 case "${1:-help}" in
@@ -578,6 +761,9 @@ case "${1:-help}" in
   webmail-down)   cmd_webmail_down ;;
   webmail-status) cmd_webmail_status ;;
   webmail-logs)   cmd_webmail_logs ;;
+  sftp-up)        cmd_sftp_up ;;
+  sftp-down)      cmd_sftp_down ;;
+  sftp-status)    cmd_sftp_status ;;
   help|-h)        cmd_help ;;
   *)           echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

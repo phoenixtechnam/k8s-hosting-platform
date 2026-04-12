@@ -198,12 +198,20 @@ func classifyCommand(cmd string) string {
 }
 
 // buildCommand returns the command slice to exec in the file-manager pod.
+// SFTP uses chroot to /data so all file operations (including absolute paths)
+// are confined to the PVC. SCP and rsync use path rewriting instead because
+// their command arguments are fully controlled by the gateway.
 func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 	dataRoot := filepath.Clean("/data/" + strings.TrimPrefix(homePath, "/"))
 
 	switch protocol {
 	case "sftp":
-		return []string{"/usr/lib/ssh/sftp-server", "-e", "-d", dataRoot}
+		// Chroot to /data — sftp-server sees / as the PVC root.
+		// The patched binary at /.platform/sftp-server has its ELF interpreter
+		// and rpath set to /.platform/sftp-jail/lib/ so it runs inside the chroot
+		// without needing /lib/ at the chroot root.
+		chrootHome := filepath.Clean("/" + strings.TrimPrefix(homePath, "/"))
+		return []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", chrootHome}
 	case "scp":
 		if rawCmd != nil {
 			return rewriteSCPCommand(*rawCmd, dataRoot)
