@@ -255,6 +255,11 @@ export async function createDeployment(
   // Deploy to K8s if cluster is available
   if (k8s && namespace) {
     try {
+      // Detect password env var for password-reset init container
+      const passwordEnvVar = generatedEnvKeys.find(k =>
+        k.includes('PASSWORD') || k.includes('ROOT_PASSWORD'),
+      );
+
       await deployCatalogEntry(k8s, {
         deploymentName: input.name,
         storagePath,
@@ -267,6 +272,9 @@ export async function createDeployment(
         storageRequest,
         configuration: finalConfiguration,
         envVars: finalEnvVars,
+        reuseExistingData: input.storage_mode === 'custom',
+        catalogCode: entry.code,
+        passwordEnvVar,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {

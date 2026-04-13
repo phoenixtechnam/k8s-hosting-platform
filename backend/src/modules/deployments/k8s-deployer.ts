@@ -8,6 +8,7 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { buildPasswordResetInitContainer } from './password-reset.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,12 @@ export interface DeployCatalogEntryInput {
   readonly storageRequest?: string;
   readonly configuration?: Record<string, unknown>;
   readonly envVars?: { fixed?: Record<string, string> };
+  /** When true, adds a password-reset init container for reused data */
+  readonly reuseExistingData?: boolean;
+  /** Catalog entry code (e.g. 'mariadb', 'mysql', 'postgresql') — needed for password reset */
+  readonly catalogCode?: string;
+  /** Password env var name (e.g. 'MARIADB_ROOT_PASSWORD') */
+  readonly passwordEnvVar?: string;
 }
 
 export interface ComponentPodStatus {
@@ -109,6 +116,17 @@ export async function deployCatalogEntry(
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
 
+  // Build password-reset init container for reused data directories
+  const passwordResetContainer = input.reuseExistingData && input.catalogCode && input.passwordEnvVar
+    ? buildPasswordResetInitContainer({
+        catalogCode: input.catalogCode,
+        image: components[0]?.image ?? '',
+        storagePath: input.storagePath,
+        volumeMountName: 'client-storage',
+        passwordEnvVar: input.passwordEnvVar,
+      })
+    : null;
+
   for (const component of components) {
     const name = k8sResourceName(deploymentName, component.name, componentCount);
     const labels = deploymentLabels(deploymentName, component.name);
@@ -128,7 +146,7 @@ export async function deployCatalogEntry(
     switch (component.type) {
       case 'deployment':
       case 'statefulset':  // Uses Deployment + shared PVC (type is semantic hint only)
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes, passwordResetContainer, env);
         break;
 
       case 'cronjob':
@@ -157,6 +175,8 @@ async function deployK8sDeployment(
   replicaCount: number,
   storagePath: string,
   volumes: Array<{ container_path: string }> = [],
+  passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
+  envVars?: Array<{ name: string; value: string }>,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
 
@@ -171,17 +191,27 @@ async function deployK8sDeployment(
     ? { ...container, volumeMounts }
     : container;
 
-  // Init container: ensures the storagePath directory exists on the shared PVC
-  // and is world-writable so database processes running as non-root can write.
-  const initContainers = storagePath
-    ? [{
-        name: 'init-dirs',
-        image: 'busybox:1.36',
-        command: ['sh', '-c', `mkdir -p /data/${storagePath} && chmod 777 /data/${storagePath}`],
-        volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
-        resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
-      }]
-    : undefined;
+  // Build init containers list
+  const initContainersList: Record<string, unknown>[] = [];
+
+  // 1. Password-reset init container (runs before init-dirs, needs the DB data)
+  if (passwordResetContainer) {
+    // Inject env vars so the password reset script can read $MARIADB_ROOT_PASSWORD etc.
+    initContainersList.push({ ...passwordResetContainer, ...(envVars?.length ? { env: envVars } : {}) });
+  }
+
+  // 2. Init-dirs container: ensures the storagePath directory exists on the shared PVC
+  if (storagePath) {
+    initContainersList.push({
+      name: 'init-dirs',
+      image: 'busybox:1.36',
+      command: ['sh', '-c', `mkdir -p /data/${storagePath} && chmod 777 /data/${storagePath}`],
+      volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
+      resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+    });
+  }
+
+  const initContainers = initContainersList.length > 0 ? initContainersList : undefined;
 
   const podVolumes = volumes.length > 0
     ? [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }]
