@@ -36,10 +36,3 @@ spec:
       ports:
         - port: 3000
           protocol: TCP
-    # Allow health checks from kubelet (no selector = node traffic).
-    # Kubelet probes hit the gateway pod's health port (:8080), not
-    # backend:3000. A rule without `from` selectors allows all pods,
-    # so we scope to port 8080 only.
-    - ports:
-        - port: 8080
-          protocol: TCP

@@ -14,7 +14,6 @@ import (
 	"os"
 	"strings"
 	"syscall"
-	"unicode"
 )
 
 func main() {
@@ -98,11 +97,14 @@ done:
 	}
 }
 
-// isSafePath allows only alphanumeric chars, /, _, -, . in paths.
-// Blocks shell metacharacters, spaces, and control characters.
+// isSafePath allows only ASCII alphanumeric chars, /, _, -, . in paths.
+// Blocks shell metacharacters, spaces, control characters, and non-ASCII.
 func isSafePath(p string) bool {
 	for _, r := range p {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '/' && r != '_' && r != '-' && r != '.' {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		isAllowed := r == '/' || r == '_' || r == '-' || r == '.'
+		if !isAlpha && !isDigit && !isAllowed {
 			return false
 		}
 	}

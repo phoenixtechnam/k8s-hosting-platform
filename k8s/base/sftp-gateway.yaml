@@ -104,6 +104,13 @@ spec:
             - name: tls-certs
               mountPath: /etc/tls
               readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"
@@ -127,10 +134,11 @@ spec:
         - name: ssh-host-keys
           secret:
             secretName: sftp-host-keys
-            defaultMode: 0600
+            defaultMode: 0444  # readable by nobody (65534); Secret is RBAC-protected
         - name: tls-certs
           secret:
             secretName: sftp-tls-certs
+            defaultMode: 0444
             optional: true
 ---
 apiVersion: v1

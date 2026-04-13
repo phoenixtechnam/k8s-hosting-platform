@@ -290,7 +290,12 @@ async function handleUpload(req, res) {
     const filePart = parts.find(p => p.filename);
     if (!filePart) return sendError(res, 400, 'No file in upload');
 
-    const destSafe = safePath(join(targetDir, filePart.filename), { allowHidden: bypass });
+    const rawFilename = (filePart.filename || 'upload')
+        .replace(/[/\\]/g, '_')
+        .replace(/\0/g, '')
+        .replace(/^-+/, '_')
+        .slice(0, 255) || 'upload';
+    const destSafe = safePath(join(targetDir, rawFilename), { allowHidden: bypass });
     if (!destSafe) return sendError(res, 404, 'Not found');
 
     await mkdir(full, { recursive: true });

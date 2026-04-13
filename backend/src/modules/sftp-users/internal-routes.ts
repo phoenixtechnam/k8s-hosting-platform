@@ -249,6 +249,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
         and(
           eq(sftpUserSshKeys.sftpUserId, user.id),
           eq(sshKeys.keyFingerprint, public_key_fingerprint),
+          eq(sshKeys.clientId, user.clientId),
         ),
       );
 

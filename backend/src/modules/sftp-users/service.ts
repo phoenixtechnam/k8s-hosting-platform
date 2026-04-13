@@ -215,6 +215,10 @@ export async function rotateSftpPassword(
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
   }
 
+  if (!existing.passwordHash) {
+    throw new ApiError('SSH_KEY_ONLY_USER', 'Cannot rotate password for SSH-key-only users. This user authenticates via SSH key.', 400);
+  }
+
   const plainPassword = customPassword ?? generateSecurePassword(24);
   const passwordHash = await bcrypt.hash(plainPassword, BCRYPT_COST);
 

@@ -263,7 +263,7 @@ func (d *ftpsDriver) GetFile(ctx *ftpserver.Context, path string, offset int64) 
 	// Stream the file via cat (or dd for offset).
 	var cmd []string
 	if offset > 0 {
-		cmd = []string{"sh", "-c", fmt.Sprintf("dd if=%s bs=1 skip=%d 2>/dev/null", shellQuote(fullPath), offset)}
+		cmd = []string{"dd", fmt.Sprintf("if=%s", fullPath), "bs=1", fmt.Sprintf("skip=%d", offset)}
 	} else {
 		cmd = []string{"cat", fullPath}
 	}
@@ -290,9 +290,9 @@ func (d *ftpsDriver) PutFile(ctx *ftpserver.Context, path string, data io.Reader
 
 	var cmd []string
 	if offset > 0 {
-		cmd = []string{"sh", "-c", fmt.Sprintf("dd of=%s bs=1 seek=%d 2>/dev/null", shellQuote(fullPath), offset)}
+		cmd = []string{"dd", fmt.Sprintf("of=%s", fullPath), "bs=1", fmt.Sprintf("seek=%d", offset)}
 	} else {
-		cmd = []string{"sh", "-c", fmt.Sprintf("cat > %s", shellQuote(fullPath))}
+		cmd = []string{"dd", fmt.Sprintf("of=%s", fullPath)}
 	}
 
 	cr := &countingReader{r: data}
@@ -448,11 +448,6 @@ func execCommandInPod(ctx *ftpserver.Context, podName string, command []string) 
 		return "", fmt.Errorf("exec %v: %w (stderr: %s)", command, err, stderr.String())
 	}
 	return stdout.String(), nil
-}
-
-// shellQuote wraps a path in single quotes for safe shell interpolation.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // ---- stat parsing ----------------------------------------------------------
