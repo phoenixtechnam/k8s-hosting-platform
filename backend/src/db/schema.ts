@@ -329,6 +329,7 @@ export const deployments = pgTable('deployments', {
   targetVersion: varchar('target_version', { length: 50 }),
   lastUpgradedAt: timestamp('last_upgraded_at'),
   lastError: text('last_error'),
+  statusMessage: text('status_message'),
   deletedAt: timestamp('deleted_at'),
   status: deploymentStatusEnum().notNull().default('pending'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

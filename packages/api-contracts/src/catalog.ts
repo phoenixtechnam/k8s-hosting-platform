@@ -159,6 +159,7 @@ export const deploymentResponseSchema = z.object({
   targetVersion: z.string().nullable(),
   lastUpgradedAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  statusMessage: z.string().nullable(),
   deletedAt: z.string().nullable(),
   status: z.string(),
   volumePaths: z.array(volumePathSchema).nullable().optional(),

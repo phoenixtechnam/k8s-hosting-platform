@@ -1071,17 +1071,24 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       </div>
                     </div>
                     {isTransitioning ? (
-                      <div className="flex items-center gap-1.5">
-                        <Loader2 size={14} className="animate-spin text-amber-500" />
-                        <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                          {deployment.status === 'pending' && updateDeployment.variables?.status === 'running' ? 'Starting'
-                            : deployment.status === 'pending' && updateDeployment.variables?.status === 'stopped' ? 'Stopping'
-                            : deployment.status === 'deploying' ? 'Deploying'
-                            : deployment.status === 'upgrading' ? 'Upgrading'
-                            : deployment.status === 'deleting' ? 'Deleting'
-                            : deployment.status === 'pending' ? 'Starting'
-                            : deployment.status}...
-                        </span>
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <Loader2 size={14} className="animate-spin text-amber-500" />
+                          <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                            {deployment.status === 'pending' && updateDeployment.variables?.status === 'running' ? 'Starting'
+                              : deployment.status === 'pending' && updateDeployment.variables?.status === 'stopped' ? 'Stopping'
+                              : deployment.status === 'deploying' ? 'Deploying'
+                              : deployment.status === 'upgrading' ? 'Upgrading'
+                              : deployment.status === 'deleting' ? 'Deleting'
+                              : deployment.status === 'pending' ? 'Starting'
+                              : deployment.status}...
+                          </span>
+                        </div>
+                        {deployment.statusMessage && (
+                          <span className="text-[11px] text-gray-500 dark:text-gray-400 line-clamp-1 pl-5">
+                            {deployment.statusMessage}
+                          </span>
+                        )}
                       </div>
                     ) : (
                       <span

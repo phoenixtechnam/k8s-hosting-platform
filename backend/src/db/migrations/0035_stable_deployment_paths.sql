@@ -10,3 +10,6 @@ ALTER TABLE "deployments" DROP COLUMN IF EXISTS "resource_suffix";
 
 -- Reduce name length to 63 (DNS-compatible K8s resource name limit)
 ALTER TABLE "deployments" ALTER COLUMN "name" TYPE varchar(63);
+
+-- Add statusMessage column for real-time status feedback during transitions
+ALTER TABLE "deployments" ADD COLUMN IF NOT EXISTS "status_message" text;

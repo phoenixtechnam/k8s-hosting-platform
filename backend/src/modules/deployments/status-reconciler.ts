@@ -20,6 +20,11 @@ export interface ReconcileResult {
   readonly errors: readonly string[];
 }
 
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+/** Max time a deployment can stay in pending/deploying before escalating to failed */
+const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+
 // ─── Map K8s phase to DB status ─────────────────────────────────────────────
 
 function phaseToDbStatus(phase: string): 'running' | 'stopped' | 'pending' | 'failed' {
@@ -135,30 +140,55 @@ export async function reconcileDeploymentStatuses(
     try {
       const components = resolveComponentsForReconcile(entry);
       const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components);
-      const newDbStatus = phaseToDbStatus(k8sStatus.phase);
+      let newDbStatus = phaseToDbStatus(k8sStatus.phase);
+      let timeoutMessage: string | null = null;
 
-      if (newDbStatus !== deployment.status) {
-        const updateValues: Record<string, unknown> = { status: newDbStatus };
+      // Staleness timeout: if deployment has been in pending/deploying for too long, escalate to failed
+      if (newDbStatus === 'pending' && (deployment.status === 'pending' || deployment.status === 'deploying')) {
+        const age = Date.now() - deployment.updatedAt.getTime();
+        if (age > STALE_TIMEOUT_MS) {
+          newDbStatus = 'failed';
+          const startingComponent = k8sStatus.components.find(c => c.phase === 'starting' || c.phase === 'not_deployed');
+          const detail = startingComponent?.message ?? 'No progress detected';
+          timeoutMessage = `Timed out after 60 minutes: ${detail}`;
+        }
+      }
+
+      // Store status message for transitioning states (shown in UI tiles)
+      const statusMessage = newDbStatus === 'pending'
+        ? (k8sStatus.components.find(c => c.message)?.message ?? null)
+        : null;
+
+      if (newDbStatus !== deployment.status || statusMessage !== (deployment.statusMessage ?? null)) {
+        const updateValues: Record<string, unknown> = { status: newDbStatus, statusMessage };
 
         // Store user-friendly error message when status changes to failed
         if (newDbStatus === 'failed') {
-          const failedComponent = k8sStatus.components.find(c => c.phase === 'failed');
-          if (failedComponent?.message) {
-            const raw = failedComponent.message;
-            // Translate common K8s error messages to user-friendly text
-            if (raw.includes('OOMKilled') || raw.includes('exit code 137') || raw.includes('exit code: 137')) {
-              updateValues.lastError = 'This app ran out of memory and was shut down. Please assign more memory.';
-            } else if (raw.includes('CrashLoopBackOff')) {
-              updateValues.lastError = 'This app is crashing repeatedly. Check the logs for details.';
-            } else if (raw.includes('ImagePullBackOff') || raw.includes('ErrImagePull')) {
-              updateValues.lastError = 'Failed to download the app image. The image may not exist or the registry is unreachable.';
-            } else {
-              updateValues.lastError = raw;
+          if (timeoutMessage) {
+            updateValues.lastError = timeoutMessage;
+          } else {
+            const failedComponent = k8sStatus.components.find(c => c.phase === 'failed');
+            if (failedComponent?.message) {
+              const raw = failedComponent.message;
+              // Translate common K8s error messages to user-friendly text
+              if (raw.includes('OOMKilled') || raw.includes('exit code 137') || raw.includes('exit code: 137')) {
+                updateValues.lastError = 'This app ran out of memory and was shut down. Please assign more memory.';
+              } else if (raw.includes('CrashLoopBackOff')) {
+                updateValues.lastError = 'This app is crashing repeatedly. Check the logs for details.';
+              } else if (raw.includes('ImagePullBackOff') || raw.includes('ErrImagePull')) {
+                updateValues.lastError = 'Failed to download the app image. The image may not exist or the registry is unreachable.';
+              } else if (raw.includes('not found')) {
+                updateValues.lastError = raw;
+              } else {
+                updateValues.lastError = raw;
+              }
             }
           }
-        } else {
-          // Clear lastError when status recovers
+          updateValues.statusMessage = null;
+        } else if (newDbStatus === 'running') {
+          // Clear errors when status recovers
           updateValues.lastError = null;
+          updateValues.statusMessage = null;
         }
 
         await db.update(deployments).set(updateValues).where(eq(deployments.id, deployment.id));

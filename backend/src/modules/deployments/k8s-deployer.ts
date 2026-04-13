@@ -569,8 +569,15 @@ async function getK8sDeploymentStatus(
   }
 
   // Check for pod failures — use baseName for app label selector
+  type PodItem = {
+    status?: {
+      phase?: string;
+      conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+      containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string }; terminated?: { reason?: string; message?: string; exitCode?: number } } }>;
+    };
+  };
   const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
-  const podList = (pods as { items?: Array<{ status?: { containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string }; terminated?: { reason?: string; message?: string; exitCode?: number } } }> } }> }).items ?? [];
+  const podList = (pods as { items?: PodItem[] }).items ?? [];
 
   for (const pod of podList) {
     for (const cs of (pod.status?.containerStatuses ?? [])) {
@@ -602,14 +609,31 @@ async function getK8sDeploymentStatus(
         };
       }
     }
+
+    // Check Pending pods with no container statuses (PVC not found, Unschedulable, etc.)
+    if (pod.status?.phase === 'Pending' && (!pod.status.containerStatuses || pod.status.containerStatuses.length === 0)) {
+      const conditions = pod.status.conditions ?? [];
+      const unschedulable = conditions.find(
+        c => c.type === 'PodScheduled' && c.status === 'False',
+      );
+      if (unschedulable?.message) {
+        return {
+          name: componentName,
+          type: 'deployment',
+          phase: 'failed',
+          ready: false,
+          message: unschedulable.message,
+        };
+      }
+    }
   }
 
   if (readyReplicas >= desiredReplicas) {
     return { name: componentName, type: 'deployment', phase: 'running', ready: true };
   }
 
-  // If no pods exist but replicas are desired, check K8s events for FailedCreate (quota exceeded, etc.)
-  if (podList.length === 0 && desiredReplicas > 0) {
+  // Check K8s events for FailedCreate (quota exceeded, etc.) — always check when not ready
+  if (desiredReplicas > 0) {
     try {
       const events = await k8s.core.listNamespacedEvent({ namespace });
       const eventItems = (events as { items?: readonly { reason?: string; message?: string; involvedObject?: { kind?: string; name?: string } }[] }).items ?? [];
