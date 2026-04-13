@@ -504,37 +504,37 @@ export default function SftpUsers() {
                     <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{user.description || '\u2014'}</td>
                     <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
                     <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
-                      <div>
-                        <span className="flex items-center gap-1">
-                          {user.username}
-                          <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
-                        </span>
-                        {regenPassword?.userId === user.id && (
-                          <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                            <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-2 py-0.5 text-xs text-amber-900 dark:text-amber-200">{regenPassword.password}</code>
-                            <CopyButton value={regenPassword.password} />
-                            <button type="button" onClick={() => setRegenPassword(null)} className="text-gray-400 hover:text-gray-600"><X size={12} /></button>
-                          </div>
-                        )}
-                      </div>
+                      <span className="flex items-center gap-1">
+                        {user.username}
+                        <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
                       {hasLinkedKeys
                         ? <span>SSH Key ({user.linkedSshKeys!.map((k) => k.name).join(', ')})</span>
                         : (
-                          <span className="flex items-center gap-1">
-                            Password
-                            {canManage && (
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); handleRegenPassword(user.id); }}
-                                className="rounded p-0.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
-                                title="Regenerate password"
-                              >
-                                <RefreshCw size={12} />
-                              </button>
+                          <div>
+                            <span className="flex items-center gap-1">
+                              Password
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleRegenPassword(user.id); }}
+                                  className="rounded p-0.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
+                                  title="Regenerate password"
+                                >
+                                  <RefreshCw size={12} />
+                                </button>
+                              )}
+                            </span>
+                            {regenPassword?.userId === user.id && (
+                              <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-2 py-0.5 text-xs text-amber-900 dark:text-amber-200">{regenPassword.password}</code>
+                                <CopyButton value={regenPassword.password} />
+                                <button type="button" onClick={() => setRegenPassword(null)} className="text-gray-400 hover:text-gray-600"><X size={12} /></button>
+                              </div>
                             )}
-                          </span>
+                          </div>
                         )}
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
