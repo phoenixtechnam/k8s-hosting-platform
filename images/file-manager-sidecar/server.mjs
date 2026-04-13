@@ -29,8 +29,9 @@ const BASE = '/data';
 // browsing `/` doesn't leak the folder.
 
 // Hidden at ALL path levels (defense-in-depth for platform internals).
-// dev/ and etc/ are no longer created at root — the SFTP wrapper uses
-// temporary symlinks that are cleaned up after each session.
+// The SFTP jail now lives in a separate emptyDir volume (/jail), so no
+// platform artifacts exist on the PVC. This filter is kept as defense-
+// in-depth in case a .platform/ dir is ever created on the PVC.
 const HIDDEN_PREFIXES = ['.platform'];
 
 function relToBase(absPath) {

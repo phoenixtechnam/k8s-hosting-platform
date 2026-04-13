@@ -206,18 +206,19 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 
 	switch protocol {
 	case "sftp":
-		// Chroot to /data — sftp-server sees / as the PVC root.
-		// Creates temporary /dev and /etc symlinks into .platform/ before
-		// entering the chroot (sftp-server needs /dev/null and /etc/passwd).
-		// Runs in the container shell (outside chroot), then chroots.
-		// Symlinks are cleaned up when the session disconnects.
-		// Sanitize homePath to prevent traversal into .platform/ jail internals.
-		chrootHome := sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
+		// Bind-mount the client PVC into the SFTP jail at /jail/home, then
+		// use sftp-chroot (static Go binary) to chroot + drop to uid 65534
+		// (nobody) + exec sftp-server. Platform dirs (.platform, dev, etc)
+		// have mode 700/711 — invisible to nobody. User sees only /home/.
+		// Sanitize homePath to prevent traversal out of /home.
+		chrootHome := "/home" + sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
+		if chrootHome == "/home/" {
+			chrootHome = "/home"
+		}
 		return []string{"sh", "-c",
-			"ln -sfn .platform/jail-dev /data/dev 2>/dev/null; " +
-				"ln -sfn .platform/jail-etc /data/etc 2>/dev/null; " +
-				"chroot /data /.platform/sftp-server -e -d " + chrootHome + "; " +
-				"rm -f /data/dev /data/etc 2>/dev/null"}
+			"mount --bind /data /jail/home && " +
+				"sftp-chroot /jail /.platform/sftp-server -e -d " + chrootHome + "; " +
+				"umount /jail/home 2>/dev/null"}
 	case "scp":
 		if rawCmd != nil {
 			return rewriteSCPCommand(*rawCmd, dataRoot)

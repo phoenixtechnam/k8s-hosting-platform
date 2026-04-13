@@ -11,12 +11,12 @@ func TestBuildCommand_SFTP(t *testing.T) {
 		homePath     string
 		wantContains string // substring expected in the sh -c command
 	}{
-		{"root homePath", "/", "chroot /data /.platform/sftp-server -e -d /;"},
-		{"subdirectory homePath", "/public_html", "-d /public_html;"},
-		{"empty homePath defaults to root", "", "-d /;"},
-		{"traversal into .platform sanitized", "/../.platform", "-d /;"},
-		{"double traversal sanitized", "/../../etc", "-d /;"},
-		{"relative traversal sanitized", "../../etc/passwd", "-d /etc/passwd;"},
+		{"root homePath", "/", "-d /home;"},
+		{"subdirectory homePath", "/public_html", "-d /home/public_html;"},
+		{"empty homePath defaults to root", "", "-d /home;"},
+		{"traversal into .platform sanitized", "/../.platform", "-d /home;"},
+		{"double traversal sanitized", "/../../etc", "-d /home;"},
+		{"relative traversal sanitized", "../../etc/passwd", "-d /home/etc/passwd;"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -28,13 +28,17 @@ func TestBuildCommand_SFTP(t *testing.T) {
 			if !strings.Contains(shellCmd, tt.wantContains) {
 				t.Errorf("shell command %q should contain %q", shellCmd, tt.wantContains)
 			}
-			// Must create symlinks before chroot
-			if !strings.Contains(shellCmd, "ln -sfn .platform/jail-dev /data/dev") {
-				t.Error("missing dev symlink creation")
+			// Must bind-mount PVC into jail
+			if !strings.Contains(shellCmd, "mount --bind /data /jail/home") {
+				t.Error("missing bind mount")
 			}
-			// Must clean up after
-			if !strings.Contains(shellCmd, "rm -f /data/dev /data/etc") {
-				t.Error("missing symlink cleanup")
+			// Must use sftp-chroot for privilege drop
+			if !strings.Contains(shellCmd, "sftp-chroot /jail") {
+				t.Error("missing sftp-chroot call")
+			}
+			// Must unmount after session
+			if !strings.Contains(shellCmd, "umount /jail/home") {
+				t.Error("missing unmount cleanup")
 			}
 		})
 	}
