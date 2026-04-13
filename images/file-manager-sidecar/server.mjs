@@ -122,6 +122,8 @@ function getPath(url) {
 
 // ─── Multipart parser (minimal, single file) ────────────────────────────────
 
+const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '0', 10) || 512 * 1024 * 1024; // 512 MB default
+
 async function parseMultipart(req) {
   const contentType = req.headers['content-type'] || '';
   const match = contentType.match(/boundary=(.+)/);
@@ -129,7 +131,15 @@ async function parseMultipart(req) {
 
   const boundary = match[1];
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let totalLength = 0;
+  for await (const chunk of req) {
+    totalLength += chunk.length;
+    if (totalLength > MAX_UPLOAD_SIZE) {
+      req.destroy();
+      throw Object.assign(new Error(`Upload exceeds ${MAX_UPLOAD_SIZE} byte limit`), { code: 'BODY_TOO_LARGE' });
+    }
+    chunks.push(chunk);
+  }
   const body = Buffer.concat(chunks);
 
   const sep = Buffer.from(`--${boundary}`);

@@ -28,8 +28,11 @@ spec:
         - port: 3000
           protocol: TCP
     # Allow ingress controller → backend (public API)
+    # Scoped to the ingress-nginx namespace only.
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
           podSelector:
             matchLabels:
               app.kubernetes.io/name: ingress-nginx

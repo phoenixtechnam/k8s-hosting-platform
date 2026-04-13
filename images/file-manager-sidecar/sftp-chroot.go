@@ -92,7 +92,10 @@ done:
 
 	cmd := os.Args[cmdIdx]
 	args := os.Args[cmdIdx:]
-	if err := syscall.Exec(cmd, args, os.Environ()); err != nil {
+	// Pass minimal environment to the child — prevent leaking secrets
+	// or platform env vars from the file-manager container.
+	childEnv := []string{"HOME=/", "PATH=/.platform"}
+	if err := syscall.Exec(cmd, args, childEnv); err != nil {
 		fatal(fmt.Sprintf("exec %s: %v", cmd, err))
 	}
 }

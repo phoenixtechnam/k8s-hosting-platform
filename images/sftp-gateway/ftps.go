@@ -263,7 +263,8 @@ func (d *ftpsDriver) GetFile(ctx *ftpserver.Context, path string, offset int64) 
 	// Stream the file via cat (or dd for offset).
 	var cmd []string
 	if offset > 0 {
-		cmd = []string{"dd", fmt.Sprintf("if=%s", fullPath), "bs=1", fmt.Sprintf("skip=%d", offset)}
+		cmd = []string{"dd", fmt.Sprintf("if=%s", fullPath), "bs=4096",
+			fmt.Sprintf("skip=%d", offset), "iflag=skip_bytes"}
 	} else {
 		cmd = []string{"cat", fullPath}
 	}
@@ -290,7 +291,8 @@ func (d *ftpsDriver) PutFile(ctx *ftpserver.Context, path string, data io.Reader
 
 	var cmd []string
 	if offset > 0 {
-		cmd = []string{"dd", fmt.Sprintf("of=%s", fullPath), "bs=1", fmt.Sprintf("seek=%d", offset)}
+		cmd = []string{"dd", fmt.Sprintf("of=%s", fullPath), "bs=4096",
+			fmt.Sprintf("seek=%d", offset), "oflag=seek_bytes"}
 	} else {
 		cmd = []string{"dd", fmt.Sprintf("of=%s", fullPath)}
 	}

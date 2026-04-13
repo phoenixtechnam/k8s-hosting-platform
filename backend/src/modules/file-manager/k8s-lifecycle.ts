@@ -88,12 +88,10 @@ export async function ensureFileManagerRunning(
                   },
                 ],
                 securityContext: {
-                  // SYS_ADMIN is required for the SFTP chroot jail: the gateway
-                  // bind-mounts the client PVC into an isolated jail directory so
-                  // that no platform artifacts (binaries, device nodes) are visible
-                  // to SFTP/FTPS clients. Without this, the chroot would pollute
-                  // the PVC root with dev/, etc/, and .platform/ directories.
-                  capabilities: { add: ['SYS_ADMIN'] },
+                  // SYS_ADMIN is required for the SFTP chroot jail bind mount.
+                  // Drop ALL other capabilities to minimize blast radius.
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN'] },
                 },
                 resources: {
                   requests: { cpu: '25m', memory: '32Mi' },
