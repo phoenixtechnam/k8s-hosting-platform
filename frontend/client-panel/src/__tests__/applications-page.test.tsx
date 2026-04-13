@@ -42,6 +42,8 @@ vi.mock('../hooks/use-deployments', () => ({
   useResourceAvailability: vi.fn(() => ({ data: undefined, isLoading: false })),
   useDeploymentLogs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useDeploymentLiveMetrics: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useDeletePreview: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useStorageFolders: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
 vi.mock('../hooks/use-catalog', () => ({
