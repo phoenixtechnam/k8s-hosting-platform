@@ -1,56 +1,40 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
 func TestBuildCommand_SFTP(t *testing.T) {
 	tests := []struct {
-		name     string
-		homePath string
-		wantCmd  []string
+		name         string
+		homePath     string
+		wantContains string // substring expected in the sh -c command
 	}{
-		{
-			name:     "root homePath",
-			homePath: "/",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
-		},
-		{
-			name:     "subdirectory homePath",
-			homePath: "/public_html",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/public_html"},
-		},
-		{
-			name:     "empty homePath defaults to root",
-			homePath: "",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
-		},
-		{
-			name:     "traversal into .platform is sanitized to root",
-			homePath: "/../.platform",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
-		},
-		{
-			name:     "double traversal sanitized to root",
-			homePath: "/../../etc",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/"},
-		},
-		{
-			name:     "relative traversal sanitized",
-			homePath: "../../etc/passwd",
-			wantCmd:  []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", "/etc/passwd"},
-		},
+		{"root homePath", "/", "chroot /data /.platform/sftp-server -e -d /;"},
+		{"subdirectory homePath", "/public_html", "-d /public_html;"},
+		{"empty homePath defaults to root", "", "-d /;"},
+		{"traversal into .platform sanitized", "/../.platform", "-d /;"},
+		{"double traversal sanitized", "/../../etc", "-d /;"},
+		{"relative traversal sanitized", "../../etc/passwd", "-d /etc/passwd;"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildCommand("sftp", nil, tt.homePath)
-			if len(got) != len(tt.wantCmd) {
-				t.Fatalf("buildCommand(sftp) = %v, want %v", got, tt.wantCmd)
+			if len(got) != 3 || got[0] != "sh" || got[1] != "-c" {
+				t.Fatalf("buildCommand(sftp) should be [sh -c <cmd>], got %v", got)
 			}
-			for i := range got {
-				if got[i] != tt.wantCmd[i] {
-					t.Errorf("buildCommand(sftp)[%d] = %q, want %q", i, got[i], tt.wantCmd[i])
-				}
+			shellCmd := got[2]
+			if !strings.Contains(shellCmd, tt.wantContains) {
+				t.Errorf("shell command %q should contain %q", shellCmd, tt.wantContains)
+			}
+			// Must create symlinks before chroot
+			if !strings.Contains(shellCmd, "ln -sfn .platform/jail-dev /data/dev") {
+				t.Error("missing dev symlink creation")
+			}
+			// Must clean up after
+			if !strings.Contains(shellCmd, "rm -f /data/dev /data/etc") {
+				t.Error("missing symlink cleanup")
 			}
 		})
 	}

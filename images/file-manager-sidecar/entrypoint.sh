@@ -35,13 +35,43 @@ if [ -f "$SFTP_PATCHED" ]; then
 
   chmod -R 555 "$JAIL_LIB" 2>/dev/null || true
 
-  # sftp-server needs /dev/null and /etc/passwd inside the chroot (root = /data)
-  mkdir -p /data/dev /data/etc
-  [ -e /data/dev/null ] || mknod /data/dev/null c 1 3 2>/dev/null || true
-  chmod 666 /data/dev/null 2>/dev/null || true
-  # Minimal passwd so sftp-server can resolve uid 0
-  echo "root:x:0:0:root:/:/sbin/nologin" > /data/etc/passwd 2>/dev/null || true
-  echo "root:x:0:" > /data/etc/group 2>/dev/null || true
+  # sftp-server needs /dev/null and /etc/passwd inside the chroot.
+  # Keep them inside .platform/ so they're invisible to SFTP clients.
+  mkdir -p /data/.platform/jail-etc /data/.platform/jail-dev
+  [ -e /data/.platform/jail-dev/null ] || mknod /data/.platform/jail-dev/null c 1 3 2>/dev/null || true
+  chmod 666 /data/.platform/jail-dev/null 2>/dev/null || true
+  echo "root:x:0:0:root:/:/sbin/nologin" > /data/.platform/jail-etc/passwd 2>/dev/null || true
+  echo "root:x:0:" > /data/.platform/jail-etc/group 2>/dev/null || true
+
+  # Copy busybox (statically linked on Alpine) into the jail so we have
+  # a shell for the wrapper script inside the chroot.
+  cp -u /bin/busybox /data/.platform/busybox 2>/dev/null || true
+  chmod 555 /data/.platform/busybox 2>/dev/null || true
+
+  # Wrapper script called by the SFTP gateway via chroot. Uses busybox sh
+  # (static, no libs needed) to create temporary /dev and /etc symlinks,
+  # run sftp-server, then clean up. The symlinks only exist for the
+  # duration of each SFTP session — invisible to other clients browsing.
+  cat > /data/.platform/sftp-wrapper <<'WRAPPER'
+#!/.platform/busybox sh
+# Create symlinks for sftp-server's hardcoded /dev/null and /etc/passwd.
+# These are atomic and idempotent — safe for concurrent sessions.
+ln -sfn /.platform/jail-dev /dev 2>/dev/null
+ln -sfn /.platform/jail-etc /etc 2>/dev/null
+# Run sftp-server (blocks until client disconnects)
+/.platform/sftp-server "$@"
+RC=$?
+# Clean up symlinks (harmless race: concurrent sessions re-create them)
+rm -f /dev /etc 2>/dev/null
+exit $RC
+WRAPPER
+  chmod 555 /data/.platform/sftp-wrapper 2>/dev/null || true
+
+  # Clean up legacy root-level dev/ and etc/ from older entrypoint versions
+  [ -d /data/dev ] && [ ! -L /data/dev ] && rm -rf /data/dev 2>/dev/null || true
+  [ -d /data/etc ] && [ ! -L /data/etc ] && rm -rf /data/etc 2>/dev/null || true
+  [ -L /data/dev ] && rm -f /data/dev 2>/dev/null || true
+  [ -L /data/etc ] && rm -f /data/etc 2>/dev/null || true
 fi
 
 exec "$@"

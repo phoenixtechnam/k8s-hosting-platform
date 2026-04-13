@@ -207,12 +207,17 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 	switch protocol {
 	case "sftp":
 		// Chroot to /data — sftp-server sees / as the PVC root.
-		// The patched binary at /.platform/sftp-server has its ELF interpreter
-		// and rpath set to /.platform/sftp-jail/lib/ so it runs inside the chroot
-		// without needing /lib/ at the chroot root.
+		// Creates temporary /dev and /etc symlinks into .platform/ before
+		// entering the chroot (sftp-server needs /dev/null and /etc/passwd).
+		// Runs in the container shell (outside chroot), then chroots.
+		// Symlinks are cleaned up when the session disconnects.
 		// Sanitize homePath to prevent traversal into .platform/ jail internals.
 		chrootHome := sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
-		return []string{"chroot", "/data", "/.platform/sftp-server", "-e", "-d", chrootHome}
+		return []string{"sh", "-c",
+			"ln -sfn .platform/jail-dev /data/dev 2>/dev/null; " +
+				"ln -sfn .platform/jail-etc /data/etc 2>/dev/null; " +
+				"chroot /data /.platform/sftp-server -e -d " + chrootHome + "; " +
+				"rm -f /data/dev /data/etc 2>/dev/null"}
 	case "scp":
 		if rawCmd != nil {
 			return rewriteSCPCommand(*rawCmd, dataRoot)

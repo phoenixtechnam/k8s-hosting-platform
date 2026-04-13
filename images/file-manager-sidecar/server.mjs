@@ -29,12 +29,9 @@ const BASE = '/data';
 // browsing `/` doesn't leak the folder.
 
 // Hidden at ALL path levels (defense-in-depth for platform internals).
+// dev/ and etc/ are no longer created at root — the SFTP wrapper uses
+// temporary symlinks that are cleaned up after each session.
 const HIDDEN_PREFIXES = ['.platform'];
-
-// Hidden only at the PVC root — chroot jail artifacts created by the SFTP
-// entrypoint (sftp-server needs /dev/null and /etc/passwd). Customers can
-// still create their own dev/ or etc/ subdirectories deeper in the tree.
-const HIDDEN_ROOT_ONLY = ['dev', 'etc'];
 
 function relToBase(absPath) {
   // Strip BASE prefix to produce a relative POSIX-style path used by
@@ -53,11 +50,6 @@ function isHidden(relPath) {
     // (e.g. "nested/dir/.platform/foo"). Defense-in-depth so a customer
     // can't stash data under a nested .platform directory they create.
     if (norm.split('/').includes(prefix)) return true;
-  }
-  // Root-only hidden entries: only match if the path has no parent directory
-  for (const name of HIDDEN_ROOT_ONLY) {
-    if (norm === name) return true;
-    if (norm.startsWith(name + '/') && !norm.includes('/' + name)) return true;
   }
   return false;
 }
