@@ -1046,7 +1046,7 @@ export async function listStorageFolders(
   }
 
   // Try to list directories via file-manager sidecar
-  let folders: Array<{ name: string; path: string; isEmpty: boolean; usedByDeployment: string | null }> = [];
+  const folders: Array<{ name: string; path: string; isEmpty: boolean; usedByDeployment: string | null }> = [];
 
   if (k8s) {
     const namespace = await getClientNamespace(db, clientId);

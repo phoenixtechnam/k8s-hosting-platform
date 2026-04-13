@@ -105,7 +105,7 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, storagePath, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
+  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
 
