@@ -1291,9 +1291,12 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="soft-delete-modal">
           <div className="fixed inset-0 bg-black/50" onClick={() => setSoftDeleteConfirm(null)} />
           <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-2">Stop Deployment</h3>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Are you sure you want to stop <span className="font-semibold text-gray-900 dark:text-gray-100">{softDeleteConfirm.name}</span>?
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-2">Delete Deployment</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+              Are you sure you want to delete <span className="font-semibold text-gray-900 dark:text-gray-100">{softDeleteConfirm.name}</span>?
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+              Deleting will de-activate this deployment but not remove any data.
             </p>
 
             {/* Affected ingress routes warning */}
@@ -1310,7 +1313,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     <div className="flex items-center gap-1.5 mb-2">
                       <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                        Stopping this deployment will unlink the following ingress routes:
+                        Deleting this deployment will unlink the following ingress routes:
                       </span>
                     </div>
                     <ul className="space-y-1 ml-5">
@@ -1348,7 +1351,9 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 data-testid={`confirm-soft-delete-${softDeleteConfirm.id}`}
               >
                 {deleteDeployment.isPending && <Loader2 size={14} className="animate-spin" />}
-                Stop & Unlink Routes
+                {deletePreview.data?.data?.affectedRoutes && deletePreview.data.data.affectedRoutes.length > 0
+                  ? 'Delete & Unlink Routes'
+                  : 'Delete'}
               </button>
             </div>
           </div>
