@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import {
   HardDrive, Plus, Trash2, Loader2, AlertCircle, X, Copy, Check,
-  Shield, Clock, KeyRound, ChevronDown, ChevronUp,
+  Shield, Clock, KeyRound, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -214,6 +214,8 @@ export default function SftpUsers() {
   const [editDescription, setEditDescription] = useState('');
   const [editEnabled, setEditEnabled] = useState(true);
   const [editResult, setEditResult] = useState<{ password?: string } | null>(null);
+  // Inline regenerated password shown in the table row
+  const [regenPassword, setRegenPassword] = useState<{ userId: string; password: string } | null>(null);
 
   const usersRaw = data?.data ?? [];
   const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'description');
@@ -253,6 +255,14 @@ export default function SftpUsers() {
 
   const handleDelete = (userId: string) => {
     deleteUser.mutate(userId, { onSuccess: () => setDeleteConfirmId(null) });
+  };
+
+  const handleRegenPassword = async (userId: string) => {
+    try {
+      const result = await updateUser.mutateAsync({ userId, input: { auth_method: 'password' } as UpdateSftpUserInput });
+      const pw = (result.data as SftpUser & { password?: string }).password;
+      if (pw) setRegenPassword({ userId, password: pw });
+    } catch { /* surfaced via updateUser.error */ }
   };
 
   const openEdit = (user: SftpUser) => {
@@ -494,16 +504,38 @@ export default function SftpUsers() {
                     <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{user.description || '\u2014'}</td>
                     <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
                     <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
-                      <span className="flex items-center gap-2">
-                        <KeyRound size={14} className="text-gray-400" />
-                        {user.username}
-                        <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
-                      </span>
+                      <div>
+                        <span className="flex items-center gap-1">
+                          {user.username}
+                          <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
+                        </span>
+                        {regenPassword?.userId === user.id && (
+                          <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-2 py-0.5 text-xs text-amber-900 dark:text-amber-200">{regenPassword.password}</code>
+                            <CopyButton value={regenPassword.password} />
+                            <button type="button" onClick={() => setRegenPassword(null)} className="text-gray-400 hover:text-gray-600"><X size={12} /></button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
                       {hasLinkedKeys
-                        ? `SSH Key (${user.linkedSshKeys!.map((k) => k.name).join(', ')})`
-                        : 'Password'}
+                        ? <span>SSH Key ({user.linkedSshKeys!.map((k) => k.name).join(', ')})</span>
+                        : (
+                          <span className="flex items-center gap-1">
+                            Password
+                            {canManage && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleRegenPassword(user.id); }}
+                                className="rounded p-0.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
+                                title="Regenerate password"
+                              >
+                                <RefreshCw size={12} />
+                              </button>
+                            )}
+                          </span>
+                        )}
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
                       {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
