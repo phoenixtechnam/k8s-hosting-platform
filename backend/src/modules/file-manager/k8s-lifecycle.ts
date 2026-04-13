@@ -130,7 +130,11 @@ export async function ensureFileManagerRunning(
   if (!deployExists) {
     await k8s.apps.createNamespacedDeployment(deployBody);
   } else {
-    await k8s.apps.replaceNamespacedDeployment({ name: FM_NAME, namespace, body: deployBody.body });
+    // Delete and recreate — K8s doesn't allow changing spec.selector on replace
+    try {
+      await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
+    } catch { /* best-effort cleanup */ }
+    await k8s.apps.createNamespacedDeployment(deployBody);
   }
 
   // Ensure SFTP gateway has per-namespace exec permission (Role + RoleBinding).

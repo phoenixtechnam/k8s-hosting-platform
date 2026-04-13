@@ -139,32 +139,37 @@ export async function applyNetworkPolicy(
   k8s: K8sClients,
   namespace: string,
 ): Promise<void> {
-  await k8s.networking.createNamespacedNetworkPolicy({
-    namespace,
-    body: {
-      metadata: {
-        name: 'default-deny-ingress',
-        namespace,
-      },
-      spec: {
-        podSelector: {},
-        policyTypes: ['Ingress'],
-        ingress: [
-          {
-            _from: [
-              {
-                namespaceSelector: {
-                  matchLabels: {
-                    'kubernetes.io/metadata.name': 'ingress-nginx',
+  try {
+    await k8s.networking.createNamespacedNetworkPolicy({
+      namespace,
+      body: {
+        metadata: {
+          name: 'default-deny-ingress',
+          namespace,
+        },
+        spec: {
+          podSelector: {},
+          policyTypes: ['Ingress'],
+          ingress: [
+            {
+              _from: [
+                {
+                  namespaceSelector: {
+                    matchLabels: {
+                      'kubernetes.io/metadata.name': 'ingress-nginx',
+                    },
                   },
                 },
-              },
-            ],
-          },
-        ],
+              ],
+            },
+          ],
+        },
       },
-    },
-  });
+    });
+  } catch (err: unknown) {
+    // Already exists — safe to ignore (policy is immutable)
+    if (!isK8s409(err)) throw err;
+  }
 }
 
 export async function applyPVC(
@@ -173,24 +178,29 @@ export async function applyPVC(
   storageGi: string,
   storageClass: string,
 ): Promise<void> {
-  await k8s.core.createNamespacedPersistentVolumeClaim({
-    namespace,
-    body: {
-      metadata: {
-        name: `${namespace}-storage`,
-        namespace,
-      },
-      spec: {
-        accessModes: ['ReadWriteOnce'],
-        storageClassName: storageClass,
-        resources: {
-          requests: {
-            storage: `${storageGi}Gi`,
+  try {
+    await k8s.core.createNamespacedPersistentVolumeClaim({
+      namespace,
+      body: {
+        metadata: {
+          name: `${namespace}-storage`,
+          namespace,
+        },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          storageClassName: storageClass,
+          resources: {
+            requests: {
+              storage: `${storageGi}Gi`,
+            },
           },
         },
       },
-    },
-  });
+    });
+  } catch (err: unknown) {
+    // Already exists — PVCs are immutable (can't resize in-place without CSI support)
+    if (!isK8s409(err)) throw err;
+  }
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────

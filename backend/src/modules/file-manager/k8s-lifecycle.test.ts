@@ -42,13 +42,13 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
     });
 
-    it('should replace deployment if it already exists', async () => {
+    it('should delete and recreate deployment if it already exists', async () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({});
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
       await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
-      expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
-      expect(mockK8s.apps.replaceNamespacedDeployment).toHaveBeenCalled();
+      expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
+      expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
     });
   });
 
