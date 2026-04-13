@@ -2,20 +2,28 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 function createMockK8sClients(): K8sClients {
+  const notFound = () => Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 });
   return {
     core: {
-      readNamespacedService: vi.fn().mockRejectedValue(Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 })),
+      readNamespacedService: vi.fn().mockRejectedValue(notFound()),
       createNamespacedService: vi.fn().mockResolvedValue({}),
+      readNamespacedSecret: vi.fn().mockRejectedValue(notFound()),
+      createNamespacedSecret: vi.fn().mockResolvedValue({}),
       listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
       deleteNamespacedService: vi.fn().mockResolvedValue({}),
     } as unknown as K8sClients['core'],
     apps: {
-      readNamespacedDeployment: vi.fn().mockRejectedValue(Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 })),
+      readNamespacedDeployment: vi.fn().mockRejectedValue(notFound()),
       createNamespacedDeployment: vi.fn().mockResolvedValue({}),
       deleteNamespacedDeployment: vi.fn().mockResolvedValue({}),
     } as unknown as K8sClients['apps'],
+    rbac: {
+      readNamespacedRole: vi.fn().mockRejectedValue(notFound()),
+      createNamespacedRole: vi.fn().mockResolvedValue({}),
+      createNamespacedRoleBinding: vi.fn().mockResolvedValue({}),
+    } as unknown as K8sClients['rbac'],
     networking: {} as K8sClients['networking'],
-  };
+  } as K8sClients;
 }
 
 describe('File Manager K8s Lifecycle', () => {

@@ -42,13 +42,15 @@ var (
 	internalSecret string
 	httpClient     *http.Client
 
-	// Rate limiting: track failed auth attempts per IP.
-	rateLimiter rateLimitStore
+	// Rate limiting: track failed auth attempts per IP AND per username.
+	rateLimiterIP       rateLimitStore
+	rateLimiterUsername rateLimitStore
 )
 
 const (
-	rateLimitWindow   = 5 * time.Minute
-	rateLimitMaxFails = 5
+	rateLimitWindow          = 5 * time.Minute
+	rateLimitMaxFailsIP      = 5  // per source IP
+	rateLimitMaxFailsUser    = 10 // per username (higher — shared NAT users)
 )
 
 // rateLimitEntry tracks failures for a single IP.
@@ -67,19 +69,35 @@ func InitAuth(url, secret string) {
 	backendURL = url
 	internalSecret = secret
 	httpClient = &http.Client{Timeout: 10 * time.Second}
-	rateLimiter = rateLimitStore{entries: make(map[string]*rateLimitEntry)}
+	rateLimiterIP = rateLimitStore{entries: make(map[string]*rateLimitEntry)}
+	rateLimiterUsername = rateLimitStore{entries: make(map[string]*rateLimitEntry)}
 
 	// Background goroutine to evict stale rate-limit entries.
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			rateLimiter.cleanup()
+			rateLimiterIP.cleanup()
+			rateLimiterUsername.cleanup()
 		}
 	}()
 }
 
 // ---- rate limiter ----------------------------------------------------------
+
+func (r *rateLimitStore) isBlockedAt(key string, maxFails int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.entries[key]
+	if !ok {
+		return false
+	}
+	if time.Since(entry.firstFail) > rateLimitWindow {
+		delete(r.entries, key)
+		return false
+	}
+	return entry.count >= maxFails
+}
 
 func (r *rateLimitStore) isBlocked(ip string) bool {
 	r.mu.Lock()
@@ -93,7 +111,7 @@ func (r *rateLimitStore) isBlocked(ip string) bool {
 		delete(r.entries, ip)
 		return false
 	}
-	return entry.count >= rateLimitMaxFails
+	return entry.count >= rateLimitMaxFailsIP
 }
 
 func (r *rateLimitStore) recordFailure(ip string) {
@@ -129,7 +147,7 @@ func (r *rateLimitStore) cleanup() {
 
 // AuthenticatePassword authenticates a user with username + password.
 func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, error) {
-	if rateLimiter.isBlocked(sourceIP) {
+	if rateLimiterIP.isBlocked(sourceIP) || rateLimiterUsername.isBlockedAt(username, rateLimitMaxFailsUser) {
 		return &AuthResult{Allowed: false}, nil
 	}
 
@@ -141,13 +159,16 @@ func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, err
 
 	result, err := callAuthEndpoint("/api/v1/internal/sftp/auth", body)
 	if err != nil {
-		rateLimiter.recordFailure(sourceIP)
+		rateLimiterIP.recordFailure(sourceIP)
+		rateLimiterUsername.recordFailure(username)
 		return nil, err
 	}
 	if !result.Allowed {
-		rateLimiter.recordFailure(sourceIP)
+		rateLimiterIP.recordFailure(sourceIP)
+		rateLimiterUsername.recordFailure(username)
 	} else {
-		rateLimiter.resetIP(sourceIP)
+		rateLimiterIP.resetIP(sourceIP)
+		rateLimiterUsername.resetIP(username)
 		go UpdateLogin(username, sourceIP)
 	}
 	return result, nil
@@ -155,7 +176,7 @@ func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, err
 
 // AuthenticateKey authenticates a user with an SSH public key fingerprint.
 func AuthenticateKey(username, keyFingerprint, sourceIP string) (*AuthResult, error) {
-	if rateLimiter.isBlocked(sourceIP) {
+	if rateLimiterIP.isBlocked(sourceIP) || rateLimiterUsername.isBlockedAt(username, rateLimitMaxFailsUser) {
 		return &AuthResult{Allowed: false}, nil
 	}
 
@@ -167,13 +188,16 @@ func AuthenticateKey(username, keyFingerprint, sourceIP string) (*AuthResult, er
 
 	result, err := callAuthEndpoint("/api/v1/internal/sftp/auth-key", body)
 	if err != nil {
-		rateLimiter.recordFailure(sourceIP)
+		rateLimiterIP.recordFailure(sourceIP)
+		rateLimiterUsername.recordFailure(username)
 		return nil, err
 	}
 	if !result.Allowed {
-		rateLimiter.recordFailure(sourceIP)
+		rateLimiterIP.recordFailure(sourceIP)
+		rateLimiterUsername.recordFailure(username)
 	} else {
-		rateLimiter.resetIP(sourceIP)
+		rateLimiterIP.resetIP(sourceIP)
+		rateLimiterUsername.resetIP(username)
 		go UpdateLogin(username, sourceIP)
 	}
 	return result, nil

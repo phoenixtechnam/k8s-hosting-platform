@@ -3,6 +3,8 @@ import { z } from 'zod';
 // ─── Input Schemas ──────────────────────────────────────────────────────────
 
 export const createSftpUserSchema = z.object({
+  auth_method: z.enum(['password', 'ssh_key']),
+  ssh_key_ids: z.array(z.string()).optional(),
   description: z.string().max(255).optional(),
   home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').optional(),
   allow_write: z.boolean().optional(),

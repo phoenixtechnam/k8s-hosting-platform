@@ -150,10 +150,10 @@ describe('createSftpUser', () => {
       insert: vi.fn().mockReturnValue({ values: mockValues }),
     };
 
-    const result = await createSftpUser(mockDb as any, 'c1', {});
+    const result = await createSftpUser(mockDb as any, 'c1', { auth_method: 'password' });
     expect(result.username).toMatch(/^[0-9a-f]{8}$/);
-    expect(result.password).toBeDefined();
-    expect(result.password.length).toBe(24);
+    expect((result as any).password).toBeDefined();
+    expect((result as any).password.length).toBe(24);
   });
 });
 

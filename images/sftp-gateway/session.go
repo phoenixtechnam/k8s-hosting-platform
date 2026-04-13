@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log"
@@ -106,8 +107,12 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 		protocol = classifyCommand(*rawCmd)
 	}
 
+	// Generate a cryptographically random session ID.
+	sessIDBytes := make([]byte, 16)
+	rand.Read(sessIDBytes)
+
 	sess := &Session{
-		ID:                    fmt.Sprintf("%s-%d", authResult.ClientID, time.Now().UnixNano()),
+		ID:                    fmt.Sprintf("%x", sessIDBytes),
 		Username:              sshSess.User(),
 		SftpUserID:            authResult.SftpUserID,
 		ClientID:              authResult.ClientID,
@@ -206,19 +211,20 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 
 	switch protocol {
 	case "sftp":
-		// Bind-mount the client PVC into the SFTP jail at /jail/home, then
-		// use sftp-chroot (static Go binary) to chroot + drop to uid 65534
-		// (nobody) + exec sftp-server. Platform dirs (.platform, dev, etc)
-		// have mode 700/711 — invisible to nobody. User sees only /home/.
-		// Sanitize homePath to prevent traversal out of /home.
+		// sftp-chroot (static Go binary) does bind-mount + chroot + uid drop
+		// + exec in a single binary — no shell interpolation, no injection.
+		// The user sees only /home/ (their PVC data). Platform dirs have
+		// mode 711/700 and are invisible to the nobody uid.
 		chrootHome := "/home" + sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
 		if chrootHome == "/home/" {
 			chrootHome = "/home"
 		}
-		return []string{"sh", "-c",
-			"mount --bind /data /jail/home && " +
-				"sftp-chroot /jail /.platform/sftp-server -e -d " + chrootHome + "; " +
-				"umount /jail/home 2>/dev/null"}
+		return []string{
+			"sftp-chroot",
+			"--root", "/jail",
+			"--bind", "/data:/home",
+			"/.platform/sftp-server", "-e", "-d", chrootHome,
+		}
 	case "scp":
 		if rawCmd != nil {
 			return rewriteSCPCommand(*rawCmd, dataRoot)

@@ -720,6 +720,19 @@ export const sftpUsers = pgTable('sftp_users', {
   index('sftp_users_expires_idx').on(table.expiresAt),
 ]);
 
+// ─── SFTP User SSH Keys (scoped to individual SFTP users) ───
+
+export const sftpUserSshKeys = pgTable('sftp_user_ssh_keys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  sftpUserId: varchar('sftp_user_id', { length: 36 }).notNull().references(() => sftpUsers.id, { onDelete: 'cascade' }),
+  sshKeyId: varchar('ssh_key_id', { length: 36 }).notNull().references(() => sshKeys.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('sftp_user_ssh_keys_unique').on(table.sftpUserId, table.sshKeyId),
+  index('sftp_user_ssh_keys_user_idx').on(table.sftpUserId),
+  index('sftp_user_ssh_keys_key_idx').on(table.sshKeyId),
+]);
+
 // ─── SFTP Audit Log ───
 
 export const sftpAuditLog = pgTable('sftp_audit_log', {

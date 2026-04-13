@@ -7,41 +7,53 @@ import (
 
 func TestBuildCommand_SFTP(t *testing.T) {
 	tests := []struct {
-		name         string
-		homePath     string
-		wantContains string // substring expected in the sh -c command
+		name     string
+		homePath string
+		wantDir  string // expected -d argument
 	}{
-		{"root homePath", "/", "-d /home;"},
-		{"subdirectory homePath", "/public_html", "-d /home/public_html;"},
-		{"empty homePath defaults to root", "", "-d /home;"},
-		{"traversal into .platform sanitized", "/../.platform", "-d /home;"},
-		{"double traversal sanitized", "/../../etc", "-d /home;"},
-		{"relative traversal sanitized", "../../etc/passwd", "-d /home/etc/passwd;"},
+		{"root homePath", "/", "/home"},
+		{"subdirectory homePath", "/public_html", "/home/public_html"},
+		{"empty homePath defaults to root", "", "/home"},
+		{"traversal into .platform sanitized", "/../.platform", "/home"},
+		{"double traversal sanitized", "/../../etc", "/home"},
+		{"relative traversal sanitized", "../../etc/passwd", "/home/etc/passwd"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildCommand("sftp", nil, tt.homePath)
-			if len(got) != 3 || got[0] != "sh" || got[1] != "-c" {
-				t.Fatalf("buildCommand(sftp) should be [sh -c <cmd>], got %v", got)
+			// Must be direct argument array, NOT sh -c (prevents shell injection)
+			if got[0] == "sh" {
+				t.Fatal("SFTP must not use sh -c — use sftp-chroot binary directly")
 			}
-			shellCmd := got[2]
-			if !strings.Contains(shellCmd, tt.wantContains) {
-				t.Errorf("shell command %q should contain %q", shellCmd, tt.wantContains)
+			if got[0] != "sftp-chroot" {
+				t.Fatalf("expected sftp-chroot, got %q", got[0])
 			}
-			// Must bind-mount PVC into jail
-			if !strings.Contains(shellCmd, "mount --bind /data /jail/home") {
-				t.Error("missing bind mount")
+			// Check --root, --bind flags
+			assertContains(t, got, "--root")
+			assertContains(t, got, "--bind")
+			assertContains(t, got, "/data:/home")
+			// Check -d flag value
+			for i, arg := range got {
+				if arg == "-d" && i+1 < len(got) {
+					if got[i+1] != tt.wantDir {
+						t.Errorf("-d = %q, want %q", got[i+1], tt.wantDir)
+					}
+					return
+				}
 			}
-			// Must use sftp-chroot for privilege drop
-			if !strings.Contains(shellCmd, "sftp-chroot /jail") {
-				t.Error("missing sftp-chroot call")
-			}
-			// Must unmount after session
-			if !strings.Contains(shellCmd, "umount /jail/home") {
-				t.Error("missing unmount cleanup")
-			}
+			t.Error("missing -d flag in command")
 		})
 	}
+}
+
+func assertContains(t *testing.T, args []string, want string) {
+	t.Helper()
+	for _, a := range args {
+		if a == want || strings.Contains(a, want) {
+			return
+		}
+	}
+	t.Errorf("args %v should contain %q", args, want)
 }
 
 func TestBuildCommand_SCP(t *testing.T) {

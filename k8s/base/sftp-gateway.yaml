@@ -38,58 +38,10 @@ subjects:
     name: sftp-gateway
     namespace: platform-system
 ---
-# Per-namespace exec Role — the backend provisioner must create this Role
-# and RoleBinding in each client-* namespace when the namespace is created.
-# This template is applied by the provisioner, NOT directly by kustomize.
-# Kept here as documentation of the required permissions.
-#
-# apiVersion: rbac.authorization.k8s.io/v1
-# kind: Role
-# metadata:
-#   name: sftp-gateway-exec
-#   namespace: client-<id>
-# rules:
-#   - apiGroups: [""]
-#     resources: ["pods/exec"]
-#     verbs: ["create"]
-# ---
-# apiVersion: rbac.authorization.k8s.io/v1
-# kind: RoleBinding
-# metadata:
-#   name: sftp-gateway-exec
-#   namespace: client-<id>
-# roleRef:
-#   apiGroup: rbac.authorization.k8s.io
-#   kind: Role
-#   name: sftp-gateway-exec
-# subjects:
-#   - kind: ServiceAccount
-#     name: sftp-gateway
-#     namespace: platform-system
-#
-# TEMPORARY: Until the provisioner creates per-namespace Roles, a ClusterRole
-# is used. Remove this once per-namespace RBAC is provisioned automatically.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: sftp-gateway-exec
-rules:
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: sftp-gateway-exec
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: sftp-gateway-exec
-subjects:
-  - kind: ServiceAccount
-    name: sftp-gateway
-    namespace: platform-system
+# Per-namespace exec Role — created automatically by the backend provisioner
+# in k8s-lifecycle.ts when ensureFileManagerRunning() is called. Each client
+# namespace gets its own Role+RoleBinding scoping pod/exec to that namespace
+# only. No cluster-wide exec ClusterRole exists.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -120,27 +72,9 @@ spec:
               name: ftps
             - containerPort: 8080
               name: health
-            # FTPS passive data ports (30000-30009)
-            - containerPort: 30000
-              name: ftps-pasv-0
-            - containerPort: 30001
-              name: ftps-pasv-1
-            - containerPort: 30002
-              name: ftps-pasv-2
-            - containerPort: 30003
-              name: ftps-pasv-3
-            - containerPort: 30004
-              name: ftps-pasv-4
-            - containerPort: 30005
-              name: ftps-pasv-5
-            - containerPort: 30006
-              name: ftps-pasv-6
-            - containerPort: 30007
-              name: ftps-pasv-7
-            - containerPort: 30008
-              name: ftps-pasv-8
-            - containerPort: 30009
-              name: ftps-pasv-9
+            # FTPS passive data ports (30000-30099) are negotiated directly
+            # via the FTPS protocol. The LoadBalancer with externalTrafficPolicy
+            # handles them without explicit containerPort entries.
           env:
             - name: BACKEND_URL
               value: "http://backend.platform-system:3000"
@@ -215,34 +149,7 @@ spec:
     - port: 2121
       targetPort: 2121
       name: ftps
-    # FTPS passive data ports
-    - port: 30000
-      targetPort: 30000
-      name: ftps-pasv-0
-    - port: 30001
-      targetPort: 30001
-      name: ftps-pasv-1
-    - port: 30002
-      targetPort: 30002
-      name: ftps-pasv-2
-    - port: 30003
-      targetPort: 30003
-      name: ftps-pasv-3
-    - port: 30004
-      targetPort: 30004
-      name: ftps-pasv-4
-    - port: 30005
-      targetPort: 30005
-      name: ftps-pasv-5
-    - port: 30006
-      targetPort: 30006
-      name: ftps-pasv-6
-    - port: 30007
-      targetPort: 30007
-      name: ftps-pasv-7
-    - port: 30008
-      targetPort: 30008
-      name: ftps-pasv-8
-    - port: 30009
-      targetPort: 30009
-      name: ftps-pasv-9
+    # FTPS passive data ports (30000-30099) are handled by the
+    # LoadBalancer with externalTrafficPolicy. They do not need
+    # individual Service port entries — the FTP client negotiates
+    # the data port directly with the gateway pod's IP.

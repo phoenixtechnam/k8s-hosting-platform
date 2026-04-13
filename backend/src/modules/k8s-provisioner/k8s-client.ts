@@ -6,6 +6,7 @@ export interface K8sClients {
   readonly networking: k8s.NetworkingV1Api;
   readonly custom: k8s.CustomObjectsApi;
   readonly batch: k8s.BatchV1Api;
+  readonly rbac: k8s.RbacAuthorizationV1Api;
 }
 
 /**
@@ -27,5 +28,6 @@ export function createK8sClients(kubeconfigPath?: string): K8sClients {
     networking: kc.makeApiClient(k8s.NetworkingV1Api),
     custom: kc.makeApiClient(k8s.CustomObjectsApi),
     batch: kc.makeApiClient(k8s.BatchV1Api),
+    rbac: kc.makeApiClient(k8s.RbacAuthorizationV1Api),
   };
 }

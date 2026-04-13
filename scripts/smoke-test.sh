@@ -828,7 +828,7 @@ if [[ -n "$SFTP_CLIENT_ID" ]]; then
   # Create
   SFTP_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
-    -d "{\"description\":\"smoke-test-$(date +%s)\"}" \
+    -d "{\"auth_method\":\"password\",\"description\":\"smoke-test-$(date +%s)\"}" \
     "${API_URL}/api/v1/clients/${SFTP_CLIENT_ID}/sftp-users")
   SFTP_CREATE_CODE=$(echo "$SFTP_CREATE_RESPONSE" | tail -1)
   SFTP_CREATE_BODY=$(echo "$SFTP_CREATE_RESPONSE" | head -n -1)

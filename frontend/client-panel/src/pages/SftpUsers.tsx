@@ -11,6 +11,7 @@ import {
   useDeleteSftpUser, useRotateSftpPassword, useSftpConnectionInfo,
   useSftpAuditLog, type SftpUser,
 } from '@/hooks/use-sftp-users';
+import { useSshKeys } from '@/hooks/use-ssh-keys';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
@@ -195,25 +196,47 @@ export default function SftpUsers() {
   const deleteUser = useDeleteSftpUser(clientId ?? undefined);
   const rotatePassword = useRotateSftpPassword(clientId ?? undefined);
 
+  const sshKeysQuery = useSshKeys(clientId ?? undefined);
+  const sshKeysList = sshKeysQuery.data?.data ?? [];
+
   const [showForm, setShowForm] = useState(false);
   const [description, setDescription] = useState('');
+  const [authMethod, setAuthMethod] = useState<'password' | 'ssh_key'>('password');
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState<{ password: string; username: string } | null>(null);
+  const [newSshKeyUser, setNewSshKeyUser] = useState<{ username: string } | null>(null);
   const [rotateUserId, setRotateUserId] = useState<string | null>(null);
   const [rotatedPassword, setRotatedPassword] = useState<string | null>(null);
 
   const usersRaw = data?.data ?? [];
   const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'username');
 
+  const toggleKeySelection = (keyId: string) => {
+    setSelectedKeyIds((prev) =>
+      prev.includes(keyId)
+        ? prev.filter((id) => id !== keyId)
+        : [...prev, keyId],
+    );
+  };
+
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
       const result = await createUser.mutateAsync({
+        auth_method: authMethod,
+        ssh_key_ids: authMethod === 'ssh_key' ? selectedKeyIds : undefined,
         description: description.trim() || undefined,
       });
       const created = result.data as SftpUser & { password?: string };
-      setNewPassword({ password: created.password ?? '', username: created.username });
+      if (authMethod === 'password') {
+        setNewPassword({ password: created.password ?? '', username: created.username });
+      } else {
+        setNewSshKeyUser({ username: created.username });
+      }
       setDescription('');
+      setAuthMethod('password');
+      setSelectedKeyIds([]);
       setShowForm(false);
     } catch { /* surfaced via createUser.error */ }
   };
@@ -276,6 +299,24 @@ export default function SftpUsers() {
         </div>
       )}
 
+      {/* SSH key user created alert (no password) */}
+      {newSshKeyUser && (
+        <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm font-medium text-blue-800 dark:text-blue-300">SSH key user created successfully.</p>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-blue-600 dark:text-blue-400 w-16">Username</span>
+                <code className="rounded bg-blue-100 dark:bg-blue-800/40 px-3 py-1 text-sm font-mono text-blue-900 dark:text-blue-200">{newSshKeyUser.username}</code>
+                <CopyButton value={newSshKeyUser.username} />
+              </div>
+              <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">This user authenticates via SSH key. No password was generated.</p>
+            </div>
+            <button type="button" onClick={() => setNewSshKeyUser(null)} className="text-blue-400 hover:text-blue-600"><X size={16} /></button>
+          </div>
+        </div>
+      )}
+
       {/* Rotated password alert */}
       {rotatedPassword && rotateUserId && (
         <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
@@ -322,10 +363,72 @@ export default function SftpUsers() {
               className={INPUT_CLASS}
             />
           </div>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            A unique username and secure password will be auto-generated.
-            You can also authenticate using SSH keys from the SSH Keys page (SFTP, SCP, rsync only).
-          </p>
+
+          {/* Auth method selector */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Authentication Method</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name="auth_method"
+                  value="password"
+                  checked={authMethod === 'password'}
+                  onChange={() => { setAuthMethod('password'); setSelectedKeyIds([]); }}
+                  className="text-brand-500 focus:ring-brand-500"
+                />
+                Password (auto-generated)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="radio"
+                  name="auth_method"
+                  value="ssh_key"
+                  checked={authMethod === 'ssh_key'}
+                  onChange={() => setAuthMethod('ssh_key')}
+                  className="text-brand-500 focus:ring-brand-500"
+                />
+                SSH Key
+              </label>
+            </div>
+          </div>
+
+          {/* SSH key selection */}
+          {authMethod === 'ssh_key' && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Select SSH Keys</label>
+              {sshKeysList.length === 0 ? (
+                <p className="text-xs text-amber-600 dark:text-amber-400">No SSH keys found. Add keys on the SSH Keys page first.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-lg p-2">
+                  {sshKeysList.map((key) => (
+                    <label key={key.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded px-1 py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedKeyIds.includes(key.id)}
+                        onChange={() => toggleKeySelection(key.id)}
+                        className="rounded text-brand-500 focus:ring-brand-500"
+                      />
+                      <KeyRound size={12} className="text-gray-400 flex-shrink-0" />
+                      <span className="truncate">{key.name}</span>
+                      <span className="text-xs text-gray-400 ml-auto flex-shrink-0">{key.keyAlgorithm ?? ''}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {authMethod === 'password' && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              A unique username and secure password will be auto-generated.
+            </p>
+          )}
+          {authMethod === 'ssh_key' && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              A unique username will be auto-generated. Authentication will use the selected SSH keys (SFTP, SCP, rsync only).
+            </p>
+          )}
           {createUser.error && (
             <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
               <AlertCircle size={14} /> {(createUser.error as Error).message}
@@ -333,7 +436,7 @@ export default function SftpUsers() {
           )}
           <button
             type="submit"
-            disabled={createUser.isPending}
+            disabled={createUser.isPending || (authMethod === 'ssh_key' && selectedKeyIds.length === 0)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
           >
             {createUser.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create User

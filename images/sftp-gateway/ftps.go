@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ func StartFTPS(port int, certPath, keyPath string, sessionMgr *SessionManager) e
 		KeyFile:      keyPath,
 		ExplicitFTPS: true,
 		ForceTLS:     true,
-		PassivePorts: "30000-30009",
+		PassivePorts: "30000-30099",
 		Driver:       driver,
 		Auth:         &ftpsAuth{sessionMgr: sessionMgr},
 		Perm:         ftpserver.NewSimplePerm("owner", "group"),
@@ -93,8 +94,10 @@ func (a *ftpsAuth) CheckPasswd(ctx *ftpserver.Context, username, password string
 	}
 
 	// Register FTPS session for concurrency tracking.
+	ftpsSessID := make([]byte, 16)
+	rand.Read(ftpsSessID)
 	sess := &Session{
-		ID:                    fmt.Sprintf("ftps-%s-%d", result.ClientID, time.Now().UnixNano()),
+		ID:                    fmt.Sprintf("%x", ftpsSessID),
 		Username:              username,
 		SftpUserID:            result.SftpUserID,
 		ClientID:              result.ClientID,

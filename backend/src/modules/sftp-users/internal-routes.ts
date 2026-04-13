@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import net from 'net';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
-import { sftpUsers, sftpAuditLog, clients, sshKeys } from '../../db/schema.js';
+import { sftpUsers, sftpAuditLog, sftpUserSshKeys, clients, sshKeys } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { recordFileManagerAccess } from '../file-manager/idle-cleanup.js';
@@ -34,7 +34,7 @@ const auditEventSchema = z.object({
   session_id: z.string().optional(),
   duration_seconds: z.number().optional(),
   bytes_transferred: z.number().optional(),
-  error_message: z.string().max(2000).optional(),
+  error_message: z.string().max(512).optional(),
 });
 
 const auditBatchSchema = z.object({
@@ -240,18 +240,19 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
       return success({ allowed: false });
     }
 
-    // Look up SSH key by fingerprint for this client
-    const [key] = await app.db
+    // Look up SSH key by fingerprint scoped to this specific SFTP user
+    const [keyLink] = await app.db
       .select()
-      .from(sshKeys)
+      .from(sftpUserSshKeys)
+      .innerJoin(sshKeys, eq(sshKeys.id, sftpUserSshKeys.sshKeyId))
       .where(
         and(
-          eq(sshKeys.clientId, user.clientId),
+          eq(sftpUserSshKeys.sftpUserId, user.id),
           eq(sshKeys.keyFingerprint, public_key_fingerprint),
         ),
       );
 
-    if (!key) {
+    if (!keyLink) {
       return success({ allowed: false });
     }
 

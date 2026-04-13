@@ -38,6 +38,24 @@ export async function ensureFileManagerRunning(
     if (!isK8s404(err)) throw err;
   }
 
+  // Ensure the platform-internal Secret exists in this namespace
+  const INTERNAL_SECRET_NAME = 'platform-internal';
+  try {
+    await k8s.core.readNamespacedSecret({ name: INTERNAL_SECRET_NAME, namespace });
+  } catch (err: unknown) {
+    if (!isK8s404(err)) throw err;
+    if (process.env.PLATFORM_INTERNAL_SECRET) {
+      await k8s.core.createNamespacedSecret({
+        namespace,
+        body: {
+          metadata: { name: INTERNAL_SECRET_NAME, namespace },
+          type: 'Opaque',
+          stringData: { PLATFORM_INTERNAL_SECRET: process.env.PLATFORM_INTERNAL_SECRET },
+        },
+      });
+    }
+  }
+
   if (!deployExists) {
     await k8s.apps.createNamespacedDeployment({
       namespace,
@@ -55,16 +73,19 @@ export async function ensureFileManagerRunning(
                 imagePullPolicy: 'IfNotPresent',
                 ports: [{ containerPort: FM_PORT }],
                 env: [
-                  // Phase 3 T5.1: shared secret for the platform
-                  // bypass header. Passed through from the backend's
-                  // own env. If unset, the sidecar fails closed and
-                  // hidden paths become unreachable via HTTP.
-                  ...(process.env.PLATFORM_INTERNAL_SECRET
-                    ? [{
-                        name: 'PLATFORM_INTERNAL_SECRET',
-                        value: process.env.PLATFORM_INTERNAL_SECRET,
-                      }]
-                    : []),
+                  // Phase 3 T5.1: shared secret for the platform bypass header.
+                  // Referenced from a K8s Secret (never as literal env value).
+                  // The provisioner creates this Secret in the namespace.
+                  {
+                    name: 'PLATFORM_INTERNAL_SECRET',
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: 'platform-internal',
+                        key: 'PLATFORM_INTERNAL_SECRET',
+                        optional: true,
+                      },
+                    },
+                  },
                 ],
                 securityContext: {
                   // SYS_ADMIN is required for the SFTP chroot jail: the gateway
@@ -106,6 +127,46 @@ export async function ensureFileManagerRunning(
             },
           },
         },
+      },
+    });
+  }
+
+  // Ensure SFTP gateway has per-namespace exec permission (Role + RoleBinding).
+  // This scopes pod/exec to THIS namespace only — no cluster-wide exec.
+  const SFTP_EXEC_ROLE = 'sftp-gateway-exec';
+  let roleExists = false;
+  try {
+    await k8s.rbac.readNamespacedRole({ name: SFTP_EXEC_ROLE, namespace });
+    roleExists = true;
+  } catch (err: unknown) {
+    if (!isK8s404(err)) throw err;
+  }
+  if (!roleExists) {
+    await k8s.rbac.createNamespacedRole({
+      namespace,
+      body: {
+        metadata: { name: SFTP_EXEC_ROLE, namespace },
+        rules: [{
+          apiGroups: [''],
+          resources: ['pods/exec'],
+          verbs: ['create'],
+        }],
+      },
+    });
+    await k8s.rbac.createNamespacedRoleBinding({
+      namespace,
+      body: {
+        metadata: { name: SFTP_EXEC_ROLE, namespace },
+        roleRef: {
+          apiGroup: 'rbac.authorization.k8s.io',
+          kind: 'Role',
+          name: SFTP_EXEC_ROLE,
+        },
+        subjects: [{
+          kind: 'ServiceAccount',
+          name: 'sftp-gateway',
+          namespace: 'platform-system',
+        }],
       },
     });
   }

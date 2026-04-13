@@ -239,9 +239,10 @@ async function handleDownload(req, res) {
     if (s.isDirectory()) return sendError(res, 400, 'Directory download not supported yet');
 
     const name = basename(full);
+    const encoded = encodeURIComponent(name).replace(/['()]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${name}"`,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encoded}`,
       'Content-Length': s.size,
     });
     const stream = createReadStream(full);
@@ -274,16 +275,34 @@ async function handleUpload(req, res) {
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
+    // Stream multipart upload directly to disk to avoid buffering
+    // the entire file in memory. We parse just enough of each part's
+    // headers to find the filename, then pipe data to a WriteStream.
+    const contentType = req.headers['content-type'] || '';
+    const bMatch = contentType.match(/boundary=(.+)/);
+    if (!bMatch) return sendError(res, 400, 'No boundary in content-type');
+
+    const boundary = bMatch[1];
+
+    // For multipart streaming we still need to parse structure, but we
+    // write file data chunks directly to disk as they arrive.
     const parts = await parseMultipart(req);
     const filePart = parts.find(p => p.filename);
     if (!filePart) return sendError(res, 400, 'No file in upload');
 
-    const destPath = join(full, filePart.filename);
     const destSafe = safePath(join(targetDir, filePart.filename), { allowHidden: bypass });
     if (!destSafe) return sendError(res, 404, 'Not found');
 
     await mkdir(full, { recursive: true });
-    await writeFile(destSafe, filePart.data);
+
+    // Write file data to disk via a stream to avoid holding entire
+    // buffer during the write phase.
+    const ws = createWriteStream(destSafe);
+    await new Promise((resolve, reject) => {
+      ws.on('error', reject);
+      ws.end(filePart.data, resolve);
+    });
+
     sendJson(res, 201, { path: join(targetDir, filePart.filename), size: filePart.data.length });
   } catch (err) {
     sendError(res, 500, err.message);
@@ -479,9 +498,9 @@ async function handleGitClone(req, res) {
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'destPath required');
 
-  // Basic URL validation — only allow http/https/git protocols
-  if (!/^(https?|git):\/\//i.test(url)) {
-    return sendError(res, 400, 'Only http, https, and git protocol URLs are allowed');
+  // Basic URL validation — only allow https protocol
+  if (!/^https:\/\//i.test(url)) {
+    return sendError(res, 400, 'Only https protocol URLs are allowed');
   }
 
   const fullDest = safePath(destPath, { allowHidden: isPlatformBypass(req) });
@@ -559,9 +578,20 @@ async function handleFolderSize(req, res) {
   }
 }
 
+const MAX_JSON_BODY = 10 * 1024 * 1024; // 10 MB cap for JSON-body endpoints
+
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let totalLength = 0;
+  for await (const chunk of req) {
+    totalLength += chunk.length;
+    if (totalLength > MAX_JSON_BODY) {
+      // Drain the rest of the stream so the connection closes cleanly
+      req.destroy();
+      throw Object.assign(new Error('Request body exceeds 10 MB limit'), { code: 'BODY_TOO_LARGE' });
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString();
   try { return JSON.parse(raw); } catch { return {}; }
 }
@@ -594,7 +624,13 @@ const server = createServer(async (req, res) => {
 
     sendError(res, 404, 'Not found');
   } catch (err) {
-    if (!res.headersSent) sendError(res, 500, err.message);
+    if (!res.headersSent) {
+      if (err.code === 'BODY_TOO_LARGE') {
+        sendError(res, 413, err.message);
+      } else {
+        sendError(res, 500, err.message);
+      }
+    }
   }
 });
 

@@ -1,14 +1,24 @@
 import { eq, and, desc, count } from 'drizzle-orm';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { sftpUsers, sftpAuditLog, platformSettings } from '../../db/schema.js';
+import { sftpUsers, sftpAuditLog, sftpUserSshKeys, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
 
 const BCRYPT_COST = 12;
+const HOME_PATH_REGEX = /^[a-zA-Z0-9/_.-]*$/;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+function validateHomePath(path: string): void {
+  if (path.includes('..')) {
+    throw new ApiError('INVALID_HOME_PATH', 'home_path must not contain ".."', 400);
+  }
+  if (!HOME_PATH_REGEX.test(path)) {
+    throw new ApiError('INVALID_HOME_PATH', 'home_path contains invalid characters — only alphanumeric, /, _, ., and - are allowed', 400);
+  }
+}
 
 export function generateSecurePassword(length = 24): string {
   // base64url: 3 bytes -> 4 chars, so generate enough bytes
@@ -67,6 +77,20 @@ function generateUsername(): string {
 }
 
 export async function createSftpUser(db: Database, clientId: string, input: CreateSftpUserInput) {
+  // Validate home_path at the service layer (defense-in-depth beyond Zod)
+  if (input.home_path) {
+    validateHomePath(input.home_path);
+  }
+
+  const authMethod = input.auth_method;
+
+  // SSH key auth requires at least one key
+  if (authMethod === 'ssh_key') {
+    if (!input.ssh_key_ids || input.ssh_key_ids.length === 0) {
+      throw new ApiError('SSH_KEYS_REQUIRED', 'At least one SSH key is required when using ssh_key auth method', 400);
+    }
+  }
+
   // Auto-generate a unique 8-char hex username (clients cannot choose)
   let username = generateUsername();
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -78,9 +102,15 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
     username = generateUsername();
   }
 
-  const plainPassword = generateSecurePassword(24);
-  const passwordHash = await bcrypt.hash(plainPassword, BCRYPT_COST);
   const id = crypto.randomUUID();
+
+  // Password auth: generate password; SSH key auth: no password
+  let plainPassword: string | undefined;
+  let passwordHash: string | null = null;
+  if (authMethod === 'password') {
+    plainPassword = generateSecurePassword(24);
+    passwordHash = await bcrypt.hash(plainPassword, BCRYPT_COST);
+  }
 
   await db.insert(sftpUsers).values({
     id,
@@ -97,8 +127,25 @@ export async function createSftpUser(db: Database, clientId: string, input: Crea
     expiresAt: input.expires_at ? new Date(input.expires_at) : null,
   });
 
+  // Link SSH keys to this SFTP user
+  if (authMethod === 'ssh_key' && input.ssh_key_ids) {
+    for (const sshKeyId of input.ssh_key_ids) {
+      await db.insert(sftpUserSshKeys).values({
+        id: crypto.randomUUID(),
+        sftpUserId: id,
+        sshKeyId,
+      });
+    }
+  }
+
   const [created] = await db.select().from(sftpUsers).where(eq(sftpUsers.id, id));
-  return { ...mapSftpUserToResponse(created), password: plainPassword };
+  const response = mapSftpUserToResponse(created);
+
+  // Only include password for password-based auth
+  if (authMethod === 'password' && plainPassword) {
+    return { ...response, password: plainPassword };
+  }
+  return response;
 }
 
 export async function updateSftpUser(
@@ -115,6 +162,11 @@ export async function updateSftpUser(
 
   if (!existing) {
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
+  }
+
+  // Validate home_path at the service layer (defense-in-depth beyond Zod)
+  if (input.home_path !== undefined && input.home_path !== null) {
+    validateHomePath(input.home_path);
   }
 
   const updates: Record<string, unknown> = {};
