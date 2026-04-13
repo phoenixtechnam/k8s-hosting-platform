@@ -1,16 +1,17 @@
 import { useState, type FormEvent } from 'react';
 import {
   HardDrive, Plus, Trash2, Loader2, AlertCircle, X, Copy, Check,
-  RefreshCw, Shield, Clock, KeyRound, ChevronDown, ChevronUp,
+  Shield, Clock, KeyRound, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import {
   useSftpUsers, useCreateSftpUser, useUpdateSftpUser,
-  useDeleteSftpUser, useRotateSftpPassword, useSftpConnectionInfo,
+  useDeleteSftpUser, useSftpConnectionInfo,
   useSftpAuditLog, type SftpUser,
 } from '@/hooks/use-sftp-users';
+import type { UpdateSftpUserInput } from '@k8s-hosting/api-contracts';
 import { useSshKeys } from '@/hooks/use-ssh-keys';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -194,7 +195,6 @@ export default function SftpUsers() {
   const createUser = useCreateSftpUser(clientId ?? undefined);
   const updateUser = useUpdateSftpUser(clientId ?? undefined);
   const deleteUser = useDeleteSftpUser(clientId ?? undefined);
-  const rotatePassword = useRotateSftpPassword(clientId ?? undefined);
 
   const sshKeysQuery = useSshKeys(clientId ?? undefined);
   const sshKeysList = sshKeysQuery.data?.data ?? [];
@@ -206,9 +206,14 @@ export default function SftpUsers() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState<{ password: string; username: string } | null>(null);
   const [newSshKeyUser, setNewSshKeyUser] = useState<{ username: string } | null>(null);
-  const [rotatedPasswordForUser, setRotatedPasswordForUser] = useState<{ userId: string; password: string } | null>(null);
-  const [editUserId, setEditUserId] = useState<string | null>(null);
-  const [editSelectedKeyIds, setEditSelectedKeyIds] = useState<string[]>([]);
+
+  // Unified edit modal state
+  const [editUser, setEditUser] = useState<SftpUser | null>(null);
+  const [editAuthMethod, setEditAuthMethod] = useState<'password' | 'ssh_key'>('password');
+  const [editKeyIds, setEditKeyIds] = useState<string[]>([]);
+  const [editDescription, setEditDescription] = useState('');
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [editResult, setEditResult] = useState<{ password?: string } | null>(null);
 
   const usersRaw = data?.data ?? [];
   const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'description');
@@ -250,39 +255,38 @@ export default function SftpUsers() {
     deleteUser.mutate(userId, { onSuccess: () => setDeleteConfirmId(null) });
   };
 
-  const handleRotate = async (userId: string) => {
+  const openEdit = (user: SftpUser) => {
+    setEditUser(user);
+    setEditAuthMethod(user.linkedSshKeys && user.linkedSshKeys.length > 0 ? 'ssh_key' : 'password');
+    setEditKeyIds(user.linkedSshKeys?.map(k => k.id) ?? []);
+    setEditDescription(user.description || '');
+    setEditEnabled(user.enabled);
+    setEditResult(null);
+  };
+
+  const handleEditSave = async () => {
+    if (!editUser) return;
     try {
-      const result = await rotatePassword.mutateAsync({ userId });
-      setRotatedPasswordForUser({ userId, password: result.data.password });
-    } catch { /* surfaced via rotatePassword.error */ }
-  };
-
-  const editUser = editUserId ? usersRaw.find((u) => u.id === editUserId) : null;
-
-  const openEditModal = (user: SftpUser) => {
-    if (!user.linkedSshKeys || user.linkedSshKeys.length === 0) return;
-    setEditUserId(user.id);
-    setEditSelectedKeyIds(user.linkedSshKeys.map((k) => k.id));
-  };
-
-  const toggleEditKeySelection = (keyId: string) => {
-    setEditSelectedKeyIds((prev) =>
-      prev.includes(keyId)
-        ? prev.filter((id) => id !== keyId)
-        : [...prev, keyId],
-    );
-  };
-
-  const handleEditSave = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!editUserId) return;
-    try {
-      await updateUser.mutateAsync({
-        userId: editUserId,
-        input: { ssh_key_ids: editSelectedKeyIds },
-      });
-      setEditUserId(null);
-    } catch { /* surfaced via updateUser.error */ }
+      const input: Record<string, unknown> = {
+        description: editDescription,
+        enabled: editEnabled,
+      };
+      // Only send auth_method if it changed
+      const currentMethod = editUser.linkedSshKeys && editUser.linkedSshKeys.length > 0 ? 'ssh_key' : 'password';
+      if (editAuthMethod !== currentMethod || editAuthMethod === 'ssh_key') {
+        input.auth_method = editAuthMethod;
+        if (editAuthMethod === 'ssh_key') {
+          input.ssh_key_ids = editKeyIds;
+        }
+      }
+      const result = await updateUser.mutateAsync({ userId: editUser.id, input: input as UpdateSftpUserInput });
+      const data = result.data as SftpUser & { password?: string };
+      if (data.password) {
+        setEditResult({ password: data.password });
+      } else {
+        setEditUser(null); // close on success if no password to show
+      }
+    } catch { /* error surfaced via updateUser.error */ }
   };
 
   return (
@@ -484,26 +488,17 @@ export default function SftpUsers() {
                 return (
                   <tr
                     key={user.id}
-                    className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50', hasLinkedKeys && 'cursor-pointer')}
-                    onClick={() => { if (hasLinkedKeys) openEditModal(user); }}
+                    className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
+                    onClick={() => openEdit(user)}
                   >
                     <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{user.description || '\u2014'}</td>
                     <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
                     <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
-                      <div>
-                        <span className="flex items-center gap-2">
-                          <KeyRound size={14} className="text-gray-400" />
-                          {user.username}
-                          <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
-                        </span>
-                        {rotatedPasswordForUser?.userId === user.id && (
-                          <div className="mt-1 flex items-center gap-1 text-xs" onClick={(e) => e.stopPropagation()}>
-                            <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-2 py-0.5 font-mono text-amber-900 dark:text-amber-200">{rotatedPasswordForUser.password}</code>
-                            <CopyButton value={rotatedPasswordForUser.password} />
-                            <button type="button" onClick={() => setRotatedPasswordForUser(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Dismiss"><X size={12} /></button>
-                          </div>
-                        )}
-                      </div>
+                      <span className="flex items-center gap-2">
+                        <KeyRound size={14} className="text-gray-400" />
+                        {user.username}
+                        <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
                       {hasLinkedKeys
@@ -529,16 +524,6 @@ export default function SftpUsers() {
                           >
                             {user.enabled ? 'Disable' : 'Enable'}
                           </button>
-                          {!hasLinkedKeys && (
-                            <button
-                              type="button"
-                              onClick={() => handleRotate(user.id)}
-                              className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
-                              title="Rotate password"
-                            >
-                              <RefreshCw size={14} />
-                            </button>
-                          )}
                           {deleteConfirmId === user.id ? (
                             <div className="flex items-center gap-1">
                               <button type="button" onClick={() => handleDelete(user.id)} className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600">Delete</button>
@@ -568,21 +553,81 @@ export default function SftpUsers() {
       {/* Audit log */}
       {clientId && <AuditLogSection clientId={clientId} />}
 
-      {/* Edit SSH keys modal for SSH key users */}
+      {/* Unified edit modal */}
       {editUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setEditUserId(null)}>
-          <div className="w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit SSH Keys for {editUser.username}</h2>
-              <button type="button" onClick={() => setEditUserId(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={18} /></button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !editResult && setEditUser(null)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit SFTP User</h3>
+              <button type="button" onClick={() => setEditUser(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={18} /></button>
             </div>
-            <div className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-              <p><strong>Description:</strong> {editUser.description || '\u2014'}</p>
-              <p><strong>Username:</strong> <code className="font-mono">{editUser.username}</code></p>
+
+            {/* Username (read-only) */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Username</label>
+              <div className="flex items-center gap-2">
+                <code className="rounded bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100">{editUser.username}</code>
+                <CopyButton value={editUser.username} />
+              </div>
             </div>
-            <form onSubmit={handleEditSave} className="space-y-4">
+
+            {/* Description */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description</label>
+              <input
+                type="text"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+
+            {/* Enabled toggle */}
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editEnabled}
+                  onChange={(e) => setEditEnabled(e.target.checked)}
+                  className="rounded text-brand-500 focus:ring-brand-500"
+                />
+                Enabled
+              </label>
+            </div>
+
+            {/* Auth Method radio */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Authentication Method</label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="edit_auth_method"
+                    value="password"
+                    checked={editAuthMethod === 'password'}
+                    onChange={() => setEditAuthMethod('password')}
+                    className="text-brand-500 focus:ring-brand-500"
+                  />
+                  Password
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="edit_auth_method"
+                    value="ssh_key"
+                    checked={editAuthMethod === 'ssh_key'}
+                    onChange={() => setEditAuthMethod('ssh_key')}
+                    className="text-brand-500 focus:ring-brand-500"
+                  />
+                  SSH Key
+                </label>
+              </div>
+            </div>
+
+            {/* SSH Key selection (when SSH Key auth selected) */}
+            {editAuthMethod === 'ssh_key' && (
               <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Linked SSH Keys</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Select SSH Keys</label>
                 {sshKeysList.length === 0 ? (
                   <p className="text-xs text-amber-600 dark:text-amber-400">No SSH keys found. Add keys on the SSH Keys page first.</p>
                 ) : (
@@ -591,8 +636,8 @@ export default function SftpUsers() {
                       <label key={key.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded px-1 py-0.5">
                         <input
                           type="checkbox"
-                          checked={editSelectedKeyIds.includes(key.id)}
-                          onChange={() => toggleEditKeySelection(key.id)}
+                          checked={editKeyIds.includes(key.id)}
+                          onChange={() => setEditKeyIds((prev) => prev.includes(key.id) ? prev.filter((id) => id !== key.id) : [...prev, key.id])}
                           className="rounded text-brand-500 focus:ring-brand-500"
                         />
                         <KeyRound size={12} className="text-gray-400 flex-shrink-0" />
@@ -603,21 +648,47 @@ export default function SftpUsers() {
                   </div>
                 )}
               </div>
-              {updateUser.isError && (
-                <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
-                  <AlertCircle size={14} /> {(updateUser.error as Error).message}
-                </p>
-              )}
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setEditUserId(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
-                  Cancel
-                </button>
-                <button type="submit" disabled={updateUser.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+            )}
+
+            {editAuthMethod === 'password' && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Saving with password auth will regenerate the password and clear any linked SSH keys.
+              </p>
+            )}
+
+            {/* Generated password display */}
+            {editResult?.password && (
+              <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
+                <p className="text-sm font-medium text-amber-800 dark:text-amber-300">New password generated. Save it now -- it won't be shown again.</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-3 py-1 text-sm font-mono">{editResult.password}</code>
+                  <CopyButton value={editResult.password} />
+                </div>
+              </div>
+            )}
+
+            {updateUser.isError && (
+              <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
+                <AlertCircle size={14} /> {(updateUser.error as Error).message}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setEditUser(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                {editResult ? 'Close' : 'Cancel'}
+              </button>
+              {!editResult && (
+                <button
+                  type="button"
+                  onClick={handleEditSave}
+                  disabled={updateUser.isPending || (editAuthMethod === 'ssh_key' && editKeyIds.length === 0)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+                >
                   {updateUser.isPending && <Loader2 size={14} className="animate-spin" />}
                   Save
                 </button>
-              </div>
-            </form>
+              )}
+            </div>
           </div>
         </div>
       )}

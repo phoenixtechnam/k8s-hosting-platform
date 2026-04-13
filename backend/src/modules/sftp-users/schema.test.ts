@@ -101,6 +101,16 @@ describe('updateSftpUserSchema', () => {
     const result = updateSftpUserSchema.safeParse({ max_concurrent_sessions: 21 });
     expect(result.success).toBe(false);
   });
+
+  it('should accept auth_method switch to password', () => {
+    const result = updateSftpUserSchema.safeParse({ auth_method: 'password' });
+    expect(result.success).toBe(true);
+  });
+
+  it('should accept auth_method switch to ssh_key with key IDs', () => {
+    const result = updateSftpUserSchema.safeParse({ auth_method: 'ssh_key', ssh_key_ids: ['k1'] });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('rotateSftpPasswordSchema', () => {

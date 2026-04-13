@@ -216,7 +216,47 @@ export async function updateSftpUser(
     await db.update(sftpUsers).set(updates).where(eq(sftpUsers.id, userId));
   }
 
-  // Update linked SSH keys if provided
+  // Auth method switching
+  if (input.auth_method === 'password') {
+    // Switch to password auth: generate password, clear SSH keys
+    const plainPassword = generateSecurePassword(24);
+    const passwordHash = await bcrypt.hash(plainPassword, BCRYPT_COST);
+    await db.update(sftpUsers).set({ passwordHash }).where(eq(sftpUsers.id, userId));
+    // Clear linked SSH keys
+    await db.delete(sftpUserSshKeys).where(eq(sftpUserSshKeys.sftpUserId, userId));
+
+    const [updated] = await db.select().from(sftpUsers).where(eq(sftpUsers.id, userId));
+    const linkedKeysMap = await fetchLinkedSshKeys(db, [updated.id]);
+    return {
+      ...mapSftpUserToResponse(updated),
+      linkedSshKeys: linkedKeysMap.get(updated.id) ?? [],
+      password: plainPassword,
+    };
+  } else if (input.auth_method === 'ssh_key') {
+    // Switch to SSH key auth: clear password, require keys
+    if (!input.ssh_key_ids || input.ssh_key_ids.length === 0) {
+      throw new ApiError('SSH_KEYS_REQUIRED', 'At least one SSH key is required when switching to SSH key auth', 400);
+    }
+    await db.update(sftpUsers).set({ passwordHash: null }).where(eq(sftpUsers.id, userId));
+    // Delete existing links and insert new ones
+    await db.delete(sftpUserSshKeys).where(eq(sftpUserSshKeys.sftpUserId, userId));
+    for (const sshKeyId of input.ssh_key_ids) {
+      await db.insert(sftpUserSshKeys).values({
+        id: crypto.randomUUID(),
+        sftpUserId: userId,
+        sshKeyId,
+      });
+    }
+
+    const [updated] = await db.select().from(sftpUsers).where(eq(sftpUsers.id, userId));
+    const linkedKeysMap = await fetchLinkedSshKeys(db, [updated.id]);
+    return {
+      ...mapSftpUserToResponse(updated),
+      linkedSshKeys: linkedKeysMap.get(updated.id) ?? [],
+    };
+  }
+
+  // Update linked SSH keys if provided (when auth_method is NOT being switched)
   if (input.ssh_key_ids !== undefined) {
     // Delete all existing links
     await db.delete(sftpUserSshKeys).where(eq(sftpUserSshKeys.sftpUserId, userId));

@@ -24,6 +24,7 @@ export const updateSftpUserSchema = z.object({
   max_concurrent_sessions: z.number().int().min(1).max(20).optional(),
   expires_at: z.string().datetime().nullable().optional(),
   ssh_key_ids: z.array(z.string()).optional(),
+  auth_method: z.enum(['password', 'ssh_key']).optional(),
 });
 
 export const rotateSftpPasswordSchema = z.object({
