@@ -117,7 +117,7 @@ describe('buildPasswordResetInitContainer', () => {
       expect(result!.image).toBe('mongo:7');
       expect(result!.command[2]).toContain('mongod');
       expect(result!.command[2]).toContain('--bind_ip 127.0.0.1');
-      expect(result!.command[2]).toContain('changeUserPassword');
+      expect(result!.command[2]).toContain('createUser');
     });
 
     it('detects existing data via WiredTiger file', () => {
