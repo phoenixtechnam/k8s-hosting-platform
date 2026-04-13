@@ -180,6 +180,23 @@ export default function ClientDetail() {
               <Loader2 size={14} className="animate-spin" />
               <span className="hidden sm:inline">Provisioning...</span>
             </button>
+          ) : (client as Record<string, unknown>).provisioningStatus === 'provisioned' ? (
+            <button
+              onClick={async () => {
+                if (!id) return;
+                try {
+                  await triggerProvision.mutateAsync({ clientId: id });
+                  setProvisioningOpen(true);
+                } catch { /* error shown via mutation state */ }
+              }}
+              disabled={triggerProvision.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+              title="Re-run provisioning to fix inconsistent K8s state"
+              data-testid="reprovision-button"
+            >
+              {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              <span className="hidden sm:inline">Re-provision</span>
+            </button>
           ) : null}
           <button
             onClick={() => setEditOpen(true)}
