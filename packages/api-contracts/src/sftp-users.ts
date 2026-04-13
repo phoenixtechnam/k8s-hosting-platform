@@ -64,6 +64,7 @@ export const sftpConnectionInfoSchema = z.object({
     ftps: z.string(),
     sftp_key: z.string(),
     scp_key: z.string(),
+    rsync_key: z.string(),
   }),
   ssh_key_note: z.string(),
 });

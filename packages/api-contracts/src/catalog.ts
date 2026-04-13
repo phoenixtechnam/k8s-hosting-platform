@@ -139,7 +139,6 @@ export const catalogEntryVersionResponseSchema = z.object({
 // ─── Deployments ─────────────────────────────────────────────────────────────
 
 export const volumePathSchema = z.object({
-  localPath: z.string(),
   containerPath: z.string(),
   k8sPath: z.string(),
 });
@@ -154,7 +153,7 @@ export const deploymentResponseSchema = z.object({
   cpuRequest: z.string(),
   memoryRequest: z.string(),
   configuration: z.record(z.string(), z.unknown()).nullable(),
-  resourceSuffix: z.string(),
+  storagePath: z.string().nullable(),
   helmReleaseName: z.string().nullable(),
   installedVersion: z.string().nullable(),
   targetVersion: z.string().nullable(),
@@ -169,15 +168,22 @@ export const deploymentResponseSchema = z.object({
 
 export const deploymentListResponseSchema = paginatedResponseSchema(deploymentResponseSchema);
 
+/** DNS-compatible name: lowercase alphanumeric + hyphens, max 63 chars, must start/end with alphanumeric */
+export const k8sNameRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
 export const createDeploymentSchema = z.object({
   catalog_entry_id: z.string().uuid(),
-  name: z.string().min(1).max(255),
+  name: z.string().min(1).max(63).regex(k8sNameRegex, {
+    message: 'Name must be DNS-compatible: lowercase letters, digits, and hyphens only (max 63 chars, must start and end with a letter or digit)',
+  }),
   domain_name: z.string().max(255).optional(),
   replica_count: z.number().int().min(1).max(10).default(1),
   cpu_request: z.string().max(20).default('0.25'),
   memory_request: z.string().max(20).default('256Mi'),
   configuration: z.record(z.string(), z.unknown()).optional(),
   version: z.string().max(50).optional(),
+  storage_mode: z.enum(['default', 'custom']).default('default'),
+  storage_path: z.string().max(500).optional(),
 });
 
 export const updateDeploymentSchema = z.object({
@@ -224,6 +230,35 @@ export const batchUpgradeSchema = z.object({
   target_version: z.string().min(1).max(50),
 });
 
+// ─── Delete Preview ─────────────────────────────────────────────────────────
+
+export const deletePreviewRouteSchema = z.object({
+  id: z.string(),
+  hostname: z.string(),
+  path: z.string(),
+  domainName: z.string(),
+});
+
+export const deletePreviewResponseSchema = z.object({
+  deploymentId: z.string(),
+  deploymentName: z.string(),
+  affectedRoutes: z.array(deletePreviewRouteSchema),
+});
+
+// ─── Storage Folder Listing ─────────────────────────────────────────────────
+
+export const storageFolderSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  isEmpty: z.boolean(),
+  usedByDeployment: z.string().nullable(),
+});
+
+export const storageFolderListResponseSchema = z.object({
+  basePath: z.string(),
+  folders: z.array(storageFolderSchema),
+});
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CatalogRepoResponse = z.infer<typeof catalogRepoResponseSchema>;
@@ -245,3 +280,7 @@ export type Component = z.infer<typeof componentSchema>;
 export type Volume = z.infer<typeof volumeSchema>;
 export type VolumePath = z.infer<typeof volumePathSchema>;
 export type Parameter = z.infer<typeof parameterSchema>;
+export type DeletePreviewRoute = z.infer<typeof deletePreviewRouteSchema>;
+export type DeletePreviewResponse = z.infer<typeof deletePreviewResponseSchema>;
+export type StorageFolder = z.infer<typeof storageFolderSchema>;
+export type StorageFolderListResponse = z.infer<typeof storageFolderListResponseSchema>;

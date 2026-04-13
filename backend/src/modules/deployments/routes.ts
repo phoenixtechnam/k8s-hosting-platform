@@ -62,6 +62,27 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return paginated(result.data, result.pagination);
   });
 
+  // GET /api/v1/clients/:clientId/deployments/storage-folders?type=database&code=mariadb
+  app.get('/clients/:clientId/deployments/storage-folders', async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const query = request.query as Record<string, unknown>;
+    const entryType = String(query.type ?? '');
+    const entryCode = String(query.code ?? '');
+
+    if (!entryType || !entryCode) {
+      throw new ApiError(
+        'MISSING_REQUIRED_FIELD',
+        'Both type and code query parameters are required',
+        400,
+        { field: 'type, code' },
+      );
+    }
+
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const result = await service.listStorageFolders(app.db, clientId, entryType, entryCode, getK8s(), kubeconfigPath);
+    return success(result);
+  });
+
   // GET /api/v1/clients/:clientId/deployments/:id
   app.get('/clients/:clientId/deployments/:id', async (request) => {
     const { clientId, id } = request.params as { clientId: string; id: string };
@@ -154,7 +175,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const components = await service.resolveDeploymentComponents(app.db, deployment);
     const namespace = await service.getClientNamespace(app.db, clientId);
 
-    await restartDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+    await restartDeployment(k8s, namespace, deployment.name, components);
 
     // Clear any previous error on successful restart initiation
     if (deployment.lastError) {
@@ -175,12 +196,10 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const k8s = getK8s();
     if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
-    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
-
     // Find the pod for this deployment
     const podList = await k8s.core.listNamespacedPod({
       namespace,
-      labelSelector: `app=${baseName}`,
+      labelSelector: `app=${deployment.name}`,
     });
     const pods = (podList as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string } } }[] } }[] }).items ?? [];
     const runningPod = pods.find(p => p.status?.phase === 'Running') ?? pods[0];
@@ -269,7 +288,6 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const k8s = getK8s();
     if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
 
-    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
     const { parseResourceValue } = await import('../../shared/resource-parser.js');
 
     // Get actual usage from Metrics API
@@ -285,7 +303,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       type PodMetric = { metadata?: { labels?: Record<string, string> }; containers?: readonly { usage?: { cpu?: string; memory?: string } }[] };
       const pods = (metricsResult as { items?: readonly PodMetric[] }).items ?? [];
       for (const pod of pods) {
-        if (pod.metadata?.labels?.['app'] !== baseName) continue;
+        if (pod.metadata?.labels?.['app'] !== deployment.name) continue;
         for (const c of pod.containers ?? []) {
           if (c.usage?.cpu) cpuUsed += parseResourceValue(c.usage.cpu, 'cpu');
           if (c.usage?.memory) memoryUsedMi += parseResourceValue(c.usage.memory, 'memory') * 1024;
@@ -301,7 +319,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
-        query: { path: `/databases/${baseName}` },
+        query: { path: deployment.storagePath ? `/${deployment.storagePath}` : `/databases/${deployment.name}` },
       });
       if (fmResult.status === 200) {
         const parsed = JSON.parse(fmResult.body) as { sizeBytes?: number; sizeFormatted?: string };
@@ -364,11 +382,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await service.getClientNamespace(app.db, clientId);
     const config = service.parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
-
-    const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, baseName, entry, config);
+    const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, deployment.name, entry, config);
     // The PVC subPath for this deployment's data directory
-    const deploymentSubPath = `databases/${baseName}`;
+    const deploymentSubPath = deployment.storagePath ?? `databases/${deployment.name}`;
     return { ...ctx, deploymentSubPath };
   }
 
@@ -617,6 +633,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
+  // GET /api/v1/clients/:clientId/deployments/:id/delete-preview
+  app.get('/clients/:clientId/deployments/:id/delete-preview', async (request) => {
+    const { clientId, id } = request.params as { clientId: string; id: string };
+    const result = await service.getDeletePreview(app.db, clientId, id);
+    return success(result);
+  });
+
   // DELETE /api/v1/clients/:clientId/deployments/:id
   // ?force=true for permanent deletion (skips soft-delete)
   app.delete('/clients/:clientId/deployments/:id', async (request, reply) => {
@@ -626,10 +649,12 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     if (force) {
       await service.hardDeleteDeployment(app.db, clientId, id, getK8s());
+      reply.status(204).send();
     } else {
+      const preview = await service.getDeletePreview(app.db, clientId, id);
       await service.deleteDeployment(app.db, clientId, id, getK8s());
+      reply.status(200).send(success(preview));
     }
-    reply.status(204).send();
   });
 
   // GET /api/v1/clients/:clientId/resource-usage — namespace resource usage from K8s quota

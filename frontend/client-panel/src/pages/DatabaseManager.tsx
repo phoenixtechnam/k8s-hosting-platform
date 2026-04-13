@@ -1625,7 +1625,7 @@ export default function DatabaseManager() {
           {!isSqlite && selectedDeploymentId && selectedDatabase && selectedDeployment && (
             <div className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-2 text-xs font-mono text-gray-600 dark:text-gray-400">
               <Server size={14} className="text-gray-400 shrink-0" />
-              <span><strong className="text-gray-700 dark:text-gray-300">Host:</strong> {selectedDeployment.name}-{selectedDeployment.resourceSuffix}</span>
+              <span><strong className="text-gray-700 dark:text-gray-300">Host:</strong> {selectedDeployment.name}</span>
               <span><strong className="text-gray-700 dark:text-gray-300">Port:</strong> {engine === 'mongodb' ? '27017' : engine === 'redis' ? '6379' : '3306'}</span>
               <span><strong className="text-gray-700 dark:text-gray-300">Database:</strong> {selectedDatabase}</span>
             </div>
@@ -2094,7 +2094,7 @@ export default function DatabaseManager() {
 
 // ─── Deployment Stats Bar ────────────────────────────────────────────────────
 
-function DeploymentStatsBar({ deployment }: { readonly deployment: { id: string; name: string; status: string; cpuRequest: string; memoryRequest: string; resourceSuffix: string } }) {
+function DeploymentStatsBar({ deployment }: { readonly deployment: { id: string; name: string; status: string; cpuRequest: string; memoryRequest: string } }) {
   const { clientId } = useClientContext();
   const { data } = useDeploymentLiveMetrics(clientId ?? undefined, deployment.status === 'running' ? deployment.id : undefined);
   const metrics = data?.data;
@@ -2107,7 +2107,7 @@ function DeploymentStatsBar({ deployment }: { readonly deployment: { id: string;
   return (
     <div className="flex items-center gap-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 mb-4">
       <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{deployment.name}-{deployment.resourceSuffix}</span>
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{deployment.name}</span>
         <span className={clsx('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', statusColor)}>
           {deployment.status}
         </span>

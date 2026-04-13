@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
-import { X, Loader2, Search, Rocket, Globe, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
+import { X, Loader2, Search, Rocket, Globe, CheckCircle, AlertCircle, AlertTriangle, Info, FolderOpen } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog, useCatalogEntryVersions } from '@/hooks/use-catalog';
-import { useCreateDeployment } from '@/hooks/use-deployments';
+import { useCreateDeployment, useStorageFolders } from '@/hooks/use-deployments';
 import { useDomains } from '@/hooks/use-domains';
 import type { CatalogEntry } from '@/types/api';
 import ParameterForm from './ParameterForm';
@@ -18,6 +18,8 @@ interface DeployWorkloadModalProps {
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
+
+const DNS_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess, existingNames = [] }: DeployWorkloadModalProps) {
   const { clientId } = useClientContext();
@@ -40,6 +42,9 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [selectedDomainId, setSelectedDomainId] = useState<string>('');
   const [selectedVersion, setSelectedVersion] = useState<string>('');
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
+  const [storageMode, setStorageMode] = useState<'default' | 'custom'>('default');
+  const [customFolderName, setCustomFolderName] = useState('');
+  const [selectedExistingFolder, setSelectedExistingFolder] = useState<string | null>(null);
   const [deployState, setDeployState] = useState<'form' | 'deploying' | 'success' | 'error'>('form');
   const [resourcesFit, setResourcesFit] = useState(true);
 
@@ -47,6 +52,29 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const domains = domainsData?.data ?? [];
 
   const selectedImage = useMemo(() => images.find(i => i.id === selectedImageId), [images, selectedImageId]);
+
+  const { data: storageFoldersData, isLoading: storageFoldersLoading } = useStorageFolders(
+    clientId ?? undefined,
+    selectedImage?.type,
+    selectedImage?.code,
+  );
+  const storageFolders = storageFoldersData?.data;
+
+  const nameError = useMemo(() => {
+    if (!name) return null;
+    if (!DNS_NAME_PATTERN.test(name)) {
+      return 'Name must be DNS-compatible: lowercase letters, digits, and hyphens only (max 63 chars)';
+    }
+    return null;
+  }, [name]);
+
+  const customFolderNameError = useMemo(() => {
+    if (!customFolderName) return null;
+    if (!DNS_NAME_PATTERN.test(customFolderName)) {
+      return 'Folder name must be DNS-compatible: lowercase letters, digits, and hyphens only (max 63 chars)';
+    }
+    return null;
+  }, [customFolderName]);
 
   const selectedResources = selectedImage?.resources as { minimum?: { cpu?: string; memory?: string; storage?: string } } | null;
   const minCpu = selectedResources?.minimum?.cpu;
@@ -162,6 +190,9 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     setSelectedDomainId('');
     setSelectedVersion('');
     setParamValues({});
+    setStorageMode('default');
+    setCustomFolderName('');
+    setSelectedExistingFolder(null);
     setDeployState('form');
     createDeployment.reset();
   };
@@ -184,6 +215,10 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
         memory_request: memoryRequest,
         configuration: Object.keys(paramValues).length > 0 ? paramValues : undefined,
         version: selectedVersion || undefined,
+        storage_mode: storageMode,
+        storage_path: storageMode === 'custom'
+          ? (selectedExistingFolder ?? `${selectedImage?.type}/${selectedImage?.code}/${customFolderName}`)
+          : undefined,
       });
       setDeployState('success');
     } catch {
@@ -443,12 +478,16 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                   <input
                     type="text"
                     required
+                    maxLength={63}
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => setName(e.target.value.toLowerCase())}
                     className={INPUT_CLASS}
                     placeholder="my-workload"
                     data-testid="deploy-name-input"
                   />
+                  {nameError && (
+                    <p className="mt-1 text-xs text-red-600 dark:text-red-400">{nameError}</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">CPU Request</label>
@@ -496,11 +535,135 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </div>
           )}
 
-          {/* Step 3: Connect Domain */}
+          {/* Step 3: Storage Folder */}
           {selectedImageId && (
             <div>
               <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                3. Connect a Domain
+                3. Storage Folder
+              </label>
+              <select
+                value={storageMode}
+                onChange={(e) => {
+                  const mode = e.target.value as 'default' | 'custom';
+                  setStorageMode(mode);
+                  setCustomFolderName('');
+                  setSelectedExistingFolder(null);
+                }}
+                className={INPUT_CLASS}
+                data-testid="deploy-storage-mode-select"
+              >
+                <option value="default">Use Default Path</option>
+                <option value="custom">Use Custom Folder</option>
+              </select>
+
+              {storageMode === 'default' && (
+                <div className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+                  <p className="text-sm text-gray-600 dark:text-gray-400 font-mono">
+                    /{selectedImage?.type}/{selectedImage?.code}/{name || '...'}/
+                  </p>
+                </div>
+              )}
+
+              {storageMode === 'custom' && (
+                <div className="mt-3 space-y-3">
+                  {storageFoldersLoading ? (
+                    <div className="flex items-center gap-2 px-3 py-4 text-sm text-gray-500 dark:text-gray-400">
+                      <Loader2 size={14} className="animate-spin" />
+                      Loading existing folders...
+                    </div>
+                  ) : (
+                    <>
+                      {/* Existing folders list */}
+                      {storageFolders && storageFolders.folders.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Existing folders</p>
+                          {storageFolders.folders.map(folder => {
+                            const inUse = folder.usedByDeployment !== null;
+                            const isSelected = selectedExistingFolder === folder.path;
+                            const label = inUse
+                              ? `(in use by: ${folder.usedByDeployment})`
+                              : folder.isEmpty
+                                ? '(unused - empty)'
+                                : '(unused - has data)';
+                            return (
+                              <button
+                                key={folder.path}
+                                type="button"
+                                disabled={inUse}
+                                onClick={() => {
+                                  setSelectedExistingFolder(isSelected ? null : folder.path);
+                                  setCustomFolderName('');
+                                }}
+                                className={`flex w-full items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-colors ${
+                                  inUse
+                                    ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-gray-700'
+                                    : isSelected
+                                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 cursor-pointer'
+                                      : 'border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                                }`}
+                                data-testid={`storage-folder-${folder.name}`}
+                              >
+                                <FolderOpen size={14} className={`shrink-0 ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-400'}`} />
+                                <span className={`font-medium ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-900 dark:text-gray-100'}`}>
+                                  {folder.name}
+                                </span>
+                                <span className={`text-xs ${inUse ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-400'}`}>
+                                  {label}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Info banner for non-empty existing folder selection */}
+                      {selectedExistingFolder && storageFolders?.folders.some(f => f.path === selectedExistingFolder && !f.isEmpty) && (
+                        <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm text-blue-700 dark:text-blue-300 flex items-center gap-2">
+                          <Info size={14} className="shrink-0" />
+                          Existing folder contents will be used for this deployment.
+                        </div>
+                      )}
+
+                      {/* New folder name input */}
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                          Or create a new folder
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          {storageFolders?.basePath && (
+                            <span className="text-xs text-gray-400 dark:text-gray-500 font-mono shrink-0">
+                              {storageFolders.basePath}/
+                            </span>
+                          )}
+                          <input
+                            type="text"
+                            maxLength={63}
+                            value={customFolderName}
+                            onChange={(e) => {
+                              setCustomFolderName(e.target.value.toLowerCase());
+                              setSelectedExistingFolder(null);
+                            }}
+                            className={INPUT_CLASS}
+                            placeholder="my-folder"
+                            data-testid="deploy-custom-folder-input"
+                          />
+                        </div>
+                        {customFolderNameError && (
+                          <p className="mt-1 text-xs text-red-600 dark:text-red-400">{customFolderNameError}</p>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 4: Connect Domain */}
+          {selectedImageId && (
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                4. Connect a Domain
               </label>
               {domains.length > 0 ? (
                 <div>
@@ -542,7 +705,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
             <button
               type="submit"
-              disabled={!clientId || !selectedImageId || !name || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError}
+              disabled={!clientId || !selectedImageId || !name || !!nameError || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError || !!customFolderNameError || (storageMode === 'custom' && !selectedExistingFolder && !customFolderName)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >

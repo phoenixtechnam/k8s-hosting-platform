@@ -10,6 +10,8 @@ interface CreateDeploymentInput {
   readonly memory_request?: string;
   readonly configuration?: Record<string, unknown>;
   readonly version?: string;
+  readonly storage_mode?: 'default' | 'custom';
+  readonly storage_path?: string;
 }
 
 interface UpdateDeploymentInput {
@@ -335,6 +337,51 @@ export function useResourceUsage(clientId: string | null | undefined) {
       ),
     enabled: Boolean(clientId),
     refetchInterval: 15_000,
+  });
+}
+
+// ─── Delete Preview ──────────────────────────────────────────────────────────
+
+export interface DeletePreviewRoute {
+  readonly id: string;
+  readonly hostname: string;
+  readonly path: string;
+  readonly domainName: string;
+}
+
+export interface DeletePreviewResponse {
+  readonly deploymentId: string;
+  readonly deploymentName: string;
+  readonly affectedRoutes: readonly DeletePreviewRoute[];
+}
+
+export function useDeletePreview(clientId: string | undefined, deploymentId: string | undefined) {
+  return useQuery({
+    queryKey: ['delete-preview', clientId, deploymentId],
+    queryFn: () => apiFetch<{ data: DeletePreviewResponse }>(`/api/v1/clients/${clientId}/deployments/${deploymentId}/delete-preview`),
+    enabled: Boolean(clientId && deploymentId),
+  });
+}
+
+// ─── Storage Folders ─────────────────────────────────────────────────────────
+
+export interface StorageFolder {
+  readonly name: string;
+  readonly path: string;
+  readonly isEmpty: boolean;
+  readonly usedByDeployment: string | null;
+}
+
+export interface StorageFolderList {
+  readonly basePath: string;
+  readonly folders: readonly StorageFolder[];
+}
+
+export function useStorageFolders(clientId: string | undefined, entryType: string | undefined, entryCode: string | undefined) {
+  return useQuery({
+    queryKey: ['storage-folders', clientId, entryType, entryCode],
+    queryFn: () => apiFetch<{ data: StorageFolderList }>(`/api/v1/clients/${clientId}/deployments/storage-folders?type=${entryType}&code=${entryCode}`),
+    enabled: Boolean(clientId && entryType && entryCode),
   });
 }
 

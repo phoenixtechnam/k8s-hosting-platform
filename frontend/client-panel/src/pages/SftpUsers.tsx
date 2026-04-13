@@ -61,67 +61,81 @@ function ConnectionInfoCard({ clientId }: { clientId: string }) {
   if (!info) return null;
 
   return (
-    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-2">
-        <Shield size={16} /> Connection Details
-      </h3>
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-sm">
-        <div>
-          <span className="text-gray-500 dark:text-gray-400">Host</span>
-          <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.host}<CopyButton value={info.host} /></div>
-        </div>
-        <div>
-          <span className="text-gray-500 dark:text-gray-400">SSH Port</span>
-          <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.port}<CopyButton value={String(info.port)} /></div>
-        </div>
-        <div>
-          <span className="text-gray-500 dark:text-gray-400">FTPS Port</span>
-          <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.ftps_port}<CopyButton value={String(info.ftps_port)} /></div>
-        </div>
-        <div>
-          <span className="text-gray-500 dark:text-gray-400">Protocols</span>
-          <div className="text-gray-900 dark:text-gray-100">{info.protocols.join(', ').toUpperCase()}</div>
-        </div>
-      </div>
-
-      {/* Password-based examples */}
-      <div className="space-y-1 text-xs font-mono text-gray-600 dark:text-gray-400">
-        <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">Password authentication:</p>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">SFTP</span> {info.instructions.sftp}
-          <CopyButton value={info.instructions.sftp} />
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">SCP</span> {info.instructions.scp}
-          <CopyButton value={info.instructions.scp} />
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">rsync</span> {info.instructions.rsync}
-          <CopyButton value={info.instructions.rsync} />
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">FTPS</span> {info.instructions.ftps}
-          <CopyButton value={info.instructions.ftps} />
+    <div className="space-y-3">
+      {/* Box 1: Connection Details */}
+      <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-2">
+          <Shield size={16} /> Connection Details
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-sm">
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">Host</span>
+            <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.host}<CopyButton value={info.host} /></div>
+          </div>
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">SSH Port</span>
+            <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.port}<CopyButton value={String(info.port)} /></div>
+          </div>
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">FTPS Port</span>
+            <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.ftps_port}<CopyButton value={String(info.ftps_port)} /></div>
+          </div>
+          <div>
+            <span className="text-gray-500 dark:text-gray-400">Protocols</span>
+            <div className="text-gray-900 dark:text-gray-100">{info.protocols.join(', ').toUpperCase()}</div>
+          </div>
         </div>
       </div>
 
-      {/* Key-based examples */}
-      <div className="space-y-1 text-xs font-mono text-gray-600 dark:text-gray-400">
-        <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">SSH key authentication (SFTP, SCP, rsync only):</p>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">SFTP</span> {info.instructions.sftp_key}
-          <CopyButton value={info.instructions.sftp_key} />
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-400 w-12 flex-shrink-0">SCP</span> {info.instructions.scp_key}
-          <CopyButton value={info.instructions.scp_key} />
-        </div>
-      </div>
+      {/* Box 2: Usage Examples */}
+      <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-2">
+          <KeyRound size={16} /> Usage Examples
+        </h3>
 
-      {/* SSH key note */}
-      <p className="text-xs text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
-        <KeyRound size={12} /> {info.ssh_key_note}
-      </p>
+        {/* Password-based examples */}
+        <div className="space-y-1.5 text-xs font-mono text-gray-600 dark:text-gray-400">
+          <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">Password authentication:</p>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SFTP</span> {info.instructions.sftp}
+            <CopyButton value={info.instructions.sftp} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SCP</span> {info.instructions.scp}
+            <CopyButton value={info.instructions.scp} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">RSYNC</span> {info.instructions.rsync}
+            <CopyButton value={info.instructions.rsync} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">FTPS</span> {info.instructions.ftps}
+            <CopyButton value={info.instructions.ftps} />
+          </div>
+        </div>
+
+        {/* Key-based examples */}
+        <div className="space-y-1.5 text-xs font-mono text-gray-600 dark:text-gray-400">
+          <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">SSH key authentication (SFTP, SCP, RSYNC):</p>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SFTP</span> {info.instructions.sftp_key}
+            <CopyButton value={info.instructions.sftp_key} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SCP</span> {info.instructions.scp_key}
+            <CopyButton value={info.instructions.scp_key} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">RSYNC</span> {info.instructions.rsync_key}
+            <CopyButton value={info.instructions.rsync_key} />
+          </div>
+        </div>
+
+        {/* SSH key note */}
+        <p className="text-xs text-blue-700 dark:text-blue-400 flex items-start gap-1.5">
+          <KeyRound size={12} className="flex-shrink-0 mt-0.5" /> {info.ssh_key_note}
+        </p>
+      </div>
     </div>
   );
 }

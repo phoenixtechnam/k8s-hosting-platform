@@ -339,12 +339,13 @@ export async function getSftpConnectionInfo(db: Database) {
     protocols: ['sftp', 'scp', 'rsync', 'ftps'],
     username_format: '<sftp_username>',
     instructions: {
-      sftp: `sftp -P ${port} <username>@${host}`,
-      scp: `scp -P ${port} file.txt <username>@${host}:/path/`,
-      rsync: `rsync -e "ssh -p ${port}" file.txt <username>@${host}:/path/`,
-      ftps: `curl --ftp-ssl -T file.txt ftp://<username>:<password>@${host}:${ftpsPort}/`,
+      sftp: `sftp -P ${port} <username>:<password>@${host}`,
+      scp: `scp -P ${port} file.txt <username>:<password>@${host}:/path/`,
+      rsync: `rsync -e "ssh -p ${port}" file.txt <username>:<password>@${host}:/path/`,
+      ftps: `ftps://<username>:<password>@${host}:${ftpsPort}/`,
       sftp_key: `sftp -P ${port} -i ~/.ssh/id_ed25519 <username>@${host}`,
       scp_key: `scp -P ${port} -i ~/.ssh/id_ed25519 file.txt <username>@${host}:/path/`,
+      rsync_key: `rsync -e "ssh -p ${port} -i ~/.ssh/id_ed25519" file.txt <username>@${host}:/path/`,
     },
     ssh_key_note: 'SSH keys uploaded on the SSH Keys page can be used for password-less authentication with SFTP, SCP, and rsync. FTPS only supports password authentication.',
   };

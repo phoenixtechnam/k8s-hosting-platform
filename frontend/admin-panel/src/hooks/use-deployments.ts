@@ -15,6 +15,7 @@ export interface Deployment {
   readonly installedVersion: string | null;
   readonly targetVersion: string | null;
   readonly domainName: string | null;
+  readonly storagePath: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }

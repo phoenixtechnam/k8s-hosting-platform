@@ -22,10 +22,10 @@ export interface DeployComponentInput {
 
 export interface DeployCatalogEntryInput {
   readonly deploymentName: string;
-  readonly resourceSuffix: string;
+  readonly storagePath: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ local_path: string; container_path: string }>;
+  readonly volumes: Array<{ container_path: string }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -62,18 +62,17 @@ function isK8s409(err: unknown): boolean {
   return false;
 }
 
-function deploymentLabels(baseName: string, componentName: string): Record<string, string> {
+function deploymentLabels(deploymentName: string, componentName: string): Record<string, string> {
   return {
-    app: baseName,
+    app: deploymentName,
     component: componentName,
     'platform.io/managed': 'true',
   };
 }
 
-function k8sResourceName(deploymentName: string, resourceSuffix: string, componentName: string, componentCount: number): string {
-  const base = `${deploymentName}-${resourceSuffix}`;
-  if (componentCount <= 1) return base;
-  return `${base}-${componentName}`;
+function k8sResourceName(deploymentName: string, componentName: string, componentCount: number): string {
+  if (componentCount <= 1) return deploymentName;
+  return `${deploymentName}-${componentName}`;
 }
 
 function buildEnvVars(fixed?: Record<string, string>, configuration?: Record<string, unknown>): Array<{ name: string; value: string }> {
@@ -106,14 +105,13 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, resourceSuffix, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
+  const { deploymentName, storagePath, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
-  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
-    const labels = deploymentLabels(baseName, component.name);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
+    const labels = deploymentLabels(deploymentName, component.name);
 
     const container = {
       name: component.name,
@@ -130,7 +128,7 @@ export async function deployCatalogEntry(
     switch (component.type) {
       case 'deployment':
       case 'statefulset':  // Uses Deployment + shared PVC (type is semantic hint only)
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, volumes);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes);
         break;
 
       case 'cronjob':
@@ -157,38 +155,29 @@ async function deployK8sDeployment(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   replicaCount: number,
-  volumes: Array<{ local_path: string; container_path: string }> = [],
+  storagePath: string,
+  volumes: Array<{ container_path: string }> = [],
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
 
-  // Mount shared client PVC with subPath per volume
-  // Use K8s resource name in path for instance isolation so multiple
-  // deployments of the same catalog entry don't collide on disk.
-  const volumeMounts = volumes.map(v => {
-    const parentDir = v.local_path.split('/').slice(0, -1).join('/');
-    const instancePath = parentDir ? `${parentDir}/${name}` : name;
-    return {
-      name: 'client-storage',
-      mountPath: v.container_path,
-      subPath: instancePath,
-    };
-  });
+  // Mount shared client PVC with subPath derived from storagePath
+  const volumeMounts = volumes.map(v => ({
+    name: 'client-storage',
+    mountPath: v.container_path,
+    subPath: storagePath,
+  }));
 
   const containerWithMounts = volumes.length > 0
     ? { ...container, volumeMounts }
     : container;
 
-  // Init container: ensures directories exist on the shared PVC and are
-  // world-writable so database processes running as non-root can write.
-  const initContainers = volumes.length > 0
+  // Init container: ensures the storagePath directory exists on the shared PVC
+  // and is world-writable so database processes running as non-root can write.
+  const initContainers = storagePath
     ? [{
         name: 'init-dirs',
         image: 'busybox:1.36',
-        command: ['sh', '-c', volumes.map(v => {
-          const parentDir = v.local_path.split('/').slice(0, -1).join('/');
-          const instancePath = parentDir ? `${parentDir}/${name}` : name;
-          return `mkdir -p /data/${instancePath} && chmod 777 /data/${instancePath}`;
-        }).join(' && ')],
+        command: ['sh', '-c', `mkdir -p /data/${storagePath} && chmod 777 /data/${storagePath}`],
         volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
         resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
       }]
@@ -336,13 +325,12 @@ export async function stopDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
-  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   const componentCount = components.length;
 
   for (const component of components) {
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     try {
       if (component.type === 'deployment' || component.type === 'statefulset') {
@@ -368,14 +356,13 @@ export async function startDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
-  resourceSuffix: string,
   components: readonly DeployComponentInput[],
   replicas: number,
 ): Promise<void> {
   const componentCount = components.length;
 
   for (const component of components) {
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     try {
       if (component.type === 'deployment' || component.type === 'statefulset') {
@@ -405,23 +392,21 @@ export async function restartDeployment(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
-  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   // Restart by deleting pods — the Deployment controller will recreate them
   const componentCount = components.length;
-  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
     if (component.type === 'cronjob' || component.type === 'job') continue;
 
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     try {
       // Find all pods owned by this component
       const pods = await k8s.core.listNamespacedPod({
         namespace,
-        labelSelector: `app=${baseName},component=${component.name}`,
+        labelSelector: `app=${deploymentName},component=${component.name}`,
       });
 
       const podList = (pods as { items?: Array<{ metadata?: { name?: string } }> }).items ?? [];
@@ -467,13 +452,12 @@ export async function deleteDeploymentResources(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
-  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<void> {
   const componentCount = components.length;
 
   for (const component of components) {
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     try {
       if (component.type === 'deployment' || component.type === 'statefulset') {
@@ -504,18 +488,16 @@ export async function getDeploymentStatus(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
-  resourceSuffix: string,
   components: readonly DeployComponentInput[],
 ): Promise<AggregateDeploymentStatus> {
   const componentCount = components.length;
   const componentStatuses: ComponentPodStatus[] = [];
-  const baseName = `${deploymentName}-${resourceSuffix}`;
 
   for (const component of components) {
-    const name = k8sResourceName(deploymentName, resourceSuffix, component.name, componentCount);
+    const name = k8sResourceName(deploymentName, component.name, componentCount);
 
     if (component.type === 'deployment' || component.type === 'statefulset') {
-      const status = await getK8sDeploymentStatus(k8s, namespace, name, baseName, component.name);
+      const status = await getK8sDeploymentStatus(k8s, namespace, name, deploymentName, component.name);
       componentStatuses.push(status);
     } else if (component.type === 'cronjob') {
       // CronJobs are either suspended or active

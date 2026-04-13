@@ -134,7 +134,7 @@ export async function reconcileDeploymentStatuses(
 
     try {
       const components = resolveComponentsForReconcile(entry);
-      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+      const k8sStatus = await getDeploymentStatus(k8s, namespace, deployment.name, components);
       const newDbStatus = phaseToDbStatus(k8sStatus.phase);
 
       if (newDbStatus !== deployment.status) {

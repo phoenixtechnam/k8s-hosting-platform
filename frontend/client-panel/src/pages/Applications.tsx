@@ -7,7 +7,7 @@ import { useClientContext } from '@/hooks/use-client-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCatalog } from '@/hooks/use-catalog';
-import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics, useDeletePreview } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
@@ -900,10 +900,13 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
   const restoreDeployment = useRestoreDeployment(clientId ?? undefined);
   const permanentDeleteDeployment = usePermanentDeleteDeployment(clientId ?? undefined);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [softDeleteConfirm, setSoftDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [deleteDataFolder, setDeleteDataFolder] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
+
+  // ─── Delete preview for soft-delete modal ─────────────────────────────────
+  const deletePreview = useDeletePreview(clientId ?? undefined, softDeleteConfirm?.id);
 
   // ─── Notification state (Issue 6) ──────────────────────────────────────────
   interface Notification {
@@ -971,8 +974,8 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const handleDelete = useCallback(async (deploymentId: string) => {
     try {
       await deleteDeployment.mutateAsync(deploymentId);
-      setDeleteConfirmId(null);
-      addNotification('success', 'Deployment deleted successfully');
+      setSoftDeleteConfirm(null);
+      addNotification('success', 'Deployment stopped and ingress routes unlinked');
     } catch {
       addNotification('error', 'Failed to delete deployment');
     }
@@ -1162,22 +1165,15 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       <Settings2 size={14} />
                       Details
                     </button>
-                    {deleteConfirmId === deployment.id ? (
-                      <div className="flex gap-1">
-                        <button type="button" onClick={async (e) => { e.stopPropagation(); await handleDelete(deployment.id); }} disabled={deleteDeployment.isPending} className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50" data-testid={`confirm-delete-${deployment.id}`}>Confirm</button>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(deployment.id); }}
-                        disabled={isTransitioning}
-                        className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                        data-testid={`delete-app-${deployment.id}`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setSoftDeleteConfirm({ id: deployment.id, name: deployment.name }); }}
+                      disabled={isTransitioning}
+                      className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid={`delete-app-${deployment.id}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                   )}
                 </div>
@@ -1283,6 +1279,75 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         isToggling={updateDeployment.isPending}
       />
 
+      {/* Soft-Delete Confirmation Modal */}
+      {softDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="soft-delete-modal">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setSoftDeleteConfirm(null)} />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-2">Stop Deployment</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Are you sure you want to stop <span className="font-semibold text-gray-900 dark:text-gray-100">{softDeleteConfirm.name}</span>?
+            </p>
+
+            {/* Affected ingress routes warning */}
+            {deletePreview.isLoading && (
+              <div className="flex items-center gap-2 mb-4 text-sm text-gray-500 dark:text-gray-400">
+                <Loader2 size={14} className="animate-spin" />
+                <span>Loading affected routes...</span>
+              </div>
+            )}
+            {deletePreview.data?.data && (
+              <div className="mb-4 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
+                {deletePreview.data.data.affectedRoutes.length > 0 ? (
+                  <>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                        Stopping this deployment will unlink the following ingress routes:
+                      </span>
+                    </div>
+                    <ul className="space-y-1 ml-5">
+                      {deletePreview.data.data.affectedRoutes.map((route) => (
+                        <li key={route.id} className="text-sm text-amber-700 dark:text-amber-300">
+                          <code className="rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-mono">{route.hostname}{route.path}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span className="text-sm text-amber-700 dark:text-amber-300">
+                      No ingress routes are linked to this deployment.
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSoftDeleteConfirm(null)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => { await handleDelete(softDeleteConfirm.id); }}
+                disabled={deleteDeployment.isPending || deletePreview.isLoading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid={`confirm-soft-delete-${softDeleteConfirm.id}`}
+              >
+                {deleteDeployment.isPending && <Loader2 size={14} className="animate-spin" />}
+                Stop & Unlink Routes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Permanent Delete Confirmation Modal */}
       {permanentDeleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="permanent-delete-modal">
@@ -1301,7 +1366,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 data-testid="delete-data-folder-checkbox"
               />
               <span className="text-sm text-gray-700 dark:text-gray-300">
-                Also delete data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/databases/{permanentDeleteConfirm.name}</code>
+                Also delete data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/{allDeployments.find(d => d.id === permanentDeleteConfirm.id)?.storagePath ?? permanentDeleteConfirm.name}</code>
               </span>
             </label>
             <div className="flex justify-end gap-2">

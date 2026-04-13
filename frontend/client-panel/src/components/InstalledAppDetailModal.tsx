@@ -255,10 +255,14 @@ export default function InstalledAppDetailModal({
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Created</span>
               <p className="text-gray-900 dark:text-gray-100">{formatDate(deployment.createdAt)}</p>
             </div>
-            {deployment.resourceSuffix && (
+            <div>
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">K8s Name</span>
+              <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.name}</p>
+            </div>
+            {deployment.storagePath && (
               <div>
-                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">K8s Name</span>
-                <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.name}-{deployment.resourceSuffix}</p>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage Path</span>
+                <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.storagePath}</p>
               </div>
             )}
             {deployment.lastUpgradedAt && (
@@ -364,13 +368,10 @@ export default function InstalledAppDetailModal({
                         </tr>
                       ));
                     }
-                    // Fallback: compute K8s path from catalog volumes + resource suffix
-                    const k8sName = deployment.resourceSuffix
-                      ? `${deployment.name}-${deployment.resourceSuffix}`
-                      : deployment.name;
+                    // Fallback: compute K8s path from catalog volumes + deployment name
                     return volumes.map((vol) => {
                       const parentDir = vol.local_path?.split('/').slice(0, -1).join('/') ?? '';
-                      const k8sPath = parentDir ? `${parentDir}/${k8sName}` : (vol.local_path ?? k8sName);
+                      const k8sPath = parentDir ? `${parentDir}/${deployment.name}` : (vol.local_path ?? deployment.name);
                       return (
                         <tr key={vol.container_path ?? vol.local_path}>
                           <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{k8sPath}</td>

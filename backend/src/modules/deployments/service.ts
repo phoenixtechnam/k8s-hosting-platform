@@ -5,7 +5,7 @@
  */
 
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { deployments, catalogEntries, catalogEntryVersions, clients, hostingPlans } from '../../db/schema.js';
+import { deployments, catalogEntries, catalogEntryVersions, clients, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
@@ -95,7 +95,7 @@ function resolveComponents(
 
 export interface ResolvedDeploymentConfig {
   readonly components: DeployComponentInput[];
-  readonly volumes: Array<{ local_path: string; container_path: string }>;
+  readonly volumes: Array<{ container_path: string }>;
   readonly fixedEnvVars: Record<string, string>;
   readonly generatedEnvKeys: readonly string[];
   readonly installedVersion: string | null;
@@ -138,9 +138,9 @@ export async function resolveVersionAwareDeploymentConfig(
   const components = resolveComponents(entry, versionComponents);
 
   // Volumes — version overrides entry-level completely
-  const entryVolumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ local_path: string; container_path: string }>;
+  const entryVolumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ container_path: string }>;
   const versionVolumes = versionRecord
-    ? parseJsonField<Array<{ local_path: string; container_path: string }>>(versionRecord.volumes)
+    ? parseJsonField<Array<{ container_path: string }>>(versionRecord.volumes)
     : null;
   const volumes = (versionVolumes && versionVolumes.length > 0) ? versionVolumes : entryVolumes;
 
@@ -220,7 +220,9 @@ export async function createDeployment(
   const finalEnvVars = { fixed: fixedEnvVars };
 
   const id = crypto.randomUUID();
-  const resourceSuffix = id.replace(/-/g, '').substring(0, 6);
+  const storagePath = input.storage_mode === 'custom' && input.storage_path
+    ? input.storage_path
+    : `${entry.type}/${entry.code}/${input.name}`;
 
   try {
     await db.insert(deployments).values({
@@ -233,7 +235,7 @@ export async function createDeployment(
       cpuRequest: input.cpu_request ?? catalogCpu,
       memoryRequest: input.memory_request ?? catalogMemory,
       configuration: finalConfiguration,
-      resourceSuffix,
+      storagePath,
       installedVersion,
       targetVersion: installedVersion,
       status: 'pending',
@@ -255,7 +257,7 @@ export async function createDeployment(
     try {
       await deployCatalogEntry(k8s, {
         deploymentName: input.name,
-        resourceSuffix,
+        storagePath,
         namespace,
         components,
         volumes,
@@ -397,9 +399,9 @@ export async function updateDeployment(
 
         try {
           if (input.status === 'stopped') {
-            await stopDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+            await stopDeployment(k8s, namespace, deployment.name, components);
           } else if (input.status === 'running') {
-            await startDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components, deployment.replicaCount ?? 1);
+            await startDeployment(k8s, namespace, deployment.name, components, deployment.replicaCount ?? 1);
           }
         } catch (err) {
           console.error('[deployments] K8s start/stop failed:', err instanceof Error ? err.message : String(err));
@@ -439,7 +441,7 @@ export async function deleteDeployment(
         const components = resolveComponents(entry, null);
 
         try {
-          await stopDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+          await stopDeployment(k8s, namespace, deployment.name, components);
         } catch {
           // K8s stop failed — still mark as deleted in DB
         }
@@ -450,6 +452,11 @@ export async function deleteDeployment(
   await db.update(deployments)
     .set({ status: 'deleted', deletedAt: new Date() })
     .where(eq(deployments.id, deploymentId));
+
+  // Unlink ingress routes (set deployment_id to NULL)
+  await db.update(ingressRoutes)
+    .set({ deploymentId: null })
+    .where(eq(ingressRoutes.deploymentId, deploymentId));
 }
 
 export async function restoreDeployment(
@@ -485,7 +492,7 @@ export async function restoreDeployment(
         const components = resolveComponents(entry, null);
 
         try {
-          await startDeployment(k8s, namespace, deployment.name, deployment.resourceSuffix, components, deployment.replicaCount ?? 1);
+          await startDeployment(k8s, namespace, deployment.name, components, deployment.replicaCount ?? 1);
         } catch {
           // K8s start failed — still update DB, reconciler will catch up
         }
@@ -523,7 +530,7 @@ export async function hardDeleteDeployment(
         const components = resolveComponents(entry, null);
 
         try {
-          await deleteDeploymentResources(k8s, namespace, deployment.name, deployment.resourceSuffix, components);
+          await deleteDeploymentResources(k8s, namespace, deployment.name, components);
         } catch {
           // K8s cleanup failed — still delete DB record
         }
@@ -532,6 +539,47 @@ export async function hardDeleteDeployment(
   }
 
   await db.delete(deployments).where(eq(deployments.id, deploymentId));
+}
+
+export async function getDeletePreview(
+  db: Database,
+  clientId: string,
+  deploymentId: string,
+) {
+  const deployment = await getDeploymentById(db, clientId, deploymentId);
+
+  // Find all ingress routes linked to this deployment
+  const routes = await db
+    .select({
+      id: ingressRoutes.id,
+      hostname: ingressRoutes.hostname,
+      path: ingressRoutes.path,
+      domainId: ingressRoutes.domainId,
+    })
+    .from(ingressRoutes)
+    .where(eq(ingressRoutes.deploymentId, deploymentId));
+
+  // Resolve domain names for each route
+  const affectedRoutes = [];
+  for (const route of routes) {
+    const [domain] = await db
+      .select({ domainName: domains.domainName })
+      .from(domains)
+      .where(eq(domains.id, route.domainId));
+
+    affectedRoutes.push({
+      id: route.id,
+      hostname: route.hostname,
+      path: route.path,
+      domainName: domain?.domainName ?? 'unknown',
+    });
+  }
+
+  return {
+    deploymentId: deployment.id,
+    deploymentName: deployment.name,
+    affectedRoutes,
+  };
 }
 
 // ─── Resource Adjustment + Restart (Issue 7) ────────────────────────────────
@@ -670,7 +718,7 @@ export async function updateDeploymentResources(
       try {
         await deployCatalogEntry(k8s, {
           deploymentName: deployment.name,
-          resourceSuffix: deployment.resourceSuffix,
+          storagePath: deployment.storagePath ?? '',
           namespace,
           components: resolved.components,
           volumes: resolved.volumes,
@@ -684,7 +732,7 @@ export async function updateDeploymentResources(
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
         // with this K8s client version due to content-type issues.
-        const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+        const baseName = deployment.name;
         try {
           const podList = await k8s.core.listNamespacedPod({
             namespace,
@@ -711,31 +759,21 @@ export async function updateDeploymentResources(
 // ─── Volume Path Computation (Issue 9) ──────────────────────────────────────
 
 export interface VolumePath {
-  readonly localPath: string;
   readonly containerPath: string;
   readonly k8sPath: string;
 }
 
 export function computeVolumePaths(
-  deployment: { name: string; resourceSuffix: string },
-  entry: { volumes: unknown; components: unknown },
+  deployment: { storagePath: string | null },
+  entry: { volumes: unknown },
 ): VolumePath[] {
-  const volumes = parseJsonField<Array<{ local_path: string; container_path: string }>>(entry.volumes) ?? [];
-  const components = parseJsonField<Array<{ name: string }>>(entry.components) ?? [];
-  const componentCount = components.length;
-  const k8sName = componentCount <= 1
-    ? `${deployment.name}-${deployment.resourceSuffix}`
-    : `${deployment.name}-${deployment.resourceSuffix}-${components[0]?.name}`;
+  const volumes = parseJsonField<Array<{ container_path: string }>>(entry.volumes) ?? [];
+  const basePath = deployment.storagePath ?? '';
 
-  return volumes.map(v => {
-    const parentDir = v.local_path.split('/').slice(0, -1).join('/');
-    const k8sPath = parentDir ? `${parentDir}/${k8sName}` : k8sName;
-    return {
-      localPath: v.local_path,
-      containerPath: v.container_path,
-      k8sPath,
-    };
-  });
+  return volumes.map(v => ({
+    containerPath: v.container_path,
+    k8sPath: basePath,
+  }));
 }
 
 export async function getDeploymentWithVolumePaths(
@@ -795,7 +833,7 @@ export async function redeployWithCurrentConfig(
 
   await deployCatalogEntry(k8s, {
     deploymentName: deployment.name,
-    resourceSuffix: deployment.resourceSuffix,
+    storagePath: deployment.storagePath ?? '',
     namespace,
     components: resolved.components,
     volumes: resolved.volumes,
@@ -808,7 +846,7 @@ export async function redeployWithCurrentConfig(
   });
 
   // Force pod restart by deleting existing pods — K8s recreates from updated spec.
-  const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+  const baseName = deployment.name;
   try {
     const podList = await k8s.core.listNamespacedPod({
       namespace,
@@ -859,7 +897,7 @@ function buildConnectionInfo(
 
   // Build internal K8s DNS hostname using deployment-scoped resource naming
   const componentName = components.length > 0 ? components[0].name : entry.code;
-  const baseName = `${deployment.name}-${deployment.resourceSuffix}`;
+  const baseName = deployment.name;
   const componentSuffix = components.length > 1 ? `-${componentName}` : '';
   const namespace = `client-${deployment.clientId}`;
   const host = `${baseName}${componentSuffix}.${namespace}.svc.cluster.local`;
@@ -976,4 +1014,78 @@ export async function regenerateDeploymentCredentials(
     .where(eq(deployments.id, deploymentId));
 
   return { credentials: newCredentials, regeneratedKeys: keysToRegenerate };
+}
+
+// ─── Storage Folder Listing ──────────────────────────────────────────────────
+
+export async function listStorageFolders(
+  db: Database,
+  clientId: string,
+  entryType: string,
+  entryCode: string,
+  k8s?: K8sClients,
+  kubeconfigPath?: string,
+) {
+  const basePath = `${entryType}/${entryCode}`;
+
+  // Get existing deployments for this client to mark folders as "in use"
+  const existingDeployments = await db
+    .select({ name: deployments.name, storagePath: deployments.storagePath, status: deployments.status })
+    .from(deployments)
+    .where(and(
+      eq(deployments.clientId, clientId),
+      ne(deployments.status, 'deleted'),
+    ));
+
+  // Build a map of storagePath -> deployment name
+  const pathToDeployment = new Map<string, string>();
+  for (const d of existingDeployments) {
+    if (d.storagePath) {
+      pathToDeployment.set(d.storagePath, d.name);
+    }
+  }
+
+  // Try to list directories via file-manager sidecar
+  let folders: Array<{ name: string; path: string; isEmpty: boolean; usedByDeployment: string | null }> = [];
+
+  if (k8s) {
+    const namespace = await getClientNamespace(db, clientId);
+    try {
+      const { fileManagerRequest } = await import('../file-manager/service.js');
+      const FM_IMAGE = 'file-manager-sidecar:latest';
+      const listing = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+        query: { path: basePath, dirs_only: 'true' },
+      });
+      const entries = (JSON.parse(listing.body) as { entries?: Array<{ name: string; type: string; size?: number }> })?.entries ?? [];
+
+      for (const entry of entries) {
+        if (entry.type === 'directory') {
+          const fullPath = `${basePath}/${entry.name}`;
+          // Check if directory is empty by listing its contents
+          let isEmpty = true;
+          try {
+            const subListing = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+              query: { path: fullPath },
+            });
+            const subEntries = (JSON.parse(subListing.body) as { entries?: unknown[] })?.entries ?? [];
+            isEmpty = subEntries.length === 0;
+          } catch {
+            // If we can't list, assume non-empty
+            isEmpty = false;
+          }
+
+          folders.push({
+            name: entry.name,
+            path: fullPath,
+            isEmpty,
+            usedByDeployment: pathToDeployment.get(fullPath) ?? null,
+          });
+        }
+      }
+    } catch {
+      // File manager not available or path doesn't exist yet — return empty list
+    }
+  }
+
+  return { basePath, folders };
 }

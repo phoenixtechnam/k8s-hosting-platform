@@ -446,7 +446,7 @@ export async function syncProtectedDirIngresses(
   if (route.deploymentId) {
     const [dep] = await db.select().from(deployments).where(eq(deployments.id, route.deploymentId));
     if (dep) {
-      serviceName = dep.resourceSuffix ? `${dep.name}-${dep.resourceSuffix}` : dep.name;
+      serviceName = dep.name;
     }
   }
 
