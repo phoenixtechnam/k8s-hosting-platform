@@ -56,8 +56,7 @@ export async function ensureFileManagerRunning(
     }
   }
 
-  if (!deployExists) {
-    await k8s.apps.createNamespacedDeployment({
+  const deployBody = {
       namespace,
       body: {
         metadata: { name: FM_NAME, namespace, labels: FM_LABELS },
@@ -126,7 +125,12 @@ export async function ensureFileManagerRunning(
           },
         },
       },
-    });
+    };
+
+  if (!deployExists) {
+    await k8s.apps.createNamespacedDeployment(deployBody);
+  } else {
+    await k8s.apps.replaceNamespacedDeployment({ name: FM_NAME, namespace, body: deployBody.body });
   }
 
   // Ensure SFTP gateway has per-namespace exec permission (Role + RoleBinding).
