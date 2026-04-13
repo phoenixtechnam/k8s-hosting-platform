@@ -130,11 +130,20 @@ export async function ensureFileManagerRunning(
   if (!deployExists) {
     await k8s.apps.createNamespacedDeployment(deployBody);
   } else {
-    // Delete and recreate — K8s doesn't allow changing spec.selector on replace
-    try {
-      await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
-    } catch { /* best-effort cleanup */ }
-    await k8s.apps.createNamespacedDeployment(deployBody);
+    // Check if the existing deployment uses the correct PVC — only recreate if wrong
+    const existingDeploy = await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace }) as Record<string, unknown>;
+    const existingVolumes = ((existingDeploy as { spec?: { template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> } } } }).spec?.template?.spec?.volumes ?? []);
+    const existingPvcClaim = existingVolumes.find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
+    const expectedPvcClaim = `${namespace}-storage`;
+
+    if (existingPvcClaim !== expectedPvcClaim) {
+      // PVC mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
+      try {
+        await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
+      } catch { /* best-effort cleanup */ }
+      await k8s.apps.createNamespacedDeployment(deployBody);
+    }
+    // Otherwise: deployment exists with correct PVC — skip
   }
 
   // Ensure SFTP gateway has per-namespace exec permission (Role + RoleBinding).

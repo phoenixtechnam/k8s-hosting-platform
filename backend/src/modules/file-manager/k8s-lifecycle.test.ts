@@ -42,8 +42,24 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
     });
 
-    it('should delete and recreate deployment if it already exists', async () => {
-      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    it('should skip recreation if deployment exists with correct PVC', async () => {
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { template: { spec: { volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }] } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
+      // Should not recreate since PVC is correct
+      expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+    });
+
+    it('should delete and recreate deployment if PVC claim is wrong', async () => {
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({}) // first call: exists check
+        .mockResolvedValueOnce({   // second call: read spec
+          spec: { template: { spec: { volumes: [{ persistentVolumeClaim: { claimName: 'wrong-pvc' } }] } } },
+        });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
       await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
