@@ -26,6 +26,7 @@ type Config struct {
 	FTPSPort       string
 	FTPSCertPath   string
 	FTPSKeyPath    string
+	FTPSPassiveIP  string
 	IdleTimeout    time.Duration
 	MaxConnections int
 	Kubeconfig     string
@@ -40,6 +41,7 @@ func loadConfig() Config {
 		FTPSPort:       envOrDefault("FTPS_PORT", "2121"),
 		FTPSCertPath:   envOrDefault("FTPS_CERT_PATH", "/etc/tls/tls.crt"),
 		FTPSKeyPath:    envOrDefault("FTPS_KEY_PATH", "/etc/tls/tls.key"),
+		FTPSPassiveIP:  os.Getenv("FTPS_PASSIVE_IP"),
 		Kubeconfig:     os.Getenv("KUBECONFIG"),
 	}
 
@@ -126,7 +128,7 @@ func main() {
 					log.Fatalf("invalid FTPS_PORT %q: %v", cfg.FTPSPort, err)
 				}
 				log.Printf("FTPS server listening on :%d", port)
-				if err := StartFTPS(port, cfg.FTPSCertPath, cfg.FTPSKeyPath, sessionMgr); err != nil {
+				if err := StartFTPS(port, cfg.FTPSCertPath, cfg.FTPSKeyPath, cfg.FTPSPassiveIP, sessionMgr); err != nil {
 					log.Fatalf("FTPS server error: %v", err)
 				}
 			}()

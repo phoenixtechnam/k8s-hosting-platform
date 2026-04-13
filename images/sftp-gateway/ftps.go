@@ -19,7 +19,7 @@ import (
 
 // StartFTPS starts the FTPS server on the given port. It blocks until the
 // server exits. If certPath/keyPath are invalid or missing it returns an error.
-func StartFTPS(port int, certPath, keyPath string, sessionMgr *SessionManager) error {
+func StartFTPS(port int, certPath, keyPath, passiveIP string, sessionMgr *SessionManager) error {
 	driver := &ftpsDriver{sessionMgr: sessionMgr}
 
 	opts := &ftpserver.Options{
@@ -31,6 +31,7 @@ func StartFTPS(port int, certPath, keyPath string, sessionMgr *SessionManager) e
 		ExplicitFTPS: true,
 		ForceTLS:     true,
 		PassivePorts: "30000-30099",
+		PublicIP:     passiveIP,
 		Driver:       driver,
 		Auth:         &ftpsAuth{sessionMgr: sessionMgr},
 		Perm:         ftpserver.NewSimplePerm("owner", "group"),

@@ -215,7 +215,8 @@ async function handleLs(req, res) {
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Directory not found');
     if (err.code === 'ENOTDIR') return sendError(res, 400, 'Not a directory');
-    sendError(res, 500, err.message);
+    console.error('[handleLs]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to list directory');
   }
 }
 
@@ -234,7 +235,8 @@ async function handleRead(req, res) {
     sendJson(res, 200, { path: p, content, size: s.size, modifiedAt: s.mtime.toISOString() });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'File not found');
-    sendError(res, 500, err.message);
+    console.error('[handleRead]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to read file');
   }
 }
 
@@ -259,7 +261,8 @@ async function handleDownload(req, res) {
     await pipeline(stream, res);
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'File not found');
-    if (!res.headersSent) sendError(res, 500, err.message);
+    console.error('[handleDownload]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to download file');
   }
 }
 
@@ -274,7 +277,8 @@ async function handleMkdir(req, res) {
     await mkdir(full, { recursive: true });
     sendJson(res, 201, { path: p, created: true });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleMkdir]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to create directory');
   }
 }
 
@@ -320,7 +324,8 @@ async function handleUpload(req, res) {
 
     sendJson(res, 201, { path: join(targetDir, filePart.filename), size: filePart.data.length });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleUpload]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to upload file');
   }
 }
 
@@ -337,7 +342,8 @@ async function handleWrite(req, res) {
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleWrite]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to write file');
   }
 }
 
@@ -355,7 +361,8 @@ async function handleRename(req, res) {
     sendJson(res, 200, { oldPath, newPath, renamed: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
-    sendError(res, 500, err.message);
+    console.error('[handleRename]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to rename');
   }
 }
 
@@ -373,7 +380,8 @@ async function handleRm(req, res) {
     sendJson(res, 200, { path: p, deleted: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Not found');
-    sendError(res, 500, err.message);
+    console.error('[handleDelete]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to delete');
   }
 }
 
@@ -393,7 +401,8 @@ async function handleCopy(req, res) {
     sendJson(res, 200, { sourcePath, destPath, copied: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
-    sendError(res, 500, err.message);
+    console.error('[handleCopy]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to copy');
   }
 }
 
@@ -437,7 +446,8 @@ async function handleArchive(req, res) {
     const s = await stat(fullDest);
     sendJson(res, 201, { path: destPath, size: s.size, format });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleArchive]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to create archive');
   }
 }
 
@@ -468,7 +478,8 @@ async function handleExtract(req, res) {
     sendJson(res, 200, { path: archivePath, extractedTo: destPath, extracted: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Archive not found');
-    sendError(res, 500, err.message);
+    console.error('[handleExtract]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to extract archive');
   }
 }
 
@@ -503,7 +514,8 @@ async function handleWriteRaw(req, res) {
   } catch (err) {
     // If client disconnected, clean up partial file
     rm(full, { force: true }).catch(() => {});
-    if (!res.headersSent) sendError(res, 500, err.message);
+    console.error('[handleWriteRaw]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to write file');
   }
 }
 
@@ -529,7 +541,8 @@ async function handleGitClone(req, res) {
     });
     sendJson(res, 201, { url, destPath, cloned: true });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleGitClone]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to clone repository');
   }
 }
 
@@ -565,7 +578,8 @@ async function handleDiskUsage(req, res) {
       availableFormatted: formatBytes(availableBytes),
     });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleDiskUsage]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to get disk usage');
   }
 }
 
@@ -589,7 +603,8 @@ async function handleFolderSize(req, res) {
       sizeFormatted: formatBytes(sizeBytes),
     });
   } catch (err) {
-    sendError(res, 500, err.message);
+    console.error('[handleFolderSize]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to get folder size');
   }
 }
 
@@ -643,7 +658,8 @@ const server = createServer(async (req, res) => {
       if (err.code === 'BODY_TOO_LARGE') {
         sendError(res, 413, err.message);
       } else {
-        sendError(res, 500, err.message);
+        console.error('[router]', err.message);
+        sendError(res, 500, 'Internal error');
       }
     }
   }

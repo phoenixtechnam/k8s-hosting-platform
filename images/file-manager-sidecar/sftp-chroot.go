@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"strings"
 	"syscall"
 )
@@ -79,25 +80,35 @@ done:
 		fatal(fmt.Sprintf("chdir /: %v", err))
 	}
 
-	// Drop privileges to nobody:nobody (65534)
-	if err := syscall.Setgroups([]int{65534}); err != nil {
-		fatal(fmt.Sprintf("setgroups: %v", err))
-	}
-	if err := syscall.Setgid(65534); err != nil {
-		fatal(fmt.Sprintf("setgid: %v", err))
-	}
-	if err := syscall.Setuid(65534); err != nil {
-		fatal(fmt.Sprintf("setuid: %v", err))
+	// Fork child process as nobody:nobody (65534) instead of exec, so the
+	// parent's deferred unmount fires after the child exits.
+	cmd := os.Args[cmdIdx]
+	childEnv := []string{"HOME=/", "PATH=/.platform"}
+
+	child := osexec.Command(cmd, os.Args[cmdIdx+1:]...)
+	child.Stdin = os.Stdin
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	child.Env = childEnv
+	child.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid:    65534,
+			Gid:    65534,
+			Groups: []uint32{65534},
+		},
 	}
 
-	cmd := os.Args[cmdIdx]
-	args := os.Args[cmdIdx:]
-	// Pass minimal environment to the child — prevent leaking secrets
-	// or platform env vars from the file-manager container.
-	childEnv := []string{"HOME=/", "PATH=/.platform"}
-	if err := syscall.Exec(cmd, args, childEnv); err != nil {
-		fatal(fmt.Sprintf("exec %s: %v", cmd, err))
+	exitCode := 0
+	if err := child.Run(); err != nil {
+		if exitErr, ok := err.(*osexec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			fmt.Fprintf(os.Stderr, "sftp-chroot: run %s: %v\n", cmd, err)
+			exitCode = 1
+		}
 	}
+	// Deferred unmount fires here — clean up bind mount
+	os.Exit(exitCode)
 }
 
 // isSafePath allows only ASCII alphanumeric chars, /, _, -, . in paths.
