@@ -88,9 +88,11 @@ export async function ensureFileManagerRunning(
                 ],
                 securityContext: {
                   // SYS_ADMIN is required for the SFTP chroot jail bind mount.
+                  // DAC_READ_SEARCH allows browsing files owned by other UIDs
+                  // (e.g. PostgreSQL's mode-700 data directory).
                   // Drop ALL other capabilities to minimize blast radius.
                   allowPrivilegeEscalation: false,
-                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN'] },
+                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN', 'DAC_READ_SEARCH'] },
                 },
                 resources: {
                   requests: { cpu: '25m', memory: '32Mi' },
