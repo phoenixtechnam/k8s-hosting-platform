@@ -1,26 +1,57 @@
 import { useState, type FormEvent } from 'react';
-import { Key, Plus, Trash2, Loader2, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
+import { Key, Plus, Trash2, Loader2, AlertCircle, X, Copy, Check, CheckCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCanManage } from '@/hooks/use-can-manage';
-import { useSshKeys, useCreateSshKey, useDeleteSshKey, type SshKey } from '@/hooks/use-ssh-keys';
+import { useSshKeys, useCreateSshKey, useUpdateSshKey, useDeleteSshKey, type SshKey } from '@/hooks/use-ssh-keys';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const onClick = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+  return (
+    <button type="button" onClick={onClick} className="ml-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Copy">
+      {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+    </button>
+  );
+}
+
 export default function SshKeys() {
   const { clientId } = useClientContext();
   const canManage = useCanManage();
   const { data, isLoading } = useSshKeys(clientId ?? undefined);
   const createKey = useCreateSshKey(clientId ?? undefined);
+  const updateKey = useUpdateSshKey(clientId ?? undefined);
   const deleteKey = useDeleteSshKey(clientId ?? undefined);
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [editKeyId, setEditKeyId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPublicKey, setEditPublicKey] = useState('');
 
   const keysRaw = data?.data ?? [];
   const { sortedData: keys, sortKey, sortDirection, onSort } = useSortable(keysRaw, 'name');
@@ -44,6 +75,31 @@ export default function SshKeys() {
     deleteKey.mutate(keyId, {
       onSuccess: () => setDeleteConfirmId(null),
     });
+  };
+
+  const editKey = editKeyId ? keysRaw.find((k) => k.id === editKeyId) : null;
+
+  const openEditModal = (key: SshKey) => {
+    setEditKeyId(key.id);
+    setEditName(key.name);
+    setEditPublicKey(key.publicKey);
+  };
+
+  const handleEditSave = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editKeyId) return;
+    try {
+      await updateKey.mutateAsync({
+        keyId: editKeyId,
+        input: {
+          name: editName.trim(),
+          public_key: editPublicKey.trim(),
+        },
+      });
+      setEditKeyId(null);
+    } catch {
+      // Error surfaced via updateKey.error
+    }
   };
 
   return (
@@ -187,10 +243,61 @@ export default function SshKeys() {
                   setDeleteConfirmId={setDeleteConfirmId}
                   onDelete={handleDelete}
                   deletePending={deleteKey.isPending}
+                  onRowClick={openEditModal}
                 />
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Edit modal */}
+      {editKey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setEditKeyId(null)}>
+          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit SSH Key</h2>
+              <button type="button" onClick={() => setEditKeyId(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={18} /></button>
+            </div>
+            <form onSubmit={handleEditSave} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
+                <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} required minLength={1} maxLength={255} className={INPUT_CLASS} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Public Key</label>
+                <textarea value={editPublicKey} onChange={(e) => setEditPublicKey(e.target.value)} required minLength={20} maxLength={10000} rows={5} className={INPUT_CLASS + ' font-mono text-xs'} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Fingerprint</label>
+                <div className="flex items-center">
+                  <code className="text-xs font-mono text-gray-600 dark:text-gray-400 break-all">{editKey.keyFingerprint}</code>
+                  <CopyButton value={editKey.keyFingerprint} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Algorithm</label>
+                <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-mono font-medium text-gray-700 dark:text-gray-300">
+                  {editKey.keyAlgorithm ?? 'unknown'}
+                </span>
+              </div>
+              {updateKey.isError && (
+                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                  <AlertCircle size={14} />
+                  {updateKey.error instanceof Error ? updateKey.error.message : 'Failed to update key'}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setEditKeyId(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                  Cancel
+                </button>
+                <button type="submit" disabled={updateKey.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+                  {updateKey.isPending && <Loader2 size={14} className="animate-spin" />}
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
@@ -203,14 +310,15 @@ function SshKeyRow({
   setDeleteConfirmId,
   onDelete,
   deletePending,
+  onRowClick,
 }: {
   readonly sshKey: SshKey;
   readonly deleteConfirmId: string | null;
   readonly setDeleteConfirmId: (id: string | null) => void;
   readonly onDelete: (id: string) => void;
   readonly deletePending: boolean;
+  readonly onRowClick: (key: SshKey) => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const isConfirming = deleteConfirmId === sshKey.id;
   const addedAt = new Date(sshKey.createdAt).toLocaleDateString(undefined, {
     year: 'numeric',
@@ -218,18 +326,8 @@ function SshKeyRow({
     day: 'numeric',
   });
 
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(sshKey.publicKey);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard unavailable — silently ignore
-    }
-  };
-
   return (
-    <tr className="hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`ssh-key-row-${sshKey.id}`}>
+    <tr className="hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" data-testid={`ssh-key-row-${sshKey.id}`} onClick={() => onRowClick(sshKey)}>
       <td className="px-5 py-3.5">
         <div className="font-medium text-gray-900 dark:text-gray-100">{sshKey.name}</div>
       </td>
@@ -241,19 +339,13 @@ function SshKeyRow({
       <td className="px-5 py-3.5 text-xs">
         <div className="flex items-center gap-1">
           <code className="font-mono text-gray-600 dark:text-gray-400 break-all">{sshKey.keyFingerprint}</code>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
-            title="Copy full public key"
-            data-testid={`ssh-key-copy-${sshKey.id}`}
-          >
-            {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
-          </button>
+          <span onClick={(e) => e.stopPropagation()}>
+            <CopyButton value={sshKey.publicKey} />
+          </span>
         </div>
       </td>
       <td className="px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400">{addedAt}</td>
-      <td className="px-5 py-3.5 text-right">
+      <td className="px-5 py-3.5 text-right" onClick={(e) => e.stopPropagation()}>
         {isConfirming ? (
           <div className="inline-flex items-center gap-1">
             <button

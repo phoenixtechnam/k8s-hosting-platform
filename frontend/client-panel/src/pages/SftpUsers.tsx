@@ -206,11 +206,12 @@ export default function SftpUsers() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState<{ password: string; username: string } | null>(null);
   const [newSshKeyUser, setNewSshKeyUser] = useState<{ username: string } | null>(null);
-  const [rotateUserId, setRotateUserId] = useState<string | null>(null);
-  const [rotatedPassword, setRotatedPassword] = useState<string | null>(null);
+  const [rotatedPasswordForUser, setRotatedPasswordForUser] = useState<{ userId: string; password: string } | null>(null);
+  const [editUserId, setEditUserId] = useState<string | null>(null);
+  const [editSelectedKeyIds, setEditSelectedKeyIds] = useState<string[]>([]);
 
   const usersRaw = data?.data ?? [];
-  const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'username');
+  const { sortedData: users, sortKey, sortDirection, onSort } = useSortable(usersRaw, 'description');
 
   const toggleKeySelection = (keyId: string) => {
     setSelectedKeyIds((prev) =>
@@ -226,7 +227,7 @@ export default function SftpUsers() {
       const result = await createUser.mutateAsync({
         auth_method: authMethod,
         ssh_key_ids: authMethod === 'ssh_key' ? selectedKeyIds : undefined,
-        description: description.trim() || undefined,
+        description: description.trim(),
       });
       const created = result.data as SftpUser & { password?: string };
       if (authMethod === 'password') {
@@ -252,9 +253,36 @@ export default function SftpUsers() {
   const handleRotate = async (userId: string) => {
     try {
       const result = await rotatePassword.mutateAsync({ userId });
-      setRotatedPassword(result.data.password);
-      setRotateUserId(userId);
+      setRotatedPasswordForUser({ userId, password: result.data.password });
     } catch { /* surfaced via rotatePassword.error */ }
+  };
+
+  const editUser = editUserId ? usersRaw.find((u) => u.id === editUserId) : null;
+
+  const openEditModal = (user: SftpUser) => {
+    if (!user.linkedSshKeys || user.linkedSshKeys.length === 0) return;
+    setEditUserId(user.id);
+    setEditSelectedKeyIds(user.linkedSshKeys.map((k) => k.id));
+  };
+
+  const toggleEditKeySelection = (keyId: string) => {
+    setEditSelectedKeyIds((prev) =>
+      prev.includes(keyId)
+        ? prev.filter((id) => id !== keyId)
+        : [...prev, keyId],
+    );
+  };
+
+  const handleEditSave = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editUserId) return;
+    try {
+      await updateUser.mutateAsync({
+        userId: editUserId,
+        input: { ssh_key_ids: editSelectedKeyIds },
+      });
+      setEditUserId(null);
+    } catch { /* surfaced via updateUser.error */ }
   };
 
   return (
@@ -317,22 +345,6 @@ export default function SftpUsers() {
         </div>
       )}
 
-      {/* Rotated password alert */}
-      {rotatedPassword && rotateUserId && (
-        <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Password rotated. Save the new password — it won't be shown again.</p>
-              <div className="mt-2 flex items-center gap-2">
-                <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-3 py-1 text-sm font-mono text-amber-900 dark:text-amber-200">{rotatedPassword}</code>
-                <CopyButton value={rotatedPassword} />
-              </div>
-            </div>
-            <button type="button" onClick={() => { setRotatedPassword(null); setRotateUserId(null); }} className="text-amber-400 hover:text-amber-600"><X size={16} /></button>
-          </div>
-        </div>
-      )}
-
       {/* Header + Add button */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500 dark:text-gray-400" data-testid="sftp-user-count">
@@ -354,13 +366,14 @@ export default function SftpUsers() {
       {showForm && (
         <form onSubmit={handleCreate} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
           <div>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description (optional)</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="e.g. CI/CD deployment, backup sync"
               className={INPUT_CLASS}
+              required
             />
           </div>
 
@@ -457,72 +470,96 @@ export default function SftpUsers() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr>
-                <SortableHeader label="Username" sortKey="username" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
+                <SortableHeader label="Description" sortKey="description" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
                 <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Description</th>
+                <SortableHeader label="Username" sortKey="username" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Auth Type</th>
                 <SortableHeader label="Last Login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="text-left" />
                 {canManage && <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
-              {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                  <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
-                    <span className="flex items-center gap-2">
-                      <KeyRound size={14} className="text-gray-400" />
-                      {user.username}
-                      <CopyButton value={user.username} />
-                    </span>
-                  </td>
-                  <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
-                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{user.description || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
-                    {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
-                  </td>
-                  {canManage && (
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleEnabled(user)}
-                          className={clsx(
-                            'rounded px-2 py-1 text-xs font-medium',
-                            user.enabled
-                              ? 'text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20'
-                              : 'text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20',
-                          )}
-                          title={user.enabled ? 'Disable' : 'Enable'}
-                        >
-                          {user.enabled ? 'Disable' : 'Enable'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRotate(user.id)}
-                          className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
-                          title="Rotate password"
-                        >
-                          <RefreshCw size={14} />
-                        </button>
-                        {deleteConfirmId === user.id ? (
-                          <div className="flex items-center gap-1">
-                            <button type="button" onClick={() => handleDelete(user.id)} className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600">Delete</button>
-                            <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+              {users.map((user) => {
+                const hasLinkedKeys = user.linkedSshKeys && user.linkedSshKeys.length > 0;
+                return (
+                  <tr
+                    key={user.id}
+                    className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50', hasLinkedKeys && 'cursor-pointer')}
+                    onClick={() => { if (hasLinkedKeys) openEditModal(user); }}
+                  >
+                    <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{user.description || '\u2014'}</td>
+                    <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
+                    <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
+                      <div>
+                        <span className="flex items-center gap-2">
+                          <KeyRound size={14} className="text-gray-400" />
+                          {user.username}
+                          <span onClick={(e) => e.stopPropagation()}><CopyButton value={user.username} /></span>
+                        </span>
+                        {rotatedPasswordForUser?.userId === user.id && (
+                          <div className="mt-1 flex items-center gap-1 text-xs" onClick={(e) => e.stopPropagation()}>
+                            <code className="rounded bg-amber-100 dark:bg-amber-800/40 px-2 py-0.5 font-mono text-amber-900 dark:text-amber-200">{rotatedPasswordForUser.password}</code>
+                            <CopyButton value={rotatedPasswordForUser.password} />
+                            <button type="button" onClick={() => setRotatedPasswordForUser(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Dismiss"><X size={12} /></button>
                           </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setDeleteConfirmId(user.id)}
-                            className="rounded p-1 text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400"
-                            title="Delete"
-                          >
-                            <Trash2 size={14} />
-                          </button>
                         )}
                       </div>
                     </td>
-                  )}
-                </tr>
-              ))}
+                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
+                      {hasLinkedKeys
+                        ? `SSH Key (${user.linkedSshKeys!.map((k) => k.name).join(', ')})`
+                        : 'Password'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
+                      {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}
+                    </td>
+                    {canManage && (
+                      <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleEnabled(user)}
+                            className={clsx(
+                              'rounded px-2 py-1 text-xs font-medium',
+                              user.enabled
+                                ? 'text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20'
+                                : 'text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20',
+                            )}
+                            title={user.enabled ? 'Disable' : 'Enable'}
+                          >
+                            {user.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                          {!hasLinkedKeys && (
+                            <button
+                              type="button"
+                              onClick={() => handleRotate(user.id)}
+                              className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300"
+                              title="Rotate password"
+                            >
+                              <RefreshCw size={14} />
+                            </button>
+                          )}
+                          {deleteConfirmId === user.id ? (
+                            <div className="flex items-center gap-1">
+                              <button type="button" onClick={() => handleDelete(user.id)} className="rounded bg-red-500 px-2 py-1 text-xs text-white hover:bg-red-600">Delete</button>
+                              <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmId(user.id)}
+                              className="rounded p-1 text-gray-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400"
+                              title="Delete"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -530,6 +567,60 @@ export default function SftpUsers() {
 
       {/* Audit log */}
       {clientId && <AuditLogSection clientId={clientId} />}
+
+      {/* Edit SSH keys modal for SSH key users */}
+      {editUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setEditUserId(null)}>
+          <div className="w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit SSH Keys for {editUser.username}</h2>
+              <button type="button" onClick={() => setEditUserId(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={18} /></button>
+            </div>
+            <div className="mb-3 text-sm text-gray-500 dark:text-gray-400">
+              <p><strong>Description:</strong> {editUser.description || '\u2014'}</p>
+              <p><strong>Username:</strong> <code className="font-mono">{editUser.username}</code></p>
+            </div>
+            <form onSubmit={handleEditSave} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Linked SSH Keys</label>
+                {sshKeysList.length === 0 ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">No SSH keys found. Add keys on the SSH Keys page first.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-lg p-2">
+                    {sshKeysList.map((key) => (
+                      <label key={key.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded px-1 py-0.5">
+                        <input
+                          type="checkbox"
+                          checked={editSelectedKeyIds.includes(key.id)}
+                          onChange={() => toggleEditKeySelection(key.id)}
+                          className="rounded text-brand-500 focus:ring-brand-500"
+                        />
+                        <KeyRound size={12} className="text-gray-400 flex-shrink-0" />
+                        <span className="truncate">{key.name}</span>
+                        <span className="text-xs text-gray-400 ml-auto flex-shrink-0">{key.keyAlgorithm ?? ''}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {updateUser.isError && (
+                <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
+                  <AlertCircle size={14} /> {(updateUser.error as Error).message}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setEditUserId(null)} className="rounded-lg border border-gray-200 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                  Cancel
+                </button>
+                <button type="submit" disabled={updateUser.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+                  {updateUser.isPending && <Loader2 size={14} className="animate-spin" />}
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { z } from 'zod';
 export const createSftpUserSchema = z.object({
   auth_method: z.enum(['password', 'ssh_key']),
   ssh_key_ids: z.array(z.string()).optional(),
-  description: z.string().max(255).optional(),
+  description: z.string().min(1, 'Description is required').max(255),
   home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').optional(),
   allow_write: z.boolean().optional(),
   allow_delete: z.boolean().optional(),
@@ -23,6 +23,7 @@ export const updateSftpUserSchema = z.object({
   ip_whitelist: z.string().max(2000).nullable().optional(),
   max_concurrent_sessions: z.number().int().min(1).max(20).optional(),
   expires_at: z.string().datetime().nullable().optional(),
+  ssh_key_ids: z.array(z.string()).optional(),
 });
 
 export const rotateSftpPasswordSchema = z.object({

@@ -65,8 +65,14 @@ describe('listSftpUsers', () => {
   it('should return mapped users for a client', async () => {
     const mockLimit = vi.fn().mockResolvedValue([mockRow]);
     const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
+    // Support both direct .where() and .innerJoin().where() chains
+    const mockLinkedWhere = vi.fn().mockResolvedValue([]); // fetchLinkedSshKeys returns no links
+    const mockInnerJoin = vi.fn().mockReturnValue({ where: mockLinkedWhere });
     const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
-    const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+    const mockFrom = vi.fn().mockImplementation(() => ({
+      where: mockWhere,
+      innerJoin: mockInnerJoin,
+    }));
     const mockDb = { select: vi.fn().mockReturnValue({ from: mockFrom }) };
 
     const result = await listSftpUsers(mockDb as any, 'c1');
@@ -88,6 +94,7 @@ describe('listSftpUsers', () => {
       expiresAt: null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
+      linkedSshKeys: [],
     });
   });
 

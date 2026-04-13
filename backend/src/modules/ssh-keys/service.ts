@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { sshKeys } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
-import type { CreateSshKeyInput } from './schema.js';
+import type { CreateSshKeyInput, UpdateSshKeyInput } from './schema.js';
 
 function computeFingerprint(publicKey: string): string {
   // Extract the key data (second field of "type base64data comment" format)
@@ -62,6 +62,58 @@ export async function createSshKey(db: Database, clientId: string, input: Create
 
   const [created] = await db.select().from(sshKeys).where(eq(sshKeys.id, id));
   return created;
+}
+
+export async function updateSshKey(db: Database, clientId: string, keyId: string, input: UpdateSshKeyInput) {
+  const [existing] = await db
+    .select()
+    .from(sshKeys)
+    .where(and(eq(sshKeys.id, keyId), eq(sshKeys.clientId, clientId)));
+
+  if (!existing) {
+    throw new ApiError('SSH_KEY_NOT_FOUND', `SSH key '${keyId}' not found`, 404);
+  }
+
+  const updates: Record<string, unknown> = {};
+
+  if (input.name !== undefined) {
+    // Check for duplicate name per client (excluding current key)
+    const [existingName] = await db
+      .select()
+      .from(sshKeys)
+      .where(and(eq(sshKeys.clientId, clientId), eq(sshKeys.name, input.name)));
+
+    if (existingName && existingName.id !== keyId) {
+      throw new ApiError('DUPLICATE_KEY_NAME', `SSH key named '${input.name}' already exists for this client`, 409);
+    }
+    updates.name = input.name;
+  }
+
+  if (input.public_key !== undefined) {
+    const fingerprint = computeFingerprint(input.public_key);
+    const algorithm = detectAlgorithm(input.public_key);
+
+    // Check for duplicate fingerprint (excluding current key)
+    const [existingFingerprint] = await db
+      .select()
+      .from(sshKeys)
+      .where(eq(sshKeys.keyFingerprint, fingerprint));
+
+    if (existingFingerprint && existingFingerprint.id !== keyId) {
+      throw new ApiError('DUPLICATE_SSH_KEY', 'An SSH key with this fingerprint already exists', 409);
+    }
+
+    updates.publicKey = input.public_key;
+    updates.keyFingerprint = fingerprint;
+    updates.keyAlgorithm = algorithm;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await db.update(sshKeys).set(updates).where(eq(sshKeys.id, keyId));
+  }
+
+  const [updated] = await db.select().from(sshKeys).where(eq(sshKeys.id, keyId));
+  return updated;
 }
 
 export async function deleteSshKey(db: Database, clientId: string, keyId: string) {

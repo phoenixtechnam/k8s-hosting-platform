@@ -10,7 +10,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
-import type { CreateSshKeyInput, SshKeyResponse } from '@k8s-hosting/api-contracts';
+import type { CreateSshKeyInput, UpdateSshKeyInput, SshKeyResponse } from '@k8s-hosting/api-contracts';
 
 export type SshKey = SshKeyResponse;
 
@@ -37,6 +37,20 @@ export function useCreateSshKey(clientId: string | undefined) {
       apiFetch<SshKeyResponseEnvelope>(
         `/api/v1/clients/${clientId}/ssh-keys`,
         { method: 'POST', body: JSON.stringify(input) },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ssh-keys', clientId] });
+    },
+  });
+}
+
+export function useUpdateSshKey(clientId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ keyId, input }: { keyId: string; input: UpdateSshKeyInput }) =>
+      apiFetch<SshKeyResponseEnvelope>(
+        `/api/v1/clients/${clientId}/ssh-keys/${keyId}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ssh-keys', clientId] });

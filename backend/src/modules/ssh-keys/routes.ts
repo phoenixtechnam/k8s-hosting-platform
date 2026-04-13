@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireClientAccess, requireClientRoleByMethod } from '../../middleware/auth.js';
-import { createSshKeySchema } from './schema.js';
+import { createSshKeySchema, updateSshKeySchema } from './schema.js';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -28,6 +28,17 @@ export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
     }
     const key = await service.createSshKey(app.db, clientId, parsed.data);
     reply.status(201).send(success(key));
+  });
+
+  // PATCH /api/v1/clients/:clientId/ssh-keys/:keyId
+  app.patch('/clients/:clientId/ssh-keys/:keyId', async (request) => {
+    const { clientId, keyId } = request.params as { clientId: string; keyId: string };
+    const parsed = updateSshKeySchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.errors[0].message}`, 400);
+    }
+    const key = await service.updateSshKey(app.db, clientId, keyId, parsed.data);
+    return success(key);
   });
 
   // DELETE /api/v1/clients/:clientId/ssh-keys/:keyId

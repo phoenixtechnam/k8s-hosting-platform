@@ -1,7 +1,7 @@
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, desc, count, inArray } from 'drizzle-orm';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
-import { sftpUsers, sftpAuditLog, sftpUserSshKeys, platformSettings } from '../../db/schema.js';
+import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
@@ -48,6 +48,28 @@ function mapSftpUserToResponse(row: typeof sftpUsers.$inferSelect) {
 
 // ─── CRUD ──────────────────────────────────────────────────────────────────
 
+async function fetchLinkedSshKeys(db: Database, userIds: string[]) {
+  if (userIds.length === 0) return new Map<string, Array<{ id: string; name: string }>>();
+
+  const links = await db
+    .select({
+      sftpUserId: sftpUserSshKeys.sftpUserId,
+      sshKeyId: sshKeys.id,
+      sshKeyName: sshKeys.name,
+    })
+    .from(sftpUserSshKeys)
+    .innerJoin(sshKeys, eq(sftpUserSshKeys.sshKeyId, sshKeys.id))
+    .where(inArray(sftpUserSshKeys.sftpUserId, userIds));
+
+  const map = new Map<string, Array<{ id: string; name: string }>>();
+  for (const link of links) {
+    const existing = map.get(link.sftpUserId) ?? [];
+    existing.push({ id: link.sshKeyId, name: link.sshKeyName });
+    map.set(link.sftpUserId, existing);
+  }
+  return map;
+}
+
 export async function listSftpUsers(db: Database, clientId: string, limit = 100) {
   const rows = await db
     .select()
@@ -56,7 +78,13 @@ export async function listSftpUsers(db: Database, clientId: string, limit = 100)
     .orderBy(desc(sftpUsers.createdAt))
     .limit(limit);
 
-  return rows.map(mapSftpUserToResponse);
+  const userIds = rows.map((r) => r.id);
+  const linkedKeysMap = await fetchLinkedSshKeys(db, userIds);
+
+  return rows.map((row) => ({
+    ...mapSftpUserToResponse(row),
+    linkedSshKeys: linkedKeysMap.get(row.id) ?? [],
+  }));
 }
 
 export async function getSftpUser(db: Database, clientId: string, userId: string) {
@@ -69,7 +97,12 @@ export async function getSftpUser(db: Database, clientId: string, userId: string
     throw new ApiError('SFTP_USER_NOT_FOUND', `SFTP user '${userId}' not found`, 404);
   }
 
-  return mapSftpUserToResponse(row);
+  const linkedKeysMap = await fetchLinkedSshKeys(db, [row.id]);
+
+  return {
+    ...mapSftpUserToResponse(row),
+    linkedSshKeys: linkedKeysMap.get(row.id) ?? [],
+  };
 }
 
 function generateUsername(): string {
@@ -183,8 +216,27 @@ export async function updateSftpUser(
     await db.update(sftpUsers).set(updates).where(eq(sftpUsers.id, userId));
   }
 
+  // Update linked SSH keys if provided
+  if (input.ssh_key_ids !== undefined) {
+    // Delete all existing links
+    await db.delete(sftpUserSshKeys).where(eq(sftpUserSshKeys.sftpUserId, userId));
+    // Insert new links
+    for (const sshKeyId of input.ssh_key_ids) {
+      await db.insert(sftpUserSshKeys).values({
+        id: crypto.randomUUID(),
+        sftpUserId: userId,
+        sshKeyId,
+      });
+    }
+  }
+
   const [updated] = await db.select().from(sftpUsers).where(eq(sftpUsers.id, userId));
-  return mapSftpUserToResponse(updated);
+  const linkedKeysMap = await fetchLinkedSshKeys(db, [updated.id]);
+
+  return {
+    ...mapSftpUserToResponse(updated),
+    linkedSshKeys: linkedKeysMap.get(updated.id) ?? [],
+  };
 }
 
 export async function deleteSftpUser(db: Database, clientId: string, userId: string) {

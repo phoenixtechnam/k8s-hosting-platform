@@ -9,7 +9,9 @@ import type {
   SftpAuditLogEntry,
 } from '@k8s-hosting/api-contracts';
 
-export type SftpUser = SftpUserResponse;
+export type SftpUser = SftpUserResponse & {
+  linkedSshKeys?: Array<{ id: string; name: string }>;
+};
 
 interface SftpUsersResponse { readonly data: readonly SftpUser[] }
 interface SftpUserEnvelope { readonly data: SftpUser & { password?: string } }
