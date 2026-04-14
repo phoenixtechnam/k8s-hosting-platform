@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw } from 'lucide-react';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
-import { useUpdateDeploymentResources, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import type { LogLine } from '@/hooks/use-deployments';
 import clsx from 'clsx';
@@ -132,6 +132,11 @@ export default function InstalledAppDetailModal({
   const logs = useDeploymentLogs(clientId, deployment?.id, showLogs);
   const liveMetrics = useDeploymentLiveMetrics(clientId, deployment?.status === 'running' ? deployment?.id : undefined);
 
+  // ─── Configuration editing ────────────────────────────────────────────────
+  const [editingConfig, setEditingConfig] = useState(false);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const updateDeployment = useUpdateDeployment(clientId);
+
   if (!open || !deployment) return null;
 
   const isDatabase = catalogEntry?.type === 'database';
@@ -176,6 +181,43 @@ export default function InstalledAppDetailModal({
       .map((p) => p.key)
       .filter((k): k is string => k != null),
   );
+
+  // Derive configurable env var keys from catalog entry
+  const configurableKeys = new Set<string>(
+    (() => {
+      const raw = catalogEntry?.envVars;
+      if (raw == null) return [];
+      const parsed = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+      if (parsed && typeof parsed === 'object' && 'configurable' in parsed && Array.isArray((parsed as Record<string, unknown>).configurable)) {
+        return (parsed as { configurable: string[] }).configurable;
+      }
+      return [];
+    })(),
+  );
+
+  const enterConfigEdit = () => {
+    const initial: Record<string, string> = {};
+    for (const key of configKeys) {
+      if (configurableKeys.has(key)) {
+        initial[key] = String(configuration[key] ?? '');
+      }
+    }
+    setEditValues(initial);
+    setEditingConfig(true);
+  };
+
+  const saveConfigEdit = () => {
+    const merged: Record<string, unknown> = { ...configuration, ...editValues };
+    updateDeployment.mutate(
+      { deploymentId: deployment.id, configuration: merged },
+      {
+        onSuccess: () => {
+          setEditingConfig(false);
+          queryClient.invalidateQueries({ queryKey: ['deployments'] });
+        },
+      },
+    );
+  };
 
   const toggleSecret = (key: string) => {
     const next = new Set(revealedSecrets);
@@ -289,7 +331,7 @@ export default function InstalledAppDetailModal({
               <TagIcon size={16} className="text-blue-600 dark:text-blue-400" />
               Supported Versions
             </h3>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {(versionsData?.data ?? []).map(v => (
                 <span
                   key={v.id}
@@ -305,18 +347,18 @@ export default function InstalledAppDetailModal({
                   {deployment.installedVersion === v.version ? <span className="text-[10px] font-medium text-green-600 dark:text-green-400">installed</span> : null}
                 </span>
               ))}
+              {deployment.status === 'running' && onRestart && (
+                <button
+                  type="button"
+                  onClick={() => { onRestart(deployment.id); onClose(); }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 text-sm font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                  data-testid="pull-latest-restart"
+                >
+                  <RefreshCw size={14} />
+                  Pull Latest
+                </button>
+              )}
             </div>
-            {deployment.status === 'running' && onRestart && (
-              <button
-                type="button"
-                onClick={() => { onRestart(deployment.id); onClose(); }}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors"
-                data-testid="pull-latest-restart"
-              >
-                <RefreshCw size={14} />
-                Pull Latest & Restart
-              </button>
-            )}
           </div>
         )}
 
@@ -401,10 +443,23 @@ export default function InstalledAppDetailModal({
 
         {/* Configuration Section */}
         <div className="mb-6">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-            <Shield size={16} className="text-blue-600 dark:text-blue-400" />
-            Configuration
-          </h3>
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <Shield size={16} className="text-blue-600 dark:text-blue-400" />
+              Configuration
+            </h3>
+            {!editingConfig && configurableKeys.size > 0 && configKeys.length > 0 && (
+              <button
+                type="button"
+                onClick={enterConfigEdit}
+                className="inline-flex items-center gap-1 rounded-md border border-blue-300 dark:border-blue-600 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                data-testid="edit-config-button"
+              >
+                <Pencil size={12} />
+                Edit
+              </button>
+            )}
+          </div>
           {configKeys.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
@@ -418,26 +473,37 @@ export default function InstalledAppDetailModal({
                   {configKeys.map((key) => {
                     const isSecret = secretKeys.has(key);
                     const isRevealed = revealedSecrets.has(key);
+                    const isConfigurable = configurableKeys.has(key);
                     const value = String(configuration[key] ?? '');
                     return (
                       <tr key={key}>
                         <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{key}</td>
                         <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-xs">
-                              {isSecret && !isRevealed ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : value}
-                            </span>
-                            {isSecret && (
-                              <button
-                                type="button"
-                                onClick={() => toggleSecret(key)}
-                                className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                                data-testid={`toggle-secret-${key}`}
-                              >
-                                {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
-                              </button>
-                            )}
-                          </div>
+                          {editingConfig && isConfigurable && !isSecret ? (
+                            <input
+                              type="text"
+                              value={editValues[key] ?? ''}
+                              onChange={(e) => setEditValues({ ...editValues, [key]: e.target.value })}
+                              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 font-mono text-xs text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              data-testid={`edit-config-${key}`}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs">
+                                {isSecret && !isRevealed ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : value}
+                              </span>
+                              {isSecret && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSecret(key)}
+                                  className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                  data-testid={`toggle-secret-${key}`}
+                                >
+                                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -447,6 +513,33 @@ export default function InstalledAppDetailModal({
             </div>
           ) : (
             <p className="text-sm text-gray-500 dark:text-gray-400">No custom configuration</p>
+          )}
+          {editingConfig && (
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={saveConfigEdit}
+                disabled={updateDeployment.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="save-config-button"
+              >
+                {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => { setEditingConfig(false); updateDeployment.reset(); }}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                data-testid="cancel-config-button"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {updateDeployment.isError && editingConfig && (
+            <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+              {updateDeployment.error instanceof Error ? updateDeployment.error.message : 'Failed to update configuration'}
+            </p>
           )}
           {secretKeys.size > 0 && (
             <p className="mt-3 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">

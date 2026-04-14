@@ -10,6 +10,7 @@ import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useDeployments } from '@/hooks/use-deployments';
+import { useCatalog } from '@/hooks/use-catalog';
 import {
   useDnsRecords, useCreateDnsRecord, useUpdateDnsRecord, useDeleteDnsRecord,
   useDnsRecordDiff, usePullDnsRecord, usePushDnsRecord,
@@ -470,6 +471,7 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const navigate = useNavigate();
   const { data: routesData, isLoading } = useIngressRoutes(clientId, domainId);
   const { data: deploymentsData } = useDeployments(clientId);
+  const { data: catalogData } = useCatalog();
   const createRoute = useCreateIngressRoute(clientId, domainId);
   const updateRoute = useUpdateIngressRoute(clientId, domainId);
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
@@ -484,7 +486,25 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const [assigningRouteId, setAssigningRouteId] = useState<string | null>(null);
 
   const routes = routesData?.data ?? [];
-  const deployments = deploymentsData?.data ?? [];
+  const allDeployments = deploymentsData?.data ?? [];
+  const catalogEntries = catalogData?.data ?? [];
+
+  // Only show deployments whose catalog entry has ingress-capable ports
+  // (i.e. at least one component with a port marked ingress: true, or
+  // the entry type is 'runtime'/'static'/'application' — database/service
+  // types never serve HTTP traffic).
+  const catalogMap = new Map(catalogEntries.map((e) => [e.id, e]));
+  const deployments = allDeployments.filter((d) => {
+    const entry = catalogMap.get(d.catalogEntryId);
+    if (!entry) return true; // If catalog not loaded yet, show all to avoid hiding valid options
+    // Check for explicit ingress ports in components
+    const hasIngressPort = entry.components?.some((c) =>
+      c.ports?.some((p) => p.ingress === true),
+    ) ?? false;
+    if (hasIngressPort) return true;
+    // Fall back to type-based check: runtimes, statics, and applications serve HTTP
+    return entry.type === 'runtime' || entry.type === 'static' || entry.type === 'application';
+  });
 
   /** Validate a single DNS label (subdomain part). */
   const validateSubdomain = (value: string): string | null => {
@@ -1286,6 +1306,16 @@ function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
 
   const tlsMode = hasCustomCert ? 'custom' : isAutoTls ? 'auto' : 'none';
 
+  // Detect local dev CA: if auto TLS and the cert issuer contains
+  // "local-ca", "Local CA", or similar local development CA strings,
+  // display a distinct label instead of "Let's Encrypt".
+  const isLocalCa = isAutoTls && (
+    cert?.issuer?.toLowerCase().includes('local-ca') ||
+    cert?.issuer?.toLowerCase().includes('local ca') ||
+    cert?.issuer?.toLowerCase().includes('local development') ||
+    false
+  );
+
   const handleUpload = async (e: FormEvent) => {
     e.preventDefault();
     if (!certificate.trim() || !privateKey.trim()) return;
@@ -1329,13 +1359,15 @@ function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
               tlsMode === 'none' && 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
             )} data-testid="tls-mode-badge">
               <ShieldCheck size={14} />
-              {tlsMode === 'auto' && 'Automatic (Let\'s Encrypt)'}
+              {tlsMode === 'auto' && (isLocalCa ? 'Automatic (Local Dev CA)' : 'Automatic (Let\'s Encrypt)')}
               {tlsMode === 'custom' && 'Custom Certificate'}
               {tlsMode === 'none' && 'No TLS'}
             </span>
           </div>
           <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            {tlsMode === 'auto' && 'TLS certificates are automatically provisioned and renewed via Let\'s Encrypt. Upload a custom certificate to override.'}
+            {tlsMode === 'auto' && (isLocalCa
+              ? 'TLS certificates are automatically provisioned by the local development CA. Upload a custom certificate to override.'
+              : 'TLS certificates are automatically provisioned and renewed via Let\'s Encrypt. Upload a custom certificate to override.')}
             {tlsMode === 'custom' && 'A custom TLS certificate has been uploaded. Delete it to revert to automatic provisioning.'}
             {tlsMode === 'none' && 'TLS is not configured for this domain. Enable auto-TLS or upload a custom certificate.'}
           </p>

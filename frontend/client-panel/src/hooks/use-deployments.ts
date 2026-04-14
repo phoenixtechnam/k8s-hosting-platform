@@ -16,6 +16,7 @@ interface CreateDeploymentInput {
 
 interface UpdateDeploymentInput {
   readonly status?: 'running' | 'stopped';
+  readonly configuration?: Record<string, unknown>;
 }
 
 export function useDeployments(clientId: string | undefined, options?: { refetchInterval?: number | false }) {
