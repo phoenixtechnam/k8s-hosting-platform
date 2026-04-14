@@ -42,9 +42,12 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
     });
 
-    it('should skip recreation if deployment exists with correct PVC', async () => {
+    it('should skip recreation if deployment exists with correct spec', async () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
-        spec: { template: { spec: { volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }] } } },
+        spec: { template: { spec: {
+          volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
+          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_READ_SEARCH'] } } }],
+        } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
       const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
