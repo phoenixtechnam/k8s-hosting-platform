@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
-import { X, Loader2, Search, Rocket, Globe, CheckCircle, AlertCircle, AlertTriangle, Info, FolderOpen } from 'lucide-react';
+import { X, Loader2, Search, Rocket, CheckCircle, AlertCircle, AlertTriangle, Info, FolderOpen } from 'lucide-react';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useCatalog, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import { useCreateDeployment, useStorageFolders } from '@/hooks/use-deployments';
@@ -39,7 +39,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [name, setName] = useState('');
   const [cpuRequest, setCpuRequest] = useState('100m');
   const [memoryRequest, setMemoryRequest] = useState('128Mi');
-  const [selectedDomainId, setSelectedDomainId] = useState<string>('');
+  const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [selectedVersion, setSelectedVersion] = useState<string>('');
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
   const [storageMode, setStorageMode] = useState<'default' | 'custom'>('default');
@@ -187,7 +187,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     setName('');
     setCpuRequest('100m');
     setMemoryRequest('128Mi');
-    setSelectedDomainId('');
+    setSelectedRouteId('');
     setSelectedVersion('');
     setParamValues({});
     setStorageMode('default');
@@ -659,40 +659,43 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </div>
           )}
 
-          {/* Step 4: Connect Domain */}
-          {selectedImageId && (
-            <div>
-              <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                4. Connect a Domain
-              </label>
-              {domains.length > 0 ? (
-                <div>
-                  <select
-                    value={selectedDomainId}
-                    onChange={(e) => setSelectedDomainId(e.target.value)}
-                    className={INPUT_CLASS}
-                    data-testid="deploy-domain-select"
-                  >
-                    <option value="">Connect a Domain Later</option>
-                    {domains.map(d => (
-                      <option key={d.id} value={d.id}>
-                        <Globe size={12} /> {d.domainName} ({d.dnsMode})
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {selectedDomainId
-                      ? 'An ingress route will be created to connect this domain to your workload.'
-                      : 'You can connect a domain later from the domain\'s Routing tab.'}
+          {/* Step 4: Connect to Unused Ingress Route */}
+          {selectedImageId && (() => {
+            const unusedDomains = domains.filter(d => !d.deploymentId);
+            return (
+              <div>
+                <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                  4. Connect to Unused Ingress Route
+                </label>
+                {unusedDomains.length > 0 ? (
+                  <div>
+                    <select
+                      value={selectedRouteId}
+                      onChange={(e) => setSelectedRouteId(e.target.value)}
+                      className={INPUT_CLASS}
+                      data-testid="deploy-domain-select"
+                    >
+                      <option value="">Connect Later</option>
+                      {unusedDomains.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.domainName}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {selectedRouteId
+                        ? 'This route will be connected to your deployment.'
+                        : 'You can connect a domain later from the domain\'s Routing tab.'}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 italic rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-3">
+                    No unused ingress routes available. Create a domain and add routes first.
                   </p>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400 dark:text-gray-500 italic rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-3">
-                  No domains available. Add a domain first, or connect one later from the Routing tab.
-                </p>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            );
+          })()}
 
           {/* Actions */}
           <div className="flex justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">

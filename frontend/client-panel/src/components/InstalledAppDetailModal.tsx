@@ -214,6 +214,7 @@ export default function InstalledAppDetailModal({
         onSuccess: () => {
           setEditingConfig(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
+          onRestart?.(deployment.id);
         },
       },
     );
@@ -515,7 +516,12 @@ export default function InstalledAppDetailModal({
             <p className="text-sm text-gray-500 dark:text-gray-400">No custom configuration</p>
           )}
           {editingConfig && (
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 space-y-3">
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
+              </div>
+              <div className="flex gap-2">
               <button
                 type="button"
                 onClick={saveConfigEdit}
@@ -534,6 +540,7 @@ export default function InstalledAppDetailModal({
               >
                 Cancel
               </button>
+              </div>
             </div>
           )}
           {updateDeployment.isError && editingConfig && (
