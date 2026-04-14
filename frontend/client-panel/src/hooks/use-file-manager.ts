@@ -11,6 +11,8 @@ interface FileEntry {
   readonly size: number;
   readonly modifiedAt: string | null;
   readonly permissions: string;
+  readonly uid: number;
+  readonly gid: number;
 }
 
 interface DirectoryListing {
@@ -190,6 +192,32 @@ export function useGitClone() {
       apiFetch(`/api/v1/clients/${clientId}/files/git-clone`, {
         method: 'POST',
         body: JSON.stringify({ url, destPath }),
+      }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', clientId] }); },
+  });
+}
+
+export function useChmod() {
+  const { clientId } = useClientContext();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, mode, recursive }: { path: string; mode: string; recursive?: boolean }) =>
+      apiFetch(`/api/v1/clients/${clientId}/files/chmod`, {
+        method: 'POST',
+        body: JSON.stringify({ path, mode, recursive }),
+      }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', clientId] }); },
+  });
+}
+
+export function useChown() {
+  const { clientId } = useClientContext();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, uid, gid, recursive }: { path: string; uid?: number; gid?: number; recursive?: boolean }) =>
+      apiFetch(`/api/v1/clients/${clientId}/files/chown`, {
+        method: 'POST',
+        body: JSON.stringify({ path, uid, gid, recursive }),
       }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', clientId] }); },
   });

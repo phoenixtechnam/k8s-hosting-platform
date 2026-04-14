@@ -201,9 +201,11 @@ async function handleLs(req, res) {
           size: s.size,
           modifiedAt: s.mtime.toISOString(),
           permissions: (s.mode & 0o777).toString(8),
+          uid: s.uid,
+          gid: s.gid,
         };
       } catch {
-        return { name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000' };
+        return { name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0 };
       }
     }));
     // Sort: directories first, then alphabetical
@@ -626,6 +628,58 @@ async function readBody(req) {
   try { return JSON.parse(raw); } catch { return {}; }
 }
 
+// ─── Permissions & Ownership ─────────────────────────────────────────────────
+
+async function handleChmod(req, res) {
+  const body = await readBody(req);
+  const { path: p, mode, recursive } = body;
+  if (!p) return sendError(res, 400, 'path is required');
+  if (!mode || !/^[0-7]{3,4}$/.test(String(mode))) return sendError(res, 400, 'mode must be an octal string (e.g. "755")');
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Path not found');
+
+  try {
+    const args = recursive ? ['-R', String(mode), full] : [String(mode), full];
+    await new Promise((resolve, reject) => {
+      execFile('chmod', args, { timeout: 60_000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr || err.message));
+        else resolve(stdout);
+      });
+    });
+    sendJson(res, 200, { path: p, mode: String(mode), recursive: !!recursive });
+  } catch (err) {
+    console.error('[handleChmod]', err.message);
+    sendError(res, 500, err.message);
+  }
+}
+
+async function handleChown(req, res) {
+  const body = await readBody(req);
+  const { path: p, uid, gid, recursive } = body;
+  if (!p) return sendError(res, 400, 'path is required');
+  if (uid === undefined && gid === undefined) return sendError(res, 400, 'uid or gid is required');
+
+  const owner = `${uid ?? ''}:${gid ?? ''}`;
+  if (owner === ':') return sendError(res, 400, 'uid or gid is required');
+
+  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Path not found');
+
+  try {
+    const args = recursive ? ['-R', owner, full] : [owner, full];
+    await new Promise((resolve, reject) => {
+      execFile('chown', args, { timeout: 60_000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr || err.message));
+        else resolve(stdout);
+      });
+    });
+    sendJson(res, 200, { path: p, uid, gid, recursive: !!recursive });
+  } catch (err) {
+    console.error('[handleChown]', err.message);
+    sendError(res, 500, err.message);
+  }
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
@@ -651,6 +705,8 @@ const server = createServer(async (req, res) => {
     if (path === '/git-clone' && method === 'POST') return handleGitClone(req, res);
     if (path === '/disk-usage' && method === 'GET') return handleDiskUsage(req, res);
     if (path === '/folder-size' && method === 'GET') return handleFolderSize(req, res);
+    if (path === '/chmod' && method === 'POST') return handleChmod(req, res);
+    if (path === '/chown' && method === 'POST') return handleChown(req, res);
 
     sendError(res, 404, 'Not found');
   } catch (err) {

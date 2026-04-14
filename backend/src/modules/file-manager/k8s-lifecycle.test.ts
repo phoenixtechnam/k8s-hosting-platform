@@ -46,7 +46,7 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
-          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_READ_SEARCH'] } } }],
+          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});

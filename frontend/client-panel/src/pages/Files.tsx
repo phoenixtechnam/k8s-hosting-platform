@@ -13,6 +13,7 @@ import {
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive, ChevronDown,
+  Shield, UserCheck,
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import {
@@ -20,7 +21,7 @@ import {
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
   useDeleteFile, useDownloadFile, useUploadFiles, useCopyFile,
   useArchiveFiles, useExtractArchive, useGitClone, useAuthenticatedBlobUrl,
-  useDiskUsage, useFolderSize,
+  useDiskUsage, useFolderSize, useChmod, useChown,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 
@@ -75,6 +76,13 @@ function joinPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`;
 }
 
+function modeToRwx(octal: string): string {
+  const num = parseInt(octal, 8);
+  const rwx = (n: number) =>
+    (n & 4 ? 'r' : '-') + (n & 2 ? 'w' : '-') + (n & 1 ? 'x' : '-');
+  return rwx((num >> 6) & 7) + rwx((num >> 3) & 7) + rwx(num & 7);
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function Files() {
@@ -100,6 +108,13 @@ export default function Files() {
   const [moveTarget, setMoveTarget] = useState<{ paths: string[]; mode: 'copy' | 'move' } | null>(null);
   const [extractTarget, setExtractTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
+  const [chmodTarget, setChmodTarget] = useState<{ path: string; currentMode: string; isDir: boolean } | null>(null);
+  const [chmodMode, setChmodMode] = useState('');
+  const [chmodRecursive, setChmodRecursive] = useState(false);
+  const [chownTarget, setChownTarget] = useState<{ path: string; currentUid: number; currentGid: number; isDir: boolean } | null>(null);
+  const [chownUid, setChownUid] = useState('');
+  const [chownGid, setChownGid] = useState('');
+  const [chownRecursive, setChownRecursive] = useState(false);
 
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -119,6 +134,8 @@ export default function Files() {
   const gitClone = useGitClone();
   const { data: diskUsage } = useDiskUsage();
   const folderSize = useFolderSize();
+  const chmod = useChmod();
+  const chown = useChown();
   const [folderSizes, setFolderSizes] = useState<Record<string, { size: string; loading: boolean }>>({});
   const [sortCol, setSortCol] = useState<FileSortColumn>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -419,6 +436,36 @@ export default function Files() {
           <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'copy' }); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Copy size={16} /> Copy</button>
           <button onClick={() => { setMoveTarget({ paths: selectedPaths, mode: 'move' }); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><Move size={16} /> Move</button>
           <button onClick={() => { setArchiveOpen(true); setArchiveName(`archive-${Date.now()}`); }} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"><FileArchive size={16} /> Archive</button>
+          <button
+            onClick={() => {
+              const firstEntry = dirListing.data?.entries.find(e => selected.has(e.name));
+              if (firstEntry) {
+                setChmodTarget({
+                  path: joinPath(currentPath, firstEntry.name),
+                  currentMode: firstEntry.permissions,
+                  isDir: firstEntry.type === 'directory',
+                });
+                setChmodMode(firstEntry.permissions);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"
+          ><Shield size={16} /> Permissions</button>
+          <button
+            onClick={() => {
+              const firstEntry = dirListing.data?.entries.find(e => selected.has(e.name));
+              if (firstEntry) {
+                setChownTarget({
+                  path: joinPath(currentPath, firstEntry.name),
+                  currentUid: firstEntry.uid,
+                  currentGid: firstEntry.gid,
+                  isDir: firstEntry.type === 'directory',
+                });
+                setChownUid(String(firstEntry.uid));
+                setChownGid(String(firstEntry.gid));
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"
+          ><UserCheck size={16} /> Ownership</button>
           {dirListing.data?.entries.some(e => e.type === 'directory' && selected.has(e.name)) && (
             <button
               onClick={() => {
@@ -516,6 +563,8 @@ export default function Files() {
                     {sortCol === 'modifiedAt' && <ChevronDown size={14} className={`transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''}`} />}
                   </button>
                 </th>
+                <th className="px-3 py-3 w-28 hidden md:table-cell">Permissions</th>
+                <th className="px-3 py-3 w-20 hidden lg:table-cell">Owner</th>
                 <th className="px-3 py-3 w-10" />
               </tr>
             </thead>
@@ -525,7 +574,7 @@ export default function Files() {
                   onClick={() => { const parts = currentPath.split('/').filter(Boolean); parts.pop(); setCurrentPath('/' + parts.join('/')); }}>
                   <td className="px-3 py-2.5" />
                   <td className="px-3 py-2.5 flex items-center gap-2"><ArrowLeft size={14} className="text-gray-400" /><span className="text-gray-500 dark:text-gray-400">..</span></td>
-                  <td /><td className="hidden sm:table-cell" /><td />
+                  <td /><td className="hidden sm:table-cell" /><td className="hidden md:table-cell" /><td className="hidden lg:table-cell" /><td />
                 </tr>
               )}
 
@@ -546,7 +595,7 @@ export default function Files() {
               })}
 
               {dirListing.data.entries.length === 0 && currentPath === '/' && (
-                <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400 dark:text-gray-500"><FolderOpen size={32} className="mx-auto mb-2" />Empty directory</td></tr>
+                <tr><td colSpan={7} className="px-4 py-12 text-center text-gray-400 dark:text-gray-500"><FolderOpen size={32} className="mx-auto mb-2" />Empty directory</td></tr>
               )}
             </tbody>
           </table>
@@ -576,6 +625,26 @@ export default function Files() {
             setContextMenu(null);
           }}
           onCalculateFolderSize={(path) => { calculateFolderSize(path); setContextMenu(null); }}
+          onChmod={(entry) => {
+            setChmodTarget({
+              path: joinPath(currentPath, entry.name),
+              currentMode: entry.permissions,
+              isDir: entry.type === 'directory',
+            });
+            setChmodMode(entry.permissions);
+            setContextMenu(null);
+          }}
+          onChown={(entry) => {
+            setChownTarget({
+              path: joinPath(currentPath, entry.name),
+              currentUid: entry.uid,
+              currentGid: entry.gid,
+              isDir: entry.type === 'directory',
+            });
+            setChownUid(String(entry.uid));
+            setChownGid(String(entry.gid));
+            setContextMenu(null);
+          }}
         />
       )}
 
@@ -648,6 +717,125 @@ export default function Files() {
             </div>
           </div>
         </SimpleDialog>
+      )}
+
+      {/* Chmod modal */}
+      {chmodTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setChmodTarget(null)} />
+          <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">Change Permissions</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 font-mono truncate">{chmodTarget.path}</p>
+            {selected.size > 1 && (
+              <p className="text-xs text-brand-600 dark:text-brand-400 mb-3">Applying to {selected.size} selected items</p>
+            )}
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Mode (octal)
+              </label>
+              <input
+                type="text"
+                value={chmodMode}
+                onChange={(e) => setChmodMode(e.target.value.replace(/[^0-7]/g, '').slice(0, 4))}
+                placeholder="755"
+                maxLength={4}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm font-mono text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                autoFocus
+              />
+              {chmodMode.length >= 3 && (
+                <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 font-mono">{modeToRwx(chmodMode)}</p>
+              )}
+            </div>
+            {chmodTarget.isDir && (
+              <label className="flex items-center gap-2 mb-4 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={chmodRecursive}
+                  onChange={(e) => setChmodRecursive(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">Apply recursively to all contents</span>
+              </label>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setChmodTarget(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+              <button
+                onClick={async () => {
+                  if (!chmodMode || chmodMode.length < 3) return;
+                  if (selected.size > 1) {
+                    for (const name of selected) {
+                      await chmod.mutateAsync({ path: joinPath(currentPath, name), mode: chmodMode, recursive: chmodRecursive });
+                    }
+                  } else {
+                    await chmod.mutateAsync({ path: chmodTarget.path, mode: chmodMode, recursive: chmodRecursive });
+                  }
+                  setChmodTarget(null);
+                  setChmodRecursive(false);
+                }}
+                disabled={chmod.isPending || !chmodMode || chmodMode.length < 3}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              >
+                {chmod.isPending ? 'Applying...' : 'Apply'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chown modal */}
+      {chownTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setChownTarget(null)} />
+          <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">Change Ownership</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 font-mono truncate">{chownTarget.path}</p>
+            {selected.size > 1 && (
+              <p className="text-xs text-brand-600 dark:text-brand-400 mb-3">Applying to {selected.size} selected items</p>
+            )}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">UID</label>
+                <input type="number" value={chownUid} onChange={(e) => setChownUid(e.target.value)} min="0"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">GID</label>
+                <input type="number" value={chownGid} onChange={(e) => setChownGid(e.target.value)} min="0"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500" />
+              </div>
+            </div>
+            {chownTarget.isDir && (
+              <label className="flex items-center gap-2 mb-4 cursor-pointer">
+                <input type="checkbox" checked={chownRecursive} onChange={(e) => setChownRecursive(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500" />
+                <span className="text-sm text-gray-700 dark:text-gray-300">Apply recursively to all contents</span>
+              </label>
+            )}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setChownTarget(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+              <button
+                onClick={async () => {
+                  const uid = chownUid ? parseInt(chownUid, 10) : undefined;
+                  const gid = chownGid ? parseInt(chownGid, 10) : undefined;
+                  if (uid === undefined && gid === undefined) return;
+                  if (selected.size > 1) {
+                    for (const name of selected) {
+                      await chown.mutateAsync({ path: joinPath(currentPath, name), uid, gid, recursive: chownRecursive });
+                    }
+                  } else {
+                    await chown.mutateAsync({ path: chownTarget.path, uid, gid, recursive: chownRecursive });
+                  }
+                  setChownTarget(null);
+                  setChownRecursive(false);
+                }}
+                disabled={chown.isPending || (!chownUid && !chownGid)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              >
+                {chown.isPending ? 'Applying...' : 'Apply'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {moveTarget && (
@@ -747,6 +935,12 @@ function FileRow({
         ) : formatSize(entry.size)}
       </td>
       <td className="px-3 py-3 text-sm text-gray-500 dark:text-gray-400 hidden sm:table-cell">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : '-'}</td>
+      <td className="px-3 py-3 text-sm hidden md:table-cell">
+        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">{modeToRwx(entry.permissions)}</span>
+      </td>
+      <td className="px-3 py-3 text-sm hidden lg:table-cell">
+        <span className="text-xs text-gray-500 dark:text-gray-400">{entry.uid}:{entry.gid}</span>
+      </td>
       <td className="px-3 py-3 text-right" data-action="actions">
         <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
           <MoreVertical size={16} />
@@ -757,7 +951,7 @@ function FileRow({
 }
 
 function ContextMenu({
-  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite, onCalculateFolderSize,
+  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite, onCalculateFolderSize, onChmod, onChown,
 }: {
   readonly entry: FileEntry;
   readonly position?: { x: number; y: number };
@@ -774,6 +968,8 @@ function ContextMenu({
   readonly onNavigate: (path: string) => void;
   readonly onOpenSqlite: (path: string) => void;
   readonly onCalculateFolderSize: (path: string) => void;
+  readonly onChmod: (entry: FileEntry) => void;
+  readonly onChown: (entry: FileEntry) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const fullPath = joinPath(currentPath, entry.name);
@@ -801,6 +997,9 @@ function ContextMenu({
         {!isDir && <button className={itemClass} onClick={() => onDownload(fullPath)}><Download size={14} /> Download</button>}
         {isArchive && <button className={itemClass} onClick={() => onExtract(fullPath)}><PackageOpen size={14} /> Extract</button>}
         {isSqlite && <button className={itemClass} onClick={() => onOpenSqlite(fullPath)}><Database size={14} /> Open in SQL Manager</button>}
+        <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+        <button className={itemClass} onClick={() => onChmod(entry)}><Shield size={14} /> Change Permissions</button>
+        <button className={itemClass} onClick={() => onChown(entry)}><UserCheck size={14} /> Change Ownership</button>
         <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
         <button className={itemClass} onClick={() => onCopy(fullPath)}><Copy size={14} /> Copy to...</button>
         <button className={itemClass} onClick={() => onMove(fullPath)}><Move size={14} /> Move to...</button>

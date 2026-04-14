@@ -8,6 +8,8 @@ export const fileEntrySchema = z.object({
   size: z.number(),
   modifiedAt: z.string().nullable(),
   permissions: z.string(),
+  uid: z.number(),
+  gid: z.number(),
 });
 
 export type FileEntry = z.infer<typeof fileEntrySchema>;
@@ -102,6 +104,27 @@ export const gitCloneInputSchema = z.object({
 });
 
 export type GitCloneInput = z.infer<typeof gitCloneInputSchema>;
+
+// ─── Chmod / Chown ──────────────────────────────────────────────────────────
+
+export const chmodInputSchema = z.object({
+  path: z.string().min(1),
+  mode: z.string().regex(/^[0-7]{3,4}$/, 'mode must be an octal string (e.g. "755")'),
+  recursive: z.boolean().optional(),
+});
+
+export type ChmodInput = z.infer<typeof chmodInputSchema>;
+
+export const chownInputSchema = z.object({
+  path: z.string().min(1),
+  uid: z.number().int().min(0).optional(),
+  gid: z.number().int().min(0).optional(),
+  recursive: z.boolean().optional(),
+}).refine(data => data.uid !== undefined || data.gid !== undefined, {
+  message: 'At least one of uid or gid must be provided',
+});
+
+export type ChownInput = z.infer<typeof chownInputSchema>;
 
 // ─── File Manager Status ─────────────────────────────────────────────────────
 

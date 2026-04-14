@@ -87,12 +87,12 @@ export async function ensureFileManagerRunning(
                   },
                 ],
                 securityContext: {
-                  // SYS_ADMIN is required for the SFTP chroot jail bind mount.
-                  // DAC_READ_SEARCH allows browsing files owned by other UIDs
-                  // (e.g. PostgreSQL's mode-700 data directory).
-                  // Drop ALL other capabilities to minimize blast radius.
+                  // SYS_ADMIN: SFTP chroot jail bind mount
+                  // DAC_OVERRIDE: read/write/delete files owned by any UID
+                  // FOWNER: chmod files owned by any UID
+                  // CHOWN: chown files to any UID/GID
                   allowPrivilegeEscalation: false,
-                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN', 'DAC_READ_SEARCH'] },
+                  capabilities: { drop: ['ALL'], add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] },
                 },
                 resources: {
                   requests: { cpu: '25m', memory: '32Mi' },
@@ -140,7 +140,7 @@ export async function ensureFileManagerRunning(
     const existingImage = existingSpec?.containers?.[0]?.image ?? '';
 
     const expectedPvcClaim = `${namespace}-storage`;
-    const expectedCaps = ['SYS_ADMIN', 'DAC_READ_SEARCH'];
+    const expectedCaps = ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'];
 
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
     const capsMismatch = expectedCaps.some(c => !existingCaps.includes(c));

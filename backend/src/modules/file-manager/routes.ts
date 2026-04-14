@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema } from '@k8s-hosting/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@k8s-hosting/api-contracts';
 import { clients } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -373,6 +373,56 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     if (result.status !== 201) {
       const err = JSON.parse(result.body);
       throw new ApiError('FILE_ERROR', err.error || 'Failed to clone repository', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/chmod — change file/directory permissions
+  app.post('/clients/:clientId/files/chmod', {
+    schema: { tags: ['Files'], summary: 'Change file or directory permissions', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = chmodInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    recordFileManagerAccess(namespace);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chmod', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to change permissions', result.status);
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/clients/:clientId/files/chown — change file/directory ownership
+  app.post('/clients/:clientId/files/chown', {
+    schema: { tags: ['Files'], summary: 'Change file or directory ownership', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const parsed = chownInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    const namespace = await resolveNamespace(app, clientId);
+    recordFileManagerAccess(namespace);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chown', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to change ownership', result.status);
     }
 
     return success(JSON.parse(result.body));
