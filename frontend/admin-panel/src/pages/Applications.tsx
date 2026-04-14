@@ -1,20 +1,21 @@
 import { useState, useMemo, useCallback } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, ArrowUpCircle, RotateCcw, XCircle, History, LayoutGrid, Tag } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
 import { useCatalog, useUpdateCatalogBadges, useCatalogEntryVersions } from '@/hooks/use-catalog';
 import type { CatalogEntry } from '@/hooks/use-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
 import {
-  useApplicationInstances,
+  useAdminDeployments,
+  useBulkStartDeployments,
+  useBulkStopDeployments,
+  useBulkDeleteDeployments,
   useApplicationUpgrades,
-  useAvailableUpgrades,
-  useTriggerUpgrade,
   useRollbackUpgrade,
-  useUpgradeProgress,
 } from '@/hooks/use-application-upgrades';
+import { useBulkRestartDeployments } from '@/hooks/use-deployments';
 import StatusBadge from '@/components/ui/StatusBadge';
-import type { DeploymentResponse as ApplicationInstanceResponse } from '@k8s-hosting/api-contracts';
 
 type Tab = 'catalog' | 'installed' | 'upgrades' | 'repos';
 
@@ -909,314 +910,446 @@ function AppDetailPanel({
 
 // ─── Installed Applications Tab ─────────────────────────────────────────────
 
+function relativeTime(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diff = now - then;
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
+const STATUS_OPTIONS = [
+  { value: '', label: 'All statuses' },
+  { value: 'running', label: 'Running' },
+  { value: 'stopped', label: 'Stopped' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'deploying', label: 'Deploying' },
+] as const;
+
 function InstalledTab() {
-  const { data: response, isLoading, isError, error } = useApplicationInstances();
-  const { data: catalogResponse } = useCatalog();
-  const [upgradeTarget, setUpgradeTarget] = useState<ApplicationInstanceResponse | null>(null);
+  const navigate = useNavigate();
+  const [page, setPage] = useState(1);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectAll, setSelectAll] = useState(false);
+  const [bulkAction, setBulkAction] = useState<'start' | 'stop' | 'restart' | 'delete' | null>(null);
+  const [sortField, setSortField] = useState<'name' | 'status' | 'createdAt'>('createdAt');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const instances = response?.data ?? [];
-  const catalogMap = useMemo(() => {
-    const map = new Map<string, CatalogEntry>();
-    for (const entry of catalogResponse?.data ?? []) {
-      map.set(entry.id, entry);
+  const { data: response, isLoading, isError, error } = useAdminDeployments({
+    page,
+    limit: 50,
+    status: statusFilter || undefined,
+  });
+
+  const bulkRestart = useBulkRestartDeployments();
+  const bulkStart = useBulkStartDeployments();
+  const bulkStop = useBulkStopDeployments();
+  const bulkDelete = useBulkDeleteDeployments();
+
+  const deployments = response?.data ?? [];
+  const pagination = response?.pagination;
+  const totalCount = pagination?.total_count ?? 0;
+  const totalPages = pagination?.total_pages ?? 1;
+
+  // Sort locally (server already sorts by createdAt desc)
+  const sorted = useMemo(() => {
+    const arr = [...deployments];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'name') cmp = a.name.localeCompare(b.name);
+      else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
+      else cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return arr;
+  }, [deployments, sortField, sortDir]);
+
+  const handleSort = useCallback((field: typeof sortField) => {
+    if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortField(field); setSortDir('asc'); }
+  }, [sortField]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setSelectAll(false);
+  }, []);
+
+  const handleSelectAll = useCallback(() => {
+    if (selectAll) {
+      setSelected(new Set());
+      setSelectAll(false);
+    } else {
+      setSelected(new Set(deployments.map(d => d.id)));
+      setSelectAll(true);
     }
-    return map;
-  }, [catalogResponse]);
+  }, [selectAll, deployments]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12" data-testid="installed-loading">
-        <Loader2 size={24} className="animate-spin text-brand-500" />
-        <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading instances...</span>
-      </div>
-    );
-  }
+  const selectedIds = useMemo(() => [...selected], [selected]);
+  const selectedDeployments = useMemo(() => deployments.filter(d => selected.has(d.id)), [deployments, selected]);
 
-  if (isError) {
-    return (
-      <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-        <AlertCircle size={16} />
-        <span>Failed to load instances: {error?.message ?? 'Unknown error'}</span>
-      </div>
-    );
-  }
+  const executeBulkAction = useCallback(async () => {
+    if (!bulkAction || selectedIds.length === 0) return;
+    try {
+      if (bulkAction === 'start') await bulkStart.mutateAsync(selectedIds);
+      else if (bulkAction === 'stop') await bulkStop.mutateAsync(selectedIds);
+      else if (bulkAction === 'restart') await bulkRestart.mutateAsync(undefined);
+      else if (bulkAction === 'delete') await bulkDelete.mutateAsync(selectedIds);
+      setSelected(new Set());
+      setSelectAll(false);
+    } catch {
+      // mutation error handled by TanStack Query
+    }
+    setBulkAction(null);
+  }, [bulkAction, selectedIds, bulkStart, bulkStop, bulkRestart, bulkDelete]);
+
+  const isBulkPending = bulkStart.isPending || bulkStop.isPending || bulkRestart.isPending || bulkDelete.isPending;
+
+  const sortIndicator = (field: typeof sortField) => {
+    if (sortField !== field) return null;
+    return <span className="ml-1 text-brand-500">{sortDir === 'asc' ? '\u2191' : '\u2193'}</span>;
+  };
 
   return (
     <div className="space-y-4" data-testid="installed-tab">
-      {instances.length === 0 ? (
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-          No application instances deployed yet.
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-          <table className="w-full text-sm" data-testid="instances-table">
-            <thead>
-              <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Catalog Entry</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Version</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Domain</th>
-                <th className="px-4 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {instances.map((inst) => {
-                const catalogEntry = catalogMap.get(inst.catalogEntryId);
-                return (
-                  <tr key={inst.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{inst.name}</td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{catalogEntry?.name ?? inst.catalogEntryId}</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300">
-                        {catalogEntry?.type ?? 'unknown'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-gray-900 dark:text-gray-100">v{inst.installedVersion ?? '-'}</span>
-                        {inst.targetVersion && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 text-xs text-blue-700 dark:text-blue-300">
-                            <ArrowUpCircle size={10} /> {inst.targetVersion}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={inst.status as Parameters<typeof StatusBadge>[0]['status']} />
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{inst.domainName ?? '-'}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {inst.status === 'running' && !inst.targetVersion && (
-                          <button
-                            type="button"
-                            onClick={() => setUpgradeTarget(inst)}
-                            className="inline-flex items-center gap-1 rounded-md bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-800/50 transition-colors"
-                            data-testid={`upgrade-btn-${inst.id}`}
-                          >
-                            <ArrowUpCircle size={12} /> Upgrade
-                          </button>
-                        )}
-                        {inst.status === 'upgrading' && (
-                          <span className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
-                            <Loader2 size={12} className="animate-spin" /> Upgrading...
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div className="text-sm text-gray-500 dark:text-gray-400">
-        {instances.length} instance{instances.length !== 1 ? 's' : ''}
+      {/* Filter bar */}
+      <div className="flex items-center gap-3">
+        <select
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-3 pr-8 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          data-testid="installed-status-filter"
+        >
+          {STATUS_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <span className="text-sm text-gray-500 dark:text-gray-400">
+          {totalCount} deployment{totalCount !== 1 ? 's' : ''}
+        </span>
       </div>
 
-      {upgradeTarget && (
-        <UpgradeModal instance={upgradeTarget} onClose={() => setUpgradeTarget(null)} />
-      )}
-    </div>
-  );
-}
-
-// ─── Upgrade Modal ──────────────────────────────────────────────────────────
-
-function UpgradeModal({
-  instance,
-  onClose,
-}: {
-  readonly instance: ApplicationInstanceResponse;
-  readonly onClose: () => void;
-}) {
-  const { data: response, isLoading } = useAvailableUpgrades(instance.id);
-  const triggerUpgrade = useTriggerUpgrade();
-  const [selectedVersion, setSelectedVersion] = useState<string>('');
-  const [activeUpgradeId, setActiveUpgradeId] = useState<string | null>(null);
-  const { progress } = useUpgradeProgress(activeUpgradeId);
-
-  const availableUpgrades = response?.data ?? [];
-
-  const selectedUpgrade = useMemo(
-    () => availableUpgrades.find((u) => u.version === selectedVersion),
-    [availableUpgrades, selectedVersion],
-  );
-
-  const handleTrigger = useCallback(() => {
-    if (!selectedVersion) return;
-    triggerUpgrade.mutate(
-      { instanceId: instance.id, toVersion: selectedVersion },
-      {
-        onSuccess: (data) => {
-          setActiveUpgradeId(data.data.id);
-        },
-      },
-    );
-  }, [instance.id, selectedVersion, triggerUpgrade]);
-
-  const isTerminal = progress && ['completed', 'failed', 'rolled_back'].includes(progress.status);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="upgrade-modal">
-      <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Upgrade {instance.name}
-          </h3>
-          <button type="button" onClick={onClose} className="rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="p-6 space-y-4">
-          {/* Current version */}
-          <div className="flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-3">
-            <span className="text-sm text-gray-500 dark:text-gray-400">Current Version</span>
-            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">v{instance.installedVersion}</span>
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2.5" data-testid="bulk-action-bar">
+          <span className="text-sm font-medium text-brand-700 dark:text-brand-300">{selected.size} selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setBulkAction('start'); }}
+              disabled={isBulkPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-green-50 dark:bg-green-900/20 px-3 py-1.5 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-800/40 transition-colors disabled:opacity-50"
+              data-testid="bulk-start-btn"
+            >
+              <Play size={12} /> Start
+            </button>
+            <button
+              type="button"
+              onClick={() => { setBulkAction('stop'); }}
+              disabled={isBulkPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+              data-testid="bulk-stop-btn"
+            >
+              <Square size={12} /> Stop
+            </button>
+            <button
+              type="button"
+              onClick={() => { setBulkAction('restart'); }}
+              disabled={isBulkPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 dark:bg-blue-900/20 px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/40 transition-colors disabled:opacity-50"
+              data-testid="bulk-restart-btn"
+            >
+              <RefreshCw size={12} /> Pull &amp; Restart
+            </button>
+            <button
+              type="button"
+              onClick={() => { setBulkAction('delete'); }}
+              disabled={isBulkPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-800/40 transition-colors disabled:opacity-50"
+              data-testid="bulk-delete-btn"
+            >
+              <Trash2 size={12} /> Remove
+            </button>
           </div>
+        </div>
+      )}
 
-          {/* Progress display */}
-          {activeUpgradeId && progress && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{progress.statusMessage}</span>
-                <StatusBadge status={progress.status as Parameters<typeof StatusBadge>[0]['status']} />
-              </div>
-              {progress.progressPct >= 0 && (
-                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-                  <div
-                    className={clsx(
-                      'h-full rounded-full transition-all duration-500',
-                      progress.status === 'failed' ? 'bg-red-500' : progress.status === 'completed' ? 'bg-green-500' : 'bg-brand-500',
-                    )}
-                    style={{ width: `${Math.max(progress.progressPct, 0)}%` }}
-                  />
-                </div>
-              )}
-              {progress.errorMessage && (
-                <div className="flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-                  <XCircle size={16} className="mt-0.5 shrink-0" />
-                  <span>{progress.errorMessage}</span>
-                </div>
-              )}
-              {isTerminal && (
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
-                  >
-                    Close
-                  </button>
-                </div>
-              )}
+      {/* Bulk action confirmation modal */}
+      {bulkAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="bulk-confirm-modal">
+          <div className="w-full max-w-md rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Confirm {bulkAction === 'delete' ? 'Remove' : bulkAction.charAt(0).toUpperCase() + bulkAction.slice(1)}
+              </h3>
+              <button type="button" onClick={() => setBulkAction(null)} className="rounded-md p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <X size={20} />
+              </button>
             </div>
-          )}
-
-          {/* Version selection (before upgrade starts) */}
-          {!activeUpgradeId && (
-            <>
-              {isLoading ? (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 size={20} className="animate-spin text-brand-500" />
-                  <span className="ml-2 text-sm text-gray-500">Loading available versions...</span>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                {bulkAction === 'delete'
+                  ? `Are you sure you want to remove ${selectedIds.length} deployment${selectedIds.length !== 1 ? 's' : ''}? This action cannot be undone.`
+                  : `${bulkAction.charAt(0).toUpperCase() + bulkAction.slice(1)} ${selectedIds.length} deployment${selectedIds.length !== 1 ? 's' : ''}?`}
+              </p>
+              {bulkAction === 'delete' && selectedDeployments.length > 0 && (
+                <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                  <ul className="space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                    {selectedDeployments.map(d => (
+                      <li key={d.id} className="flex items-center gap-2">
+                        <span className="font-medium">{d.catalogEntryName ?? d.name}</span>
+                        <span className="text-gray-400">({d.name})</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              ) : availableUpgrades.length === 0 ? (
-                <div className="rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                  No upgrades available for this instance.
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Target Version
-                    </label>
-                    <select
-                      value={selectedVersion}
-                      onChange={(e) => setSelectedVersion(e.target.value)}
-                      className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-3 pr-8 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      data-testid="version-select"
-                    >
-                      <option value="">Select a version...</option>
-                      {availableUpgrades.map((u) => (
-                        <option key={u.version} value={u.version}>
-                          v{u.version} {u.isDefault ? '(recommended)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Breaking changes warning */}
-                  {selectedUpgrade?.breakingChanges && (
-                    <div className="flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
-                      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                      <div>
-                        <p className="font-medium">Breaking Changes</p>
-                        <p className="mt-1">{selectedUpgrade.breakingChanges}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Migration notes */}
-                  {selectedUpgrade?.migrationNotes && (
-                    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-300">
-                      <p className="font-medium">Migration Notes</p>
-                      <p className="mt-1">{selectedUpgrade.migrationNotes}</p>
-                    </div>
-                  )}
-
-                  {/* Env changes */}
-                  {selectedUpgrade?.envChanges && selectedUpgrade.envChanges.length > 0 && (
-                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
-                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Environment Variable Changes</p>
-                      <div className="space-y-1">
-                        {selectedUpgrade.envChanges.map((change: { key: string; action: string; oldKey?: string | null }) => (
-                          <div key={change.key} className="flex items-center gap-2 text-xs">
-                            <span className={clsx(
-                              'rounded px-1.5 py-0.5 font-medium',
-                              change.action === 'add' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' :
-                              change.action === 'remove' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
-                              'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-                            )}>
-                              {change.action}
-                            </span>
-                            <code className="text-gray-700 dark:text-gray-300">{change.key}</code>
-                            {change.oldKey && <span className="text-gray-400">(was: {change.oldKey})</span>}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
               )}
-
               <div className="flex justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={() => setBulkAction(null)}
                   className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
-                  onClick={handleTrigger}
-                  disabled={!selectedVersion || triggerUpgrade.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="confirm-upgrade"
+                  onClick={executeBulkAction}
+                  disabled={isBulkPending}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50',
+                    bulkAction === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-500 hover:bg-brand-600',
+                  )}
+                  data-testid="bulk-confirm-btn"
                 >
-                  {triggerUpgrade.isPending ? <Loader2 size={14} className="animate-spin" /> : <ArrowUpCircle size={14} />}
-                  Start Upgrade
+                  {isBulkPending && <Loader2 size={14} className="animate-spin" />}
+                  {bulkAction === 'delete' ? 'Remove' : bulkAction.charAt(0).toUpperCase() + bulkAction.slice(1)}
                 </button>
               </div>
-            </>
-          )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Loading */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-12" data-testid="installed-loading">
+          <Loader2 size={24} className="animate-spin text-brand-500" />
+          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading deployments...</span>
+        </div>
+      )}
+
+      {/* Error */}
+      {isError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400" data-testid="installed-error">
+          <AlertCircle size={16} />
+          <span>Failed to load deployments: {error?.message ?? 'Unknown error'}</span>
+        </div>
+      )}
+
+      {/* Table */}
+      {!isLoading && !isError && (
+        <>
+          {sorted.length === 0 ? (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="installed-empty">
+              No deployments found.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm" data-testid="deployments-table">
+                <thead>
+                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    <th className="px-3 py-3 w-10">
+                      <button type="button" onClick={handleSelectAll} className="flex items-center justify-center" data-testid="select-all-checkbox">
+                        <CheckSquare size={16} className={selectAll ? 'text-brand-500' : 'text-gray-400 dark:text-gray-500'} />
+                      </button>
+                    </th>
+                    <th className="px-3 py-3">
+                      <button type="button" onClick={() => handleSort('name')} className="inline-flex items-center hover:text-gray-700 dark:hover:text-gray-200">
+                        App Name{sortIndicator('name')}
+                      </button>
+                    </th>
+                    <th className="px-3 py-3">Deployment</th>
+                    <th className="px-3 py-3">Client</th>
+                    <th className="px-3 py-3">
+                      <button type="button" onClick={() => handleSort('status')} className="inline-flex items-center hover:text-gray-700 dark:hover:text-gray-200">
+                        Status{sortIndicator('status')}
+                      </button>
+                    </th>
+                    <th className="px-3 py-3">CPU</th>
+                    <th className="px-3 py-3">Memory</th>
+                    <th className="px-3 py-3">Version</th>
+                    <th className="px-3 py-3">
+                      <button type="button" onClick={() => handleSort('createdAt')} className="inline-flex items-center hover:text-gray-700 dark:hover:text-gray-200">
+                        Created{sortIndicator('createdAt')}
+                      </button>
+                    </th>
+                    <th className="px-3 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {sorted.map((d) => {
+                    const isRunning = d.status === 'running';
+                    const isStopped = d.status === 'stopped' || d.status === 'failed';
+                    return (
+                      <tr key={d.id} className={clsx('hover:bg-gray-50 dark:hover:bg-gray-800/50', selected.has(d.id) && 'bg-brand-50/50 dark:bg-brand-900/10')}>
+                        <td className="px-3 py-3">
+                          <button type="button" onClick={() => toggleSelect(d.id)} className="flex items-center justify-center" data-testid={`select-${d.id}`}>
+                            <CheckSquare size={16} className={selected.has(d.id) ? 'text-brand-500' : 'text-gray-300 dark:text-gray-600'} />
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className="font-semibold text-gray-900 dark:text-gray-100">{d.catalogEntryName ?? d.catalogEntryCode ?? '-'}</span>
+                          {d.catalogEntryType && (
+                            <span className="ml-2 inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
+                              {d.catalogEntryType}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/clients/${d.clientId}`)}
+                            className="text-brand-600 dark:text-brand-400 hover:underline text-sm"
+                          >
+                            {d.name}
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/clients/${d.clientId}`)}
+                            className="text-brand-600 dark:text-brand-400 hover:underline text-sm"
+                          >
+                            {d.clientName ?? d.clientId.slice(0, 8)}
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          <StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} />
+                        </td>
+                        <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.cpuRequest}</td>
+                        <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.memoryRequest}</td>
+                        <td className="px-3 py-3 text-gray-700 dark:text-gray-300 text-xs">
+                          {d.installedVersion ? `v${d.installedVersion}` : '-'}
+                        </td>
+                        <td className="px-3 py-3 text-gray-500 dark:text-gray-400 text-xs" title={new Date(d.createdAt).toLocaleString()}>
+                          {relativeTime(d.createdAt)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1">
+                            {isStopped && (
+                              <button
+                                type="button"
+                                onClick={() => { setSelected(new Set([d.id])); setBulkAction('start'); }}
+                                className="rounded-md p-1.5 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+                                title="Start"
+                                data-testid={`start-btn-${d.id}`}
+                              >
+                                <Play size={14} />
+                              </button>
+                            )}
+                            {isRunning && (
+                              <button
+                                type="button"
+                                onClick={() => { setSelected(new Set([d.id])); setBulkAction('stop'); }}
+                                className="rounded-md p-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                                title="Stop"
+                                data-testid={`stop-btn-${d.id}`}
+                              >
+                                <Square size={14} />
+                              </button>
+                            )}
+                            {isRunning && (
+                              <button
+                                type="button"
+                                onClick={() => { setSelected(new Set([d.id])); setBulkAction('restart'); }}
+                                className="rounded-md p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+                                title="Pull &amp; Restart"
+                                data-testid={`restart-btn-${d.id}`}
+                              >
+                                <RefreshCw size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between pt-2" data-testid="pagination">
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                Page {page} of {totalPages}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="inline-flex items-center rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="prev-page"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                  let pageNum: number;
+                  if (totalPages <= 7) {
+                    pageNum = i + 1;
+                  } else if (page <= 4) {
+                    pageNum = i + 1;
+                  } else if (page >= totalPages - 3) {
+                    pageNum = totalPages - 6 + i;
+                  } else {
+                    pageNum = page - 3 + i;
+                  }
+                  return (
+                    <button
+                      key={pageNum}
+                      type="button"
+                      onClick={() => setPage(pageNum)}
+                      className={clsx(
+                        'rounded-md px-3 py-1.5 text-sm font-medium',
+                        pageNum === page
+                          ? 'bg-brand-500 text-white'
+                          : 'border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50',
+                      )}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="inline-flex items-center rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="next-page"
+                >
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

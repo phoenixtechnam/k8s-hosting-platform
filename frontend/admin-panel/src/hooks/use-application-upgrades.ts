@@ -25,8 +25,86 @@ interface InstanceListResponse {
   readonly data: readonly ApplicationInstanceResponse[];
 }
 
-// ─── Instances ──────────────────────────────────────────────────────────────
+// ─── Admin Deployments ──────────────────────────────────────────────────────
 
+export interface AdminDeployment {
+  readonly id: string;
+  readonly name: string;
+  readonly clientId: string;
+  readonly clientName: string | null;
+  readonly catalogEntryId: string;
+  readonly catalogEntryName: string | null;
+  readonly catalogEntryCode: string | null;
+  readonly catalogEntryType: string | null;
+  readonly status: string;
+  readonly statusMessage: string | null;
+  readonly lastError: string | null;
+  readonly cpuRequest: string;
+  readonly memoryRequest: string;
+  readonly storagePath: string | null;
+  readonly installedVersion: string | null;
+  readonly replicaCount: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface AdminDeploymentsResponse {
+  readonly data: readonly AdminDeployment[];
+  readonly pagination: {
+    readonly page: number;
+    readonly page_size: number;
+    readonly total_count: number;
+    readonly total_pages: number;
+    readonly has_more: boolean;
+  };
+}
+
+export function useAdminDeployments(params?: { page?: number; limit?: number; status?: string; catalog_entry_id?: string; client_id?: string }) {
+  const query = new URLSearchParams();
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.status) query.set('status', String(params.status));
+  if (params?.catalog_entry_id) query.set('catalog_entry_id', params.catalog_entry_id);
+  if (params?.client_id) query.set('client_id', params.client_id);
+  const qs = query.toString();
+
+  return useQuery({
+    queryKey: ['admin-deployments', qs],
+    queryFn: () => apiFetch<AdminDeploymentsResponse>(`/api/v1/admin/deployments${qs ? '?' + qs : ''}`),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+}
+
+// ─── Bulk Actions ───────────────────────────────────────────────────────────
+
+export function useBulkStartDeployments() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => apiFetch('/api/v1/admin/deployments/bulk-start', { method: 'POST', body: JSON.stringify({ deployment_ids: ids }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-deployments'] }); },
+  });
+}
+
+export function useBulkStopDeployments() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => apiFetch('/api/v1/admin/deployments/bulk-stop', { method: 'POST', body: JSON.stringify({ deployment_ids: ids }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-deployments'] }); },
+  });
+}
+
+export function useBulkDeleteDeployments() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => apiFetch('/api/v1/admin/deployments/bulk-delete', { method: 'POST', body: JSON.stringify({ deployment_ids: ids }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-deployments'] }); },
+  });
+}
+
+// ─── Instances (deprecated — use useAdminDeployments) ───────────────────────
+
+/** @deprecated Use useAdminDeployments instead */
 export function useApplicationInstances() {
   return useQuery({
     queryKey: ['application-instances'],

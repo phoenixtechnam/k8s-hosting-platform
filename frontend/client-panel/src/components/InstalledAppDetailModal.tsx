@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal } from 'lucide-react';
+import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
@@ -100,6 +100,7 @@ interface InstalledAppDetailModalProps {
   readonly onClose: () => void;
   readonly onToggleStatus: (deploymentId: string, newStatus: 'running' | 'stopped') => void;
   readonly isToggling: boolean;
+  readonly onRestart?: (id: string) => void;
 }
 
 export default function InstalledAppDetailModal({
@@ -110,6 +111,7 @@ export default function InstalledAppDetailModal({
   onClose,
   onToggleStatus,
   isToggling,
+  onRestart,
 }: InstalledAppDetailModalProps) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
   const [dbModalOpen, setDbModalOpen] = useState(false);
@@ -304,6 +306,17 @@ export default function InstalledAppDetailModal({
                 </span>
               ))}
             </div>
+            {deployment.status === 'running' && onRestart && (
+              <button
+                type="button"
+                onClick={() => { onRestart(deployment.id); onClose(); }}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors"
+                data-testid="pull-latest-restart"
+              >
+                <RefreshCw size={14} />
+                Pull Latest & Restart
+              </button>
+            )}
           </div>
         )}
 

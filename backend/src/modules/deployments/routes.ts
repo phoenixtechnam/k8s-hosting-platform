@@ -10,7 +10,7 @@ import { reconcileDeploymentStatuses } from './status-reconciler.js';
 import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, ne, inArray, desc, sql } from 'drizzle-orm';
 import { catalogEntries, deployments, clients } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 
@@ -719,6 +719,154 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err;
     }
+  });
+
+  // GET /api/v1/admin/deployments — list all deployments across all clients (admin)
+  // Also aliased as GET /api/v1/admin/application-instances for backwards compat
+  const adminListHandler = async (request: import('fastify').FastifyRequest) => {
+    const query = request.query as Record<string, unknown>;
+    const page = Math.max(1, parseInt(String(query.page ?? '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(query.limit ?? '50'), 10) || 50));
+    const statusFilter = query.status ? String(query.status) : undefined;
+    const catalogFilter = query.catalog_entry_id ? String(query.catalog_entry_id) : undefined;
+    const clientFilter = query.client_id ? String(query.client_id) : undefined;
+    const includeDeleted = query.include_deleted === 'true';
+    const offset = (page - 1) * limit;
+
+    const conditions = [];
+    if (!includeDeleted) conditions.push(ne(deployments.status, 'deleted'));
+    if (statusFilter) conditions.push(eq(deployments.status, statusFilter as typeof deployments.status.enumValues[number]));
+    if (catalogFilter) conditions.push(eq(deployments.catalogEntryId, catalogFilter));
+    if (clientFilter) conditions.push(eq(deployments.clientId, clientFilter));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rows = await app.db
+      .select({
+        id: deployments.id,
+        name: deployments.name,
+        clientId: deployments.clientId,
+        clientName: clients.companyName,
+        catalogEntryId: deployments.catalogEntryId,
+        catalogEntryName: catalogEntries.name,
+        catalogEntryCode: catalogEntries.code,
+        catalogEntryType: catalogEntries.type,
+        status: deployments.status,
+        statusMessage: deployments.statusMessage,
+        lastError: deployments.lastError,
+        cpuRequest: deployments.cpuRequest,
+        memoryRequest: deployments.memoryRequest,
+        storagePath: deployments.storagePath,
+        installedVersion: deployments.installedVersion,
+        replicaCount: deployments.replicaCount,
+        createdAt: deployments.createdAt,
+        updatedAt: deployments.updatedAt,
+      })
+      .from(deployments)
+      .leftJoin(clients, eq(deployments.clientId, clients.id))
+      .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
+      .where(where)
+      .orderBy(desc(deployments.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const [countResult] = await app.db
+      .select({ count: sql<number>`count(*)` })
+      .from(deployments)
+      .where(where);
+
+    const totalCount = Number(countResult?.count ?? 0);
+
+    return {
+      data: rows,
+      pagination: {
+        page,
+        page_size: rows.length,
+        total_count: totalCount,
+        total_pages: Math.ceil(totalCount / limit),
+        has_more: offset + rows.length < totalCount,
+      },
+    };
+  };
+
+  app.get('/admin/deployments', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'List all deployments across clients', security: [{ bearerAuth: [] }] },
+  }, adminListHandler);
+
+  // Backwards-compat alias
+  app.get('/admin/application-instances', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'List all deployments (alias)', security: [{ bearerAuth: [] }] },
+  }, adminListHandler);
+
+  // POST /api/v1/admin/deployments/bulk-start
+  app.post('/admin/deployments/bulk-start', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Bulk start deployments', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const body = (request.body ?? {}) as { deployment_ids?: string[] };
+    if (!body.deployment_ids?.length) throw new ApiError('MISSING_REQUIRED_FIELD', 'deployment_ids required', 400);
+
+    let succeeded = 0;
+    const errors: string[] = [];
+    for (const depId of body.deployment_ids) {
+      try {
+        const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
+        if (!dep) { errors.push(`${depId}: not found`); continue; }
+        await service.updateDeployment(app.db, dep.clientId, depId, { status: 'running' }, getK8s());
+        succeeded++;
+      } catch (err) {
+        errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return success({ succeeded, failed: errors.length, total: body.deployment_ids.length, errors });
+  });
+
+  // POST /api/v1/admin/deployments/bulk-stop
+  app.post('/admin/deployments/bulk-stop', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Bulk stop deployments', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const body = (request.body ?? {}) as { deployment_ids?: string[] };
+    if (!body.deployment_ids?.length) throw new ApiError('MISSING_REQUIRED_FIELD', 'deployment_ids required', 400);
+
+    let succeeded = 0;
+    const errors: string[] = [];
+    for (const depId of body.deployment_ids) {
+      try {
+        const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
+        if (!dep) { errors.push(`${depId}: not found`); continue; }
+        await service.updateDeployment(app.db, dep.clientId, depId, { status: 'stopped' }, getK8s());
+        succeeded++;
+      } catch (err) {
+        errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return success({ succeeded, failed: errors.length, total: body.deployment_ids.length, errors });
+  });
+
+  // POST /api/v1/admin/deployments/bulk-delete (soft delete)
+  app.post('/admin/deployments/bulk-delete', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Bulk soft-delete deployments', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const body = (request.body ?? {}) as { deployment_ids?: string[] };
+    if (!body.deployment_ids?.length) throw new ApiError('MISSING_REQUIRED_FIELD', 'deployment_ids required', 400);
+
+    let succeeded = 0;
+    const errors: string[] = [];
+    for (const depId of body.deployment_ids) {
+      try {
+        const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, depId));
+        if (!dep) { errors.push(`${depId}: not found`); continue; }
+        await service.deleteDeployment(app.db, dep.clientId, depId, getK8s());
+        succeeded++;
+      } catch (err) {
+        errors.push(`${depId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return success({ succeeded, failed: errors.length, total: body.deployment_ids.length, errors });
   });
 
   // POST /api/v1/admin/deployments/reconcile — admin-only, reconcile all deployment statuses

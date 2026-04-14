@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, RefreshCw } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -194,6 +194,20 @@ function asResources(val: unknown): ResourcesData {
 }
 function asHealthCheck(val: unknown): HealthCheckData {
   return (val && typeof val === 'object' ? val : {}) as HealthCheckData;
+}
+
+function friendlyStatusMessage(status: string, statusMessage: string | null): string {
+  if (!statusMessage) {
+    if (status === 'deploying') return 'Setting up deployment...';
+    if (status === 'pending') return 'Starting...';
+    return '';
+  }
+  const msg = statusMessage.toLowerCase();
+  if (msg.includes('pulling') || msg.includes('imagepull')) return 'Downloading image...';
+  if (msg.includes('creating') || msg.includes('scheduled')) return 'Deploying...';
+  if (msg.includes('not found') || msg.includes('pvc')) return 'Waiting for storage...';
+  if (msg.includes('replica')) return 'Starting application...';
+  return statusMessage;
 }
 
 function getIconUrl(entryId: string | null | undefined): string | null {
@@ -1085,9 +1099,9 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                               : deployment.status}...
                           </span>
                         </div>
-                        {deployment.statusMessage && (
+                        {friendlyStatusMessage(deployment.status, deployment.statusMessage ?? null) && (
                           <span className="text-[11px] text-gray-500 dark:text-gray-400 line-clamp-1 pl-5">
-                            {deployment.statusMessage}
+                            {friendlyStatusMessage(deployment.status, deployment.statusMessage ?? null)}
                           </span>
                         )}
                       </div>
@@ -1164,23 +1178,6 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       )}
                       {deployment.status === 'running' ? 'Stop' : 'Start'}
                     </button>
-                    {deployment.status === 'running' && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); restartDeployment.mutate(deployment.id); }}
-                      disabled={restartDeployment.isPending}
-                      className="flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Pull latest image and restart"
-                      data-testid={`pull-latest-app-${deployment.id}`}
-                    >
-                      {restartDeployment.isPending ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        <RefreshCw size={14} />
-                      )}
-                      Pull Latest
-                    </button>
-                    )}
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setSelectedDeploymentId(deployment.id); }}
@@ -1302,6 +1299,9 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
           updateDeployment.mutate({ deploymentId: id, status: newStatus });
         }}
         isToggling={updateDeployment.isPending}
+        onRestart={(id) => {
+          restartDeployment.mutate(id);
+        }}
       />
 
       {/* Soft-Delete Confirmation Modal */}
