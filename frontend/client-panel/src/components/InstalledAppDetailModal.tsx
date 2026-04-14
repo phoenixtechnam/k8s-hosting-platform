@@ -215,6 +215,7 @@ export default function InstalledAppDetailModal({
           setEditingConfig(false);
           queryClient.invalidateQueries({ queryKey: ['deployments'] });
           onRestart?.(deployment.id);
+          onClose();
         },
       },
     );
@@ -530,7 +531,7 @@ export default function InstalledAppDetailModal({
                 data-testid="save-config-button"
               >
                 {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                Save
+                Apply Changes
               </button>
               <button
                 type="button"
