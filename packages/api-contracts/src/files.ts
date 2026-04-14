@@ -10,6 +10,8 @@ export const fileEntrySchema = z.object({
   permissions: z.string(),
   uid: z.number(),
   gid: z.number(),
+  owner: z.string().optional(),
+  group: z.string().optional(),
 });
 
 export type FileEntry = z.infer<typeof fileEntrySchema>;
@@ -119,9 +121,11 @@ export const chownInputSchema = z.object({
   path: z.string().min(1),
   uid: z.number().int().min(0).optional(),
   gid: z.number().int().min(0).optional(),
+  owner: z.string().max(32).optional(),
+  group: z.string().max(32).optional(),
   recursive: z.boolean().optional(),
-}).refine(data => data.uid !== undefined || data.gid !== undefined, {
-  message: 'At least one of uid or gid must be provided',
+}).refine(data => data.uid !== undefined || data.gid !== undefined || data.owner !== undefined || data.group !== undefined, {
+  message: 'At least one of uid/owner or gid/group must be provided',
 });
 
 export type ChownInput = z.infer<typeof chownInputSchema>;

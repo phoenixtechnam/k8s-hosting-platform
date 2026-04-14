@@ -3,7 +3,7 @@
 // No auth — protected by NetworkPolicy (only platform namespace can reach it)
 
 import { createServer } from 'node:http';
-import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp } from 'node:fs/promises';
+import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve, basename, extname, dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -13,6 +13,48 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 const PORT = 8111;
+
+// Default ownership for files created by the file-manager (www-data, compatible with PHP apps)
+const DEFAULT_UID = 33;
+const DEFAULT_GID = 33;
+
+// ─── UID/GID → Name Resolution ──────────────────────────────────────────────
+const uidNameCache = new Map();
+const gidNameCache = new Map();
+
+async function loadPasswd() {
+  try {
+    const data = await readFile('/etc/passwd', 'utf8');
+    for (const line of data.split('\n')) {
+      const parts = line.split(':');
+      if (parts.length >= 3) uidNameCache.set(parseInt(parts[2], 10), parts[0]);
+    }
+  } catch { /* no /etc/passwd */ }
+}
+
+async function loadGroup() {
+  try {
+    const data = await readFile('/etc/group', 'utf8');
+    for (const line of data.split('\n')) {
+      const parts = line.split(':');
+      if (parts.length >= 3) gidNameCache.set(parseInt(parts[2], 10), parts[0]);
+    }
+  } catch { /* no /etc/group */ }
+}
+
+function resolveUidName(uid) { return uidNameCache.get(uid) ?? String(uid); }
+function resolveGidName(gid) { return gidNameCache.get(gid) ?? String(gid); }
+
+// Load at startup
+await loadPasswd();
+await loadGroup();
+// Also add well-known names not in Alpine's /etc/passwd
+if (!uidNameCache.has(33)) uidNameCache.set(33, 'www-data');
+if (!gidNameCache.has(33)) gidNameCache.set(33, 'www-data');
+if (!uidNameCache.has(999)) uidNameCache.set(999, 'mysql');
+if (!gidNameCache.has(999)) gidNameCache.set(999, 'mysql');
+if (!uidNameCache.has(70)) uidNameCache.set(70, 'postgres');
+if (!gidNameCache.has(70)) gidNameCache.set(70, 'postgres');
 const BASE = '/data';
 
 // ─── Hidden platform paths ───────────────────────────────────────────────────
@@ -203,9 +245,11 @@ async function handleLs(req, res) {
           permissions: (s.mode & 0o777).toString(8),
           uid: s.uid,
           gid: s.gid,
+          owner: resolveUidName(s.uid),
+          group: resolveGidName(s.gid),
         };
       } catch {
-        return { name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0 };
+        return { name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0, owner: 'root', group: 'root' };
       }
     }));
     // Sort: directories first, then alphabetical
@@ -277,6 +321,7 @@ async function handleMkdir(req, res) {
 
   try {
     await mkdir(full, { recursive: true });
+    await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
     sendJson(res, 201, { path: p, created: true });
   } catch (err) {
     console.error('[handleMkdir]', err.message);
@@ -323,6 +368,7 @@ async function handleUpload(req, res) {
       ws.on('error', reject);
       ws.end(filePart.data, resolve);
     });
+    await fsChown(destSafe, DEFAULT_UID, DEFAULT_GID).catch(() => {});
 
     sendJson(res, 201, { path: join(targetDir, filePart.filename), size: filePart.data.length });
   } catch (err) {
@@ -341,6 +387,7 @@ async function handleWrite(req, res) {
 
   try {
     await writeFile(full, content, 'utf-8');
+    await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
   } catch (err) {
@@ -510,6 +557,7 @@ async function handleWriteRaw(req, res) {
 
     await pipeline(req, ws);
     pipelineDone = true;
+    await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
 
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
@@ -655,18 +703,43 @@ async function handleChmod(req, res) {
 
 async function handleChown(req, res) {
   const body = await readBody(req);
-  const { path: p, uid, gid, recursive } = body;
+  const { path: p, uid, gid, owner: ownerName, group: groupName, recursive } = body;
   if (!p) return sendError(res, 400, 'path is required');
-  if (uid === undefined && gid === undefined) return sendError(res, 400, 'uid or gid is required');
 
-  const owner = `${uid ?? ''}:${gid ?? ''}`;
-  if (owner === ':') return sendError(res, 400, 'uid or gid is required');
+  // Resolve name strings to numeric UIDs/GIDs (Alpine may not have all users in /etc/passwd)
+  let resolvedUid = uid;
+  let resolvedGid = gid;
+  if (ownerName) {
+    // Reverse lookup: name → uid from our cache
+    for (const [id, name] of uidNameCache) {
+      if (name === ownerName) { resolvedUid = id; break; }
+    }
+    if (resolvedUid === undefined) {
+      // Try parsing as number
+      const parsed = parseInt(ownerName, 10);
+      if (!isNaN(parsed)) resolvedUid = parsed;
+      else return sendError(res, 400, `Unknown user: ${ownerName}`);
+    }
+  }
+  if (groupName) {
+    for (const [id, name] of gidNameCache) {
+      if (name === groupName) { resolvedGid = id; break; }
+    }
+    if (resolvedGid === undefined) {
+      const parsed = parseInt(groupName, 10);
+      if (!isNaN(parsed)) resolvedGid = parsed;
+      else return sendError(res, 400, `Unknown group: ${groupName}`);
+    }
+  }
+
+  const ownerSpec = `${resolvedUid ?? ''}:${resolvedGid ?? ''}`;
+  if (ownerSpec === ':') return sendError(res, 400, 'uid/owner or gid/group is required');
 
   const full = safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
-    const args = recursive ? ['-R', owner, full] : [owner, full];
+    const args = recursive ? ['-R', ownerSpec, full] : [ownerSpec, full];
     await new Promise((resolve, reject) => {
       execFile('chown', args, { timeout: 60_000 }, (err, stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));

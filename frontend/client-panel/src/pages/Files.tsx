@@ -6,7 +6,7 @@ interface FileSystemDirectoryEntry extends FileSystemEntry { createReader(): Fil
 interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[]) => void, err?: () => void): void; }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FolderOpen, File, FilePlus, ChevronRight, ArrowLeft, Trash2, Edit3,
@@ -115,6 +115,8 @@ export default function Files() {
   const [chownUid, setChownUid] = useState('');
   const [chownGid, setChownGid] = useState('');
   const [chownRecursive, setChownRecursive] = useState(false);
+  const [chownOwnerName, setChownOwnerName] = useState('');
+  const [chownGroupName, setChownGroupName] = useState('');
 
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -462,6 +464,8 @@ export default function Files() {
                 });
                 setChownUid(String(firstEntry.uid));
                 setChownGid(String(firstEntry.gid));
+                setChownOwnerName('');
+                setChownGroupName('');
               }
             }}
             className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"
@@ -643,6 +647,8 @@ export default function Files() {
             });
             setChownUid(String(entry.uid));
             setChownGid(String(entry.gid));
+            setChownOwnerName('');
+            setChownGroupName('');
             setContextMenu(null);
           }}
         />
@@ -746,6 +752,42 @@ export default function Files() {
                 <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 font-mono">{modeToRwx(chmodMode)}</p>
               )}
             </div>
+            {/* rwx checkboxes */}
+            <div className="mb-4">
+              <div className="grid grid-cols-4 gap-1 text-xs text-center">
+                <div />
+                <span className="font-medium text-gray-600 dark:text-gray-400">Read</span>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Write</span>
+                <span className="font-medium text-gray-600 dark:text-gray-400">Execute</span>
+                {(['Owner', 'Group', 'Others'] as const).map((label, rowIdx) => {
+                  const shift = (2 - rowIdx) * 3;
+                  const modeNum = parseInt(chmodMode.padStart(3, '0'), 8) || 0;
+                  return (
+                    <Fragment key={label}>
+                      <span className="text-right pr-2 font-medium text-gray-600 dark:text-gray-400 py-1">{label}</span>
+                      {[4, 2, 1].map(bit => {
+                        const isSet = (modeNum >> shift & bit) !== 0;
+                        return (
+                          <label key={bit} className="flex items-center justify-center py-1 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isSet}
+                              onChange={(e) => {
+                                const newMode = e.target.checked
+                                  ? modeNum | (bit << shift)
+                                  : modeNum & ~(bit << shift);
+                                setChmodMode(newMode.toString(8).padStart(3, '0'));
+                              }}
+                              className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500"
+                            />
+                          </label>
+                        );
+                      })}
+                    </Fragment>
+                  );
+                })}
+              </div>
+            </div>
             {chmodTarget.isDir && (
               <label className="flex items-center gap-2 mb-4 cursor-pointer">
                 <input
@@ -785,13 +827,36 @@ export default function Files() {
       {/* Chown modal */}
       {chownTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setChownTarget(null)} />
+          <div className="fixed inset-0 bg-black/50" onClick={() => { setChownTarget(null); setChownOwnerName(''); setChownGroupName(''); }} />
           <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
             <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">Change Ownership</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3 font-mono truncate">{chownTarget.path}</p>
             {selected.size > 1 && (
               <p className="text-xs text-brand-600 dark:text-brand-400 mb-3">Applying to {selected.size} selected items</p>
             )}
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Owner Name</label>
+                <input
+                  type="text"
+                  value={chownOwnerName}
+                  onChange={(e) => setChownOwnerName(e.target.value)}
+                  placeholder="www-data"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Group Name</label>
+                <input
+                  type="text"
+                  value={chownGroupName}
+                  onChange={(e) => setChownGroupName(e.target.value)}
+                  placeholder="www-data"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">Use names or numeric IDs (names take precedence)</p>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">UID</label>
@@ -812,23 +877,30 @@ export default function Files() {
               </label>
             )}
             <div className="flex justify-end gap-2">
-              <button onClick={() => setChownTarget(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
+              <button onClick={() => { setChownTarget(null); setChownOwnerName(''); setChownGroupName(''); }} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
               <button
                 onClick={async () => {
+                  const hasNames = !!(chownOwnerName || chownGroupName);
                   const uid = chownUid ? parseInt(chownUid, 10) : undefined;
                   const gid = chownGid ? parseInt(chownGid, 10) : undefined;
-                  if (uid === undefined && gid === undefined) return;
+                  if (!hasNames && uid === undefined && gid === undefined) return;
+                  const makeArgs = (path: string) =>
+                    hasNames
+                      ? { path, owner: chownOwnerName || undefined, group: chownGroupName || undefined, recursive: chownRecursive }
+                      : { path, uid, gid, recursive: chownRecursive };
                   if (selected.size > 1) {
                     for (const name of selected) {
-                      await chown.mutateAsync({ path: joinPath(currentPath, name), uid, gid, recursive: chownRecursive });
+                      await chown.mutateAsync(makeArgs(joinPath(currentPath, name)));
                     }
                   } else {
-                    await chown.mutateAsync({ path: chownTarget.path, uid, gid, recursive: chownRecursive });
+                    await chown.mutateAsync(makeArgs(chownTarget.path));
                   }
                   setChownTarget(null);
                   setChownRecursive(false);
+                  setChownOwnerName('');
+                  setChownGroupName('');
                 }}
-                disabled={chown.isPending || (!chownUid && !chownGid)}
+                disabled={chown.isPending || (!chownUid && !chownGid && !chownOwnerName && !chownGroupName)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               >
                 {chown.isPending ? 'Applying...' : 'Apply'}
@@ -939,7 +1011,7 @@ function FileRow({
         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">{modeToRwx(entry.permissions)}</span>
       </td>
       <td className="px-3 py-3 text-sm hidden lg:table-cell">
-        <span className="text-xs text-gray-500 dark:text-gray-400">{entry.uid}:{entry.gid}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">{entry.owner ?? entry.uid}:{entry.group ?? entry.gid}</span>
       </td>
       <td className="px-3 py-3 text-right" data-action="actions">
         <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">

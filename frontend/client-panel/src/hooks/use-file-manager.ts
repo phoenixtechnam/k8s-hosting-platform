@@ -13,6 +13,8 @@ interface FileEntry {
   readonly permissions: string;
   readonly uid: number;
   readonly gid: number;
+  readonly owner?: string;
+  readonly group?: string;
 }
 
 interface DirectoryListing {
@@ -214,10 +216,10 @@ export function useChown() {
   const { clientId } = useClientContext();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ path, uid, gid, recursive }: { path: string; uid?: number; gid?: number; recursive?: boolean }) =>
+    mutationFn: ({ path, uid, gid, owner, group, recursive }: { path: string; uid?: number; gid?: number; owner?: string; group?: string; recursive?: boolean }) =>
       apiFetch(`/api/v1/clients/${clientId}/files/chown`, {
         method: 'POST',
-        body: JSON.stringify({ path, uid, gid, recursive }),
+        body: JSON.stringify({ path, uid, gid, owner, group, recursive }),
       }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', clientId] }); },
   });
