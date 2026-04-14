@@ -624,12 +624,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'File path is required', 400, { field: 'file_path' });
     }
 
-    if (body.file_path.includes('..') || body.file_path.startsWith('/')) {
-      throw new ApiError('INVALID_PATH', 'File path cannot contain ".." traversal or be absolute', 400);
+    if (body.file_path.includes('..')) {
+      throw new ApiError('INVALID_PATH', 'File path cannot contain ".." traversal', 400);
     }
 
+    // Strip leading slash — the PVC file picker returns paths relative to /data/ root
+    const filePath = body.file_path.replace(/^\/+/, '');
+
     const { deploymentSubPath, ...ctx } = await buildDbCtx(clientId, id);
-    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', body.file_path, deploymentSubPath);
+    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', filePath, deploymentSubPath);
     return success(result);
   });
 
