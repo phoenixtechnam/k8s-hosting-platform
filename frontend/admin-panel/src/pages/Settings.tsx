@@ -113,6 +113,14 @@ export default function Settings() {
         )}
       </div>
 
+      <Link to="/settings/system" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="system-settings-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"><SettingsIcon size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">System Settings</h2><p className="text-sm text-gray-500 dark:text-gray-400">Platform identity, networking, mail server, and rate limits</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
       <Link to="/settings/oidc" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="oidc-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400"><Shield size={20} /></div>

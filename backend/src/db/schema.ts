@@ -1186,3 +1186,21 @@ export type ProvisioningTask = typeof provisioningTasks.$inferSelect;
 export type NewProvisioningTask = typeof provisioningTasks.$inferInsert;
 export type DnsProviderGroup = typeof dnsProviderGroups.$inferSelect;
 export type NewDnsProviderGroup = typeof dnsProviderGroups.$inferInsert;
+
+// ─── System Settings (single-row structured config) ───
+
+export const systemSettings = pgTable('system_settings', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  platformName: varchar('platform_name', { length: 255 }).notNull().default('Hosting Platform'),
+  adminPanelUrl: varchar('admin_panel_url', { length: 500 }),
+  clientPanelUrl: varchar('client_panel_url', { length: 500 }),
+  supportEmail: varchar('support_email', { length: 255 }),
+  supportUrl: varchar('support_url', { length: 500 }),
+  ingressBaseDomain: varchar('ingress_base_domain', { length: 255 }),
+  mailHostname: varchar('mail_hostname', { length: 255 }),
+  webmailUrl: varchar('webmail_url', { length: 500 }),
+  apiRateLimit: integer('api_rate_limit').notNull().default(100),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type SystemSettings = typeof systemSettings.$inferSelect;

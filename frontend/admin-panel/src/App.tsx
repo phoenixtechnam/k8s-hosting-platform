@@ -24,6 +24,7 @@ import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
 import EmailManagement from '@/pages/EmailManagement';
 import TlsSettings from '@/pages/TlsSettings';
+import SystemSettingsPage from '@/pages/SystemSettings';
 import AuditLogs from '@/pages/AuditLogs';
 import Placeholder from '@/pages/Placeholder';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -63,6 +64,7 @@ export default function App() {
             <Route path="security" element={<Security />} />
             <Route path="monitoring" element={<Monitoring />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="settings/system" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><SystemSettingsPage /></ProtectedRoute>} />
             <Route path="settings/oidc" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><OidcSettings /></ProtectedRoute>} />
             <Route path="settings/dns" element={<DnsServers />} />
             <Route path="settings/plans" element={<PlanManagement />} />

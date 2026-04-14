@@ -268,6 +268,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
   await app.register(sqliteRoutes, { prefix: '/api/v1' });
 
+  const { systemSettingsRoutes } = await import('./modules/system-settings/routes.js');
+  await app.register(systemSettingsRoutes, { prefix: '/api/v1' });
+
   // Start background schedulers (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
     app.addHook('onReady', async () => {
