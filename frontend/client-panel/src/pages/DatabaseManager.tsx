@@ -205,11 +205,17 @@ export default function DatabaseManager() {
   const catalogEntries = catalogData?.data ?? [];
   const allDeployments = deploymentsData?.data ?? [];
 
-  // Filter to database-type deployments only
+  // Filter to deployments that have a manageable database component
   const databaseDeployments = useMemo(() => {
     const dbCatalogIds = new Set(
       catalogEntries
-        .filter((entry) => entry.type === 'database')
+        .filter((entry) => {
+          // Standalone database type
+          if (entry.type === 'database') return true;
+          // Multi-component app with a database component
+          const components = (entry.components ?? []) as Array<{ database?: string }>;
+          return components.some(c => c.database);
+        })
         .map((entry) => entry.id),
     );
     return allDeployments.filter(
@@ -219,8 +225,16 @@ export default function DatabaseManager() {
 
   const selectedDeployment = databaseDeployments.find((d) => d.id === selectedDeploymentId);
   const selectedCatalogEntry = catalogEntries.find((e) => e.id === selectedDeployment?.catalogEntryId);
-  const engine: DbEngine = isSqlite ? 'sql' : detectEngine(selectedCatalogEntry?.name);
-  const dbRuntime = isSqlite ? undefined : (selectedCatalogEntry?.runtime ?? selectedCatalogEntry?.code);
+
+  // Detect the DB engine from the catalog component's "database" field
+  const dbComponentEngine = useMemo(() => {
+    if (!selectedCatalogEntry) return undefined;
+    const components = (selectedCatalogEntry.components ?? []) as Array<{ database?: string }>;
+    return components.find(c => c.database)?.database;
+  }, [selectedCatalogEntry]);
+
+  const engine: DbEngine = isSqlite ? 'sql' : (dbComponentEngine === 'mongodb' ? 'mongodb' : detectEngine(selectedCatalogEntry?.name));
+  const dbRuntime = isSqlite ? undefined : (dbComponentEngine ?? selectedCatalogEntry?.runtime ?? selectedCatalogEntry?.code);
 
   // Auto-deselect deployment if it crashes or stops
   useEffect(() => {

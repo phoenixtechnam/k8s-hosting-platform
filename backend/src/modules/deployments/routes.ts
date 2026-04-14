@@ -370,10 +370,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!entry) {
       throw new ApiError('CATALOG_ENTRY_NOT_FOUND', 'Catalog entry not found', 404);
     }
-    if (entry.type !== 'database') {
+
+    // Find the database component — either standalone DB or embedded in a multi-component app
+    const components = service.parseJsonField<Array<{ name: string; database?: string }>>(entry.components) ?? [];
+    const dbComponent = components.find(c => c.database);
+
+    if (!dbComponent?.database) {
       throw new ApiError(
         'NOT_A_DATABASE',
-        'This deployment is not a database instance',
+        'This deployment has no manageable database component',
         400,
         { type: entry.type },
       );
@@ -382,8 +387,17 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await service.getClientNamespace(app.db, clientId);
     const config = service.parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-    const ctx = await dbManager.buildDbContext(k8s, kubeconfigPath, namespace, deployment.name, entry, config);
-    // The PVC subPath for this deployment's data directory
+
+    // For multi-component apps, the DB pod name is {deployment}-{componentName}
+    // For single-component, it's just {deployment}
+    const dbPodDeploymentName = components.length > 1
+      ? `${deployment.name}-${dbComponent.name}`
+      : deployment.name;
+
+    const ctx = await dbManager.buildDbContext(
+      k8s, kubeconfigPath, namespace, dbPodDeploymentName, entry,
+      config, dbComponent.database as dbManager.Engine, dbComponent.name,
+    );
     const deploymentSubPath = deployment.storagePath ?? `databases/${deployment.name}`;
     return { ...ctx, deploymentSubPath };
   }

@@ -45,6 +45,8 @@ export const componentSchema = z.object({
   })).optional(),
   optional: z.boolean().optional(),
   schedule: z.string().optional(),
+  /** Database engine this component provides — enables SQL Manager access */
+  database: z.enum(['mariadb', 'mysql', 'postgresql', 'mongodb']).optional(),
 });
 
 export const volumeSchema = z.object({

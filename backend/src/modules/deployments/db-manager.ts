@@ -250,6 +250,19 @@ export interface DbUser {
 
 export type Engine = 'mariadb' | 'mysql' | 'postgresql' | 'mongodb';
 
+/** Central engine configuration — derived from the catalog "database" field */
+export const ENGINE_CONFIG: Record<Engine, {
+  readonly rootPasswordEnv: string;
+  readonly rootUsernameEnv?: string;
+  readonly dataRoot: string;
+  readonly port: number;
+}> = {
+  mariadb: { rootPasswordEnv: 'MARIADB_ROOT_PASSWORD', dataRoot: '/var/lib/mysql', port: 3306 },
+  mysql: { rootPasswordEnv: 'MYSQL_ROOT_PASSWORD', dataRoot: '/var/lib/mysql', port: 3306 },
+  postgresql: { rootPasswordEnv: 'POSTGRES_PASSWORD', dataRoot: '/var/lib/postgresql', port: 5432 },
+  mongodb: { rootPasswordEnv: 'MONGO_INITDB_ROOT_PASSWORD', rootUsernameEnv: 'MONGO_INITDB_ROOT_USERNAME', dataRoot: '/data/db', port: 27017 },
+};
+
 export interface DbManagerContext {
   readonly kubeconfigPath: string | undefined;
   readonly namespace: string;
@@ -1032,12 +1045,15 @@ export async function buildDbContext(
   deploymentName: string,
   catalogEntry: { runtime?: string | null; code: string },
   configuration: Record<string, unknown>,
+  dbEngine?: Engine,
+  componentName?: string,
 ): Promise<DbManagerContext> {
-  const engine = detectEngine(catalogEntry);
+  const engine = dbEngine ?? detectEngine(catalogEntry);
   const podName = await findPodName(k8s, namespace, deploymentName);
 
-  // Container name is the catalog entry code (matches the container name set in k8s-deployer)
-  const containerName = catalogEntry.code;
+  // Container name: for multi-component apps, use the DB component name;
+  // for standalone databases, use the catalog entry code
+  const containerName = componentName ?? catalogEntry.code;
 
   // Get root password from configuration
   let rootPassword = '';
@@ -1842,12 +1858,7 @@ export async function importSqlFromPvcFile(
   // The database pod only sees /data/<deploymentSubPath>/ as its data root.
   // We need to reference the file relative to the database pod's mount.
 
-  // Determine the database pod's data root path (engine-specific).
-  // This must match the container_path from the catalog volume mount.
-  // PostgreSQL 18+: mount is /var/lib/postgresql (PGDATA is a subdirectory).
-  const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
-    ? '/var/lib/mysql'
-    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql' : '/data/db');
+  const dataRoot = ENGINE_CONFIG[ctx.engine].dataRoot;
 
   // The import file path inside the database pod:
   // File-manager path: /data/<filePath>
@@ -2064,9 +2075,7 @@ export async function exportDatabaseToPvc(
 ): Promise<{ pvcPath: string; sizeBytes: number }> {
   validateDatabaseName(database);
 
-  const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
-    ? '/var/lib/mysql'
-    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql' : '/data/db');
+  const dataRoot = ENGINE_CONFIG[ctx.engine].dataRoot;
 
   const exportPath = `${dataRoot}/${outputFileName}`;
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
