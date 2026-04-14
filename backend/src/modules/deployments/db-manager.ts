@@ -1861,32 +1861,13 @@ export async function importSqlFromPvcFile(
   const sqlFileName = `_import_${Date.now()}.sql`;
 
   try {
-    // Ensure file-manager is running (may have been scaled down by idle cleanup)
-    const { ensureFileManagerRunning } = await import('../file-manager/k8s-lifecycle.js');
-    await ensureFileManagerRunning(ctx.k8s!, ctx.namespace, 'file-manager-sidecar:latest');
-
-    // Wait briefly for pod to be ready after ensure
-    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-    let fmPod: { metadata?: { name?: string }; status?: { phase?: string } } | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const fmPods = await ctx.k8s!.core.listNamespacedPod({
-        namespace: ctx.namespace,
-        labelSelector: 'app=file-manager',
-      });
-      const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
-      fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
-      if (fmPod?.metadata?.name) break;
-      await sleep(1000);
-    }
-
-    if (!fmPod?.metadata?.name) {
-      throw new Error('File manager pod not found or not running after startup');
-    }
+    // Ensure file-manager is running and get a ready pod name
+    const { getReadyFileManagerPod } = await import('../file-manager/service.js');
+    const fmPodName = await getReadyFileManagerPod(ctx.k8s!, ctx.namespace);
 
     // Step 1: Extract/decompress archives in the file-manager pod (has tar, unzip, gunzip).
     // Database pods (especially MySQL 8) lack these tools.
     // Result: a plain .sql (or pg_restore-compatible) file in the database's subPath.
-    const fmPodName = fmPod.metadata.name;
     const fmSrcPath = `/data/${cleanFilePath}`;
     const fmDestDir = `/data/${cleanSubPath}`;
     const fmSqlPath = `${fmDestDir}/${sqlFileName}`;
@@ -2115,19 +2096,12 @@ export async function exportDatabaseToPvc(
   const sizeBytes = parseInt(sizeOut.trim(), 10) || 0;
 
   // Move the export from the database subPath to /data/exports/ via file-manager pod
-  const fmPods = await ctx.k8s!.core.listNamespacedPod({
-    namespace: ctx.namespace,
-    labelSelector: 'app=file-manager',
-  });
-  const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
-  const fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
-
-  if (fmPod?.metadata?.name) {
-    await execInPod(
-      ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
-      ['sh', '-c', `mkdir -p /data/exports && mv ${shellEscape(`/data/${cleanSubPath}/${outputFileName}`)} ${shellEscape(`/data/exports/${outputFileName}`)}`],
-    );
-  }
+  const { getReadyFileManagerPod: getExportFmPod } = await import('../file-manager/service.js');
+  const exportFmPodName = await getExportFmPod(ctx.k8s!, ctx.namespace);
+  await execInPod(
+    ctx.kubeconfigPath, ctx.namespace, exportFmPodName, 'file-manager',
+    ['sh', '-c', `mkdir -p /data/exports && mv ${shellEscape(`/data/${cleanSubPath}/${outputFileName}`)} ${shellEscape(`/data/exports/${outputFileName}`)}`],
+  );
 
   const pvcPath = `/exports/${outputFileName}`;
   return { pvcPath, sizeBytes };

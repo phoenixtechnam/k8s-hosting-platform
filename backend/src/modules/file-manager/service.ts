@@ -291,4 +291,33 @@ export async function fileManagerRequest(
   return proxyToFileManager(kubeconfigPath, namespace, sidecarPath, options);
 }
 
+/**
+ * Ensure file-manager is running and return a ready pod name.
+ * Use this when you need to exec into the file-manager pod directly
+ * (e.g. for cp/tar operations) rather than proxying HTTP requests.
+ * Handles auto-start from idle (scaled to 0) with up to 30s wait.
+ */
+export async function getReadyFileManagerPod(
+  k8sClients: K8sClients,
+  namespace: string,
+  image = 'file-manager-sidecar:latest',
+): Promise<string> {
+  await ensureFileManagerRunning(k8sClients, namespace, image);
+  const status = await waitForReady(k8sClients, namespace);
+  if (!status.ready) {
+    throw new Error(`File manager not ready: ${status.message ?? 'timeout'}`);
+  }
+
+  const pods = await k8sClients.core.listNamespacedPod({
+    namespace,
+    labelSelector: 'app=file-manager',
+  });
+  const podItems = (pods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
+  const runningPod = podItems.find(p => p.status?.phase === 'Running');
+  if (!runningPod?.metadata?.name) {
+    throw new Error('File manager pod not found after startup');
+  }
+  return runningPod.metadata.name;
+}
+
 export { ensureFileManagerRunning, getFileManagerStatus, stopFileManager } from './k8s-lifecycle.js';
