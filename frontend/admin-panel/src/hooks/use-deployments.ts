@@ -96,3 +96,28 @@ export function useDeleteDeployment(clientId: string | undefined) {
     },
   });
 }
+
+export function useRestartDeployment(clientId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch(`/api/v1/clients/${clientId}/deployments/${deploymentId}/restart`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+  });
+}
+
+export function useBulkRestartDeployments() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (catalogEntryId?: string) =>
+      apiFetch('/api/v1/admin/deployments/bulk-restart', {
+        method: 'POST',
+        body: JSON.stringify(catalogEntryId ? { catalog_entry_id: catalogEntryId } : {}),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+  });
+}

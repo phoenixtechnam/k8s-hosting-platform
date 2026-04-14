@@ -9,7 +9,7 @@ import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
-import { useDeployments } from '@/hooks/use-deployments';
+import { useDeployments, useRestartDeployment, useBulkRestartDeployments } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
@@ -51,6 +51,7 @@ export default function ClientDetail() {
   const impersonate = useImpersonate();
   const triggerProvision = useTriggerProvisioning();
   const triggerDecommission = useTriggerDecommission();
+  const bulkRestart = useBulkRestartDeployments();
 
   const handleDelete = async () => {
     if (!id) return;
@@ -199,6 +200,16 @@ export default function ClientDetail() {
             </button>
           ) : null}
           <button
+            onClick={() => bulkRestart.mutate(undefined)}
+            disabled={bulkRestart.isPending}
+            className="inline-flex items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 shadow-sm hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50"
+            title="Pull latest images and restart all running deployments"
+            data-testid="refresh-all-apps-button"
+          >
+            {bulkRestart.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            <span className="hidden sm:inline">Refresh All Apps</span>
+          </button>
+          <button
             onClick={() => setEditOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50"
             data-testid="edit-button"
@@ -338,7 +349,7 @@ export default function ClientDetail() {
         <div className="p-5">
           {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
           {activeTab === 'applications' && <ApplicationsTab clientId={id} />}
-          {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} />}
+          {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} clientId={id} />}
           {activeTab === 'files' && (
             <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
               <FolderOpen size={32} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
@@ -885,7 +896,9 @@ function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'
   return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>{status}</span>;
 }
 
-function DeploymentsTab({ data, isLoading, error }: TabContentProps<Deployment>) {
+function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<Deployment> & { readonly clientId: string | undefined }) {
+  const restartDeployment = useRestartDeployment(clientId);
+
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load deployments." />;
   const items = data?.data ?? [];
@@ -903,6 +916,7 @@ function DeploymentsTab({ data, isLoading, error }: TabContentProps<Deployment>)
           <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <th className="px-3 py-2 text-right">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -915,6 +929,25 @@ function DeploymentsTab({ data, isLoading, error }: TabContentProps<Deployment>)
             <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
             <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
             <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+            <td className="py-2 text-right">
+              {d.status === 'running' && (
+                <button
+                  type="button"
+                  onClick={() => restartDeployment.mutate(d.id)}
+                  disabled={restartDeployment.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Pull latest image and restart"
+                  data-testid={`restart-deployment-${d.id}`}
+                >
+                  {restartDeployment.isPending ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={12} />
+                  )}
+                  Restart
+                </button>
+              )}
+            </td>
           </tr>
         ))}
       </tbody>

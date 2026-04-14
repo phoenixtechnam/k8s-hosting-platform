@@ -10,8 +10,8 @@ import { reconcileDeploymentStatuses } from './status-reconciler.js';
 import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
 import { generateSecurePassword } from './service.js';
-import { eq } from 'drizzle-orm';
-import { catalogEntries } from '../../db/schema.js';
+import { eq, and, inArray } from 'drizzle-orm';
+import { catalogEntries, deployments, clients } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 
 const FM_IMAGE = 'file-manager-sidecar:latest';
@@ -736,5 +736,66 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
     const result = await reconcileDeploymentStatuses(app.db, k8s);
     return success(result);
+  });
+
+  // POST /api/v1/admin/deployments/bulk-restart — restart all running deployments
+  // Optional filter: { catalog_entry_id?: string }
+  app.post('/admin/deployments/bulk-restart', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['Deployments'],
+      summary: 'Bulk restart running deployments (pulls latest images)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const k8s = getK8s();
+    if (!k8s) {
+      throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    }
+
+    const body = (request.body ?? {}) as { catalog_entry_id?: string };
+    const conditions = [eq(deployments.status, 'running')];
+    if (body.catalog_entry_id) {
+      conditions.push(eq(deployments.catalogEntryId, body.catalog_entry_id));
+    }
+
+    const runningDeployments = await app.db
+      .select({
+        id: deployments.id,
+        name: deployments.name,
+        clientId: deployments.clientId,
+        catalogEntryId: deployments.catalogEntryId,
+      })
+      .from(deployments)
+      .where(and(...conditions));
+
+    // Group by client for namespace lookup
+    const clientIds = [...new Set(runningDeployments.map(d => d.clientId))];
+    const clientRows = await app.db
+      .select({ id: clients.id, kubernetesNamespace: clients.kubernetesNamespace })
+      .from(clients)
+      .where(inArray(clients.id, clientIds));
+
+    const nsMap = new Map(clientRows.map(c => [c.id, c.kubernetesNamespace]));
+
+    let restarted = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const dep of runningDeployments) {
+      const namespace = nsMap.get(dep.clientId);
+      if (!namespace) continue;
+
+      try {
+        await restartDeployment(k8s, namespace, dep.name,
+          await service.resolveDeploymentComponents(app.db, dep as typeof deployments.$inferSelect));
+        restarted++;
+      } catch (err) {
+        failed++;
+        errors.push(`${dep.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return success({ restarted, failed, total: runningDeployments.length, errors });
   });
 }

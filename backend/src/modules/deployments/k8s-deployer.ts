@@ -134,7 +134,7 @@ export async function deployCatalogEntry(
     const container = {
       name: component.name,
       image: component.image,
-      imagePullPolicy: 'IfNotPresent' as const,
+      imagePullPolicy: 'Always' as const,
       ports: component.ports.map(p => ({ containerPort: p.port })),
       resources: {
         requests: { cpu: cpuRequest, memory: memoryRequest },

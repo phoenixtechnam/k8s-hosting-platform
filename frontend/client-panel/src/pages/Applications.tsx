@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, RefreshCw } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -7,7 +7,7 @@ import { useClientContext } from '@/hooks/use-client-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCatalog } from '@/hooks/use-catalog';
-import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics, useDeletePreview } from '@/hooks/use-deployments';
+import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics, useDeletePreview, useRestartDeployment } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
@@ -900,6 +900,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const deleteDeployment = useDeleteDeployment(clientId ?? undefined);
   const restoreDeployment = useRestoreDeployment(clientId ?? undefined);
   const permanentDeleteDeployment = usePermanentDeleteDeployment(clientId ?? undefined);
+  const restartDeployment = useRestartDeployment(clientId ?? undefined);
   const [softDeleteConfirm, setSoftDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [deleteDataFolder, setDeleteDataFolder] = useState(false);
@@ -1163,6 +1164,23 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       )}
                       {deployment.status === 'running' ? 'Stop' : 'Start'}
                     </button>
+                    {deployment.status === 'running' && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); restartDeployment.mutate(deployment.id); }}
+                      disabled={restartDeployment.isPending}
+                      className="flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Pull latest image and restart"
+                      data-testid={`pull-latest-app-${deployment.id}`}
+                    >
+                      {restartDeployment.isPending ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={14} />
+                      )}
+                      Pull Latest
+                    </button>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setSelectedDeploymentId(deployment.id); }}
