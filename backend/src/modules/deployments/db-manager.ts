@@ -1861,17 +1861,26 @@ export async function importSqlFromPvcFile(
   const sqlFileName = `_import_${Date.now()}.sql`;
 
   try {
-    // Copy the source file to the database's subPath using file-manager exec
-    // Both paths are visible to the file-manager pod at /data/
-    const fmPods = await ctx.k8s!.core.listNamespacedPod({
-      namespace: ctx.namespace,
-      labelSelector: 'app=file-manager',
-    });
-    const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
-    const fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
+    // Ensure file-manager is running (may have been scaled down by idle cleanup)
+    const { ensureFileManagerRunning } = await import('../file-manager/k8s-lifecycle.js');
+    await ensureFileManagerRunning(ctx.k8s!, ctx.namespace, 'file-manager-sidecar:latest');
+
+    // Wait briefly for pod to be ready after ensure
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    let fmPod: { metadata?: { name?: string }; status?: { phase?: string } } | undefined;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const fmPods = await ctx.k8s!.core.listNamespacedPod({
+        namespace: ctx.namespace,
+        labelSelector: 'app=file-manager',
+      });
+      const fmPodItems = (fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
+      fmPod = fmPodItems.find(p => p.status?.phase === 'Running');
+      if (fmPod?.metadata?.name) break;
+      await sleep(1000);
+    }
 
     if (!fmPod?.metadata?.name) {
-      throw new Error('File manager pod not found or not running');
+      throw new Error('File manager pod not found or not running after startup');
     }
 
     // Step 1: Extract/decompress archives in the file-manager pod (has tar, unzip, gunzip).
