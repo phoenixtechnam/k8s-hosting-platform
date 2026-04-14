@@ -1842,10 +1842,12 @@ export async function importSqlFromPvcFile(
   // The database pod only sees /data/<deploymentSubPath>/ as its data root.
   // We need to reference the file relative to the database pod's mount.
 
-  // Determine the database pod's data root path (engine-specific)
+  // Determine the database pod's data root path (engine-specific).
+  // This must match the container_path from the catalog volume mount.
+  // PostgreSQL 18+: mount is /var/lib/postgresql (PGDATA is a subdirectory).
   const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
     ? '/var/lib/mysql'
-    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql/data' : '/data/db');
+    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql' : '/data/db');
 
   // The import file path inside the database pod:
   // File-manager path: /data/<filePath>
@@ -2074,7 +2076,7 @@ export async function exportDatabaseToPvc(
 
   const dataRoot = (ctx.engine === 'mariadb' || ctx.engine === 'mysql')
     ? '/var/lib/mysql'
-    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql/data' : '/data/db');
+    : (ctx.engine === 'postgresql' ? '/var/lib/postgresql' : '/data/db');
 
   const exportPath = `${dataRoot}/${outputFileName}`;
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
