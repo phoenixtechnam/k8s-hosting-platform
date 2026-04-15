@@ -23,12 +23,8 @@ spec:
             - containerPort: 80
               protocol: TCP
           env:
-            - name: API_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: platform-config
-                  key: api-url
-                  optional: true
+            # API_URL intentionally omitted — defaults to '' (same-origin).
+            # Frontend nginx proxies /api/* to platform-api:3000 internally.
             - name: CLIENT_PANEL_URL
               valueFrom:
                 configMapKeyRef:

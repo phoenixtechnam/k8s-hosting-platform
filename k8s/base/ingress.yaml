@@ -1,3 +1,6 @@
+# Platform ingress — admin and client panels only.
+# The API is not publicly exposed. Each frontend's nginx container
+# reverse-proxies /api/* to platform-api:3000 internally.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -12,21 +15,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - api.platform.local
         - admin.platform.local
         - client.platform.local
       secretName: platform-tls
   rules:
-    - host: api.platform.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: platform-api
-                port:
-                  number: 3000
     - host: admin.platform.local
       http:
         paths:

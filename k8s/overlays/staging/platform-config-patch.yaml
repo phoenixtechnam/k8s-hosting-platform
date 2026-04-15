@@ -7,10 +7,8 @@ data:
   environment: "staging"
   log-level: "info"
   default-storage-class: "longhorn"
-  # Override these with your staging domain via bootstrap.sh or manual edit.
   ingress-base-domain: "staging.example.com"
   cluster-issuer-name: "letsencrypt-staging-http01"
-  api-url: "https://api.staging.example.com"
   admin-url: "https://admin.staging.example.com"
   client-url: "https://client.staging.example.com"
   cors-origins: "https://admin.staging.example.com,https://client.staging.example.com"

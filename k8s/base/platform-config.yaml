@@ -18,10 +18,11 @@ data:
   # Storage — Longhorn is the default; dev overlay can override to local-path.
   default-storage-class: "longhorn"
 
-  # Frontend URLs — consumed by admin-panel and client-panel container env vars.
-  api-url: "https://api.platform.local"
+  # Frontend URLs — API is same-origin (empty = proxied by frontend nginx).
+  # client-url is only needed by admin panel for impersonation links.
   admin-url: "https://admin.platform.local"
   client-url: "https://client.platform.local"
 
-  # CORS — overlays patch with actual frontend origins.
+  # CORS — with same-origin proxy, CORS is not strictly needed for browser
+  # requests. Kept for API consumers like Swagger UI or external tools.
   cors-origins: "https://admin.platform.local,https://client.platform.local"

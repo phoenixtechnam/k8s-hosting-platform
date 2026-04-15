@@ -7,10 +7,8 @@ data:
   environment: "production"
   log-level: "warn"
   default-storage-class: "longhorn"
-  # Override these with your production domain via bootstrap.sh or manual edit.
   ingress-base-domain: "example.com"
   cluster-issuer-name: "letsencrypt-prod-http01"
-  api-url: "https://api.example.com"
   admin-url: "https://admin.example.com"
   client-url: "https://client.example.com"
   cors-origins: "https://admin.example.com,https://client.example.com"

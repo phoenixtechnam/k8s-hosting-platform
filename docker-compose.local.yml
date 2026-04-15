@@ -4,7 +4,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     ports:
       - "${PORT_DB:-2013}:5432"
     environment:
@@ -113,9 +113,6 @@ services:
     build:
       context: .
       dockerfile: frontend/admin-panel/Dockerfile
-      args:
-        VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
-        VITE_CLIENT_PANEL_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
     deploy:
       resources:
         limits:
@@ -123,6 +120,15 @@ services:
           memory: 512M
     ports:
       - "${PORT_ADMIN:-2010}:80"
+    environment:
+      # Same-origin proxy: nginx proxies /api/* to the backend container.
+      API_URL: ""
+      CLIENT_PANEL_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
+      BACKEND_HOST: backend
+      BACKEND_PORT: "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
       interval: 15s
@@ -133,8 +139,6 @@ services:
     build:
       context: .
       dockerfile: frontend/client-panel/Dockerfile
-      args:
-        VITE_API_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}"
     deploy:
       resources:
         limits:
@@ -142,6 +146,10 @@ services:
           memory: 512M
     ports:
       - "${PORT_CLIENT:-2011}:80"
+    environment:
+      API_URL: ""
+      BACKEND_HOST: backend
+      BACKEND_PORT: "3000"
     depends_on:
       backend:
         condition: service_healthy

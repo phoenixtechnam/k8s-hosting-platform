@@ -11,9 +11,8 @@ server {
     }
 
     # Reverse-proxy API requests to the backend.
-    # The browser makes same-origin requests; nginx forwards them internally.
     location /api/ {
-        proxy_pass http://platform-api.platform.svc.cluster.local:3000;
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -23,21 +22,21 @@ server {
         proxy_request_buffering off;
     }
 
-    # Email autodiscover endpoints (no /api prefix, public/unauthenticated).
+    # Email autodiscover endpoints
     location /.well-known/autoconfig/ {
-        proxy_pass http://platform-api.platform.svc.cluster.local:3000;
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location ~ ^/[Aa]utodiscover/ {
-        proxy_pass http://platform-api.platform.svc.cluster.local:3000;
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /.well-known/mta-sts.txt {
-        proxy_pass http://platform-api.platform.svc.cluster.local:3000;
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
@@ -47,7 +46,6 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Cache static assets
     location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";

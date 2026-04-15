@@ -9,7 +9,6 @@ data:
   default-storage-class: "local-path"
   ingress-base-domain: "platform.local"
   cluster-issuer-name: "selfsigned-issuer"
-  api-url: "http://api.platform.local"
   admin-url: "http://admin.platform.local"
   client-url: "http://client.platform.local"
   cors-origins: "http://admin.platform.local,http://client.platform.local,http://localhost:5173,http://localhost:5174"

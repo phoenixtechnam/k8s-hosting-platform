@@ -1,8 +1,12 @@
 /**
- * Runtime configuration injected via config.js at container startup.
- * Falls back to Vite build-time env vars, then to defaults.
+ * Runtime configuration.
  *
- * Priority: window.__RUNTIME_CONFIG__ > import.meta.env.VITE_* > default
+ * API_URL defaults to '' (same-origin). In all environments the frontend
+ * nginx (or Vite dev proxy) reverse-proxies /api/* to the backend, so the
+ * browser never needs a cross-origin API URL.
+ *
+ * Override via window.__RUNTIME_CONFIG__ (container startup) or VITE_* env
+ * vars (local dev without proxy, if ever needed).
  */
 
 interface RuntimeConfig {
@@ -19,9 +23,9 @@ function getConfig(): RuntimeConfig {
   const runtime = window.__RUNTIME_CONFIG__ ?? {};
   return {
     API_URL:
-      runtime.API_URL ||
-      import.meta.env.VITE_API_URL ||
-      'http://localhost:3000',
+      runtime.API_URL ??
+      import.meta.env.VITE_API_URL ??
+      '',
   };
 }
 

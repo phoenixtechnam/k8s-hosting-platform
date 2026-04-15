@@ -17,14 +17,18 @@ RUN npx vite build
 
 FROM nginx:1.27-alpine
 COPY --from=builder /app/dist/ /usr/share/nginx/html/
+# Nginx config template — BACKEND_HOST/BACKEND_PORT substituted at startup
+COPY frontend/admin-panel/nginx.conf.template /etc/nginx/conf.d/default.conf.template
 COPY frontend/admin-panel/nginx.conf /etc/nginx/conf.d/default.conf
 COPY frontend/admin-panel/config.template.js /usr/share/nginx/html/config.template.js
 COPY frontend/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-# Runtime config — set these at deploy time (k8s env, docker-compose env, etc.)
+# Runtime config defaults (same-origin API, k8s service DNS for proxy backend)
 ENV API_URL=""
 ENV CLIENT_PANEL_URL=""
+ENV BACKEND_HOST="platform-api.platform.svc.cluster.local"
+ENV BACKEND_PORT="3000"
 
 EXPOSE 80
 ENTRYPOINT ["/docker-entrypoint.sh"]

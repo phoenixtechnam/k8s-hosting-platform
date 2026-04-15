@@ -10,21 +10,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - api.staging.example.com
         - admin.staging.example.com
         - client.staging.example.com
       secretName: platform-staging-tls
   rules:
-    - host: api.staging.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: platform-api
-                port:
-                  number: 3000
     - host: admin.staging.example.com
       http:
         paths:
