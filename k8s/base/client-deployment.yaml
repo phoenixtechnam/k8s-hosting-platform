@@ -22,6 +22,13 @@ spec:
           ports:
             - containerPort: 80
               protocol: TCP
+          env:
+            - name: API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: api-url
+                  optional: true
           resources:
             requests:
               cpu: 50m

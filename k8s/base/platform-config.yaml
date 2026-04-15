@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  # Environment identifier — overlays patch this per environment.
+  environment: "development"
+  log-level: "info"
+
+  # Ingress / TLS — overlays MUST patch these with real values.
+  ingress-base-domain: "platform.local"
+  ingress-default-ipv4: ""
+  cluster-issuer-name: "letsencrypt-prod-http01"
+
+  # Storage — Longhorn is the default; dev overlay can override to local-path.
+  default-storage-class: "longhorn"
+
+  # Frontend URLs — consumed by admin-panel and client-panel container env vars.
+  api-url: "https://api.platform.local"
+  admin-url: "https://admin.platform.local"
+  client-url: "https://client.platform.local"
+
+  # CORS — overlays patch with actual frontend origins.
+  cors-origins: "https://admin.platform.local,https://client.platform.local"

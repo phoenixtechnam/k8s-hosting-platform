@@ -1,0 +1,47 @@
+# Patch ingress hostnames for production environment.
+# Replace example.com with your actual production domain.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: platform
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
+spec:
+  tls:
+    - hosts:
+        - api.example.com
+        - admin.example.com
+        - client.example.com
+      secretName: platform-production-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-api
+                port:
+                  number: 3000
+    - host: admin.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin-panel
+                port:
+                  number: 80
+    - host: client.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: client-panel
+                port:
+                  number: 80

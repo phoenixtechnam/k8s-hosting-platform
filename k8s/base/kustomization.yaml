@@ -6,6 +6,8 @@ resources:
   - rbac.yaml
   - network-policies.yaml
   - resource-quotas.yaml
+  - platform-config.yaml
+  - cluster-issuers.yaml
   - database.yaml
   - redis.yaml
   - backend-deployment.yaml
@@ -14,3 +16,6 @@ resources:
   - ingress.yaml
   - sftp-gateway.yaml
   - sftp-gateway-netpol.yaml
+  - oauth2-proxy/
+  - update-checker-rbac.yaml
+  - update-checker-cronjob.yaml

@@ -1,13 +1,24 @@
+# Production overlay — Flux pull-based deployment from `stable` branch.
+#
+# Image tags are pinned to semver. The release.yml workflow creates a PR to
+# the `stable` branch with updated tags. Human merges the PR → Flux deploys.
+#
+# NEVER use :latest here. Tags are updated by release.yml GitHub Action.
+
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../base
 
+patches:
+  - path: platform-config-patch.yaml
+  - path: ingress-patch.yaml
+
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend
-    newTag: "latest"
+    newTag: "0.0.0"  # Updated by release.yml PR
   - name: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
-    newTag: "latest"
+    newTag: "0.0.0"  # Updated by release.yml PR
   - name: ghcr.io/phoenixtechnam/hosting-platform/client-panel
-    newTag: "latest"
+    newTag: "0.0.0"  # Updated by release.yml PR
