@@ -1,14 +1,3 @@
-# PROVIDER-SPECIFIC CONFIGURATIONS
-#
-# This directory contains the original Hetzner-specific Terraform config.
-# For multi-provider support, use the provider-specific directories:
-#
-#   terraform/providers/hetzner/  — Hetzner Cloud VPS provisioning
-#   terraform/providers/generic/  — Any pre-provisioned server (SSH + bootstrap)
-#
-# The original files here are kept for backwards compatibility.
-# New deployments should use the provider directories.
-
 terraform {
   required_version = ">= 1.5.0"
 

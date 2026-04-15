@@ -46,10 +46,12 @@ K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.31.4+k3s1"
 CALICO_VERSION="v3.28.0"
+ACME_EMAIL=""
 ENABLE_MONITORING=false
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_VPN=false
+SKIP_LONGHORN=false
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
@@ -65,12 +67,14 @@ Server provisioning and platform installation for k8s-hosting-platform.
 OPTIONS:
   --domain <FQDN>       Base domain (required for server role)
   --role <server|worker> Node role (default: server)
-  --env <dev|production> Environment (default: production)
+  --env <dev|staging|production> Environment (default: production)
   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
   --with-monitoring      Install Prometheus + Loki
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-vpn             Skip WireGuard + NetBird
+  --skip-longhorn        Skip Longhorn storage (use local-path)
+  --acme-email <email>   Email for Let's Encrypt (required for server role)
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
@@ -115,6 +119,8 @@ parse_args() {
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --skip-vpn)        SKIP_VPN=true; shift ;;
+      --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
+      --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -124,8 +130,8 @@ parse_args() {
     error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
   fi
 
-  if [[ "$PLATFORM_ENV" != "dev" && "$PLATFORM_ENV" != "production" ]]; then
-    error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev' or 'production'."
+  if [[ "$PLATFORM_ENV" != "dev" && "$PLATFORM_ENV" != "staging" && "$PLATFORM_ENV" != "production" ]]; then
+    error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev', 'staging', or 'production'."
   fi
 
   if [[ "$NODE_ROLE" == "server" ]]; then
@@ -502,39 +508,40 @@ install_cert_manager() {
     --wait \
     --timeout 300s
 
-  kctl apply -f - <<'EOF'
+  local le_email="${ACME_EMAIL:-admin@${PLATFORM_DOMAIN}}"
+  kctl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-staging
+  name: letsencrypt-staging-http01
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: admin@phoenix-host.net
+    email: ${le_email}
     privateKeySecretRef:
-      name: letsencrypt-staging
+      name: letsencrypt-staging-account-key
     solvers:
     - http01:
         ingress:
-          class: nginx
+          ingressClassName: nginx
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-production
+  name: letsencrypt-prod-http01
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: admin@phoenix-host.net
+    email: ${le_email}
     privateKeySecretRef:
-      name: letsencrypt-production
+      name: letsencrypt-prod-account-key
     solvers:
     - http01:
         ingress:
-          class: nginx
+          ingressClassName: nginx
 EOF
 
-  log "cert-manager installed with Let's Encrypt issuers."
+  log "cert-manager installed with Let's Encrypt issuers (email=${le_email})."
 }
 
 install_sealed_secrets() {
@@ -554,6 +561,43 @@ install_sealed_secrets() {
     --timeout 300s
 
   log "Sealed Secrets controller installed."
+}
+
+install_longhorn() {
+  if [[ "$SKIP_LONGHORN" == true ]]; then
+    log "Skipping Longhorn (--skip-longhorn). Using local-path for storage."
+    return 0
+  fi
+
+  if kctl get deployment -n longhorn-system longhorn-driver-deployer &>/dev/null 2>&1; then
+    log "Longhorn already installed, skipping."
+    return 0
+  fi
+
+  log "Installing Longhorn distributed storage..."
+
+  # Prerequisites should already be installed (open-iscsi, nfs-common)
+  systemctl enable --now iscsid 2>/dev/null || true
+
+  helm_cmd repo add longhorn https://charts.longhorn.io 2>/dev/null || true
+  helm_cmd repo update
+
+  helm_cmd upgrade --install longhorn longhorn/longhorn \
+    --namespace longhorn-system \
+    --create-namespace \
+    --set defaultSettings.defaultReplicaCount=1 \
+    --set defaultSettings.replicaAutoBalance=best-effort \
+    --set defaultSettings.storageMinimalAvailablePercentage=15 \
+    --set defaultSettings.defaultDataLocality=best-effort \
+    --wait \
+    --timeout 600s
+
+  # Set Longhorn as the default StorageClass, demote local-path
+  kctl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || true
+  kctl patch storageclass longhorn -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
+
+  marker_set "longhorn-installed"
+  log "Longhorn installed (replicas=1, auto-balance=best-effort). Add nodes to increase replicas."
 }
 
 install_monitoring() {
@@ -617,23 +661,51 @@ install_flux() {
   fi
 
   log "Installing Flux v2..."
-  flux install --kubeconfig="$KUBECONFIG" --timeout=300s
+  local flux_extra=""
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    flux_extra="--components-extra=image-reflector-controller,image-automation-controller"
+  fi
+  flux install --kubeconfig="$KUBECONFIG" --timeout=300s $flux_extra
 
-  log "Configuring Flux source and kustomization for ${PLATFORM_ENV}..."
-  flux create source git hosting-platform \
+  # Determine which branch Flux should watch
+  local flux_branch="main"
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    flux_branch="staging"
+  elif [[ "$PLATFORM_ENV" == "production" ]]; then
+    flux_branch="stable"
+  fi
+
+  # Source name must match the declarative GitRepository YAML names
+  local source_name="hosting-platform"
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    source_name="hosting-platform-staging"
+  elif [[ "$PLATFORM_ENV" == "production" ]]; then
+    source_name="hosting-platform-stable"
+  fi
+
+  log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (branch=${flux_branch}, source=${source_name})..."
+  flux create source git "$source_name" \
     --url="$REPO_URL" \
-    --branch=main \
+    --branch="$flux_branch" \
     --interval=1m \
     --kubeconfig="$KUBECONFIG"
 
   flux create kustomization platform \
-    --source=hosting-platform \
+    --source="$source_name" \
     --path="./k8s/overlays/${PLATFORM_ENV}" \
     --prune=true \
     --interval=1m \
     --kubeconfig="$KUBECONFIG"
 
-  log "Flux v2 installed and configured for ${PLATFORM_ENV}."
+  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+    warn "Image automation requires GitHub push credentials for the staging branch."
+    warn "Create the flux-github-auth secret before enabling automation:"
+    warn "  kubectl create secret generic flux-github-auth -n flux-system \\"
+    warn "    --from-literal=username=x-access-token \\"
+    warn "    --from-literal=password=<GITHUB_PAT>"
+  fi
+
+  log "Flux v2 installed and configured for ${PLATFORM_ENV} (branch=${flux_branch})."
 }
 
 generate_platform_secrets() {
@@ -645,13 +717,10 @@ generate_platform_secrets() {
   else
     local db_password
     db_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
-    local db_root_password
-    db_root_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
 
     kctl create secret generic platform-db-credentials \
       --namespace=platform \
       --from-literal=password="$db_password" \
-      --from-literal=root-password="$db_root_password" \
       --from-literal=url="postgresql://platform:${db_password}@postgres.platform.svc.cluster.local:5432/hosting_platform"
     log "DB credentials secret created."
   fi
@@ -667,16 +736,77 @@ generate_platform_secrets() {
       --from-literal=secret="$jwt_secret"
     log "JWT secret created."
   fi
+
+  if kctl get secret -n platform platform-secrets &>/dev/null 2>&1; then
+    log "Platform secrets already exist, skipping."
+  else
+    local oidc_key
+    oidc_key="$(openssl rand -hex 32)"
+    local internal_secret
+    internal_secret="$(openssl rand -base64 48 | tr -d '/+=' | head -c 64)"
+
+    kctl create secret generic platform-secrets \
+      --namespace=platform \
+      --from-literal=oidc-encryption-key="$oidc_key" \
+      --from-literal=internal-secret="$internal_secret"
+    log "Platform secrets created."
+  fi
+
+  # OAuth2 Proxy config secret — generated per-environment with unique OIDC client secrets
+  if kctl get secret -n platform oauth2-proxy-config &>/dev/null 2>&1; then
+    log "OAuth2 Proxy config secret already exists, skipping."
+  else
+    local oidc_client_secret
+    oidc_client_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+    local cookie_secret
+    cookie_secret="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+
+    local issuer_url=""
+    local redirect_url=""
+    if [[ "$PLATFORM_ENV" == "dev" ]]; then
+      issuer_url="http://dex.${PLATFORM_DOMAIN}/dex"
+      redirect_url="http://${PLATFORM_DOMAIN}/oauth2/callback"
+    elif [[ "$PLATFORM_ENV" == "staging" ]]; then
+      issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
+      redirect_url="https://${PLATFORM_DOMAIN}/oauth2/callback"
+    else
+      # Production: operator must configure external OIDC issuer
+      issuer_url="${OIDC_ISSUER_URL:-https://auth.${PLATFORM_DOMAIN}}"
+      redirect_url="https://${PLATFORM_DOMAIN}/oauth2/callback"
+    fi
+
+    kctl create secret generic oauth2-proxy-config \
+      --namespace=platform \
+      --from-literal=OIDC_ISSUER_URL="$issuer_url" \
+      --from-literal=OAUTH2_PROXY_CLIENT_ID="hosting-platform-oauth2-proxy" \
+      --from-literal=OAUTH2_PROXY_CLIENT_SECRET="$oidc_client_secret" \
+      --from-literal=OAUTH2_PROXY_COOKIE_SECRET="$cookie_secret" \
+      --from-literal=OAUTH2_PROXY_REDIRECT_URL="$redirect_url"
+    log "OAuth2 Proxy config secret created (env=${PLATFORM_ENV})."
+  fi
 }
 
 create_platform_configmap() {
   log "Creating platform-config ConfigMap (environment=${PLATFORM_ENV})..."
+
+  local issuer_name="${CLUSTER_ISSUER_NAME:-letsencrypt-production}"
+  if [[ "$PLATFORM_ENV" == "staging" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    issuer_name="letsencrypt-staging-http01"
+  elif [[ "$PLATFORM_ENV" == "dev" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
+    issuer_name="local-ca-issuer"
+  fi
+
   kctl create configmap platform-config \
     --namespace=platform \
     --from-literal=environment="$PLATFORM_ENV" \
     --from-literal=version="0.0.0" \
+    --from-literal=default-storage-class="${DEFAULT_STORAGE_CLASS:-longhorn}" \
+    --from-literal=cluster-issuer-name="$issuer_name" \
+    --from-literal=ingress-base-domain="${PLATFORM_DOMAIN:-}" \
+    --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
+    --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
-  log "platform-config ConfigMap applied."
+  log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
 
 apply_platform_manifests() {
@@ -705,9 +835,74 @@ apply_platform_manifests() {
   local client_host="client.${PLATFORM_DOMAIN}"
   log "Hostnames: ${api_host}, ${admin_host}, ${client_host}"
 
-  # Generate the environment overlay with real hostnames
+  # Generate the environment overlay with real hostnames.
+  # For staging, preserve the checked-in kustomization.yaml (contains
+  # Flux image policy markers) and only write an ingress patch file.
   local overlay_dir="${repo_dir}/k8s/overlays/${PLATFORM_ENV}"
   mkdir -p "$overlay_dir"
+
+  if [[ "$PLATFORM_ENV" == "staging" && -f "${overlay_dir}/kustomization.yaml" ]]; then
+    log "Staging: preserving existing kustomization.yaml (image policy markers)."
+    log "Writing ingress hostname patch only."
+    cat > "${overlay_dir}/ingress-hosts-patch.yaml" <<PATCH
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: platform
+spec:
+  tls:
+    - hosts:
+        - ${api_host}
+        - ${admin_host}
+        - ${client_host}
+      secretName: platform-tls
+  rules:
+    - host: ${api_host}
+    - host: ${admin_host}
+    - host: ${client_host}
+PATCH
+    # Add patch reference if not already in kustomization.yaml
+    if ! grep -q "ingress-hosts-patch.yaml" "${overlay_dir}/kustomization.yaml"; then
+      log "Adding ingress-hosts-patch.yaml to staging kustomization."
+      sed -i '/^patches:/a\  - path: ingress-hosts-patch.yaml' "${overlay_dir}/kustomization.yaml"
+    fi
+    # Replace Dex PLACEHOLDER URLs and inject generated client secrets
+    local dex_config="${overlay_dir}/dex/config.yaml"
+    if [[ -f "$dex_config" ]]; then
+      log "Updating Dex config with domain ${PLATFORM_DOMAIN}..."
+      local dex_host="dex.${PLATFORM_DOMAIN}"
+      sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
+      sed -i "s|issuer:.*|issuer: https://${dex_host}/dex|" "$dex_config"
+      # Replace hardcoded client secrets with the generated oauth2-proxy secret
+      local proxy_secret
+      proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
+      if [[ -n "$proxy_secret" ]]; then
+        sed -i "s|staging-secret-oauth2-proxy|${proxy_secret}|g" "$dex_config"
+        log "Dex oauth2-proxy client secret synced from generated secret."
+      fi
+    fi
+
+    kctl apply -k "$overlay_dir"
+    log "Staging manifests applied."
+    return 0
+  fi
+
+  # Also handle dev overlay Dex config if present
+  if [[ "$PLATFORM_ENV" == "dev" ]]; then
+    local dex_config="${overlay_dir}/dex/config.yaml"
+    if [[ -f "$dex_config" ]]; then
+      log "Updating dev Dex config with domain ${PLATFORM_DOMAIN}..."
+      sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
+      sed -i "s|issuer:.*|issuer: http://dex.${PLATFORM_DOMAIN}/dex|" "$dex_config"
+      # Sync oauth2-proxy client secret
+      local proxy_secret
+      proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
+      if [[ -n "$proxy_secret" ]]; then
+        sed -i "s|local-dev-secret-oauth2-proxy|${proxy_secret}|g" "$dex_config"
+      fi
+    fi
+  fi
 
   cat > "${overlay_dir}/kustomization.yaml" <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -868,6 +1063,7 @@ main() {
     install_nginx_ingress
     install_cert_manager
     install_sealed_secrets
+    install_longhorn
     install_monitoring
     install_flux
     generate_platform_secrets
