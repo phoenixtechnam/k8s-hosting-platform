@@ -1,4 +1,4 @@
-name: Build & Deploy
+name: Build Images
 
 on:
   push:
@@ -33,6 +33,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -61,6 +62,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -89,6 +91,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -98,6 +101,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Images are tagged with both SHA and 'latest'.
-  # The dev server's Flux watches for new 'latest' images and auto-deploys.
-  # No git commit needed — Flux image automation handles rollouts.
+  # Tag strategy:
+  # - SHA:          for traceability (e.g., a1b2c3d)
+  # - latest:       consumed by dev environment
+  # - timestamp-SHA: consumed by staging Flux Image Automation
+  #                  (matches image-policies.yaml regex pattern)
+  #
+  # Production uses pinned semver tags from release.yml — never :latest.

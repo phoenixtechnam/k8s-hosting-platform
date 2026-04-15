@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   packages: write
+  pull-requests: write
 
 env:
   REGISTRY: ghcr.io
@@ -30,42 +31,27 @@ jobs:
       - id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # Build all 3 images with semver tag
+      # Build all 3 images with semver tag only (no :latest — that's build-deploy.yml's job)
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: backend/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/backend:latest
+          tags: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
 
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: frontend/admin-panel/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/admin-panel:latest
+          tags: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
 
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: frontend/client-panel/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/client-panel:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/client-panel:latest
-
-      # Update production kustomization with new version
-      - name: Update production image tags
-        run: |
-          cd k8s/overlays/production
-          # Use kustomize edit to set image tags
-          for component in backend admin-panel client-panel; do
-            sed -i "s|newTag:.*|newTag: \"${{ steps.version.outputs.version }}\"|g" kustomization.yaml || true
-          done
+          tags: ${{ env.IMAGE_PREFIX }}/client-panel:${{ steps.version.outputs.version }}
 
       # Create GitHub Release
       - uses: softprops/action-gh-release@v2
@@ -75,3 +61,52 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Create a PR to the `stable` branch with updated production image tags.
+  # The production Flux Kustomization watches the `stable` branch.
+  # An admin merges this PR when ready to deploy.
+  update-production-tags:
+    name: Create Production Update PR
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update production image tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd k8s/overlays/production
+          # Update each image tag individually to avoid clobbering comments
+          sed -i '/\/backend$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
+          sed -i '/\/admin-panel$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
+          sed -i '/\/client-panel$/{ n; s|newTag:.*|newTag: "'"$VERSION"'"  # Updated by release.yml PR|; }' kustomization.yaml
+
+      - name: Create PR to stable branch
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: release/${{ steps.version.outputs.version }}
+          base: stable
+          commit-message: "chore: bump production images to v${{ steps.version.outputs.version }}"
+          title: "chore: bump production images to v${{ steps.version.outputs.version }}"
+          body: |
+            ## Production Image Update
+
+            Updates all platform images to `v${{ steps.version.outputs.version }}`:
+            - `backend:${{ steps.version.outputs.version }}`
+            - `admin-panel:${{ steps.version.outputs.version }}`
+            - `client-panel:${{ steps.version.outputs.version }}`
+
+            Merge this PR to deploy to production. The production Flux
+            Kustomization watches the `stable` branch and will reconcile
+            after merge.
+
+            ---
+            Created automatically by the Release workflow.
+          labels: deployment,production
