@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+import { config } from './runtime-config';
+
+export const API_BASE = config.API_URL;
 
 export class ApiError extends Error {
   constructor(

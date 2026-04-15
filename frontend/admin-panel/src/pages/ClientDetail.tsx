@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { config } from '@/lib/runtime-config';
 import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
@@ -144,7 +145,7 @@ export default function ClientDetail() {
               try {
                 const res = await impersonate.mutateAsync(id);
                 const data = res.data;
-                const clientPanelUrl = import.meta.env.VITE_CLIENT_PANEL_URL ?? 'http://localhost:5174';
+                const clientPanelUrl = config.CLIENT_PANEL_URL;
                 const userJson = encodeURIComponent(JSON.stringify(data.user));
                 window.open(`${clientPanelUrl}/login?token=${data.token}&user=${userJson}`, '_blank');
               } catch { /* error shown via impersonate.error */ }

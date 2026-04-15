@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
@@ -44,8 +45,7 @@ function parseJsonField<T>(value: unknown): T | null {
 
 function getIconUrl(entryId: string | null | undefined): string | null {
   if (!entryId) return null;
-  const base = import.meta.env.VITE_API_URL || '';
-  return `${base}/api/v1/catalog/${entryId}/icon`;
+  return `${API_BASE}/api/v1/catalog/${entryId}/icon`;
 }
 
 function AppIcon({ entryId, size = 48 }: { readonly entryId?: string | null; readonly size?: number }) {

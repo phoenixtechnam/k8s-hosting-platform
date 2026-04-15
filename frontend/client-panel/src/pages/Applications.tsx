@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
+import { API_BASE } from '@/lib/api-client';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
@@ -212,8 +213,7 @@ function friendlyStatusMessage(status: string, statusMessage: string | null): st
 
 function getIconUrl(entryId: string | null | undefined): string | null {
   if (!entryId) return null;
-  const base = import.meta.env.VITE_API_URL || '';
-  return `${base}/api/v1/catalog/${entryId}/icon`;
+  return `${API_BASE}/api/v1/catalog/${entryId}/icon`;
 }
 
 function AppIcon({ entryId, size = 40 }: { readonly entryId?: string | null; readonly size?: number }) {

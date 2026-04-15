@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { API_BASE } from '@/lib/api-client';
 import { useNavigate } from 'react-router-dom';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
@@ -150,8 +151,7 @@ function asHealthCheck(val: unknown): HealthCheckData {
 
 function getIconUrl(entryId: string | null | undefined): string | null {
   if (!entryId) return null;
-  const base = import.meta.env.VITE_API_URL || '';
-  return `${base}/api/v1/catalog/${entryId}/icon`;
+  return `${API_BASE}/api/v1/catalog/${entryId}/icon`;
 }
 
 function AppIcon({ entryId, size = 40 }: { readonly entryId?: string | null; readonly size?: number }) {
