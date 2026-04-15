@@ -1,15 +1,24 @@
+# Production Flux Kustomization — watches the `stable` branch.
+#
+# Deployment flow:
+#   1. Developer creates tag v1.0.0 → release.yml builds images
+#   2. release.yml creates PR to `stable` branch with pinned semver tags
+#   3. Human reviews and merges the PR
+#   4. Flux detects the stable branch change → rolling update
+#
+# The PR merge IS the gate — no suspend/unsuspend needed.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: hosting-platform-production
   namespace: flux-system
 spec:
-  interval: 10m
+  interval: 5m
   path: ./k8s/overlays/production
   prune: true
   sourceRef:
     kind: GitRepository
-    name: hosting-platform
+    name: hosting-platform-stable
   healthChecks:
     - apiVersion: apps/v1
       kind: Deployment
@@ -24,5 +33,3 @@ spec:
       name: client-panel
       namespace: platform
   timeout: 5m
-  # Manual gate: requires annotation to reconcile
-  suspend: true
