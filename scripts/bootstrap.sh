@@ -789,7 +789,7 @@ generate_platform_secrets() {
 create_platform_configmap() {
   log "Creating platform-config ConfigMap (environment=${PLATFORM_ENV})..."
 
-  local issuer_name="${CLUSTER_ISSUER_NAME:-letsencrypt-production}"
+  local issuer_name="${CLUSTER_ISSUER_NAME:-letsencrypt-prod-http01}"
   if [[ "$PLATFORM_ENV" == "staging" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
     issuer_name="letsencrypt-staging-http01"
   elif [[ "$PLATFORM_ENV" == "dev" && -z "${CLUSTER_ISSUER_NAME:-}" ]]; then
@@ -804,6 +804,9 @@ create_platform_configmap() {
     --from-literal=cluster-issuer-name="$issuer_name" \
     --from-literal=ingress-base-domain="${PLATFORM_DOMAIN:-}" \
     --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
+    --from-literal=api-url="https://api.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=client-url="https://client.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."

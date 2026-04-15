@@ -32,10 +32,17 @@ resource "null_resource" "bootstrap" {
     destination = "/tmp/bootstrap.sh"
   }
 
+  # For worker nodes, pass the join token via a temp file to avoid
+  # exposing it in process arguments or Terraform state.
+  provisioner "file" {
+    content     = var.role == "worker" ? var.k3s_token : ""
+    destination = "/tmp/.k3s-token"
+  }
+
   provisioner "remote-exec" {
     inline = [
       "chmod +x /tmp/bootstrap.sh",
-      "/tmp/bootstrap.sh --domain ${var.domain} --env ${var.environment} --role ${var.role} --acme-email ${var.acme_email}${var.role == "worker" ? " --server ${var.k3s_server_ip} --token ${var.k3s_token}" : ""}",
+      var.role == "worker" ? "/tmp/bootstrap.sh --domain ${var.domain} --env ${var.environment} --role worker --acme-email ${var.acme_email} --server ${var.k3s_server_ip} --token $(cat /tmp/.k3s-token) && rm -f /tmp/.k3s-token" : "/tmp/bootstrap.sh --domain ${var.domain} --env ${var.environment} --role server --acme-email ${var.acme_email}",
     ]
   }
 }

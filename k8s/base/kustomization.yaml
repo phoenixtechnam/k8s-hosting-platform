@@ -7,7 +7,9 @@ resources:
   - network-policies.yaml
   - resource-quotas.yaml
   - platform-config.yaml
-  - cluster-issuers.yaml
+  # cluster-issuers.yaml is NOT included here — ClusterIssuers are created
+  # imperatively by bootstrap.sh with the correct ACME email address.
+  # See scripts/bootstrap.sh install_cert_manager() function.
   - database.yaml
   - redis.yaml
   - backend-deployment.yaml
