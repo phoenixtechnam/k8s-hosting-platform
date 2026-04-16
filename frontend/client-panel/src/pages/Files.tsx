@@ -1394,10 +1394,11 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const language = getLanguage(filename);
   const models = aiModels.data?.data ?? [];
   const isDiffMode = aiProposal !== null;
+  const editorHeight = showAiChat ? 'calc(100% - 200px)' : '100%';
 
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 120px)' }}>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2 shrink-0">
         <div className="flex items-center gap-2">
           <File size={14} className="text-gray-400" />
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{path}</span>
@@ -1432,24 +1433,26 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
       </div>
 
       {/* Editor */}
-      {fileContent.isLoading && <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-gray-400" /></div>}
-      {fileContent.data && !isDiffMode && (
-        <Editor height="500px" language={language} value={content}
-          onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
-          theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
-          options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
-      )}
-      {fileContent.data && isDiffMode && (
-        <DiffEditor height="500px" language={language}
-          original={content}
-          modified={aiProposal}
-          theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
-          options={{ minimap: { enabled: false }, fontSize: 13, readOnly: true, renderSideBySide: true, automaticLayout: true }} />
-      )}
+      <div className="flex-1 min-h-0">
+        {fileContent.isLoading && <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-gray-400" /></div>}
+        {fileContent.data && !isDiffMode && (
+          <Editor height="100%" language={language} value={content}
+            onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
+            theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
+            options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
+        )}
+        {fileContent.data && isDiffMode && (
+          <DiffEditor height="100%" language={language}
+            original={content}
+            modified={aiProposal}
+            theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
+            options={{ minimap: { enabled: false }, fontSize: 13, readOnly: true, renderSideBySide: true, automaticLayout: true }} />
+        )}
+      </div>
 
       {/* AI Chat Panel */}
       {showAiChat && (
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col" style={{ maxHeight: '240px' }}>
+        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col shrink-0" style={{ height: '180px' }}>
           {/* Chat history */}
           <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0">
             {chatHistory.length === 0 && (
