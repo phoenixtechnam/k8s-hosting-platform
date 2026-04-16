@@ -516,4 +516,31 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     );
     return reply;
   });
+
+  // POST /api/v1/clients/:clientId/files/clone-site — clone entire website
+  app.post('/clients/:clientId/files/clone-site', {
+    schema: { tags: ['Files'], summary: 'Clone website to PVC', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { clientId } = request.params as { clientId: string };
+    const { url, path: destPath, maxPages, maxDepth } = request.body as {
+      url?: string; path?: string; maxPages?: number; maxDepth?: number;
+    };
+    if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
+
+    const namespace = await resolveNamespace(app, clientId);
+    recordFileManagerAccess(namespace);
+    const { k8sClients, kubeconfigPath } = getK8s();
+
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+
+    const { proxyToFileManagerStream } = await import('./service.js');
+    await proxyToFileManagerStream(
+      kubeconfigPath,
+      namespace,
+      '/clone-site',
+      JSON.stringify({ url, path: destPath, maxPages: maxPages ?? 50, maxDepth: maxDepth ?? 3 }),
+      reply.raw,
+    );
+    return reply;
+  });
 }

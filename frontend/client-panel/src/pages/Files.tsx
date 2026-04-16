@@ -13,7 +13,7 @@ import {
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive, ChevronDown,
-  Shield, UserCheck, Sparkles, X as XIcon,
+  Shield, UserCheck, Sparkles, X as XIcon, Globe,
 } from 'lucide-react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import {
@@ -27,6 +27,7 @@ import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
 import { useClientContext } from '@/hooks/use-client-context';
 import AiFolderModal from '@/components/AiFolderModal';
+import CloneSiteModal from '@/components/CloneSiteModal';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -123,6 +124,7 @@ export default function Files() {
 
   // Folder AI modal
   const [showFolderAi, setShowFolderAi] = useState(false);
+  const [showCloneSite, setShowCloneSite] = useState(false);
 
   // URL download dialog
   const [showUrlDownload, setShowUrlDownload] = useState(false);
@@ -439,6 +441,9 @@ export default function Files() {
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Download size={14} /> From URL
           </button>
+          <button onClick={() => setShowCloneSite(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+            <Globe size={14} /> Clone Site
+          </button>
           <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <GitBranch size={14} /> Git Clone
           </button>
@@ -638,6 +643,15 @@ export default function Files() {
           folderPath={currentPath}
           onClose={() => setShowFolderAi(false)}
           onApplied={() => dirListing.refetch()}
+        />
+      )}
+
+      {/* Clone Website Modal */}
+      {showCloneSite && (
+        <CloneSiteModal
+          currentPath={currentPath}
+          onClose={() => setShowCloneSite(false)}
+          onComplete={() => dirListing.refetch()}
         />
       )}
 

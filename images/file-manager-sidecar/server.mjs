@@ -5,7 +5,7 @@
 import { createServer } from 'node:http';
 import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { join, resolve, basename, extname, dirname } from 'node:path';
+import { join, resolve, basename, extname, dirname, relative } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -909,6 +909,239 @@ async function handleFetchUrl(req, res) {
   }
 }
 
+// ─── Clone Site (website scraper) ────────────────────────────────────────────
+
+async function handleCloneSite(req, res) {
+  const body = await readBody(req);
+  const { url, path: destPath, maxPages = 50, maxDepth = 3 } = body;
+  if (!url) return sendError(res, 400, 'url required');
+  if (!destPath) return sendError(res, 400, 'path required');
+  if (!/^https?:\/\//i.test(url)) return sendError(res, 400, 'Only http/https URLs supported');
+
+  const full = safePath(destPath, { allowHidden: false });
+  if (!full) return sendError(res, 404, 'Destination path not allowed');
+
+  const clampedMaxPages = Math.min(Math.max(1, maxPages), 500);
+  const clampedMaxDepth = Math.min(Math.max(1, maxDepth), 10);
+
+  // Check disk space
+  const { statfs: statfsAsync } = await import('node:fs/promises');
+  const fsStats = await statfsAsync(BASE);
+  const freeBytes = fsStats.bsize * fsStats.bavail;
+  if (freeBytes < 50 * 1024 * 1024) {
+    return sendError(res, 507, 'Less than 50MB free disk space — cannot clone');
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+
+  const send = (obj) => { if (!aborted) try { res.write(JSON.stringify(obj) + '\n'); } catch {} };
+
+  try {
+    await mkdir(full, { recursive: true });
+
+    const baseUrl = new URL(url);
+    const baseOrigin = baseUrl.origin;
+    const visited = new Set();
+    const queue = [{ url: baseUrl.href, depth: 0 }];
+    let pagesDownloaded = 0;
+    let assetsDownloaded = 0;
+    const assetQueue = [];
+
+    // Fetch helper with redirect following
+    async function fetchUrl(fetchUrl) {
+      const proto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
+      return new Promise((resolve, reject) => {
+        const doFetch = (u, redirects = 0) => {
+          const p = u.startsWith('https') ? proto.default : (import('node:http')).then(m => m.default);
+          Promise.resolve(p).then(mod => {
+            mod.get(u, { timeout: 15000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SiteCloner/1.0)' } }, (r) => {
+              if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location && redirects < 5) {
+                r.resume();
+                const loc = new URL(r.headers.location, u).href;
+                doFetch(loc, redirects + 1);
+              } else {
+                resolve(r);
+              }
+            }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
+          });
+        };
+        doFetch(fetchUrl);
+      });
+    }
+
+    // Collect response body as buffer
+    async function fetchBody(u) {
+      const response = await fetchUrl(u);
+      if (response.statusCode !== 200) { response.resume(); return null; }
+      const chunks = [];
+      let size = 0;
+      return new Promise((resolve) => {
+        response.on('data', (c) => { size += c.length; if (size > 20 * 1024 * 1024) { response.destroy(); resolve(null); } else chunks.push(c); });
+        response.on('end', () => resolve(Buffer.concat(chunks)));
+        response.on('error', () => resolve(null));
+      });
+    }
+
+    // URL to local file path
+    function urlToPath(u) {
+      try {
+        const parsed = new URL(u);
+        let p = parsed.pathname;
+        if (p.endsWith('/')) p += 'index.html';
+        if (!p.includes('.') && !p.endsWith('/')) p += '/index.html';
+        return p.replace(/^\//, '');
+      } catch { return null; }
+    }
+
+    // Extract links from HTML
+    function extractLinks(html, pageUrl) {
+      const links = { pages: [], assets: [] };
+      // Pages: <a href="...">
+      for (const m of html.matchAll(/href\s*=\s*["']([^"'#]+)/gi)) {
+        try {
+          const abs = new URL(m[1], pageUrl).href;
+          if (abs.startsWith(baseOrigin) && !abs.includes('#')) links.pages.push(abs.split('?')[0].split('#')[0]);
+        } catch {}
+      }
+      // CSS: <link rel="stylesheet" href="...">
+      for (const m of html.matchAll(/<link[^>]+href\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+        if (m[0].includes('stylesheet') || m[1].endsWith('.css')) {
+          try { links.assets.push(new URL(m[1], pageUrl).href); } catch {}
+        }
+      }
+      // Scripts: <script src="...">
+      for (const m of html.matchAll(/<script[^>]+src\s*=\s*["']([^"']+)["']/gi)) {
+        try { links.assets.push(new URL(m[1], pageUrl).href); } catch {}
+      }
+      // Images: <img src="...">, srcset, background-image
+      for (const m of html.matchAll(/(?:src|srcset|poster)\s*=\s*["']([^"'\s,]+)/gi)) {
+        try { const abs = new URL(m[1], pageUrl).href; if (!abs.startsWith('data:')) links.assets.push(abs); } catch {}
+      }
+      // CSS url() references
+      for (const m of html.matchAll(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/gi)) {
+        try { const abs = new URL(m[1], pageUrl).href; if (!abs.startsWith('data:')) links.assets.push(abs); } catch {}
+      }
+      // Favicon
+      for (const m of html.matchAll(/<link[^>]+href\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+        if (m[0].includes('icon')) { try { links.assets.push(new URL(m[1], pageUrl).href); } catch {} }
+      }
+      return links;
+    }
+
+    // Rewrite URLs in content to relative paths
+    function rewriteUrls(content, pageUrl) {
+      let result = content;
+      // Replace absolute URLs with relative paths
+      const pageDir = dirname(urlToPath(pageUrl) || 'index.html');
+      result = result.replace(new RegExp(baseOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(/[^"\'\\s)]*)', 'g'), (match, path) => {
+        const targetFile = urlToPath(baseOrigin + path) || path.slice(1);
+        const rel = relative(pageDir, targetFile) || targetFile;
+        return rel;
+      });
+      return result;
+    }
+
+    send({ type: 'status', message: `Starting crawl of ${baseOrigin}`, maxPages: clampedMaxPages, maxDepth: clampedMaxDepth });
+
+    // BFS crawl pages
+    while (queue.length > 0 && pagesDownloaded < clampedMaxPages && !aborted) {
+      const { url: pageUrl, depth } = queue.shift();
+      const normalized = pageUrl.split('?')[0].split('#')[0];
+      if (visited.has(normalized)) continue;
+      visited.add(normalized);
+
+      send({ type: 'crawling', url: normalized, depth, pagesDownloaded, pagesQueued: queue.length });
+
+      const bodyBuf = await fetchBody(normalized);
+      if (!bodyBuf) continue;
+
+      const contentType = 'text/html';
+      const html = bodyBuf.toString('utf-8');
+      const localPath = urlToPath(normalized) || 'index.html';
+      const fullPath = join(full, localPath);
+
+      // Extract links before rewriting
+      const links = extractLinks(html, normalized);
+
+      // Rewrite URLs and save
+      const rewritten = rewriteUrls(html, normalized);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, rewritten, 'utf-8');
+      await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+      pagesDownloaded++;
+
+      send({ type: 'page', url: normalized, path: localPath, size: bodyBuf.length, pagesDownloaded, totalDiscovered: visited.size + queue.length });
+
+      // Queue internal page links
+      if (depth < clampedMaxDepth) {
+        for (const link of links.pages) {
+          const norm = link.split('?')[0].split('#')[0];
+          if (!visited.has(norm) && !queue.some(q => q.url === norm)) {
+            queue.push({ url: norm, depth: depth + 1 });
+          }
+        }
+      }
+
+      // Queue assets
+      for (const asset of links.assets) {
+        if (!visited.has(asset)) assetQueue.push(asset);
+      }
+    }
+
+    // Download assets
+    const uniqueAssets = [...new Set(assetQueue)].filter(a => !visited.has(a));
+    send({ type: 'status', message: `Downloading ${uniqueAssets.length} assets...` });
+
+    for (let i = 0; i < uniqueAssets.length && !aborted; i++) {
+      const assetUrl = uniqueAssets[i];
+      visited.add(assetUrl);
+
+      const localPath = urlToPath(assetUrl);
+      if (!localPath) continue;
+
+      send({ type: 'asset', url: assetUrl, path: localPath, current: i + 1, total: uniqueAssets.length });
+
+      const assetBuf = await fetchBody(assetUrl);
+      if (!assetBuf) continue;
+
+      const fullPath = join(full, localPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, assetBuf);
+      await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+      assetsDownloaded++;
+
+      // Parse CSS for additional url() references
+      if (localPath.endsWith('.css')) {
+        const cssText = assetBuf.toString('utf-8');
+        for (const m of cssText.matchAll(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/gi)) {
+          try {
+            const abs = new URL(m[1], assetUrl).href;
+            if (!abs.startsWith('data:') && !visited.has(abs)) {
+              uniqueAssets.push(abs);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    send({
+      type: 'complete',
+      pagesDownloaded,
+      assetsDownloaded,
+      totalFiles: pagesDownloaded + assetsDownloaded,
+      path: destPath,
+      message: `Cloned ${pagesDownloaded} pages and ${assetsDownloaded} assets`,
+    });
+  } catch (err) {
+    send({ type: 'error', message: err.message });
+  }
+
+  res.end();
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
@@ -937,6 +1170,7 @@ const server = createServer(async (req, res) => {
     if (path === '/chmod' && method === 'POST') return handleChmod(req, res);
     if (path === '/chown' && method === 'POST') return handleChown(req, res);
     if (path === '/fetch-url' && method === 'POST') return handleFetchUrl(req, res);
+    if (path === '/clone-site' && method === 'POST') return handleCloneSite(req, res);
 
     sendError(res, 404, 'Not found');
   } catch (err) {
