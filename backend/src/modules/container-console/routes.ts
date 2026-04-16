@@ -128,18 +128,67 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
           return;
         }
 
-        const pods = await fetchPods(k8sClients, namespace, deployment.name);
-        const components = listDeploymentComponents(pods);
+        const kc = getKubeConfig(app);
+        let trackedPodNames = new Set<string>();
 
-        if (components.length === 0) {
+        function attachLogStream(
+          podName: string,
+          containerName: string,
+          componentName: string,
+          lines: number,
+        ) {
+          const stream = new PassThrough();
+          streams.push(stream);
+          trackedPodNames.add(podName);
+
+          const log = new k8s.Log(kc);
+          log.log(namespace, podName, containerName, stream, {
+            follow: true,
+            tailLines: lines,
+            timestamps: true,
+          }).catch(() => { stream.destroy(); });
+
+          let buffer = '';
+          stream.on('data', (chunk: Buffer) => {
+            if (closed) return;
+            buffer += chunk.toString();
+            const splitLines = buffer.split('\n');
+            buffer = splitLines.pop() ?? '';
+            for (const line of splitLines) {
+              if (!line) continue;
+              const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s(.*)/);
+              const upper = line.toUpperCase();
+              let level = 'info';
+              if (upper.includes('ERROR') || upper.includes('FATAL')) level = 'error';
+              else if (upper.includes('WARN')) level = 'warning';
+
+              try {
+                socket.send(JSON.stringify({
+                  type: 'log',
+                  component: componentName,
+                  timestamp: tsMatch?.[1] ?? new Date().toISOString(),
+                  text: tsMatch?.[2] ?? line,
+                  level,
+                }));
+              } catch { cleanup(); }
+            }
+          });
+          stream.on('error', () => { /* handled by cleanup */ });
+        }
+
+        // Initial pod discovery + attach
+        const initialPods = await fetchPods(k8sClients, namespace, deployment.name);
+        const initialComponents = listDeploymentComponents(initialPods);
+
+        if (initialComponents.length === 0) {
           socket.send(JSON.stringify({ type: 'error', message: 'No running pods found' }));
           socket.close(4404, 'No pods');
           return;
         }
 
         const targets = componentFilter && componentFilter !== '*'
-          ? components.filter((c) => c.name === componentFilter)
-          : components;
+          ? initialComponents.filter((c) => c.name === componentFilter)
+          : initialComponents;
 
         if (targets.length === 0) {
           socket.send(JSON.stringify({ type: 'error', message: `Component "${componentFilter}" not found` }));
@@ -152,63 +201,50 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
           components: targets.map((c) => c.name),
         }));
 
-        const kc = getKubeConfig(app);
-        const log = new k8s.Log(kc);
-
         for (const target of targets) {
           if (closed) break;
-          const stream = new PassThrough();
-          streams.push(stream);
+          attachLogStream(target.podName, target.containerName, target.name, tailLines);
+        }
 
-          log.log(namespace, target.podName, target.containerName, stream, {
-            follow: true,
-            tailLines,
-            timestamps: true,
-          }).catch(() => {
-            stream.destroy();
-          });
+        // Pod watcher: every 5s, check if pods changed (restart/scale).
+        // If new pods appear, attach log streams. If all pods gone, notify client.
+        const podWatcher = setInterval(async () => {
+          if (closed) { clearInterval(podWatcher); return; }
+          try {
+            const currentPods = await fetchPods(k8sClients, namespace, deployment.name);
+            const currentComponents = listDeploymentComponents(currentPods);
 
-          let buffer = '';
-          stream.on('data', (chunk: Buffer) => {
-            if (closed) return;
-            buffer += chunk.toString();
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-            for (const line of lines) {
-              if (!line) continue;
-              const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s(.*)/);
-              const upper = line.toUpperCase();
-              let level = 'info';
-              if (upper.includes('ERROR') || upper.includes('FATAL')) level = 'error';
-              else if (upper.includes('WARN')) level = 'warning';
+            const applicableComponents = componentFilter && componentFilter !== '*'
+              ? currentComponents.filter((c) => c.name === componentFilter)
+              : currentComponents;
 
-              try {
-                socket.send(JSON.stringify({
-                  type: 'log',
-                  component: target.name,
-                  timestamp: tsMatch?.[1] ?? new Date().toISOString(),
-                  text: tsMatch?.[2] ?? line,
-                  level,
-                }));
-              } catch {
-                cleanup();
+            for (const comp of applicableComponents) {
+              if (!trackedPodNames.has(comp.podName) && comp.status === 'running') {
+                // New pod detected — destroy old streams and attach to new pod
+                for (const s of streams) s.destroy();
+                streams.length = 0;
+                trackedPodNames = new Set();
+
+                try {
+                  socket.send(JSON.stringify({
+                    type: 'log',
+                    component: comp.name,
+                    text: '--- reconnected to new pod ---',
+                    level: 'info',
+                    timestamp: new Date().toISOString(),
+                  }));
+                } catch { cleanup(); return; }
+
+                for (const c of applicableComponents) {
+                  if (c.status === 'running') {
+                    attachLogStream(c.podName, c.containerName, c.name, 10);
+                  }
+                }
+                break;
               }
             }
-          });
-
-          stream.on('error', () => { /* handled by cleanup */ });
-          stream.on('end', () => {
-            if (!closed) {
-              socket.send(JSON.stringify({
-                type: 'log',
-                component: target.name,
-                text: '--- log stream ended ---',
-                level: 'info',
-                timestamp: new Date().toISOString(),
-              }));
-            }
-          });
-        }
+          } catch { /* k8s query failed, retry next cycle */ }
+        }, 5_000);
 
         // Heartbeat
         const heartbeat = setInterval(() => {
@@ -216,7 +252,10 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
           try { socket.ping(); } catch { cleanup(); clearInterval(heartbeat); }
         }, 30_000);
 
-        socket.on('close', () => clearInterval(heartbeat));
+        socket.on('close', () => {
+          clearInterval(heartbeat);
+          clearInterval(podWatcher);
+        });
       } catch (err) {
         const msg = err instanceof ApiError ? err.message : 'An internal error occurred';
         try {
@@ -241,9 +280,9 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
       return;
     }
 
-    // Terminal access restricted to platform staff only
-    const staffRoles = ['super_admin', 'admin'];
-    if (!staffRoles.includes(user.role)) {
+    // Terminal access: platform staff + client admins (for their own deployments)
+    const terminalRoles = ['super_admin', 'admin', 'client_admin'];
+    if (!terminalRoles.includes(user.role)) {
       socket.send(JSON.stringify({ type: 'error', message: 'Terminal access denied' }));
       socket.close(4403, 'Forbidden');
       return;
