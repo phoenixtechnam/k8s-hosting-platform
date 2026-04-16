@@ -909,11 +909,90 @@ async function handleFetchUrl(req, res) {
   }
 }
 
+// ─── Pretty-print formatter (no deps) ───────────────────────────────────────
+
+function prettifyHtml(html) {
+  const voidTags = new Set(['area','base','br','col','embed','hr','img','input','link','meta','source','track','wbr']);
+  const inlineTags = new Set(['a','abbr','b','bdi','bdo','cite','code','data','em','i','kbd','mark','q','s','small','span','strong','sub','sup','time','u','var']);
+  let indent = 0;
+  const lines = [];
+  // Split on tags while preserving them
+  const tokens = html.replace(/>\s+</g, '>\n<').split('\n');
+  for (const token of tokens) {
+    const trimmed = token.trim();
+    if (!trimmed) continue;
+    // Closing tag
+    if (/^<\//.test(trimmed)) {
+      indent = Math.max(0, indent - 1);
+      lines.push('  '.repeat(indent) + trimmed);
+    }
+    // Self-closing or void tag
+    else if (/\/>$/.test(trimmed) || voidTags.has((trimmed.match(/^<(\w+)/)?.[1] ?? '').toLowerCase())) {
+      lines.push('  '.repeat(indent) + trimmed);
+    }
+    // Opening tag
+    else if (/^<\w/.test(trimmed)) {
+      lines.push('  '.repeat(indent) + trimmed);
+      // Only indent if not inline and not a tag that closes on the same line
+      const tagName = (trimmed.match(/^<(\w+)/)?.[1] ?? '').toLowerCase();
+      if (!inlineTags.has(tagName) && !trimmed.includes('</')) {
+        indent++;
+      }
+    }
+    // Text or other content
+    else {
+      lines.push('  '.repeat(indent) + trimmed);
+    }
+  }
+  return lines.join('\n');
+}
+
+function prettifyCss(css) {
+  let result = css;
+  // Add newlines after { and ;
+  result = result.replace(/\{/g, ' {\n').replace(/\}/g, '\n}\n').replace(/;/g, ';\n');
+  // Indent
+  let indent = 0;
+  const lines = result.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('}')) indent = Math.max(0, indent - 1);
+    const formatted = '  '.repeat(indent) + trimmed;
+    if (trimmed.endsWith('{')) indent++;
+    return formatted;
+  }).filter(Boolean);
+  return lines.join('\n');
+}
+
+function prettifyJs(js) {
+  // Basic: add newlines after { } ; and indent
+  let result = js;
+  result = result.replace(/\{/g, ' {\n').replace(/\}/g, '\n}\n').replace(/;(?!\s*[\n}])/g, ';\n');
+  let indent = 0;
+  const lines = result.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('}')) indent = Math.max(0, indent - 1);
+    const formatted = '  '.repeat(indent) + trimmed;
+    if (trimmed.endsWith('{')) indent++;
+    return formatted;
+  }).filter(Boolean);
+  return lines.join('\n');
+}
+
+function prettifyContent(content, filePath) {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  if (ext === 'html' || ext === 'htm') return prettifyHtml(content);
+  if (ext === 'css' || ext === 'scss') return prettifyCss(content);
+  if (ext === 'js' || ext === 'mjs') return prettifyJs(content);
+  return content;
+}
+
 // ─── Clone Site (website scraper) ────────────────────────────────────────────
 
 async function handleCloneSite(req, res) {
   const body = await readBody(req);
-  const { url, path: destPath, maxPages = 50, maxDepth = 3 } = body;
+  const { url, path: destPath, maxPages = 50, maxDepth = 3, prettify = false } = body;
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'path required');
   if (!/^https?:\/\//i.test(url)) return sendError(res, 400, 'Only http/https URLs supported');
@@ -1069,7 +1148,8 @@ async function handleCloneSite(req, res) {
       // Rewrite URLs and save
       const rewritten = rewriteUrls(html, normalized);
       await mkdir(dirname(fullPath), { recursive: true });
-      await writeFile(fullPath, rewritten, 'utf-8');
+      const finalContent = prettify ? prettifyContent(rewritten, localPath) : rewritten;
+      await writeFile(fullPath, finalContent, 'utf-8');
       await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
       pagesDownloaded++;
 
@@ -1109,7 +1189,13 @@ async function handleCloneSite(req, res) {
 
       const fullPath = join(full, localPath);
       await mkdir(dirname(fullPath), { recursive: true });
-      await writeFile(fullPath, assetBuf);
+      // Prettify text assets (CSS/JS) if enabled; skip binary files
+      const isTextAsset = /\.(css|scss|js|mjs|html?|svg|xml)$/i.test(localPath);
+      if (prettify && isTextAsset) {
+        await writeFile(fullPath, prettifyContent(assetBuf.toString('utf-8'), localPath), 'utf-8');
+      } else {
+        await writeFile(fullPath, assetBuf);
+      }
       await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
       assetsDownloaded++;
 
