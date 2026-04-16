@@ -1551,7 +1551,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   // AI edit state
   const [showAiChat, setShowAiChat] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
-  const [aiModelId, setAiModelId] = useState('');
+  const [aiModelId, setAiModelId] = useState(() => localStorage.getItem('ai-model-id') ?? '');
   const [aiProposal, setAiProposal] = useState<string | null>(null);
   const aiEdit = useAiFileEdit('');
   const aiModels = useAiModels();
@@ -1572,9 +1572,15 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
   // Auto-select first model
   useEffect(() => {
-    if (!aiModelId && aiModels.data?.data?.length) {
-      const defaultModel = aiModels.data.data.find((m) => m.isDefault) ?? aiModels.data.data[0];
-      setAiModelId(defaultModel.id);
+    if (aiModels.data?.data?.length) {
+      const models = aiModels.data.data;
+      const savedId = aiModelId || localStorage.getItem('ai-model-id') || '';
+      const savedValid = models.some((m) => m.id === savedId);
+      if (!savedValid) {
+        const defaultModel = models.find((m) => m.isDefault) ?? models[0];
+        setAiModelId(defaultModel.id);
+        localStorage.setItem('ai-model-id', defaultModel.id);
+      }
     }
   }, [aiModels.data, aiModelId]);
 
@@ -1744,7 +1750,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
               <div className="flex gap-2 items-end">
                 {models.length > 1 && (
                   <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-28 shrink-0"
-                    value={aiModelId} onChange={(e) => setAiModelId(e.target.value)}>
+                    value={aiModelId} onChange={(e) => { setAiModelId(e.target.value); localStorage.setItem('ai-model-id', e.target.value); }}>
                     {models.map((m) => <option key={m.id} value={m.id}>{m.displayName} {(m as Record<string, unknown>).providerName ? `(${(m as Record<string, unknown>).providerName})` : ''} — ${m.costPer1mInputTokens + m.costPer1mOutputTokens}/M</option>)}
                   </select>
                 )}

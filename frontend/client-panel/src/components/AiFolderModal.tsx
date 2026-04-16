@@ -28,7 +28,7 @@ interface AiFolderModalProps {
 export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFolderModalProps) {
   const [step, setStep] = useState<Step>('prompt');
   const [prompt, setPrompt] = useState('');
-  const [modelId, setModelId] = useState('');
+  const [modelId, setModelId] = useState(() => localStorage.getItem('ai-model-id') ?? '');
   const [selectedOps, setSelectedOps] = useState<Set<number>>(new Set());
   const [selectedChanges, setSelectedChanges] = useState<Set<number>>(new Set());
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -48,7 +48,17 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
   const operations = planner.result?.operations ?? [];
   const changes = executor.result?.changes ?? [];
 
-  useEffect(() => { if (!modelId && models.length) setModelId(models[0].id); }, [models, modelId]);
+  useEffect(() => {
+    if (models.length) {
+      const savedId = modelId || localStorage.getItem('ai-model-id') || '';
+      const savedValid = models.some((m) => m.id === savedId);
+      if (!savedValid) {
+        const defaultModel = models.find((m) => m.isDefault) ?? models[0];
+        setModelId(defaultModel.id);
+        localStorage.setItem('ai-model-id', defaultModel.id);
+      }
+    }
+  }, [models, modelId]);
   useEffect(() => { setSelectedOps(new Set(operations.map((_, i) => i))); }, [operations.length]);
   useEffect(() => { setSelectedChanges(new Set(changes.map((_, i) => i))); setExpandedIdx(null); }, [changes.length]);
 
@@ -166,7 +176,7 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
                 rows={3} autoFocus />
               {models.length > 1 && (
                 <select className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
-                  value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                  value={modelId} onChange={(e) => { setModelId(e.target.value); localStorage.setItem('ai-model-id', e.target.value); }}>
                   {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
                 </select>
               )}
