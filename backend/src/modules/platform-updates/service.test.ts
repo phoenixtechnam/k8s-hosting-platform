@@ -278,7 +278,7 @@ describe('platform-updates service', () => {
       const db = createTrackedDb();
       const result = await triggerUpdate(db);
 
-      expect(result.message).toBe('Update initiated');
+      expect(result.message).toBe('Update initiated — will be applied on next reconciliation cycle');
       expect(result.targetVersion).toBe('3.0.0');
       expect(settingsStore.get('pending_update_version')).toBe('3.0.0');
     });

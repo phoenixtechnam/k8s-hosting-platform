@@ -1,0 +1,86 @@
+# Platform Update Checker CronJob
+#
+# Checks the platform API for a pending update version. When found,
+# triggers Flux reconciliation by unsuspending the production Kustomization
+# and annotating it with a reconcile request.
+#
+# Suspended by default in base — unsuspend via overlay for production only.
+# Staging/dev use Flux Image Automation and do not need this CronJob.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-update-checker
+  namespace: platform
+  labels:
+    app: platform-update-checker
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  schedule: "*/5 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          serviceAccountName: platform-update-checker
+          restartPolicy: Never
+          containers:
+            - name: checker
+              image: bitnami/kubectl:1.31
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # Query the platform API for pending updates using internal secret
+                  RESPONSE=$(wget -qO- \
+                    --header="X-Internal-Secret: ${PLATFORM_INTERNAL_SECRET}" \
+                    "http://platform-api.platform.svc.cluster.local:3000/api/v1/internal/platform/version" \
+                    2>/dev/null || echo '{}')
+
+                  PENDING=$(echo "$RESPONSE" | jq -r '.data.pendingVersion // empty')
+
+                  if [ -z "$PENDING" ]; then
+                    echo "No pending update. Exiting."
+                    exit 0
+                  fi
+
+                  echo "Pending update detected: ${PENDING}"
+
+                  # Unsuspend the production Kustomization (if suspended)
+                  kubectl patch kustomization hosting-platform-production \
+                    -n flux-system \
+                    --type=merge \
+                    -p '{"spec":{"suspend":false}}'
+
+                  # Trigger reconciliation
+                  kubectl annotate --overwrite kustomization/hosting-platform-production \
+                    -n flux-system \
+                    reconcile.fluxcd.io/requestedAt="$(date +%s)"
+
+                  echo "Reconciliation triggered for version ${PENDING}."
+
+                  # Re-suspend after triggering (Flux will complete the current reconcile)
+                  sleep 10
+                  kubectl patch kustomization hosting-platform-production \
+                    -n flux-system \
+                    --type=merge \
+                    -p '{"spec":{"suspend":true}}'
+
+                  echo "Production Kustomization re-suspended."
+              env:
+                - name: PLATFORM_INTERNAL_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-secrets
+                      key: internal-secret
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

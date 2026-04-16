@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, API_BASE } from '@/lib/api-client';
 import { useClientContext } from '@/hooks/use-client-context';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,8 +36,6 @@ interface FileManagerStatus {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('auth_token');

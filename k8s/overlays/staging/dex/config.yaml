@@ -1,0 +1,55 @@
+# Dex configuration for staging environment
+#
+# Static users for testing:
+#   - admin@platform.local / admin
+#   - user@platform.local  / user
+#
+# IMPORTANT: bootstrap.sh --env staging --domain <FQDN> regenerates
+# this file with correct hostnames. PLACEHOLDER.example.com will
+# fail loudly if not overridden.
+
+issuer: http://PLACEHOLDER.example.com/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: hosting-platform-admin
+    name: Hosting Platform Admin
+    secret: staging-secret-admin
+    redirectURIs:
+      - https://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+  - id: hosting-platform-client
+    name: Hosting Platform Client
+    secret: staging-secret-client
+    redirectURIs:
+      - https://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+  - id: hosting-platform-oauth2-proxy
+    name: OAuth2 Proxy
+    secret: staging-secret-oauth2-proxy
+    redirectURIs:
+      - https://PLACEHOLDER.example.com/oauth2/callback
+
+connectors: []
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: admin@platform.local
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+    username: admin
+    userID: "00000000-0000-0000-0000-000000000001"
+  - email: user@platform.local
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user
+    userID: "00000000-0000-0000-0000-000000000003"

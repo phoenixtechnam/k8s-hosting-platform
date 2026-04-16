@@ -40,6 +40,54 @@ spec:
                 secretKeyRef:
                   name: platform-jwt-secret
                   key: secret
+            - name: REDIS_URL
+              value: redis://redis.platform.svc.cluster.local:6379
+            - name: OIDC_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: oidc-encryption-key
+            - name: PLATFORM_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: internal-secret
+            - name: DEFAULT_STORAGE_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: default-storage-class
+                  optional: true
+            - name: INGRESS_BASE_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: ingress-base-domain
+                  optional: true
+            - name: INGRESS_DEFAULT_IPV4
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: ingress-default-ipv4
+                  optional: true
+            - name: CLUSTER_ISSUER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cluster-issuer-name
+                  optional: true
+            - name: PLATFORM_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: environment
+                  optional: true
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cors-origins
+                  optional: true
           resources:
             requests:
               cpu: 100m

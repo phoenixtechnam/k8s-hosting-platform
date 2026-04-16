@@ -1,0 +1,50 @@
+# Staging overlay: medium resource quotas — between dev (4 CPU/4Gi)
+# and production (16 CPU/32Gi). Suitable for a 4-8 vCPU staging server.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: hosting-quota
+  namespace: hosting
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 24Gi
+    persistentvolumeclaims: "100"
+    pods: "100"
+    services: "100"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: hosting-limit-range
+  namespace: hosting
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 250m
+        memory: 256Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      max:
+        cpu: "2"
+        memory: 4Gi
+      min:
+        cpu: 25m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+  namespace: platform
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    pods: "30"

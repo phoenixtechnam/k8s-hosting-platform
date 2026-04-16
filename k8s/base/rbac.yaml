@@ -45,6 +45,13 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["*"]
+  # Node awareness: get/list for health checks and Phase 1 node pinning
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
   # Phase 2c: the backend `certificates` module creates and manages
   # cert-manager Certificate CRs in customer namespaces. Issuers and
   # ClusterIssuers are read-only (operators provision them via

@@ -52,12 +52,17 @@ export async function getVersionInfo(db: Database) {
 
   const updateAvailable = latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
 
+  const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
+  const pendingVersion = await getSetting(db, 'pending_update_version');
+
   return {
     currentVersion: CURRENT_VERSION,
     latestVersion,
     updateAvailable,
     environment: ENVIRONMENT,
     autoUpdate,
+    imageUpdateStrategy,
+    pendingVersion,
     lastCheckedAt: lastCheckedAt ?? null,
   };
 }
@@ -178,12 +183,18 @@ export async function getCapacityCheck(
 }
 
 export async function triggerUpdate(db: Database) {
+  if (ENVIRONMENT !== 'production') {
+    return { message: 'Auto-update environment — updates are deployed automatically via Flux', targetVersion: CURRENT_VERSION };
+  }
+
   const info = await getVersionInfo(db);
   if (!info.updateAvailable || !info.latestVersion) {
     return { message: 'Already up to date', targetVersion: info.currentVersion };
   }
-  // In production, this would update the platform-config ConfigMap or
-  // trigger a Flux reconciliation. For now, we record the intent.
+
+  // Record the target version. A CronJob (`platform-update-checker`)
+  // periodically reads `pending_update_version` from the database and
+  // triggers `flux reconcile kustomization platform` when set.
   await setSetting(db, 'pending_update_version', info.latestVersion);
-  return { message: 'Update initiated', targetVersion: info.latestVersion };
+  return { message: 'Update initiated — will be applied on next reconciliation cycle', targetVersion: info.latestVersion };
 }

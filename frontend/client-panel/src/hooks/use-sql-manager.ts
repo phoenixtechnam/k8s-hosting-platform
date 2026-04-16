@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, API_BASE } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ export function useImportSql(clientId: string | null | undefined) {
       }
 
       const token = localStorage.getItem('auth_token');
-      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+      // API_BASE imported from @/lib/api-client
       const res = await fetch(
         `${API_BASE}/api/v1/clients/${clientId}/deployments/${deploymentId}/import?database=${encodeURIComponent(database)}`,
         {
@@ -361,7 +361,7 @@ export function useSqliteExport(clientId: string | null | undefined) {
     mutationFn: async ({ filePath }: { readonly filePath: string }) => {
       if (!clientId) throw new Error('No client selected');
       const token = localStorage.getItem('auth_token');
-      const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+      // API_BASE imported from @/lib/api-client
       const res = await fetch(
         `${API_BASE}/api/v1/clients/${clientId}/sqlite/export?file_path=${encodeURIComponent(filePath)}`,
         { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} },

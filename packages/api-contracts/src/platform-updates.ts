@@ -6,6 +6,8 @@ export const platformVersionResponseSchema = z.object({
   updateAvailable: z.boolean(),
   environment: z.string(),
   autoUpdate: z.boolean(),
+  imageUpdateStrategy: z.enum(['auto', 'manual']),
+  pendingVersion: z.string().nullable(),
   lastCheckedAt: z.string().nullable(),
 });
 

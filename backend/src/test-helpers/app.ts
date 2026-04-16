@@ -11,6 +11,12 @@ export async function buildTestApp(): Promise<FastifyInstance> {
       DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://platform:platform@localhost:5433/hosting_platform_test',
       JWT_SECRET: 'test-secret-key-for-testing-only',
       LOG_LEVEL: 'error',
+      REDIS_URL: 'redis://localhost:6379',
+      PLATFORM_ENV: 'development',
+      PLATFORM_VERSION: '0.0.0-test',
+      DEFAULT_STORAGE_CLASS: 'local-path',
+      PLATFORM_NAMESPACE: 'platform',
+      FILE_MANAGER_IMAGE: 'file-manager:test',
     },
     db,
   });

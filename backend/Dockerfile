@@ -32,6 +32,6 @@ USER node
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD wget -q --spider http://localhost:3000/api/v1/admin/status || exit 1
+  CMD wget -q --spider http://localhost:3000/api/v1/healthz || exit 1
 
 ENTRYPOINT ["sh", "docker-entrypoint.sh"]

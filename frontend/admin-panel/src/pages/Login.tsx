@@ -2,9 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Loader2, Server, Shield, KeyRound } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-import { apiFetch } from '@/lib/api-client';
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+import { apiFetch, API_BASE } from '@/lib/api-client';
 
 interface AuthStatus {
   readonly localAuthEnabled: boolean;

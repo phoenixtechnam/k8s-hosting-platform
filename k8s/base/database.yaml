@@ -1,39 +1,34 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: mariadb
+  name: postgres
   namespace: platform
   labels:
-    app: mariadb
+    app: postgres
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  serviceName: mariadb
+  serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
-      app: mariadb
+      app: postgres
   template:
     metadata:
       labels:
-        app: mariadb
+        app: postgres
     spec:
       containers:
-        - name: mariadb
-          image: mariadb:10.6
+        - name: postgres
+          image: postgres:18-alpine
           ports:
-            - containerPort: 3306
+            - containerPort: 5432
               protocol: TCP
           env:
-            - name: MARIADB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: platform-db-credentials
-                  key: root-password
-            - name: MARIADB_DATABASE
+            - name: POSTGRES_DB
               value: hosting_platform
-            - name: MARIADB_USER
+            - name: POSTGRES_USER
               value: platform
-            - name: MARIADB_PASSWORD
+            - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: platform-db-credentials
@@ -47,20 +42,26 @@ spec:
               memory: 1Gi
           volumeMounts:
             - name: data
-              mountPath: /var/lib/mysql
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
           livenessProbe:
             exec:
               command:
-                - healthcheck.sh
-                - --connect
-                - --innodb_initialized
+                - pg_isready
+                - -U
+                - platform
+                - -d
+                - hosting_platform
             initialDelaySeconds: 30
             periodSeconds: 10
           readinessProbe:
             exec:
               command:
-                - healthcheck.sh
-                - --connect
+                - pg_isready
+                - -U
+                - platform
+                - -d
+                - hosting_platform
             initialDelaySeconds: 10
             periodSeconds: 5
   volumeClaimTemplates:
@@ -75,15 +76,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: mariadb
+  name: postgres
   namespace: platform
   labels:
-    app: mariadb
+    app: postgres
 spec:
   selector:
-    app: mariadb
+    app: postgres
   ports:
-    - port: 3306
-      targetPort: 3306
+    - port: 5432
+      targetPort: 5432
       protocol: TCP
   clusterIP: None

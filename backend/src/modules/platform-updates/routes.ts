@@ -28,6 +28,8 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
                 updateAvailable: { type: 'boolean' },
                 environment: { type: 'string' },
                 autoUpdate: { type: 'boolean' },
+                imageUpdateStrategy: { type: 'string', enum: ['auto', 'manual'] },
+                pendingVersion: { type: 'string', nullable: true },
                 lastCheckedAt: { type: 'string', nullable: true },
               },
             },

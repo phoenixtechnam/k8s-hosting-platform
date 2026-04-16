@@ -1,0 +1,36 @@
+# ServiceAccount and RBAC for the platform-update-checker CronJob.
+# Scoped to only patch the production Flux Kustomization.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-update-checker
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-update-checker
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "patch"]
+    resourceNames: ["hosting-platform-production"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-update-checker-binding
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-update-checker
+subjects:
+  - kind: ServiceAccount
+    name: platform-update-checker
+    namespace: platform

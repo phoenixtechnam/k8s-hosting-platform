@@ -1,0 +1,73 @@
+# Dex configuration for k8s dev/staging environments
+#
+# Static users for testing:
+#   - admin@platform.local  / admin  (maps to the platform's default super_admin)
+#   - admin2@platform.local / admin  (second admin for multi-user testing)
+#   - user@platform.local   / user   (unprivileged user for OIDC auto-provision testing)
+#   - user2@platform.local  / user   (second unprivileged user)
+#
+# Static OIDC clients:
+#   - hosting-platform-admin   (admin panel SSO)
+#   - hosting-platform-client  (client panel SSO)
+#   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
+#
+# IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
+# bootstrap.sh --env dev --domain <FQDN> regenerates this file with
+# correct hostnames. The defaults below use PLACEHOLDER.example.com
+# to fail loudly if not overridden.
+
+issuer: http://PLACEHOLDER.example.com/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: hosting-platform-admin
+    name: Hosting Platform Admin
+    secret: local-dev-secret-admin
+    redirectURIs:
+      - http://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+  - id: hosting-platform-client
+    name: Hosting Platform Client
+    secret: local-dev-secret-client
+    redirectURIs:
+      - http://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+  - id: hosting-platform-oauth2-proxy
+    name: OAuth2 Proxy
+    secret: local-dev-secret-oauth2-proxy
+    redirectURIs:
+      - http://PLACEHOLDER.example.com/oauth2/callback
+
+connectors: []
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: admin@platform.local
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+    username: admin
+    userID: "00000000-0000-0000-0000-000000000001"
+  - email: admin2@platform.local
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+    username: admin2
+    userID: "00000000-0000-0000-0000-000000000002"
+  - email: user@platform.local
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user
+    userID: "00000000-0000-0000-0000-000000000003"
+  - email: user2@platform.local
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user2
+    userID: "00000000-0000-0000-0000-000000000004"

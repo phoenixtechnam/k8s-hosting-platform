@@ -21,3 +21,11 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     purpose: client-workloads
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    purpose: platform-services

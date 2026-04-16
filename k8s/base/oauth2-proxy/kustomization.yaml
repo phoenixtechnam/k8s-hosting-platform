@@ -3,4 +3,6 @@ kind: Kustomization
 resources:
   - deployment.yaml
   - service.yaml
-  - secret.yaml
+  # secret.yaml excluded — each overlay must provide its own oauth2-proxy-config
+  # Secret with environment-specific OIDC_ISSUER_URL and OAUTH2_PROXY_REDIRECT_URL.
+  # See secret.yaml for the required keys.
