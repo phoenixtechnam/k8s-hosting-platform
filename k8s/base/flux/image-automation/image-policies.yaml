@@ -1,0 +1,77 @@
+# Flux Image Policies — select the latest timestamp-prefixed tag.
+# build-deploy.yml produces tags like: 20260414120000-a1b2c3d
+# The timestamp prefix ensures chronological ordering via alphabetical sort.
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: backend
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: backend
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: admin-panel
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: admin-panel
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: client-panel
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: client-panel
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: sftp-gateway
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: sftp-gateway
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: file-manager-sidecar
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: file-manager-sidecar
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc

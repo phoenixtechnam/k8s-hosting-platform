@@ -1,0 +1,35 @@
+# Flux Image Update Automation — commits new SHA tags to the `staging`
+# branch when new images are detected. The staging Flux Kustomization
+# watches the `staging` branch and auto-reconciles.
+#
+# Requires flux components: image-reflector-controller, image-automation-controller
+# Install via: flux install --components-extra=image-reflector-controller,image-automation-controller
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageUpdateAutomation
+metadata:
+  name: staging-image-updates
+  namespace: flux-system
+spec:
+  interval: 1m
+  sourceRef:
+    kind: GitRepository
+    name: hosting-platform-staging
+  git:
+    checkout:
+      ref:
+        branch: staging
+    commit:
+      author:
+        name: Flux Image Automation
+        email: flux@platform.local
+      messageTemplate: |
+        chore: update staging images
+
+        {{range .Changed.Changes}}
+        - {{.OldValue}} -> {{.NewValue}}
+        {{end}}
+    push:
+      branch: staging
+  update:
+    path: ./k8s/overlays/staging
+    strategy: Setters

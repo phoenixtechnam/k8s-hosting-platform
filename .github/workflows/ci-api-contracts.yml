@@ -1,0 +1,29 @@
+name: API Contracts CI
+
+# Fast standalone validation for the shared API contracts package.
+# Runs before (and in parallel with) downstream consumer CI so a broken
+# schema fails in ~30s instead of after all three consumer builds.
+
+on:
+  push:
+    branches: [main]
+    paths: ['packages/api-contracts/**', '.github/workflows/ci-api-contracts.yml']
+  pull_request:
+    branches: [main]
+    paths: ['packages/api-contracts/**', '.github/workflows/ci-api-contracts.yml']
+
+jobs:
+  build:
+    name: Build & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build (tsc)
+        run: npm run build -w @k8s-hosting/api-contracts
+      - name: Verify dist was produced
+        run: test -f packages/api-contracts/dist/index.d.ts && test -f packages/api-contracts/dist/index.js

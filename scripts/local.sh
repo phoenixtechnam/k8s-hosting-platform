@@ -3,14 +3,16 @@ set -euo pipefail
 
 # local.sh — Manage the local development stack.
 #
+# k3s is ESSENTIAL and included in up/reset/rebuild by default.
+#
 # Usage:
-#   ./scripts/local.sh up          Build and start all services
+#   ./scripts/local.sh up          Build and start all services (incl. k3s + init)
 #   ./scripts/local.sh down        Stop all services
-#   ./scripts/local.sh reset       Stop, wipe volumes, and restart fresh
+#   ./scripts/local.sh reset       Stop, wipe volumes, and restart fresh (incl. k3s)
 #   ./scripts/local.sh logs        Tail logs from all services
 #   ./scripts/local.sh status      Show service status and endpoints
-#   ./scripts/local.sh rebuild     Rebuild and restart (no volume wipe)
-#   ./scripts/local.sh k3s-up      Start k3s cluster + init (PVC, ingress)
+#   ./scripts/local.sh rebuild     Rebuild app services (k3s/DB/Redis untouched)
+#   ./scripts/local.sh k3s-up      (Re-)run k3s cluster init standalone
 #   ./scripts/local.sh k3s-down    Stop k3s cluster
 #   ./scripts/local.sh k3s-reset   Wipe k3s cluster and restart fresh
 #   ./scripts/local.sh k3s-status  Show k3s cluster status
@@ -102,6 +104,9 @@ cmd_up() {
   compose build client-panel
   compose up -d
   echo ""
+  echo "Waiting for k3s cluster init (PVC, ingress)..."
+  compose up k3s-init
+  echo ""
   _rebuild_sidecar
   _check_k3s_health
   _cleanup_stale_namespaces
@@ -131,7 +136,11 @@ cmd_reset() {
   compose build client-panel
   compose up -d
   echo ""
+  echo "Waiting for k3s cluster init (PVC, ingress)..."
+  compose up k3s-init
+  echo ""
   _rebuild_sidecar
+  _check_k3s_health
   _patch_postgres_bridge 2>/dev/null || true
   cmd_status
 }
@@ -165,8 +174,12 @@ _rebuild_sidecar() {
   fi
   echo "Rebuilding file-manager sidecar..."
   docker build -t file-manager-sidecar:latest "${PROJECT_DIR}/images/file-manager-sidecar/" -q 2>/dev/null
-  docker save file-manager-sidecar:latest | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
-  echo "  Sidecar image imported into k3s"
+  # Tag with GHCR path too so manifests using the canonical image ref resolve
+  # locally without hitting the registry.
+  docker tag file-manager-sidecar:latest ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest
+  docker save file-manager-sidecar:latest ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest \
+    | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
+  echo "  Sidecar image imported into k3s (both local + GHCR tags)"
 }
 
 _cleanup_stale_namespaces() {
@@ -677,8 +690,12 @@ cmd_sftp_up() {
   # Build and import sftp-gateway image
   echo "  Building sftp-gateway image..."
   docker build -t sftp-gateway:latest "${PROJECT_DIR}/images/sftp-gateway/" -q || { echo "  ERROR: sftp-gateway build failed"; return 1; }
-  docker save sftp-gateway:latest | docker exec -i "$K3S_CONTAINER" ctr images import - 2>/dev/null
-  echo "  sftp-gateway image imported into k3s"
+  # Tag with GHCR path so the base manifest's canonical image ref resolves
+  # locally without hitting the registry.
+  docker tag sftp-gateway:latest ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest
+  docker save sftp-gateway:latest ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest \
+    | docker exec -i "$K3S_CONTAINER" ctr images import - 2>/dev/null
+  echo "  sftp-gateway image imported into k3s (both local + GHCR tags)"
 
   # Apply manifests
   _mail_sync_manifests
@@ -737,7 +754,7 @@ cmd_sftp_status() {
 }
 
 cmd_help() {
-  sed -n '3,21p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 case "${1:-help}" in

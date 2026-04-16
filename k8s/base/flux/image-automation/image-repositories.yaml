@@ -1,0 +1,51 @@
+# Flux Image Repositories — scan GHCR for new image tags.
+# Used by ImagePolicies to detect when new builds are available.
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: backend
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/backend
+  interval: 1m
+  provider: generic
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: admin-panel
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/admin-panel
+  interval: 1m
+  provider: generic
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: client-panel
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/client-panel
+  interval: 1m
+  provider: generic
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: sftp-gateway
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway
+  interval: 1m
+  provider: generic
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: file-manager-sidecar
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar
+  interval: 1m
+  provider: generic

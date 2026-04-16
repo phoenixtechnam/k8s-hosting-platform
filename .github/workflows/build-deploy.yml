@@ -3,6 +3,12 @@ name: Build Images
 on:
   push:
     branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/admin-panel/**'
+      - 'frontend/client-panel/**'
+      - 'packages/api-contracts/**'
+      - '.github/workflows/build-deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -14,8 +20,33 @@ env:
   IMAGE_PREFIX: ghcr.io/phoenixtechnam/hosting-platform
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      admin_panel: ${{ steps.filter.outputs.admin_panel }}
+      client_panel: ${{ steps.filter.outputs.client_panel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'packages/api-contracts/**'
+            admin_panel:
+              - 'frontend/admin-panel/**'
+              - 'packages/api-contracts/**'
+            client_panel:
+              - 'frontend/client-panel/**'
+              - 'packages/api-contracts/**'
+
   build-backend:
     name: Build Backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +76,8 @@ jobs:
 
   build-admin-panel:
     name: Build Admin Panel
+    needs: changes
+    if: needs.changes.outputs.admin_panel == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +107,8 @@ jobs:
 
   build-client-panel:
     name: Build Client Panel
+    needs: changes
+    if: needs.changes.outputs.client_panel == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,3 +143,7 @@ jobs:
   #                  (matches image-policies.yaml regex pattern)
   #
   # Production uses pinned semver tags from release.yml — never :latest.
+  #
+  # Per-job path filters via dorny/paths-filter mean a frontend-only change
+  # no longer rebuilds the backend image (and vice versa). api-contracts
+  # changes still trigger all three since they're a shared dependency.

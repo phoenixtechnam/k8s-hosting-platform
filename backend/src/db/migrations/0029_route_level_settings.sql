@@ -60,5 +60,5 @@ CREATE TABLE waf_logs (
   created_at timestamp NOT NULL DEFAULT now()
 );
 
-CREATE INDEX waf_logs_route_idx ON waf_logs(route_id, timestamp);
-CREATE INDEX waf_logs_client_idx ON waf_logs(client_id);
+CREATE INDEX IF NOT EXISTS waf_logs_route_idx ON waf_logs(route_id, created_at);
+CREATE INDEX IF NOT EXISTS waf_logs_client_idx ON waf_logs(client_id);

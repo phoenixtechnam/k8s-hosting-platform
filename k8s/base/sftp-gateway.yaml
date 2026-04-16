@@ -63,7 +63,7 @@ spec:
       serviceAccountName: sftp-gateway
       containers:
         - name: gateway
-          image: sftp-gateway:latest
+          image: ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest # {"$imagepolicy": "flux-system:sftp-gateway"}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 2222
@@ -77,12 +77,12 @@ spec:
             # handles them without explicit containerPort entries.
           env:
             - name: BACKEND_URL
-              value: "http://backend.platform-system:3000"
+              value: "http://platform-api.platform.svc.cluster.local:3000"
             - name: INTERNAL_SECRET
               valueFrom:
                 secretKeyRef:
                   name: platform-secrets
-                  key: PLATFORM_INTERNAL_SECRET
+                  key: internal-secret
             - name: SSH_HOST_KEY_PATH
               value: "/etc/ssh/keys/ssh_host_ed25519_key"
             - name: SSH_PORT
