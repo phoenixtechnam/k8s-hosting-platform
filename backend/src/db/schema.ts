@@ -5,6 +5,7 @@ import {
   text,
   integer,
   numeric,
+  boolean,
   timestamp,
   jsonb,
   uniqueIndex,
@@ -1204,3 +1205,44 @@ export const systemSettings = pgTable('system_settings', {
 });
 
 export type SystemSettings = typeof systemSettings.$inferSelect;
+
+// ─── AI Editor ─────────────────────────────────────────────────────────────
+
+export const aiProviders = pgTable('ai_providers', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  type: varchar('type', { length: 30 }).notNull(),
+  displayName: varchar('display_name', { length: 200 }).notNull(),
+  baseUrl: varchar('base_url', { length: 500 }),
+  apiKeyEnc: text('api_key_enc'),
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type AiProvider = typeof aiProviders.$inferSelect;
+
+export const aiModels = pgTable('ai_models', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  providerId: varchar('provider_id', { length: 100 }).notNull().references(() => aiProviders.id, { onDelete: 'cascade' }),
+  modelName: varchar('model_name', { length: 200 }).notNull(),
+  displayName: varchar('display_name', { length: 200 }).notNull(),
+  costPer1mInputTokens: numeric('cost_per_1m_input_tokens', { precision: 10, scale: 4 }).default('0'),
+  costPer1mOutputTokens: numeric('cost_per_1m_output_tokens', { precision: 10, scale: 4 }).default('0'),
+  maxOutputTokens: integer('max_output_tokens').notNull().default(4096),
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export type AiModel = typeof aiModels.$inferSelect;
+
+export const aiTokenUsage = pgTable('ai_token_usage', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  deploymentId: varchar('deployment_id', { length: 36 }).references(() => deployments.id, { onDelete: 'set null' }),
+  modelId: varchar('model_id', { length: 100 }).notNull().references(() => aiModels.id),
+  mode: varchar('mode', { length: 20 }).notNull(),
+  tokensInput: integer('tokens_input').notNull(),
+  tokensOutput: integer('tokens_output').notNull(),
+  instruction: text('instruction'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});

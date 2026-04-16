@@ -13,9 +13,9 @@ import {
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive, ChevronDown,
-  Shield, UserCheck,
+  Shield, UserCheck, Sparkles, X as XIcon,
 } from 'lucide-react';
-import Editor from '@monaco-editor/react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
 import {
   useFileManagerStatus, useStartFileManager, useDirectoryListing,
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
@@ -24,6 +24,7 @@ import {
   useDiskUsage, useFolderSize, useChmod, useChown,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
+import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1293,9 +1294,24 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const [dirty, setDirty] = useState(false);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
 
+  // AI edit state
+  const [showAiChat, setShowAiChat] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiModelId, setAiModelId] = useState('');
+  const [aiProposal, setAiProposal] = useState<string | null>(null);
+  const aiEdit = useAiFileEdit('');
+  const aiModels = useAiModels();
+
   useEffect(() => {
     if (fileContent.data) { setContent(fileContent.data.content); setDirty(false); }
   }, [fileContent.data]);
+
+  // Auto-select first model
+  useEffect(() => {
+    if (!aiModelId && aiModels.data?.data?.length) {
+      setAiModelId(aiModels.data.data[0].id);
+    }
+  }, [aiModels.data, aiModelId]);
 
   const handleSave = useCallback(() => {
     if (!dirty || writeFile.isPending) return;
@@ -1306,7 +1322,34 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
     if (dirty) { setShowUnsavedDialog(true); } else { onClose(); }
   }, [dirty, onClose]);
 
-  // Keyboard shortcuts: Ctrl+S / Cmd+S to save, Esc to close
+  const handleAiSubmit = useCallback(() => {
+    if (!aiPrompt.trim() || !aiModelId || aiEdit.loading) return;
+    aiEdit.edit(path, content, aiPrompt.trim(), aiModelId);
+  }, [aiPrompt, aiModelId, aiEdit, path, content]);
+
+  // When AI result arrives, show the proposal
+  useEffect(() => {
+    if (aiEdit.result?.changes[0]?.modifiedContent) {
+      setAiProposal(aiEdit.result.changes[0].modifiedContent);
+    }
+  }, [aiEdit.result]);
+
+  const handleAcceptAi = useCallback(() => {
+    if (aiProposal) {
+      setContent(aiProposal);
+      setDirty(true);
+      setAiProposal(null);
+      setAiPrompt('');
+      aiEdit.clear();
+    }
+  }, [aiProposal, aiEdit]);
+
+  const handleRejectAi = useCallback(() => {
+    setAiProposal(null);
+    aiEdit.clear();
+  }, [aiEdit]);
+
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
@@ -1314,15 +1357,18 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
         handleSave();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        handleClose();
+        if (aiProposal) handleRejectAi();
+        else handleClose();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleSave, handleClose]);
+  }, [handleSave, handleClose, aiProposal, handleRejectAi]);
 
   const filename = path.split('/').pop() ?? '';
   const language = getLanguage(filename);
+  const models = aiModels.data?.data ?? [];
+  const isDiffMode = aiProposal !== null;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
@@ -1331,23 +1377,87 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
           <File size={14} className="text-gray-400" />
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{path}</span>
           {dirty && <span className="text-xs text-amber-500">Modified</span>}
+          {isDiffMode && <span className="text-xs text-purple-500 font-medium">AI Diff</span>}
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">{language}</span>
           <span className="text-[10px] text-gray-400 hidden sm:inline">Ctrl+S to save</span>
-          <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
-            className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
-            {writeFile.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
+          {isDiffMode ? (
+            <>
+              <button onClick={handleAcceptAi} className="inline-flex items-center gap-1 rounded-lg bg-green-500 px-3 py-1 text-xs font-medium text-white hover:bg-green-600">
+                <Check size={12} /> Accept
+              </button>
+              <button onClick={handleRejectAi} className="inline-flex items-center gap-1 rounded-lg border border-red-300 dark:border-red-700 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                <XIcon size={12} /> Reject
+              </button>
+            </>
+          ) : (
+            <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
+              className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+              {writeFile.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
+            </button>
+          )}
+          <button onClick={() => setShowAiChat(!showAiChat)}
+            className={`rounded p-1 transition-colors ${showAiChat ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+            title="AI Assistant">
+            <Sparkles size={16} />
           </button>
           <button onClick={handleClose} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Close (Esc)"><X size={16} /></button>
         </div>
       </div>
+
+      {/* Editor */}
       {fileContent.isLoading && <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-gray-400" /></div>}
-      {fileContent.data && (
+      {fileContent.data && !isDiffMode && (
         <Editor height="500px" language={language} value={content}
           onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
           theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
           options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
+      )}
+      {fileContent.data && isDiffMode && (
+        <DiffEditor height="500px" language={language}
+          original={content}
+          modified={aiProposal}
+          theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
+          options={{ minimap: { enabled: false }, fontSize: 13, readOnly: true, renderSideBySide: true, automaticLayout: true }} />
+      )}
+
+      {/* AI Chat Panel */}
+      {showAiChat && (
+        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-3">
+          {aiEdit.error && (
+            <div className="mb-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-700 dark:text-red-400">{aiEdit.error}</div>
+          )}
+          {aiEdit.result?.changes[0]?.summary && (
+            <div className="mb-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">{aiEdit.result.changes[0].summary}</div>
+          )}
+          {aiEdit.result?.tokensUsed && (
+            <div className="mb-2 text-[10px] text-gray-400">Tokens: {aiEdit.result.tokensUsed.input} in / {aiEdit.result.tokensUsed.output} out</div>
+          )}
+          <div className="flex gap-2">
+            {models.length > 1 && (
+              <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-32"
+                value={aiModelId} onChange={(e) => setAiModelId(e.target.value)}>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+              </select>
+            )}
+            <input
+              className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              placeholder="Ask AI to edit this file..."
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiSubmit(); } }}
+              disabled={aiEdit.loading || models.length === 0}
+            />
+            <button onClick={handleAiSubmit} disabled={!aiPrompt.trim() || aiEdit.loading || models.length === 0}
+              className="rounded-lg bg-purple-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50">
+              {aiEdit.loading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
+            </button>
+          </div>
+          {models.length === 0 && (
+            <p className="mt-1 text-[10px] text-gray-400">No AI models configured. Go to Admin → Settings → AI to add providers and models.</p>
+          )}
+        </div>
       )}
 
       {/* Unsaved changes dialog */}

@@ -276,6 +276,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const { containerConsoleRoutes } = await import('./modules/container-console/routes.js');
   await app.register(containerConsoleRoutes, { prefix: '/api/v1' });
 
+  const { aiEditorRoutes } = await import('./modules/ai-editor/routes.js');
+  await app.register(aiEditorRoutes, { prefix: '/api/v1' });
+
   // Start background schedulers (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
     app.addHook('onReady', async () => {

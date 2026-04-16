@@ -20,6 +20,7 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
     "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^10.0.0",
     "@fastify/jwt": "^9.0.0",
@@ -35,6 +36,7 @@
     "ioredis": "^5.10.1",
     "js-yaml": "^4.1.1",
     "nodemailer": "^8.0.4",
+    "openai": "^6.34.0",
     "pg": "^8.16.0",
     "zod": "^3.24.0"
   },

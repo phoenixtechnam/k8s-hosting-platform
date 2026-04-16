@@ -51,4 +51,5 @@ export * from './storage.js';
 export * from './mail-imapsync.js';
 export * from './sub-users.js';
 export * from './plans.js';
+export * from './ai-editor.js';
 export * from './oidc-settings.js';

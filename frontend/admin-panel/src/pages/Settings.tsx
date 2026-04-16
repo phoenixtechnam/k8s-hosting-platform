@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { usePlatformVersion, useUpdateSettings, useTriggerUpdate } from '@/hooks/use-platform-updates';
 
@@ -149,6 +149,14 @@ export default function Settings() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"><Mail size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Email System</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage email domains, mailboxes, SMTP relays, and spam settings</p></div>
+        </div>
+        <ChevronRight size={20} className="text-gray-400" />
+      </Link>
+
+      <Link to="/settings/ai" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="ai-settings-link">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"><Cpu size={20} /></div>
+          <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">AI Settings</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure LLM providers, models, and AI editing capabilities</p></div>
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>

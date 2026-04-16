@@ -26,6 +26,7 @@ import EmailManagement from '@/pages/EmailManagement';
 import TlsSettings from '@/pages/TlsSettings';
 import SystemSettingsPage from '@/pages/SystemSettings';
 import AuditLogs from '@/pages/AuditLogs';
+import AiSettings from '@/pages/AiSettings';
 import Placeholder from '@/pages/Placeholder';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -75,6 +76,7 @@ export default function App() {
             <Route path="monitoring/health" element={<HealthDashboard />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />
+            <Route path="settings/ai" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AiSettings /></ProtectedRoute>} />
             <Route path="user-settings" element={<UserSettings />} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
