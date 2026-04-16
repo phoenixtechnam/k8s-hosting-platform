@@ -137,7 +137,7 @@ export function useTerminal(
 
   const connect = useCallback(
     (onData: (data: string) => void) => {
-      if (!clientId || !deploymentId || !enabled) return;
+      if (!clientId || !deploymentId) return;
 
       const params = new URLSearchParams();
       if (component) params.set('component', component);
@@ -165,7 +165,7 @@ export function useTerminal(
       ws.onclose = () => setConnected(false);
       ws.onerror = () => setError('Terminal connection failed');
     },
-    [clientId, deploymentId, component, shell, enabled],
+    [clientId, deploymentId, component, shell],
   );
 
   const send = useCallback((data: string) => {
