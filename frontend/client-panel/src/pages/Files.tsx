@@ -1302,6 +1302,16 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const aiEdit = useAiFileEdit('');
   const aiModels = useAiModels();
 
+  // Chat history (persisted in sessionStorage per file)
+  type ChatMsg = { role: 'user' | 'assistant' | 'error'; text: string; tokens?: { input: number; output: number } };
+  const chatKey = `ai-chat:${path}`;
+  const [chatHistory, setChatHistory] = useState<ChatMsg[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem(chatKey) ?? '[]'); } catch { return []; }
+  });
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { sessionStorage.setItem(chatKey, JSON.stringify(chatHistory)); }, [chatHistory, chatKey]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory.length]);
+
   useEffect(() => {
     if (fileContent.data) { setContent(fileContent.data.content); setDirty(false); }
   }, [fileContent.data]);
@@ -1324,15 +1334,30 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
   const handleAiSubmit = useCallback(() => {
     if (!aiPrompt.trim() || !aiModelId || aiEdit.loading) return;
+    setChatHistory((prev) => [...prev, { role: 'user', text: aiPrompt.trim() }]);
     aiEdit.edit(path, content, aiPrompt.trim(), aiModelId);
+    setAiPrompt('');
   }, [aiPrompt, aiModelId, aiEdit, path, content]);
 
-  // When AI result arrives, show the proposal
+  // When AI result arrives, show the proposal + add to chat
   useEffect(() => {
     if (aiEdit.result?.changes[0]?.modifiedContent) {
       setAiProposal(aiEdit.result.changes[0].modifiedContent);
+      setChatHistory((prev) => [...prev, {
+        role: 'assistant',
+        text: aiEdit.result!.changes[0].summary ?? 'Changes proposed — review the diff above.',
+        tokens: aiEdit.result!.tokensUsed,
+      }]);
+    } else if (aiEdit.result?.changes[0]?.summary) {
+      setChatHistory((prev) => [...prev, { role: 'assistant', text: aiEdit.result!.changes[0].summary! }]);
     }
   }, [aiEdit.result]);
+
+  useEffect(() => {
+    if (aiEdit.error) {
+      setChatHistory((prev) => [...prev, { role: 'error', text: aiEdit.error! }]);
+    }
+  }, [aiEdit.error]);
 
   const handleAcceptAi = useCallback(() => {
     if (aiProposal) {
@@ -1424,39 +1449,66 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
       {/* AI Chat Panel */}
       {showAiChat && (
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-4 py-3">
-          {aiEdit.error && (
-            <div className="mb-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-700 dark:text-red-400">{aiEdit.error}</div>
-          )}
-          {aiEdit.result?.changes[0]?.summary && (
-            <div className="mb-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">{aiEdit.result.changes[0].summary}</div>
-          )}
-          {aiEdit.result?.tokensUsed && (
-            <div className="mb-2 text-[10px] text-gray-400">Tokens: {aiEdit.result.tokensUsed.input} in / {aiEdit.result.tokensUsed.output} out</div>
-          )}
-          <div className="flex gap-2">
-            {models.length > 1 && (
-              <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-32"
-                value={aiModelId} onChange={(e) => setAiModelId(e.target.value)}>
-                {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
-              </select>
+        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col" style={{ maxHeight: '240px' }}>
+          {/* Chat history */}
+          <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2 min-h-0">
+            {chatHistory.length === 0 && (
+              <p className="text-xs text-gray-400 py-2 text-center">Ask AI to edit this file. Chat history is preserved during your session.</p>
             )}
-            <input
-              className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500"
-              placeholder="Ask AI to edit this file..."
-              value={aiPrompt}
-              onChange={(e) => setAiPrompt(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiSubmit(); } }}
-              disabled={aiEdit.loading || models.length === 0}
-            />
-            <button onClick={handleAiSubmit} disabled={!aiPrompt.trim() || aiEdit.loading || models.length === 0}
-              className="rounded-lg bg-purple-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50">
-              {aiEdit.loading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
-            </button>
+            {chatHistory.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] rounded-lg px-3 py-1.5 text-xs ${
+                  msg.role === 'user'
+                    ? 'bg-purple-500 text-white'
+                    : msg.role === 'error'
+                    ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+                    : 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-600'
+                }`}>
+                  <p className="whitespace-pre-wrap">{msg.text}</p>
+                  {msg.tokens && <p className="text-[10px] opacity-60 mt-1">{msg.tokens.input + msg.tokens.output} tokens</p>}
+                </div>
+              </div>
+            ))}
+            {aiEdit.loading && (
+              <div className="flex justify-start">
+                <div className="rounded-lg px-3 py-1.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
+                  <Loader2 size={14} className="animate-spin text-purple-500" />
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
           </div>
-          {models.length === 0 && (
-            <p className="mt-1 text-[10px] text-gray-400">No AI models configured. Go to Admin → Settings → AI to add providers and models.</p>
-          )}
+
+          {/* Input area */}
+          <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-2">
+            {models.length === 0 ? (
+              <p className="text-[10px] text-gray-400 text-center py-1">No AI models configured. Go to Admin → Settings → AI to add providers and models.</p>
+            ) : (
+              <div className="flex gap-2 items-end">
+                {models.length > 1 && (
+                  <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-28 shrink-0"
+                    value={aiModelId} onChange={(e) => setAiModelId(e.target.value)}>
+                    {models.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+                  </select>
+                )}
+                <textarea
+                  className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 resize-none"
+                  placeholder="Ask AI to edit this file..."
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAiSubmit(); } }}
+                  disabled={aiEdit.loading}
+                  rows={1}
+                  style={{ minHeight: '36px', maxHeight: '80px' }}
+                  onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = '36px'; t.style.height = Math.min(t.scrollHeight, 80) + 'px'; }}
+                />
+                <button onClick={handleAiSubmit} disabled={!aiPrompt.trim() || aiEdit.loading}
+                  className="rounded-lg bg-purple-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50 shrink-0 self-end">
+                  {aiEdit.loading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
