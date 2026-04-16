@@ -39,6 +39,8 @@ function formatModel(m: AiModel) {
     costPer1mOutputTokens: Number(m.costPer1mOutputTokens ?? 0),
     maxOutputTokens: m.maxOutputTokens,
     enabled: m.enabled,
+    adminOnly: m.adminOnly,
+    isDefault: m.isDefault,
     createdAt: m.createdAt.toISOString(),
   };
 }
@@ -177,12 +179,31 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/ai/models', {
     onRequest: [authenticate],
-  }, async () => {
+  }, async (request) => {
     const allModels = await service.listModels(app.db);
     const allProviders = await service.listProviders(app.db);
     const enabledProviderIds = new Set(allProviders.filter((p) => p.enabled && p.apiKeyEnc).map((p) => p.id));
-    const enabledModels = allModels.filter((m) => m.enabled && enabledProviderIds.has(m.providerId));
-    return success(enabledModels.map(formatModel));
+    const isAdmin = ['super_admin', 'admin'].includes(request.user.role);
+    const enabledModels = allModels.filter((m) =>
+      m.enabled && enabledProviderIds.has(m.providerId) && (isAdmin || !m.adminOnly)
+    );
+
+    // Include provider name for display
+    const providerMap = new Map(allProviders.map((p) => [p.id, p.displayName]));
+    return success(enabledModels.map((m) => ({
+      ...formatModel(m),
+      providerName: providerMap.get(m.providerId) ?? m.providerId,
+    })));
+  });
+
+  // ─── Token budget status ────────────────────────────────────────────────
+
+  app.get('/clients/:clientId/ai/budget', {
+    onRequest: [authenticate],
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const budget = await service.getTokenBudget(app.db, clientId);
+    return success(budget);
   });
 
   // ─── AI Edit ───────────────────────────────────────────────────────────
@@ -198,6 +219,15 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const isAdmin = ['super_admin', 'admin'].includes(request.user.role);
+    const isImpersonating = Boolean(request.user.impersonatedBy);
+
+    // Check token budget (skip for admins and impersonated sessions)
+    if (!isAdmin && !isImpersonating) {
+      const budget = await service.getTokenBudget(app.db, clientId);
+      if (budget.exhausted) {
+        throw new ApiError('BUDGET_EXHAUSTED', `Weekly AI token budget exhausted (${budget.percentUsed}% used). Resets ${budget.weekStart}.`, 429);
+      }
+    }
 
     if (!parsed.data.model_id) {
       throw new ApiError('MISSING_REQUIRED_FIELD', 'model_id is required', 400);

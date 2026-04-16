@@ -1201,6 +1201,7 @@ export const systemSettings = pgTable('system_settings', {
   mailHostname: varchar('mail_hostname', { length: 255 }),
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
+  currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
@@ -1230,6 +1231,8 @@ export const aiModels = pgTable('ai_models', {
   costPer1mOutputTokens: numeric('cost_per_1m_output_tokens', { precision: 10, scale: 4 }).default('0'),
   maxOutputTokens: integer('max_output_tokens').notNull().default(4096),
   enabled: boolean('enabled').notNull().default(true),
+  adminOnly: boolean('admin_only').notNull().default(false),
+  isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 

@@ -126,6 +126,7 @@ export default function Files() {
   // Folder AI modal
   const [showFolderAi, setShowFolderAi] = useState(false);
   const [showCloneSite, setShowCloneSite] = useState(false);
+  const [showImportMenu, setShowImportMenu] = useState(false);
 
   // URL download dialog
   const [showUrlDownload, setShowUrlDownload] = useState(false);
@@ -416,21 +417,14 @@ export default function Files() {
 
   return (
     <div className="space-y-4">
-      <FilePageHeader />
-
-      {/* Storage usage bar */}
-      <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-        <HardDrive size={16} />
-        <div className="flex-1 max-w-xs">
-          <div className="flex justify-between text-xs mb-1">
-            <span>{used} used</span>
-            <span>{total} total</span>
-          </div>
-          <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
-            <div
-              className={`h-1.5 rounded-full ${usagePct > 90 ? 'bg-red-500' : usagePct > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
-              style={{ width: `${Math.min(usagePct, 100)}%` }}
-            />
+      <div className="flex items-center justify-between">
+        <FilePageHeader />
+        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0">
+          <HardDrive size={14} />
+          <span>{used} / {total}</span>
+          <div className="w-24 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
+            <div className={`h-1.5 rounded-full ${usagePct > 90 ? 'bg-red-500' : usagePct > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
+              style={{ width: `${Math.min(usagePct, 100)}%` }} />
           </div>
         </div>
       </div>
@@ -452,16 +446,30 @@ export default function Files() {
           <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
           </button>
-          <button onClick={() => { setShowUrlDownload(true); setDownloadUrl(''); setDownloadDest(''); setDownloadError(null); setDownloadProgress(null); }}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-            <Download size={14} /> From URL
-          </button>
-          <button onClick={() => setShowCloneSite(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-            <Globe size={14} /> Clone Site
-          </button>
-          <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-            <GitBranch size={14} /> Git Clone
-          </button>
+          <div className="relative">
+            <button onClick={() => setShowImportMenu(!showImportMenu)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+              <Download size={14} /> Import <ChevronDown size={12} />
+            </button>
+            {showImportMenu && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowImportMenu(false)} />
+                <div className="absolute right-0 top-full mt-1 z-20 w-48 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1">
+                  <button onClick={() => { setShowImportMenu(false); setShowUrlDownload(true); setDownloadUrl(''); setDownloadDest(''); setDownloadError(null); setDownloadProgress(null); setDownloadWarning(null); }}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <Download size={14} /> From URL
+                  </button>
+                  <button onClick={() => { setShowImportMenu(false); setShowCloneSite(true); }}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <Globe size={14} /> Clone Website
+                  </button>
+                  <button onClick={() => { setShowImportMenu(false); setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                    <GitBranch size={14} /> Git Clone
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={() => { setNewFileOpen(true); setNewFileName(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <FilePlus size={14} /> New File
           </button>

@@ -1,10 +1,68 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql, and, gte } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import type { Database } from '../../db/index.js';
-import { aiProviders, aiModels, aiTokenUsage } from '../../db/schema.js';
+import { aiProviders, aiModels, aiTokenUsage, clients } from '../../db/schema.js';
 import { createProviderAdapter, type LlmMessage, type LlmResponse } from './providers/index.js';
 import { scanOutput } from './output-scanner.js';
 import type { AiProviderType } from '@k8s-hosting/api-contracts';
+
+// ─── Token Budget ──────────────────────────────────────────────────────────
+
+function getWeekStart(): Date {
+  const now = new Date();
+  const day = now.getUTCDay();
+  const diff = day === 0 ? 6 : day - 1; // Monday = start of week
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - diff);
+  monday.setUTCHours(0, 0, 0, 0);
+  return monday;
+}
+
+export async function getTokenBudget(db: Database, clientId: string) {
+  const weekStart = getWeekStart();
+
+  // Get this week's token usage
+  const usageRows = await db.select({
+    totalInput: sql<number>`COALESCE(SUM(tokens_input), 0)`,
+    totalOutput: sql<number>`COALESCE(SUM(tokens_output), 0)`,
+  }).from(aiTokenUsage).where(
+    and(eq(aiTokenUsage.clientId, clientId), gte(aiTokenUsage.createdAt, weekStart))
+  );
+
+  const tokensUsed = Number(usageRows[0]?.totalInput ?? 0) + Number(usageRows[0]?.totalOutput ?? 0);
+
+  // Get budget limit from plan (via client → plan)
+  const clientRows = await db.select().from(clients).where(eq(clients.id, clientId));
+  const client = clientRows[0];
+  // Default: $1/week = 100 cents
+  const weeklyBudgetCents = 100; // TODO: read from hosting_plans via client.planId
+
+  // Calculate token limit based on cheapest available model
+  const models = await listModels(db);
+  const cheapestCostPer1m = models.reduce((min, m) => {
+    const cost = Number(m.costPer1mInputTokens ?? 0) + Number(m.costPer1mOutputTokens ?? 0);
+    return cost > 0 && cost < min ? cost : min;
+  }, Infinity);
+
+  const budgetDollars = weeklyBudgetCents / 100;
+  const tokenLimit = cheapestCostPer1m < Infinity
+    ? Math.round((budgetDollars / cheapestCostPer1m) * 1_000_000)
+    : 1_000_000; // fallback 1M if no pricing set
+
+  const costUsed = models.length > 0
+    ? (tokensUsed / 1_000_000) * (cheapestCostPer1m < Infinity ? cheapestCostPer1m : 1)
+    : 0;
+
+  return {
+    tokensUsed,
+    tokenLimit,
+    budgetCents: weeklyBudgetCents,
+    costUsedCents: Math.round(costUsed * 100),
+    weekStart: weekStart.toISOString(),
+    percentUsed: tokenLimit > 0 ? Math.round((tokensUsed / tokenLimit) * 100) : 0,
+    exhausted: tokensUsed >= tokenLimit,
+  };
+}
 
 // ─── Provider CRUD ─────────────────────────────────────────────────────────
 

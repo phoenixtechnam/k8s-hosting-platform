@@ -21,6 +21,17 @@ async function resolveNamespace(app: FastifyInstance, clientId: string): Promise
 }
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
+  // Support ?token= query param for <img src> (browser can't set Authorization header)
+  app.addHook('onRequest', (request, _reply, done) => {
+    if (!request.headers.authorization) {
+      const query = request.query as Record<string, string>;
+      if (query.token) {
+        request.headers.authorization = `Bearer ${query.token}`;
+      }
+    }
+    done();
+  });
+
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireClientRoleByMethod());
   app.addHook('onRequest', requireClientAccess());
@@ -154,17 +165,6 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/clients/:clientId/files/download — download file
-  // Supports ?token= query param for <img src> usage (browser can't set headers)
-  app.addHook('onRequest', (request, _reply, done) => {
-    if (request.url.includes('/files/download') && !request.headers.authorization) {
-      const query = request.query as Record<string, string>;
-      if (query.token) {
-        request.headers.authorization = `Bearer ${query.token}`;
-      }
-    }
-    done();
-  });
-
   app.get('/clients/:clientId/files/download', {
     schema: { tags: ['Files'], summary: 'Download file', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
