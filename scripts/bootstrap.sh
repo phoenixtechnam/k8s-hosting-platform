@@ -484,6 +484,12 @@ install_nginx_ingress() {
     --set controller.service.type=ClusterIP \
     --set controller.metrics.enabled=true \
     --set controller.allowSnippetAnnotations=false \
+    --set controller.config.use-gzip=true \
+    --set controller.config.gzip-level=5 \
+    --set controller.config.gzip-min-length=256 \
+    --set controller.config.enable-brotli=true \
+    --set controller.config.brotli-level=6 \
+    --set controller.config.brotli-min-length=256 \
     --wait \
     --timeout 300s
 
