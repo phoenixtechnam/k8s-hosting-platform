@@ -148,6 +148,7 @@ export const hostingPlans = pgTable('hosting_plans', {
   // email domains. Can be overridden per-client via
   // clients.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
+  weeklyAiBudgetCents: integer('weekly_ai_budget_cents').notNull().default(100),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

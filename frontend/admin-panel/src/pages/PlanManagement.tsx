@@ -68,6 +68,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     storage_limit: initial?.storageLimit ?? '10.00', monthly_price_usd: initial?.monthlyPriceUsd ?? '5.00',
     max_sub_users: String(initial?.maxSubUsers ?? 3),
     max_mailboxes: String(initial?.maxMailboxes ?? 50),
+    weekly_ai_budget_cents: String((initial as unknown as Record<string, unknown>)?.weeklyAiBudgetCents ?? 100),
   });
 
   const handleSubmit = async (e: FormEvent) => {
@@ -76,6 +77,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       ...form,
       max_sub_users: Number(form.max_sub_users),
       max_mailboxes: Number(form.max_mailboxes),
+      weekly_ai_budget_cents: Number(form.weekly_ai_budget_cents),
     };
     try {
       if (isEdit && initial) { await update.mutateAsync({ id: initial.id, ...payload }); }
@@ -112,6 +114,18 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
             onChange={(e) => setForm({ ...form, max_mailboxes: e.target.value })}
             data-testid="plan-max-mailboxes-input"
           />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Weekly AI Budget (cents)</label>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            min={0}
+            max={100000}
+            value={form.weekly_ai_budget_cents}
+            onChange={(e) => setForm({ ...form, weekly_ai_budget_cents: e.target.value })}
+          />
+          <p className="text-[10px] text-gray-400 mt-0.5">${(Number(form.weekly_ai_budget_cents) / 100).toFixed(2)}/week</p>
         </div>
       </div>
       <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Description</label><input type="text" className={INPUT_CLASS} placeholder="Optional description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
@@ -151,6 +165,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.maxSubUsers} users</span>
           <span>{plan.maxMailboxes} mailboxes</span>
+          <span>${((plan as unknown as Record<string, unknown>).weeklyAiBudgetCents as number ?? 100) / 100}/wk AI</span>
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-plan-${plan.id}`}><Edit size={12} /></button>
             {confirmDel ? (

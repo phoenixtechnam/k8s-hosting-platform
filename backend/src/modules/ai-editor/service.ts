@@ -1,7 +1,7 @@
 import { eq, sql, and, gte } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import type { Database } from '../../db/index.js';
-import { aiProviders, aiModels, aiTokenUsage, clients } from '../../db/schema.js';
+import { aiProviders, aiModels, aiTokenUsage, clients, hostingPlans } from '../../db/schema.js';
 import { createProviderAdapter, type LlmMessage, type LlmResponse } from './providers/index.js';
 import { scanOutput } from './output-scanner.js';
 import type { AiProviderType } from '@k8s-hosting/api-contracts';
@@ -31,11 +31,16 @@ export async function getTokenBudget(db: Database, clientId: string) {
 
   const tokensUsed = Number(usageRows[0]?.totalInput ?? 0) + Number(usageRows[0]?.totalOutput ?? 0);
 
-  // Get budget limit from plan (via client → plan)
+  // Get budget limit from client's plan
   const clientRows = await db.select().from(clients).where(eq(clients.id, clientId));
   const client = clientRows[0];
-  // Default: $1/week = 100 cents
-  const weeklyBudgetCents = 100; // TODO: read from hosting_plans via client.planId
+  let weeklyBudgetCents = 100; // default $1/week
+  if (client?.planId) {
+    const planRows = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId));
+    if (planRows[0]?.weeklyAiBudgetCents) {
+      weeklyBudgetCents = planRows[0].weeklyAiBudgetCents;
+    }
+  }
 
   // Calculate token limit based on cheapest available model
   const models = await listModels(db);
