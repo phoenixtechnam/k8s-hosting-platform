@@ -24,7 +24,7 @@ import {
   useDiskUsage, useFolderSize, useChmod, useChown,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
-import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
+import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useClientContext } from '@/hooks/use-client-context';
 import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
@@ -1554,6 +1554,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const [aiModelId, setAiModelId] = useState(() => localStorage.getItem('ai-model-id') ?? '');
   const [aiProposal, setAiProposal] = useState<string | null>(null);
   const aiEdit = useAiFileEdit('');
+  const aiBudget = useAiTokenBudget();
   const aiModels = useAiModels();
 
   // Chat history (persisted in sessionStorage per file)
@@ -1741,6 +1742,19 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
             )}
             <div ref={chatEndRef} />
           </div>
+
+          {/* Budget bar */}
+          {aiBudget.data?.data && (
+            <div className="px-4 py-1 border-t border-gray-200 dark:border-gray-700 flex items-center gap-2 text-[10px] text-gray-400 shrink-0">
+              <span>Budget: {aiBudget.data.data.percentUsed}%</span>
+              <div className="w-16 h-1 rounded-full bg-gray-200 dark:bg-gray-700">
+                <div className={`h-1 rounded-full ${aiBudget.data.data.percentUsed > 90 ? 'bg-red-500' : aiBudget.data.data.percentUsed > 70 ? 'bg-amber-500' : 'bg-green-500'}`}
+                  style={{ width: `${Math.min(aiBudget.data.data.percentUsed, 100)}%` }} />
+              </div>
+              <span>{(aiBudget.data.data.tokensUsed / 1000).toFixed(0)}k / {(aiBudget.data.data.tokenLimit / 1000).toFixed(0)}k tokens</span>
+              {aiBudget.data.data.exhausted && <span className="text-red-500 font-medium">Exhausted</span>}
+            </div>
+          )}
 
           {/* Input area */}
           <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-2">

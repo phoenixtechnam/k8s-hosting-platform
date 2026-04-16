@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, X, Check, XCircle, Eye, EyeOff, FileText, FolderPlus, Sparkles, AlertCircle, Download, Trash2, ArrowRight } from 'lucide-react';
 import { DiffEditor } from '@monaco-editor/react';
-import { useAiFolderPlan, useAiFolderExecute, useAiModels } from '@/hooks/use-ai-editor';
+import { useAiFolderPlan, useAiFolderExecute, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import type { AiEditChange } from '@/hooks/use-ai-editor';
 import { useWriteFile, useDeleteFile, useRenameFile } from '@/hooks/use-file-manager';
 import { useClientContext } from '@/hooks/use-client-context';
@@ -37,6 +37,7 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
 
   const { clientId } = useClientContext();
   const aiModels = useAiModels();
+  const aiBudget = useAiTokenBudget();
   const planner = useAiFolderPlan();
   const executor = useAiFolderExecute();
   const writeFile = useWriteFile();
@@ -362,6 +363,12 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
           <div className="text-xs text-gray-400">
             {planner.result?.tokensUsed && `Plan: ${planner.result.tokensUsed.input + planner.result.tokensUsed.output} tokens`}
             {executor.result?.tokensUsed && ` | Execute: ${executor.result.tokensUsed.input + executor.result.tokensUsed.output} tokens`}
+            {aiBudget.data?.data && (
+              <span className="ml-2">
+                | Budget: {aiBudget.data.data.percentUsed}% ({(aiBudget.data.data.tokensUsed / 1000).toFixed(0)}k / {(aiBudget.data.data.tokenLimit / 1000).toFixed(0)}k)
+                {aiBudget.data.data.exhausted && <span className="text-red-500 ml-1">Exhausted</span>}
+              </span>
+            )}
           </div>
           <div className="flex gap-2">
             {step === 'prompt' && (

@@ -4,6 +4,27 @@ import { useClientContext } from './use-client-context';
 import type { AiEditResponse, AiModelResponse } from '@k8s-hosting/api-contracts';
 import { useQuery } from '@tanstack/react-query';
 
+export interface AiTokenBudget {
+  tokensUsed: number;
+  tokenLimit: number;
+  budgetCents: number;
+  costUsedCents: number;
+  weekStart: string;
+  percentUsed: number;
+  exhausted: boolean;
+}
+
+export function useAiTokenBudget() {
+  const { clientId } = useClientContext();
+  return useQuery({
+    queryKey: ['ai-token-budget', clientId],
+    queryFn: () => apiFetch<{ data: AiTokenBudget }>(`/api/v1/clients/${clientId}/ai/budget`),
+    enabled: Boolean(clientId),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
 export function useAiModels() {
   return useQuery({
     queryKey: ['ai-models-enabled'],
