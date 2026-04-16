@@ -76,6 +76,8 @@ export function useCreateAiModel() {
       cost_per_1m_input_tokens?: number;
       cost_per_1m_output_tokens?: number;
       max_output_tokens?: number;
+      admin_only?: boolean;
+      is_default?: boolean;
     }) => apiFetch<{ data: AiModelResponse }>('/api/v1/admin/ai/models', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -94,6 +96,8 @@ export function useUpdateAiModel() {
       cost_per_1m_output_tokens?: number;
       max_output_tokens?: number;
       enabled?: boolean;
+      admin_only?: boolean;
+      is_default?: boolean;
     }) => apiFetch<{ data: AiModelResponse }>(`/api/v1/admin/ai/models/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),

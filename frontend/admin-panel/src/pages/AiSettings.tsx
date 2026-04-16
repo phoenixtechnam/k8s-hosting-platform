@@ -47,6 +47,8 @@ interface FormData {
   costInput: string;
   costOutput: string;
   maxTokens: string;
+  adminOnly: boolean;
+  isDefault: boolean;
 }
 
 const EMPTY_FORM: FormData = {
@@ -59,6 +61,8 @@ const EMPTY_FORM: FormData = {
   costInput: '0',
   costOutput: '0',
   maxTokens: '4096',
+  adminOnly: false,
+  isDefault: false,
 };
 
 interface FormErrors {
@@ -152,6 +156,8 @@ export default function AiSettings() {
       costInput: String(model.costPer1mInputTokens),
       costOutput: String(model.costPer1mOutputTokens),
       maxTokens: String(model.maxOutputTokens),
+      adminOnly: model.adminOnly ?? false,
+      isDefault: model.isDefault ?? false,
     });
   };
 
@@ -183,6 +189,8 @@ export default function AiSettings() {
             cost_per_1m_input_tokens: parseFloat(form.costInput) || 0,
             cost_per_1m_output_tokens: parseFloat(form.costOutput) || 0,
             max_output_tokens: parseInt(form.maxTokens) || 4096,
+            admin_only: form.adminOnly,
+            is_default: form.isDefault,
           });
         }
       } else {
@@ -202,6 +210,8 @@ export default function AiSettings() {
           cost_per_1m_input_tokens: parseFloat(form.costInput) || 0,
           cost_per_1m_output_tokens: parseFloat(form.costOutput) || 0,
           max_output_tokens: parseInt(form.maxTokens) || 4096,
+          admin_only: form.adminOnly,
+          is_default: form.isDefault,
         });
       }
 
@@ -378,6 +388,22 @@ export default function AiSettings() {
               <label className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1 block">Max output tokens</label>
               <input className={INPUT_CLASS} type="number" min="256" max="65536" value={form.maxTokens} onChange={(e) => setForm({ ...form, maxTokens: e.target.value })} />
             </div>
+          </div>
+
+          {/* Flags */}
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+              <input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })}
+                className="rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
+              Default model
+              <span className="text-[10px] text-gray-400">(pre-selected for all users)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+              <input type="checkbox" checked={form.adminOnly} onChange={(e) => setForm({ ...form, adminOnly: e.target.checked })}
+                className="rounded border-gray-300 text-red-500 focus:ring-red-500" />
+              Admin only
+              <span className="text-[10px] text-gray-400">(hidden from clients)</span>
+            </label>
           </div>
 
           {/* Save status */}

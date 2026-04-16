@@ -131,6 +131,8 @@ export async function createModel(
     costPer1mInputTokens?: number;
     costPer1mOutputTokens?: number;
     maxOutputTokens?: number;
+    adminOnly?: boolean;
+    isDefault?: boolean;
   },
 ) {
   const [row] = await db.insert(aiModels).values({
@@ -141,6 +143,8 @@ export async function createModel(
     costPer1mInputTokens: String(input.costPer1mInputTokens ?? 0),
     costPer1mOutputTokens: String(input.costPer1mOutputTokens ?? 0),
     maxOutputTokens: input.maxOutputTokens ?? 4096,
+    adminOnly: input.adminOnly ?? false,
+    isDefault: input.isDefault ?? false,
   }).returning();
   return row;
 }
@@ -148,7 +152,7 @@ export async function createModel(
 export async function updateModel(
   db: Database,
   id: string,
-  input: { displayName?: string; costPer1mInputTokens?: number; costPer1mOutputTokens?: number; maxOutputTokens?: number; enabled?: boolean },
+  input: { displayName?: string; costPer1mInputTokens?: number; costPer1mOutputTokens?: number; maxOutputTokens?: number; enabled?: boolean; adminOnly?: boolean; isDefault?: boolean },
 ) {
   const updates: Record<string, unknown> = {};
   if (input.displayName !== undefined) updates.displayName = input.displayName;
@@ -156,6 +160,8 @@ export async function updateModel(
   if (input.costPer1mOutputTokens !== undefined) updates.costPer1mOutputTokens = String(input.costPer1mOutputTokens);
   if (input.maxOutputTokens !== undefined) updates.maxOutputTokens = input.maxOutputTokens;
   if (input.enabled !== undefined) updates.enabled = input.enabled;
+  if (input.adminOnly !== undefined) updates.adminOnly = input.adminOnly;
+  if (input.isDefault !== undefined) updates.isDefault = input.isDefault;
 
   if (Object.keys(updates).length === 0) return getModel(db, id);
 

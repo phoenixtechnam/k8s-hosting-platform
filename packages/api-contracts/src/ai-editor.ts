@@ -43,6 +43,8 @@ export const createAiModelSchema = z.object({
   cost_per_1m_input_tokens: z.number().min(0).default(0),
   cost_per_1m_output_tokens: z.number().min(0).default(0),
   max_output_tokens: z.number().int().min(256).max(65536).default(4096),
+  admin_only: z.boolean().default(false),
+  is_default: z.boolean().default(false),
 });
 
 export const updateAiModelSchema = z.object({
@@ -51,6 +53,8 @@ export const updateAiModelSchema = z.object({
   cost_per_1m_output_tokens: z.number().min(0).optional(),
   max_output_tokens: z.number().int().min(256).max(65536).optional(),
   enabled: z.boolean().optional(),
+  admin_only: z.boolean().optional(),
+  is_default: z.boolean().optional(),
 });
 
 export const aiModelResponseSchema = z.object({
@@ -62,6 +66,9 @@ export const aiModelResponseSchema = z.object({
   costPer1mOutputTokens: z.number(),
   maxOutputTokens: z.number(),
   enabled: z.boolean(),
+  adminOnly: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
+  providerName: z.string().optional(),
   createdAt: z.string(),
 });
 

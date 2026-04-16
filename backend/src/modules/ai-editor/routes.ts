@@ -129,6 +129,8 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       costPer1mInputTokens: parsed.data.cost_per_1m_input_tokens,
       costPer1mOutputTokens: parsed.data.cost_per_1m_output_tokens,
       maxOutputTokens: parsed.data.max_output_tokens,
+      adminOnly: parsed.data.admin_only,
+      isDefault: parsed.data.is_default,
     });
     return success(formatModel(model));
   });
@@ -146,6 +148,8 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       costPer1mOutputTokens: parsed.data.cost_per_1m_output_tokens,
       maxOutputTokens: parsed.data.max_output_tokens,
       enabled: parsed.data.enabled,
+      adminOnly: parsed.data.admin_only,
+      isDefault: parsed.data.is_default,
     });
     if (!model) throw new ApiError('NOT_FOUND', 'Model not found', 404);
     return success(formatModel(model));
