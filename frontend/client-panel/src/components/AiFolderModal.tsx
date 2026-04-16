@@ -83,7 +83,7 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
 
     await executor.execute(
       folderPath, prompt.trim(), modelId,
-      planner.result.filesToRead, planner.result.filesToCreate, planner.result.plan,
+      approvedOps, planner.result.plan,
     );
     addLog(`Done — ${executor.result?.changes.length ?? 0} changes proposed`);
     setStep('approve-changes');

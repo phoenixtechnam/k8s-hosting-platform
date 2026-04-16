@@ -141,8 +141,7 @@ export function useAiFolderExecute() {
     folderPath: string,
     instruction: string,
     modelId: string,
-    filesToRead: string[],
-    filesToCreate: string[],
+    operations: FolderOp[],
     plan: string,
   ) => {
     if (!clientId) return;
@@ -160,8 +159,7 @@ export function useAiFolderExecute() {
             folder_path: folderPath,
             instruction,
             model_id: modelId,
-            files_to_read: filesToRead,
-            files_to_create: filesToCreate,
+            operations,
             plan,
           }),
         },
