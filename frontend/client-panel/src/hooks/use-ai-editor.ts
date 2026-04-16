@@ -44,7 +44,7 @@ export function useAiFileEdit(deploymentId: string) {
           method: 'POST',
           body: JSON.stringify({
             mode: 'file',
-            deployment_id: deploymentId,
+            ...(deploymentId ? { deployment_id: deploymentId } : {}),
             file_path: filePath,
             file_content: fileContent,
             instruction,
@@ -94,7 +94,7 @@ export function useAiFolderEdit(deploymentId: string) {
           method: 'POST',
           body: JSON.stringify({
             mode: 'folder',
-            deployment_id: deploymentId,
+            ...(deploymentId ? { deployment_id: deploymentId } : {}),
             folder_path: folderPath,
             instruction,
             model_id: modelId,
