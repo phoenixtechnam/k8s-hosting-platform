@@ -39,6 +39,8 @@ export interface DeployCatalogEntryInput {
   readonly catalogCode?: string;
   /** Password env var name (e.g. 'MARIADB_ROOT_PASSWORD') */
   readonly passwordEnvVar?: string;
+  /** Client timezone — injected as TZ env var */
+  readonly timezone?: string;
 }
 
 export interface ComponentPodStatus {
@@ -112,9 +114,14 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars } = input;
+  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars, timezone } = input;
   const componentCount = components.length;
   const env = buildEnvVars(envVars?.fixed, configuration);
+
+  // Inject client timezone as TZ env var (respected by most Linux base images)
+  if (timezone && !env.some((e) => e.name === 'TZ')) {
+    env.push({ name: 'TZ', value: timezone });
+  }
 
   // Build password-reset init container for reused data directories
   const passwordResetContainer = input.reuseExistingData && input.catalogCode && input.passwordEnvVar

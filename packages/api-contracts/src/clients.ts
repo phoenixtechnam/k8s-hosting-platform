@@ -32,6 +32,7 @@ export const updateClientSchema = z.object({
   // Phase 3.B.3: per-customer email send rate limit (messages/hour).
   // null = inherit the global default. 0 = blocked.
   email_send_rate_limit: z.number().int().min(0).max(1000000).nullable().optional(),
+  timezone: z.string().min(1).max(50).nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────

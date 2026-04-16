@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
+import TimezoneSelect from './TimezoneSelect';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -19,6 +20,7 @@ export default function SystemSettingsForm() {
   const [mailHostname, setMailHostname] = useState('');
   const [webmailUrl, setWebmailUrl] = useState('');
   const [apiRateLimit, setApiRateLimit] = useState(100);
+  const [timezone, setTimezone] = useState('UTC');
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -33,6 +35,7 @@ export default function SystemSettingsForm() {
       setMailHostname(settings.mailHostname ?? '');
       setWebmailUrl(settings.webmailUrl ?? '');
       setApiRateLimit(settings.apiRateLimit);
+      setTimezone(settings.timezone ?? 'UTC');
     }
   }, [settings]);
 
@@ -50,6 +53,7 @@ export default function SystemSettingsForm() {
         mailHostname: mailHostname || null,
         webmailUrl: webmailUrl || null,
         apiRateLimit,
+        timezone,
       },
       {
         onSuccess: () => {
@@ -220,22 +224,31 @@ export default function SystemSettingsForm() {
 
       {/* Limits */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Limits</h3>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            API Rate Limit
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              value={apiRateLimit}
-              onChange={(e) => setApiRateLimit(Math.max(1, Math.min(10000, Number(e.target.value) || 1)))}
-              className={INPUT_CLASS}
-              min={1}
-              max={10000}
-              data-testid="api-rate-limit-input"
-            />
-            <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">req/min</span>
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Limits & Regional</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              API Rate Limit
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={apiRateLimit}
+                onChange={(e) => setApiRateLimit(Math.max(1, Math.min(10000, Number(e.target.value) || 1)))}
+                className={INPUT_CLASS}
+                min={1}
+                max={10000}
+                data-testid="api-rate-limit-input"
+              />
+              <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">req/min</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              System Timezone
+            </label>
+            <TimezoneSelect value={timezone} onChange={setTimezone} />
+            <p className="text-xs text-gray-400 mt-1">Default timezone for new clients. Clients can override in their settings.</p>
           </div>
         </div>
       </div>

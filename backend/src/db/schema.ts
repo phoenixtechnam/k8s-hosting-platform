@@ -181,6 +181,7 @@ export const clients = pgTable('clients', {
   // `email_send_rate_limit_default`. Suspended clients are forced to
   // rate=0 at the Stalwart level regardless of this value.
   emailSendRateLimit: integer('email_send_rate_limit'),
+  timezone: varchar('timezone', { length: 50 }),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
   createdBy: varchar('created_by', { length: 36 }),
   subscriptionExpiresAt: timestamp('subscription_expires_at'),
@@ -1203,6 +1204,7 @@ export const systemSettings = pgTable('system_settings', {
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
+  timezone: varchar('timezone', { length: 50 }).notNull().default('UTC'),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

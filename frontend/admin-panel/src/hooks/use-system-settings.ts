@@ -12,6 +12,8 @@ export interface SystemSettings {
   readonly mailHostname: string | null;
   readonly webmailUrl: string | null;
   readonly apiRateLimit: number;
+  readonly timezone: string;
+  readonly currencySymbol: string;
   readonly updatedAt: string;
 }
 

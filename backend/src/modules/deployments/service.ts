@@ -275,6 +275,7 @@ export async function createDeployment(
         reuseExistingData: input.storage_mode === 'custom',
         catalogCode: entry.code,
         passwordEnvVar,
+        timezone: client.timezone ?? undefined,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {
