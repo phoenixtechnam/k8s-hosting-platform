@@ -9,7 +9,7 @@ interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  FolderOpen, File, FilePlus, ChevronRight, ArrowLeft, Trash2, Edit3,
+  FolderOpen, File, FilePlus, ChevronRight, ChevronLeft, ArrowLeft, Trash2, Edit3,
   Download, FolderPlus, Loader2, RefreshCw, Home, X, Save, AlertTriangle, Upload,
   Copy, Move, GitBranch, Image as ImageIcon, CheckSquare, Square,
   FileArchive, PackageOpen, Check, MoreVertical, Database, Calculator, HardDrive, ChevronDown,
@@ -26,6 +26,7 @@ import {
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
 import { useClientContext } from '@/hooks/use-client-context';
+import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
 
@@ -388,7 +389,21 @@ export default function Files() {
   }
 
   if (viewingImage) {
-    return <div className="space-y-4"><FilePageHeader /><ImageViewer path={viewingImage} onClose={() => setViewingImage(null)} onDownload={() => downloadFile(viewingImage)} /></div>;
+    const allImages = (dirListing.data?.entries ?? [])
+      .filter((e) => e.type === 'file' && isImageFile(e.name))
+      .map((e) => joinPath(currentPath, e.name));
+    return (
+      <div className="space-y-4">
+        <FilePageHeader />
+        <ImageViewer
+          path={viewingImage}
+          allImages={allImages}
+          onClose={() => setViewingImage(null)}
+          onDownload={() => downloadFile(viewingImage)}
+          onNavigate={(p) => setViewingImage(p)}
+        />
+      </div>
+    );
   }
 
   // ─── File browser view ───────────────────────────────────────────────────
@@ -1256,29 +1271,88 @@ function ContextMenu({
   );
 }
 
-function ImageViewer({ path, onClose, onDownload }: { readonly path: string; readonly onClose: () => void; readonly onDownload: () => void }) {
-  const blobUrl = useAuthenticatedBlobUrl(path);
+function ImageViewer({ path, allImages, onClose, onDownload, onNavigate }: {
+  readonly path: string;
+  readonly allImages: string[];
+  readonly onClose: () => void;
+  readonly onDownload: () => void;
+  readonly onNavigate: (path: string) => void;
+}) {
+  const { clientId } = useClientContext();
   const filename = path.split('/').pop() ?? '';
+  const [imgError, setImgError] = useState(false);
+  const [imgLoading, setImgLoading] = useState(true);
+
+  const currentIdx = allImages.indexOf(path);
+  const hasPrev = currentIdx > 0;
+  const hasNext = currentIdx < allImages.length - 1;
+
+  const goPrev = useCallback(() => { if (hasPrev) onNavigate(allImages[currentIdx - 1]); }, [hasPrev, currentIdx, allImages, onNavigate]);
+  const goNext = useCallback(() => { if (hasNext) onNavigate(allImages[currentIdx + 1]); }, [hasNext, currentIdx, allImages, onNavigate]);
+
+  // Keyboard nav
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
+      else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [goPrev, goNext, onClose]);
+
+  // Reset loading state on path change
+  useEffect(() => { setImgError(false); setImgLoading(true); }, [path]);
+
+  // Direct URL — browser fetches the image natively (no blob intermediary)
+  const token = localStorage.getItem('auth_token') ?? '';
+  const base = config.API_URL || '';
+  const imgSrc = `${base}/api/v1/clients/${clientId}/files/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2">
-        <div className="flex items-center gap-2">
-          <ImageIcon size={14} className="text-purple-500" />
-          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{path}</span>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <ImageIcon size={14} className="text-purple-500 shrink-0" />
+          <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{path}</span>
+          {allImages.length > 1 && (
+            <span className="text-xs text-gray-400 shrink-0">{currentIdx + 1} / {allImages.length}</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={onDownload} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"><Download size={12} /> Download</button>
+          <button onClick={onDownload} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+            <Download size={12} /> Download
+          </button>
           <button onClick={onClose} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={16} /></button>
         </div>
       </div>
-      <div className="flex items-center justify-center p-4 min-h-[300px] bg-gray-50 dark:bg-gray-900/50">
-        {blobUrl.isLoading && <Loader2 size={24} className="animate-spin text-gray-400" />}
-        {blobUrl.error && <p className="text-sm text-red-500">Failed to load image</p>}
-        {blobUrl.data && (
-          getExtension(filename) === '.svg'
-            ? <img src={blobUrl.data} alt={filename} className="max-w-full max-h-[600px] object-contain" />
-            : <img src={blobUrl.data} alt={filename} className="max-w-full max-h-[600px] object-contain rounded" />
+      <div className="relative flex items-center justify-center p-4 min-h-[400px] bg-gray-50 dark:bg-gray-900/50">
+        {/* Prev button */}
+        {hasPrev && (
+          <button onClick={goPrev} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/30 hover:bg-black/50 text-white p-2 z-10" title="Previous (←)">
+            <ChevronLeft size={20} />
+          </button>
+        )}
+
+        {/* Image */}
+        {imgLoading && <Loader2 size={24} className="animate-spin text-gray-400 absolute" />}
+        {imgError ? (
+          <p className="text-sm text-red-500">Failed to load image</p>
+        ) : (
+          <img
+            src={imgSrc}
+            alt={filename}
+            className={`max-w-full max-h-[600px] object-contain rounded transition-opacity ${imgLoading ? 'opacity-0' : 'opacity-100'}`}
+            onLoad={() => setImgLoading(false)}
+            onError={() => { setImgLoading(false); setImgError(true); }}
+          />
+        )}
+
+        {/* Next button */}
+        {hasNext && (
+          <button onClick={goNext} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/30 hover:bg-black/50 text-white p-2 z-10" title="Next (→)">
+            <ChevronRight size={20} />
+          </button>
         )}
       </div>
     </div>
