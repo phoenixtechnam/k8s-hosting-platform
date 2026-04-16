@@ -4,6 +4,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
+import websocket from '@fastify/websocket';
 import { errorHandler } from './middleware/error-handler.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
@@ -98,6 +99,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       : true; // Permissive in development/test
   await app.register(fastifyCors, { origin: allowedOrigins });
   await app.register(fastifyCompress, { global: true });
+  await app.register(websocket);
   await app.register(fastifyJwt, { secret: deps.config.JWT_SECRET });
   await registerRateLimit(app);
 
@@ -270,6 +272,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   const { systemSettingsRoutes } = await import('./modules/system-settings/routes.js');
   await app.register(systemSettingsRoutes, { prefix: '/api/v1' });
+
+  const { containerConsoleRoutes } = await import('./modules/container-console/routes.js');
+  await app.register(containerConsoleRoutes, { prefix: '/api/v1' });
 
   // Start background schedulers (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
