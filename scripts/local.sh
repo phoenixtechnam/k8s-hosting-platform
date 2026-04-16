@@ -180,6 +180,13 @@ _rebuild_sidecar() {
   docker save file-manager-sidecar:latest ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest \
     | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
   echo "  Sidecar image imported into k3s (both local + GHCR tags)"
+  # Restart running file-manager pods so they pick up the new image
+  local namespaces
+  namespaces=$(docker exec "$k3s_name" kubectl get deployments -A -l app=file-manager --no-headers 2>/dev/null | awk '{print $1}')
+  for ns in $namespaces; do
+    docker exec "$k3s_name" kubectl rollout restart deployment/file-manager -n "$ns" >/dev/null 2>&1 && \
+      echo "  Restarted file-manager in $ns" || true
+  done
 }
 
 _cleanup_stale_namespaces() {

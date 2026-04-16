@@ -798,17 +798,23 @@ async function handleFetchUrl(req, res) {
   try {
     await mkdir(dirname(full), { recursive: true });
 
-    // Use dynamic import for either http or https
-    const proto = url.startsWith('https') ? await import('node:https') : await import('node:http');
+    async function fetchWithRedirects(fetchUrl, maxRedirects = 5) {
+      const fetchProto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
+      return new Promise((resolve, reject) => {
+        fetchProto.default.get(fetchUrl, { timeout: 30000 }, (response) => {
+          if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+            if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return; }
+            response.resume();
+            resolve(fetchWithRedirects(response.headers.location, maxRedirects - 1));
+            return;
+          }
+          resolve(response);
+        }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('Download timed out (30s)')); });
+      });
+    }
 
     await new Promise((resolve, reject) => {
-      const request = proto.default.get(url, { timeout: 30000 }, (response) => {
-        // Follow redirects (up to 5)
-        if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
-          // Simple redirect — just report error for now (avoids recursive complexity)
-          reject(new Error(`Redirect to ${response.headers.location} — direct URLs only`));
-          return;
-        }
+      fetchWithRedirects(url).then((response) => {
 
         if (response.statusCode !== 200) {
           reject(new Error(`HTTP ${response.statusCode} from ${url}`));
@@ -864,13 +870,7 @@ async function handleFetchUrl(req, res) {
           ws.destroy();
           reject(err);
         });
-      });
-
-      request.on('error', reject);
-      request.on('timeout', () => {
-        request.destroy();
-        reject(new Error('Download timed out (30s)'));
-      });
+      }).catch(reject);
     });
   } catch (err) {
     // Clean up partial file
