@@ -326,8 +326,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         storageUsedBytes = parsed.sizeBytes ?? 0;
         storageUsedFormatted = parsed.sizeFormatted ?? '0 B';
       }
-    } catch {
-      // File manager not available — return zero storage
+    } catch (fmErr) {
+      app.log.warn({ err: fmErr instanceof Error ? fmErr.message : String(fmErr) }, 'File manager folder-size failed');
     }
 
     return success({

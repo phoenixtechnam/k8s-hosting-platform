@@ -685,15 +685,16 @@ export default function InstalledAppDetailModal({
                 used={liveMetrics.data?.data?.memoryUsedMi}
                 type="memory"
               />
-              {liveMetrics.data?.data?.storageUsedBytes != null && liveMetrics.data.data.storageUsedBytes > 0 && (() => {
-                const usedGb = liveMetrics.data.data.storageUsedBytes / (1024 * 1024 * 1024);
+              {(() => {
+                const storageBytes = liveMetrics.data?.data?.storageUsedBytes ?? 0;
+                const usedGb = storageBytes / (1024 * 1024 * 1024);
                 const pct = Math.min((usedGb / 10) * 100, 100);
                 const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
                 return (
                   <div className="col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 p-3 text-center">
                     <HardDrive size={16} className="mx-auto mb-1 text-gray-400" />
                     <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
-                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data.data.storageUsedFormatted}</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">{liveMetrics.data?.data?.storageUsedFormatted ?? '0 B'}</p>
                     <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
                       <div className={clsx('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
                     </div>
