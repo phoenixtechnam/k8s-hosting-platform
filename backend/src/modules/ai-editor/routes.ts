@@ -224,7 +224,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    if (parsed.data.mode === 'folder') {
+    if (parsed.data.mode === 'folder-plan' || parsed.data.mode === 'folder') {
       if (!parsed.data.folder_path) {
         throw new ApiError('MISSING_REQUIRED_FIELD', 'folder_path required for folder mode', 400);
       }
@@ -236,17 +236,78 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       const namespace = await deploymentService.getClientNamespace(app.db, clientId);
       const FM_IMAGE = 'file-manager-sidecar:latest';
 
-      // List files in folder via sidecar
+      // List files recursively via sidecar
       const lsResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
-        query: { path: parsed.data.folder_path },
+        query: { path: parsed.data.folder_path, recursive: 'true' },
       });
       if (lsResult.status !== 200) throw new ApiError('FILE_MANAGER_ERROR', 'Failed to list directory', 500);
       const entries = JSON.parse(lsResult.body).entries as Array<{ name: string; size: number; type: string }>;
-      const files = entries.filter((e) => e.type === 'file');
 
-      const result = await service.editFolder(app.db, {
+      const planResult = await service.planFolderEdit(app.db, {
         folderPath: parsed.data.folder_path,
-        fileList: files,
+        fileList: entries,
+        instruction: parsed.data.instruction,
+        modelId: parsed.data.model_id,
+      });
+
+      if (parsed.data.mode === 'folder-plan') {
+        return success(planResult);
+      }
+
+      // Combined folder mode — plan + execute in one call
+      const readFileFn = async (filePath: string) => {
+        const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
+          query: { path: filePath },
+        });
+        if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);
+        return JSON.parse(readResult.body).content as string;
+      };
+
+      const result = await service.executeFolderEdit(app.db, {
+        folderPath: parsed.data.folder_path,
+        filesToRead: planResult.filesToRead,
+        plan: planResult.plan,
+        instruction: parsed.data.instruction,
+        modelId: parsed.data.model_id,
+        clientId,
+        deploymentId: parsed.data.deployment_id ?? null,
+        isAdmin,
+        readFile: readFileFn,
+      });
+
+      return success({
+        changes: result.changes,
+        tokensUsed: {
+          input: planResult.tokensUsed.input + result.tokensUsed.input,
+          output: planResult.tokensUsed.output + result.tokensUsed.output,
+        },
+        planSummary: planResult.plan,
+      });
+    }
+
+    if (parsed.data.mode === 'folder-execute') {
+      if (!parsed.data.folder_path) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'folder_path required', 400);
+      }
+
+      const body = request.body as Record<string, unknown>;
+      const filesToRead = body.files_to_read as string[] | undefined;
+      const plan = body.plan as string | undefined;
+      if (!filesToRead?.length || !plan) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'files_to_read and plan required for folder-execute', 400);
+      }
+
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
+      if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+
+      const namespace = await deploymentService.getClientNamespace(app.db, clientId);
+      const FM_IMAGE = 'file-manager-sidecar:latest';
+
+      const result = await service.executeFolderEdit(app.db, {
+        folderPath: parsed.data.folder_path,
+        filesToRead,
+        plan,
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,
         clientId,
@@ -264,7 +325,6 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       return success({
         changes: result.changes,
         tokensUsed: result.tokensUsed,
-        planSummary: result.planSummary,
       });
     }
 

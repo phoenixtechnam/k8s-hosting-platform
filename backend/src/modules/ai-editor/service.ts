@@ -249,6 +249,32 @@ Respond with ONLY a JSON object (no markdown fences):
 const FOLDER_APPLY_PROMPT = `You are a code editor assistant. Output ONLY the complete modified file content.
 No explanation, no markdown fences, no commentary.`;
 
+export interface FolderPlanInput {
+  folderPath: string;
+  fileList: Array<{ name: string; size: number; type: string }>;
+  instruction: string;
+  modelId: string;
+}
+
+export interface FolderPlanResult {
+  filesToRead: string[];
+  plan: string;
+  tokensUsed: { input: number; output: number };
+}
+
+export interface FolderExecuteInput {
+  folderPath: string;
+  filesToRead: string[];
+  plan: string;
+  instruction: string;
+  modelId: string;
+  clientId: string;
+  deploymentId: string | null;
+  isAdmin: boolean;
+  readFile: (path: string) => Promise<string>;
+}
+
+// Keep the combined interface for backward compat
 export interface FolderEditInput {
   folderPath: string;
   fileList: Array<{ name: string; size: number; type: string }>;
@@ -258,6 +284,116 @@ export interface FolderEditInput {
   deploymentId: string | null;
   isAdmin: boolean;
   readFile: (path: string) => Promise<string>;
+}
+
+export async function planFolderEdit(db: Database, input: FolderPlanInput): Promise<FolderPlanResult> {
+  const model = await getModel(db, input.modelId);
+  if (!model) throw new Error(`Model "${input.modelId}" not found`);
+
+  const provider = await getProvider(db, model.providerId);
+  if (!provider?.apiKeyEnc || !provider.enabled || !model.enabled) {
+    throw new Error('Provider or model not available');
+  }
+
+  const adapter = createProviderAdapter(
+    provider.type as AiProviderType,
+    provider.apiKeyEnc,
+    provider.baseUrl,
+  );
+
+  const fileListStr = input.fileList
+    .map((f) => `${f.type === 'directory' ? '📁' : '📄'} ${f.name} (${f.size} bytes)`)
+    .join('\n');
+
+  const planResponse = await adapter.call(model.modelName, [
+    { role: 'system', content: FOLDER_PLAN_PROMPT },
+    { role: 'user', content: `Directory: ${input.folderPath}\n\nFiles:\n${fileListStr}\n\nInstruction: ${input.instruction}` },
+  ], { maxTokens: 1024 });
+
+  let plan: { filesToRead: string[]; plan: string };
+  try {
+    plan = JSON.parse(stripMarkdownFences(planResponse.content));
+  } catch {
+    throw new Error('AI returned an invalid plan. Please try rephrasing your instruction.');
+  }
+
+  return {
+    filesToRead: plan.filesToRead,
+    plan: plan.plan,
+    tokensUsed: { input: planResponse.tokensInput, output: planResponse.tokensOutput },
+  };
+}
+
+export async function executeFolderEdit(db: Database, input: FolderExecuteInput): Promise<EditResult> {
+  const model = await getModel(db, input.modelId);
+  if (!model) throw new Error(`Model "${input.modelId}" not found`);
+
+  const provider = await getProvider(db, model.providerId);
+  if (!provider?.apiKeyEnc || !provider.enabled || !model.enabled) {
+    throw new Error('Provider or model not available');
+  }
+
+  const adapter = createProviderAdapter(
+    provider.type as AiProviderType,
+    provider.apiKeyEnc,
+    provider.baseUrl,
+  );
+
+  let totalInput = 0;
+  let totalOutput = 0;
+  const changes: EditChange[] = [];
+
+  for (const fileName of input.filesToRead) {
+    const filePath = `${input.folderPath}/${fileName}`.replace(/\/\//g, '/');
+    let originalContent: string;
+    try {
+      originalContent = await input.readFile(filePath);
+    } catch {
+      continue;
+    }
+
+    const applyResponse = await adapter.call(model.modelName, [
+      { role: 'system', content: FOLDER_APPLY_PROMPT },
+      {
+        role: 'user',
+        content: `File: ${fileName}\nPlan: ${input.plan}\nInstruction: ${input.instruction}\n\nCurrent content:\n\`\`\`\n${originalContent}\n\`\`\``,
+      },
+    ], { maxTokens: model.maxOutputTokens });
+
+    totalInput += applyResponse.tokensInput;
+    totalOutput += applyResponse.tokensOutput;
+
+    let modifiedContent = stripMarkdownFences(applyResponse.content);
+
+    if (!input.isAdmin) {
+      const scanResult = scanOutput(modifiedContent);
+      if (scanResult.refused) continue;
+      modifiedContent = scanResult.content;
+    }
+
+    if (modifiedContent !== originalContent) {
+      changes.push({
+        path: filePath,
+        action: 'modify',
+        originalContent,
+        modifiedContent,
+      });
+    }
+  }
+
+  // Log usage
+  await db.insert(aiTokenUsage).values({
+    id: randomUUID(),
+    clientId: input.clientId,
+    deploymentId: input.deploymentId,
+    modelId: input.modelId,
+    mode: 'folder',
+    tokensInput: totalInput,
+    tokensOutput: totalOutput,
+    instruction: input.instruction.slice(0, 500),
+  });
+
+  return { changes, tokensUsed: { input: totalInput, output: totalOutput } };
 }
 
 export async function editFolder(db: Database, input: FolderEditInput): Promise<EditResult & { planSummary: string }> {

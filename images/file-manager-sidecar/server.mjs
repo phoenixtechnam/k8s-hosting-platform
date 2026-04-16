@@ -216,42 +216,52 @@ async function parseMultipart(req) {
 // ─── Route handlers ──────────────────────────────────────────────────────────
 
 async function handleLs(req, res) {
-  const { path: p = '/' } = getQuery(req.url);
+  const { path: p = '/', recursive } = getQuery(req.url);
   const bypass = isPlatformBypass(req);
   const full = safePath(p, { allowHidden: bypass });
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
-    const entries = await readdir(full, { withFileTypes: true });
-    // Filter out hidden platform paths unless the caller is the
-    // platform backend with the bypass header. We pre-compute the
-    // parent's path relative to BASE so each entry can be checked.
-    const parentRel = relToBase(full);
-    const visibleEntries = bypass
-      ? entries
-      : entries.filter((e) => {
-          const childRel = parentRel === '.' ? e.name : `${parentRel}/${e.name}`;
-          return !isHidden(childRel);
-        });
-    const items = await Promise.all(visibleEntries.map(async (e) => {
-      const entryPath = join(full, e.name);
-      try {
-        const s = await stat(entryPath);
-        return {
-          name: e.name,
-          type: e.isDirectory() ? 'directory' : 'file',
-          size: s.size,
-          modifiedAt: s.mtime.toISOString(),
-          permissions: (s.mode & 0o777).toString(8),
-          uid: s.uid,
-          gid: s.gid,
-          owner: resolveUidName(s.uid),
-          group: resolveGidName(s.gid),
-        };
-      } catch {
-        return { name: e.name, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0, owner: 'root', group: 'root' };
+    const isRecursive = recursive === 'true' || recursive === '1';
+
+    async function listDir(dirPath, prefix) {
+      const entries = await readdir(dirPath, { withFileTypes: true });
+      const parentRel = relToBase(dirPath);
+      const visibleEntries = bypass
+        ? entries
+        : entries.filter((e) => {
+            const childRel = parentRel === '.' ? e.name : `${parentRel}/${e.name}`;
+            return !isHidden(childRel);
+          });
+      const items = [];
+      for (const e of visibleEntries) {
+        const entryPath = join(dirPath, e.name);
+        const relativeName = prefix ? `${prefix}/${e.name}` : e.name;
+        try {
+          const s = await stat(entryPath);
+          items.push({
+            name: relativeName,
+            type: e.isDirectory() ? 'directory' : 'file',
+            size: s.size,
+            modifiedAt: s.mtime.toISOString(),
+            permissions: (s.mode & 0o777).toString(8),
+            uid: s.uid,
+            gid: s.gid,
+            owner: resolveUidName(s.uid),
+            group: resolveGidName(s.gid),
+          });
+          if (isRecursive && e.isDirectory()) {
+            const subItems = await listDir(entryPath, relativeName);
+            items.push(...subItems);
+          }
+        } catch {
+          items.push({ name: relativeName, type: e.isDirectory() ? 'directory' : 'file', size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0, owner: 'root', group: 'root' });
+        }
       }
-    }));
+      return items;
+    }
+
+    const items = await listDir(full, '');
     // Sort: directories first, then alphabetical
     items.sort((a, b) => {
       if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;

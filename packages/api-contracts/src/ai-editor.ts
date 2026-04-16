@@ -69,7 +69,7 @@ export type AiModelResponse = z.infer<typeof aiModelResponseSchema>;
 
 // ─── AI Edit request/response ──────────────────────────────────────────────
 
-export const aiEditModeEnum = z.enum(['file', 'folder', 'website']);
+export const aiEditModeEnum = z.enum(['file', 'folder', 'folder-plan', 'folder-execute', 'website']);
 export type AiEditMode = z.infer<typeof aiEditModeEnum>;
 
 export const aiEditRequestSchema = z.object({
@@ -107,6 +107,16 @@ export const aiEditResponseSchema = z.object({
 });
 
 export type AiEditResponse = z.infer<typeof aiEditResponseSchema>;
+
+// ─── Folder plan response ──────────────────────────────────────────────────
+
+export const aiFolderPlanResponseSchema = z.object({
+  filesToRead: z.array(z.string()),
+  plan: z.string(),
+  tokensUsed: z.object({ input: z.number(), output: z.number() }),
+});
+
+export type AiFolderPlanResponse = z.infer<typeof aiFolderPlanResponseSchema>;
 
 // ─── Test connection ───────────────────────────────────────────────────────
 

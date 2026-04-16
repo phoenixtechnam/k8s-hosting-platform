@@ -24,7 +24,8 @@ import {
   useDiskUsage, useFolderSize, useChmod, useChown,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
-import { useAiFileEdit, useAiFolderEdit, useAiModels } from '@/hooks/use-ai-editor';
+import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
+import AiFolderModal from '@/components/AiFolderModal';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -119,12 +120,8 @@ export default function Files() {
   const [chownOwnerName, setChownOwnerName] = useState('');
   const [chownGroupName, setChownGroupName] = useState('');
 
-  // Folder AI state
+  // Folder AI modal
   const [showFolderAi, setShowFolderAi] = useState(false);
-  const [folderAiPrompt, setFolderAiPrompt] = useState('');
-  const folderAiEdit = useAiFolderEdit('');
-  const folderAiModels = useAiModels();
-  const [folderAiModelId, setFolderAiModelId] = useState('');
 
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -619,116 +616,13 @@ export default function Files() {
         )}
       </div>
 
-      {/* Folder AI Chat */}
+      {/* Folder AI Modal */}
       {showFolderAi && (
-        <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/10 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-              <Sparkles size={14} className="text-purple-500" /> AI Folder Edit
-            </h3>
-            <button onClick={() => setShowFolderAi(false)} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Hide</button>
-          </div>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            AI can read and modify files in <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">{currentPath}</code>. Describe what you want to change.
-          </p>
-          {folderAiEdit.error && (
-            <div className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-700 dark:text-red-400">{folderAiEdit.error}</div>
-          )}
-          <div className="flex gap-2 items-end">
-            {(folderAiModels.data?.data ?? []).length > 1 && (
-              <select className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-xs text-gray-900 dark:text-gray-100 w-28 shrink-0"
-                value={folderAiModelId || (folderAiModels.data?.data?.[0]?.id ?? '')}
-                onChange={(e) => setFolderAiModelId(e.target.value)}>
-                {(folderAiModels.data?.data ?? []).map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
-              </select>
-            )}
-            <textarea
-              className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 resize-none"
-              placeholder="e.g., Add dark mode to all HTML files..."
-              value={folderAiPrompt}
-              onChange={(e) => setFolderAiPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  if (folderAiPrompt.trim() && !folderAiEdit.loading) {
-                    const modelId = folderAiModelId || folderAiModels.data?.data?.[0]?.id || '';
-                    if (modelId) folderAiEdit.edit(currentPath, folderAiPrompt.trim(), modelId);
-                  }
-                }
-              }}
-              disabled={folderAiEdit.loading || (folderAiModels.data?.data ?? []).length === 0}
-              rows={2}
-            />
-            <button
-              onClick={() => {
-                const modelId = folderAiModelId || folderAiModels.data?.data?.[0]?.id || '';
-                if (folderAiPrompt.trim() && modelId) folderAiEdit.edit(currentPath, folderAiPrompt.trim(), modelId);
-              }}
-              disabled={!folderAiPrompt.trim() || folderAiEdit.loading || (folderAiModels.data?.data ?? []).length === 0}
-              className="rounded-lg bg-purple-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-600 disabled:opacity-50 shrink-0 self-end">
-              {folderAiEdit.loading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
-            </button>
-          </div>
-          {(folderAiModels.data?.data ?? []).length === 0 && (
-            <p className="text-[10px] text-gray-400">No AI models configured. Go to Admin → Settings → AI.</p>
-          )}
-        </div>
-      )}
-
-      {/* Folder AI Change Plan Modal */}
-      {folderAiEdit.result && folderAiEdit.result.changes.length > 0 && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) folderAiEdit.clear(); }}>
-          <div className="w-full max-w-3xl max-h-[80vh] rounded-xl bg-white dark:bg-gray-800 shadow-xl overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">AI Change Plan</h3>
-              {folderAiEdit.result.planSummary && (
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{folderAiEdit.result.planSummary}</p>
-              )}
-              <p className="text-xs text-gray-400 mt-1">
-                {folderAiEdit.result.changes.length} file(s) modified |
-                {folderAiEdit.result.tokensUsed.input + folderAiEdit.result.tokensUsed.output} tokens used
-              </p>
-            </div>
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {folderAiEdit.result.changes.map((change, i) => (
-                <details key={i} className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                  <summary className="flex items-center gap-2 px-4 py-2.5 cursor-pointer bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                      change.action === 'create' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                      : change.action === 'delete' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                      : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                    }`}>{change.action.toUpperCase()}</span>
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{change.path}</span>
-                  </summary>
-                  <div className="bg-gray-900 p-3 font-mono text-xs text-gray-300 max-h-64 overflow-y-auto whitespace-pre-wrap">
-                    {change.modifiedContent?.slice(0, 3000) ?? '(no content)'}
-                    {(change.modifiedContent?.length ?? 0) > 3000 && <span className="text-gray-500">... ({change.modifiedContent!.length} chars total)</span>}
-                  </div>
-                </details>
-              ))}
-            </div>
-            <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-              <button onClick={() => folderAiEdit.clear()}
-                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  for (const change of folderAiEdit.result!.changes) {
-                    if (change.modifiedContent != null) {
-                      await createFile.mutateAsync({ path: change.path, content: change.modifiedContent });
-                    }
-                  }
-                  folderAiEdit.clear();
-                  setFolderAiPrompt('');
-                  dirListing.refetch();
-                }}
-                className="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white hover:bg-green-600">
-                <Check size={14} className="inline mr-1" /> Apply All ({folderAiEdit.result.changes.length} files)
-              </button>
-            </div>
-          </div>
-        </div>
+        <AiFolderModal
+          folderPath={currentPath}
+          onClose={() => setShowFolderAi(false)}
+          onApplied={() => dirListing.refetch()}
+        />
       )}
 
       {/* Context menu */}

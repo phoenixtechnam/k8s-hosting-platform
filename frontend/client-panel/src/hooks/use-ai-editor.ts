@@ -71,6 +71,102 @@ export function useAiFileEdit(deploymentId: string) {
   return { edit, loading, error, result, clear };
 }
 
+export interface AiFolderPlan {
+  filesToRead: string[];
+  plan: string;
+  tokensUsed: { input: number; output: number };
+}
+
+export function useAiFolderPlan() {
+  const { clientId } = useClientContext();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<AiFolderPlan | null>(null);
+
+  const plan = useCallback(async (
+    folderPath: string,
+    instruction: string,
+    modelId: string,
+  ): Promise<AiFolderPlan | null> => {
+    if (!clientId) return null;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await apiFetch<{ data: AiFolderPlan }>(
+        `/api/v1/clients/${clientId}/ai/edit`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            mode: 'folder-plan',
+            folder_path: folderPath,
+            instruction,
+            model_id: modelId,
+          }),
+        },
+      );
+      setResult(response.data);
+      return response.data;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Planning failed');
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  const clear = useCallback(() => { setResult(null); setError(null); }, []);
+
+  return { plan, loading, error, result, clear };
+}
+
+export function useAiFolderExecute() {
+  const { clientId } = useClientContext();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ changes: AiEditChange[]; tokensUsed: { input: number; output: number } } | null>(null);
+
+  const execute = useCallback(async (
+    folderPath: string,
+    instruction: string,
+    modelId: string,
+    filesToRead: string[],
+    plan: string,
+  ) => {
+    if (!clientId) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await apiFetch<{ data: { changes: AiEditChange[]; tokensUsed: { input: number; output: number } } }>(
+        `/api/v1/clients/${clientId}/ai/edit`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            mode: 'folder-execute',
+            folder_path: folderPath,
+            instruction,
+            model_id: modelId,
+            files_to_read: filesToRead,
+            plan,
+          }),
+        },
+      );
+      setResult(response.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Execution failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  const clear = useCallback(() => { setResult(null); setError(null); }, []);
+
+  return { execute, loading, error, result, clear };
+}
+
 export function useAiFolderEdit(deploymentId: string) {
   const { clientId } = useClientContext();
   const [loading, setLoading] = useState(false);
