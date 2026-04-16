@@ -1164,17 +1164,29 @@ async function handleCloneSite(req, res) {
       const bodyBuf = await fetchBody(normalized);
       if (!bodyBuf) continue;
 
-      const contentType = 'text/html';
-      const html = bodyBuf.toString('utf-8');
       const localPath = urlToPath(normalized) || 'index.html';
       const fullPath = join(full, localPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+
+      // Detect binary files — skip text processing for non-text files
+      const isBinary = /\.(jpg|jpeg|png|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|ogg|pdf|zip|gz|tar|exe|dll|so|dylib)$/i.test(localPath);
+
+      if (isBinary) {
+        // Write binary files directly — no UTF-8 conversion
+        await writeFile(fullPath, bodyBuf);
+        await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+        assetsDownloaded++;
+        send({ type: 'asset', url: normalized, path: localPath, current: assetsDownloaded, total: 0 });
+        continue;
+      }
+
+      const html = bodyBuf.toString('utf-8');
 
       // Extract links before rewriting
       const links = extractLinks(html, normalized);
 
       // Rewrite URLs and save
       const rewritten = rewriteUrls(html, normalized);
-      await mkdir(dirname(fullPath), { recursive: true });
       const finalContent = shouldPrettify(localPath, prettifyHtml, prettifyCss, prettifyJs) ? prettifyContent(rewritten, localPath) : rewritten;
       await writeFile(fullPath, finalContent, 'utf-8');
       await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});

@@ -26,6 +26,7 @@ import {
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
@@ -156,6 +157,7 @@ export default function Files() {
   const archiveFiles = useArchiveFiles();
   const gitClone = useGitClone();
   const { data: diskUsage } = useDiskUsage();
+  const resourceAvail = useResourceAvailability(clientId ?? undefined);
   const folderSize = useFolderSize();
   const chmod = useChmod();
   const chown = useChown();
@@ -412,15 +414,19 @@ export default function Files() {
   const pathParts = currentPath.split('/').filter(Boolean);
 
   const used = diskUsage?.data?.usedFormatted ?? '\u2014';
-  const total = diskUsage?.data?.totalFormatted ?? '\u2014';
-  const usagePct = diskUsage?.data ? (diskUsage.data.usedBytes / diskUsage.data.totalBytes) * 100 : 0;
+  // Use plan storage quota (from resource availability) instead of physical disk total
+  const storageLimitGi = resourceAvail.data?.data?.storageLimitGi;
+  const total = storageLimitGi ? `${storageLimitGi} GB` : (diskUsage?.data?.totalFormatted ?? '\u2014');
+  const totalBytes = storageLimitGi ? storageLimitGi * 1024 * 1024 * 1024 : diskUsage?.data?.totalBytes ?? 1;
+  const usagePct = diskUsage?.data ? (diskUsage.data.usedBytes / totalBytes) * 100 : 0;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <FilePageHeader />
-        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0">
+        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
           <HardDrive size={14} />
+          <span className="font-medium text-gray-600 dark:text-gray-300">Storage</span>
           <span>{used} / {total}</span>
           <div className="w-24 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
             <div className={`h-1.5 rounded-full ${usagePct > 90 ? 'bg-red-500' : usagePct > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
