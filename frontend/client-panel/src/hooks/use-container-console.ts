@@ -58,10 +58,17 @@ export function useLogStream(
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intentionalCloseRef = useRef(false);
   const maxLines = 5000;
 
   const connect = useCallback(() => {
     if (!clientId || !deploymentId || !enabled) return;
+    intentionalCloseRef.current = false;
+
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
 
     const params = new URLSearchParams();
     if (component) params.set('component', component);
@@ -87,11 +94,18 @@ export function useLogStream(
       } catch { /* ignore parse errors */ }
     };
 
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      setConnected(false);
+      if (!intentionalCloseRef.current && enabled) {
+        reconnectTimerRef.current = setTimeout(() => { connect(); }, 3000);
+      }
+    };
     ws.onerror = () => setError('WebSocket connection failed');
   }, [clientId, deploymentId, component, tailLines, enabled]);
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     wsRef.current?.close();
     wsRef.current = null;
     setConnected(false);
@@ -100,9 +114,13 @@ export function useLogStream(
   const clear = useCallback(() => setLines([]), []);
 
   useEffect(() => {
-    connect();
-    return () => { wsRef.current?.close(); };
-  }, [connect]);
+    if (enabled) connect();
+    return () => {
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+    };
+  }, [connect, enabled]);
 
   return { lines, connected, error, disconnect, clear, reconnect: connect };
 }
