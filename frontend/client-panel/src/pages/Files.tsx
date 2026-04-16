@@ -366,7 +366,7 @@ export default function Files() {
   }
 
   if (editingFile) {
-    return <div className="space-y-4"><FilePageHeader /><FileEditor path={editingFile} onClose={() => setEditingFile(null)} /></div>;
+    return <div className="space-y-4"><FileEditor path={editingFile} onClose={() => setEditingFile(null)} /></div>;
   }
 
   if (viewingImage) {
@@ -569,7 +569,7 @@ export default function Files() {
                   </button>
                 </th>
                 <th className="px-3 py-3 w-28 hidden md:table-cell">Permissions</th>
-                <th className="px-3 py-3 w-20 hidden lg:table-cell">Owner</th>
+                <th className="px-3 py-3 w-36 hidden lg:table-cell">Owner</th>
                 <th className="px-3 py-3 w-10" />
               </tr>
             </thead>
@@ -1398,37 +1398,36 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 120px)' }}>
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2 shrink-0">
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-2.5 shrink-0">
         <div className="flex items-center gap-2">
-          <File size={14} className="text-gray-400" />
+          <File size={16} className="text-gray-400" />
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{path}</span>
-          {dirty && <span className="text-xs text-amber-500">Modified</span>}
-          {isDiffMode && <span className="text-xs text-purple-500 font-medium">AI Diff</span>}
+          <span className="rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">{language.toUpperCase()}</span>
+          {dirty && <span className="rounded-md px-2 py-0.5 text-[10px] font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">Modified</span>}
+          {isDiffMode && <span className="rounded-md px-2 py-0.5 text-[10px] font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">AI Diff</span>}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">{language}</span>
-          <span className="text-[10px] text-gray-400 hidden sm:inline">Ctrl+S to save</span>
           {isDiffMode ? (
             <>
-              <button onClick={handleAcceptAi} className="inline-flex items-center gap-1 rounded-lg bg-green-500 px-3 py-1 text-xs font-medium text-white hover:bg-green-600">
-                <Check size={12} /> Accept
+              <button onClick={handleAcceptAi} className="inline-flex items-center gap-1.5 rounded-lg bg-green-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-600">
+                <Check size={14} /> Accept
               </button>
-              <button onClick={handleRejectAi} className="inline-flex items-center gap-1 rounded-lg border border-red-300 dark:border-red-700 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-                <XIcon size={12} /> Reject
+              <button onClick={handleRejectAi} className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-4 py-1.5 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                <XIcon size={14} /> Reject
               </button>
             </>
           ) : (
             <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
-              className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
-              {writeFile.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+              {writeFile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
             </button>
           )}
           <button onClick={() => setShowAiChat(!showAiChat)}
-            className={`rounded p-1 transition-colors ${showAiChat ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+            className={`rounded-lg p-1.5 transition-colors ${showAiChat ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
             title="AI Assistant">
-            <Sparkles size={16} />
+            <Sparkles size={18} />
           </button>
-          <button onClick={handleClose} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Close (Esc)"><X size={16} /></button>
+          <button onClick={handleClose} className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" title="Close (Esc)"><X size={18} /></button>
         </div>
       </div>
 
