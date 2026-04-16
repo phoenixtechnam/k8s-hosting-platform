@@ -2,8 +2,10 @@ import { useState, useCallback } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { useTokenRefresh } from '@/hooks/use-token-refresh';
 
 export default function Layout() {
+  useTokenRefresh();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);

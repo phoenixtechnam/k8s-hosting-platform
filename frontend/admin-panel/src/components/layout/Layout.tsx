@@ -4,8 +4,10 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import UpdateBanner from '../UpdateBanner';
 import SystemHealthBanner from '../SystemHealthBanner';
+import { useTokenRefresh } from '@/hooks/use-token-refresh';
 
 export default function Layout() {
+  useTokenRefresh();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);

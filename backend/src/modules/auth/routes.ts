@@ -88,7 +88,7 @@ export async function authRoutes(app: FastifyInstance) {
       sub: user.id,
       role: user.role,
       panel: user.panel ?? 'admin',
-      exp: Math.floor(Date.now() / 1000) + 86400,
+      exp: Math.floor(Date.now() / 1000) + 3600, // 60 min — auto-refreshed by frontend on activity
       iat: Math.floor(Date.now() / 1000),
       jti: crypto.randomUUID(),
     };
@@ -260,11 +260,14 @@ export async function authRoutes(app: FastifyInstance) {
       sub: user.id,
       role: user.roleName,
       panel: user.panel ?? 'admin',
-      exp: Math.floor(Date.now() / 1000) + 86400,
+      exp: Math.floor(Date.now() / 1000) + 3600, // 60 min — auto-refreshed by frontend on activity
       iat: Math.floor(Date.now() / 1000),
       jti: crypto.randomUUID(),
     };
     if (user.clientId) refreshPayload.clientId = user.clientId;
+    // Preserve impersonation claim on refresh
+    const originalPayload = request.user as unknown as Record<string, unknown>;
+    if (originalPayload.impersonatedBy) refreshPayload.impersonatedBy = originalPayload.impersonatedBy;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newToken = app.jwt.sign(refreshPayload as any);
 
@@ -282,4 +285,5 @@ export async function authRoutes(app: FastifyInstance) {
       },
     });
   });
+
 }
