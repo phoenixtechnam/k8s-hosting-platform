@@ -112,6 +112,7 @@ export type AiEditResponse = z.infer<typeof aiEditResponseSchema>;
 
 export const aiFolderPlanResponseSchema = z.object({
   filesToRead: z.array(z.string()),
+  filesToCreate: z.array(z.string()),
   plan: z.string(),
   tokensUsed: z.object({ input: z.number(), output: z.number() }),
 });

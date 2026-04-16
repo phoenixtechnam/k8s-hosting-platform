@@ -73,6 +73,7 @@ export function useAiFileEdit(deploymentId: string) {
 
 export interface AiFolderPlan {
   filesToRead: string[];
+  filesToCreate: string[];
   plan: string;
   tokensUsed: { input: number; output: number };
 }
@@ -132,6 +133,7 @@ export function useAiFolderExecute() {
     instruction: string,
     modelId: string,
     filesToRead: string[],
+    filesToCreate: string[],
     plan: string,
   ) => {
     if (!clientId) return;
@@ -150,6 +152,7 @@ export function useAiFolderExecute() {
             instruction,
             model_id: modelId,
             files_to_read: filesToRead,
+            files_to_create: filesToCreate,
             plan,
           }),
         },

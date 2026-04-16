@@ -238,16 +238,24 @@ export async function editFile(db: Database, input: FileEditInput): Promise<Edit
 
 const FOLDER_PLAN_PROMPT = `You are a code editor assistant. The user wants to modify files in a directory.
 
-Given the file listing below, determine which files you need to read and propose a plan.
+Given the file listing below, determine which existing files you need to read and what new files to create.
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "filesToRead": ["file1.ext", "file2.ext"],
-  "plan": "Brief description of what you will change in each file"
-}`;
+  "filesToRead": ["existing-file1.ext", "existing-file2.ext"],
+  "filesToCreate": ["new-file.ext"],
+  "plan": "Brief description of changes: which files will be modified and which will be created"
+}
 
-const FOLDER_APPLY_PROMPT = `You are a code editor assistant. Output ONLY the complete modified file content.
+filesToRead: existing files you need to examine before making changes.
+filesToCreate: new files that don't exist yet and need to be created from scratch.
+A file should appear in EITHER filesToRead OR filesToCreate, never both.`;
+
+const FOLDER_APPLY_PROMPT = `You are a code editor assistant. Output ONLY the complete file content.
 No explanation, no markdown fences, no commentary.`;
+
+const FOLDER_CREATE_PROMPT = `You are a code editor assistant. Create the requested file from scratch.
+Output ONLY the complete file content. No explanation, no markdown fences, no commentary.`;
 
 export interface FolderPlanInput {
   folderPath: string;
@@ -258,6 +266,7 @@ export interface FolderPlanInput {
 
 export interface FolderPlanResult {
   filesToRead: string[];
+  filesToCreate: string[];
   plan: string;
   tokensUsed: { input: number; output: number };
 }
@@ -265,6 +274,7 @@ export interface FolderPlanResult {
 export interface FolderExecuteInput {
   folderPath: string;
   filesToRead: string[];
+  filesToCreate: string[];
   plan: string;
   instruction: string;
   modelId: string;
@@ -310,7 +320,7 @@ export async function planFolderEdit(db: Database, input: FolderPlanInput): Prom
     { role: 'user', content: `Directory: ${input.folderPath}\n\nFiles:\n${fileListStr}\n\nInstruction: ${input.instruction}` },
   ], { maxTokens: 1024 });
 
-  let plan: { filesToRead: string[]; plan: string };
+  let plan: { filesToRead: string[]; filesToCreate?: string[]; plan: string };
   try {
     plan = JSON.parse(stripMarkdownFences(planResponse.content));
   } catch {
@@ -318,7 +328,8 @@ export async function planFolderEdit(db: Database, input: FolderPlanInput): Prom
   }
 
   return {
-    filesToRead: plan.filesToRead,
+    filesToRead: plan.filesToRead ?? [],
+    filesToCreate: plan.filesToCreate ?? [],
     plan: plan.plan,
     tokensUsed: { input: planResponse.tokensInput, output: planResponse.tokensOutput },
   };
@@ -377,6 +388,38 @@ export async function executeFolderEdit(db: Database, input: FolderExecuteInput)
         action: 'modify',
         originalContent,
         modifiedContent,
+      });
+    }
+  }
+
+  // Create new files
+  for (const fileName of (input.filesToCreate ?? [])) {
+    const filePath = `${input.folderPath}/${fileName}`.replace(/\/\//g, '/');
+
+    const createResponse = await adapter.call(model.modelName, [
+      { role: 'system', content: FOLDER_CREATE_PROMPT },
+      {
+        role: 'user',
+        content: `Create new file: ${fileName}\nPlan: ${input.plan}\nInstruction: ${input.instruction}`,
+      },
+    ], { maxTokens: model.maxOutputTokens });
+
+    totalInput += createResponse.tokensInput;
+    totalOutput += createResponse.tokensOutput;
+
+    let newContent = stripMarkdownFences(createResponse.content);
+
+    if (!input.isAdmin) {
+      const scanResult = scanOutput(newContent);
+      if (scanResult.refused) continue;
+      newContent = scanResult.content;
+    }
+
+    if (newContent.trim()) {
+      changes.push({
+        path: filePath,
+        action: 'create',
+        modifiedContent: newContent,
       });
     }
   }

@@ -50,13 +50,18 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
     if (!planResult) { setStep('prompt'); return; }
 
     setStep('reading');
-    // Brief pause to show the reading step
-    await new Promise((r) => setTimeout(r, 500));
+    // Pause at reading step — user must click Continue to approve reads
+  }, [prompt, modelId, folderPath, planner]);
 
+  const handleContinueAfterRead = useCallback(async () => {
+    if (!planner.result) return;
     setStep('executing');
-    await executor.execute(folderPath, prompt.trim(), modelId, planResult.filesToRead, planResult.plan);
+    await executor.execute(
+      folderPath, prompt.trim(), modelId,
+      planner.result.filesToRead, planner.result.filesToCreate, planner.result.plan,
+    );
     setStep('review');
-  }, [prompt, modelId, folderPath, planner, executor]);
+  }, [folderPath, prompt, modelId, planner.result, executor]);
 
   const handleApplySelected = useCallback(async () => {
     setApplying(true);
@@ -154,20 +159,30 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
             </div>
           )}
 
-          {/* Step 3: Reading */}
+          {/* Step 3: Reading — requires user approval */}
           {step === 'reading' && planner.result && (
             <div className="space-y-3">
-              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Reading files...</p>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">AI wants to perform the following operations:</p>
               <div className="space-y-1">
                 {planner.result.filesToRead.map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-900/20">
+                  <div key={`read-${i}`} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-900/20">
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">READ</span>
                     <FileText size={14} className="text-blue-500" />
                     <span className="text-sm text-gray-900 dark:text-gray-100">{f}</span>
                   </div>
                 ))}
+                {planner.result.filesToCreate.map((f, i) => (
+                  <div key={`create-${i}`} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/20">
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">CREATE</span>
+                    <FileText size={14} className="text-green-500" />
+                    <span className="text-sm text-gray-900 dark:text-gray-100">{f}</span>
+                  </div>
+                ))}
               </div>
-              <p className="text-xs text-gray-400 mt-2">Plan: {planner.result.plan}</p>
+              <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 px-3 py-2">
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Plan:</p>
+                <p className="text-sm text-gray-700 dark:text-gray-300 mt-0.5">{planner.result.plan}</p>
+              </div>
             </div>
           )}
 
@@ -279,6 +294,18 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
               <button onClick={onClose} className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
                 Close
               </button>
+            )}
+            {step === 'reading' && !error && (
+              <>
+                <button onClick={() => { planner.clear(); setStep('prompt'); }}
+                  className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                  Back
+                </button>
+                <button onClick={handleContinueAfterRead}
+                  className="rounded-lg bg-purple-500 px-4 py-2 text-sm font-medium text-white hover:bg-purple-600">
+                  Approve & Continue
+                </button>
+              </>
             )}
             {(step === 'planning' || step === 'reading' || step === 'executing') && error && (
               <button onClick={() => setStep('prompt')} className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
