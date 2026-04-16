@@ -766,7 +766,7 @@ async function handleChown(req, res) {
 
 // ─── Fetch URL (download from internet) ─────────────────────────────────────
 
-const FETCH_MAX_SIZE = 50 * 1024 * 1024; // 50 MB
+const FETCH_MAX_SIZE = 500 * 1024 * 1024; // 500 MB (TODO: derive from client disk quota)
 const BLOCKED_URL_PATTERNS = [
   /^file:/i,
   /^ftp:/i,
