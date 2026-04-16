@@ -396,6 +396,7 @@ async function handleWrite(req, res) {
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
+    await mkdir(dirname(full), { recursive: true });
     await writeFile(full, content, 'utf-8');
     await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
     const s = await stat(full);
@@ -763,6 +764,126 @@ async function handleChown(req, res) {
   }
 }
 
+// ─── Fetch URL (download from internet) ─────────────────────────────────────
+
+const FETCH_MAX_SIZE = 50 * 1024 * 1024; // 50 MB
+const BLOCKED_URL_PATTERNS = [
+  /^file:/i,
+  /^ftp:/i,
+  /localhost/i,
+  /127\.0\.0\./,
+  /\[::1\]/,
+  /10\.\d+\.\d+\.\d+/,
+  /172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/,
+  /192\.168\.\d+\.\d+/,
+];
+
+async function handleFetchUrl(req, res) {
+  const body = await readBody(req);
+  const { url, path: destPath } = body;
+  if (!url) return sendError(res, 400, 'url required');
+  if (!destPath) return sendError(res, 400, 'path required');
+
+  // Security: block internal/local URLs (SSRF prevention)
+  if (BLOCKED_URL_PATTERNS.some((p) => p.test(url))) {
+    return sendError(res, 403, 'URL not allowed (internal/local addresses blocked)');
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    return sendError(res, 400, 'Only http:// and https:// URLs are supported');
+  }
+
+  const full = safePath(destPath, { allowHidden: isPlatformBypass(req) });
+  if (!full) return sendError(res, 404, 'Destination path not allowed');
+
+  try {
+    await mkdir(dirname(full), { recursive: true });
+
+    // Use dynamic import for either http or https
+    const proto = url.startsWith('https') ? await import('node:https') : await import('node:http');
+
+    await new Promise((resolve, reject) => {
+      const request = proto.default.get(url, { timeout: 30000 }, (response) => {
+        // Follow redirects (up to 5)
+        if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+          // Simple redirect — just report error for now (avoids recursive complexity)
+          reject(new Error(`Redirect to ${response.headers.location} — direct URLs only`));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode} from ${url}`));
+          return;
+        }
+
+        const contentLength = parseInt(response.headers['content-length'] || '0', 10);
+        if (contentLength > FETCH_MAX_SIZE) {
+          reject(new Error(`File too large: ${contentLength} bytes (max ${FETCH_MAX_SIZE})`));
+          return;
+        }
+
+        // Stream response with progress
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+
+        const ws = createWriteStream(full);
+        let downloaded = 0;
+
+        response.on('data', (chunk) => {
+          downloaded += chunk.length;
+          if (downloaded > FETCH_MAX_SIZE) {
+            response.destroy();
+            ws.destroy();
+            rm(full).catch(() => {});
+            res.write(JSON.stringify({ type: 'error', message: 'File too large' }) + '\n');
+            res.end();
+            return;
+          }
+          ws.write(chunk);
+          res.write(JSON.stringify({
+            type: 'progress',
+            downloaded,
+            total: contentLength || null,
+            percent: contentLength ? Math.round((downloaded / contentLength) * 100) : null,
+          }) + '\n');
+        });
+
+        response.on('end', async () => {
+          ws.end();
+          await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+          const s = await stat(full);
+          res.write(JSON.stringify({
+            type: 'complete',
+            path: destPath,
+            size: s.size,
+            sizeFormatted: formatBytes(s.size),
+          }) + '\n');
+          res.end();
+          resolve();
+        });
+
+        response.on('error', (err) => {
+          ws.destroy();
+          reject(err);
+        });
+      });
+
+      request.on('error', reject);
+      request.on('timeout', () => {
+        request.destroy();
+        reject(new Error('Download timed out (30s)'));
+      });
+    });
+  } catch (err) {
+    // Clean up partial file
+    await rm(full).catch(() => {});
+    if (!res.headersSent) {
+      sendError(res, 500, `Download failed: ${err.message}`);
+    } else {
+      res.write(JSON.stringify({ type: 'error', message: err.message }) + '\n');
+      res.end();
+    }
+  }
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
@@ -790,6 +911,7 @@ const server = createServer(async (req, res) => {
     if (path === '/folder-size' && method === 'GET') return handleFolderSize(req, res);
     if (path === '/chmod' && method === 'POST') return handleChmod(req, res);
     if (path === '/chown' && method === 'POST') return handleChown(req, res);
+    if (path === '/fetch-url' && method === 'POST') return handleFetchUrl(req, res);
 
     sendError(res, 404, 'Not found');
   } catch (err) {

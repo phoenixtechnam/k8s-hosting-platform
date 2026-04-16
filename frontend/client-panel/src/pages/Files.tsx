@@ -25,6 +25,7 @@ import {
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels } from '@/hooks/use-ai-editor';
+import { useClientContext } from '@/hooks/use-client-context';
 import AiFolderModal from '@/components/AiFolderModal';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -123,10 +124,19 @@ export default function Files() {
   // Folder AI modal
   const [showFolderAi, setShowFolderAi] = useState(false);
 
+  // URL download dialog
+  const [showUrlDownload, setShowUrlDownload] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState('');
+  const [downloadDest, setDownloadDest] = useState('');
+  const [downloadProgress, setDownloadProgress] = useState<{ percent: number | null; downloaded: number; total: number | null } | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const { clientId } = useClientContext();
   const fmStatus = useFileManagerStatus();
   const startFm = useStartFileManager();
   const dirListing = useDirectoryListing(currentPath, fmStatus.data?.ready === true);
@@ -423,6 +433,10 @@ export default function Files() {
           <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
           </button>
+          <button onClick={() => { setShowUrlDownload(true); setDownloadUrl(''); setDownloadDest(''); setDownloadError(null); setDownloadProgress(null); }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
+            <Download size={14} /> From URL
+          </button>
           <button onClick={() => { setGitCloneOpen(true); setGitUrl(''); setGitDest(''); }} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <GitBranch size={14} /> Git Clone
           </button>
@@ -623,6 +637,96 @@ export default function Files() {
           onClose={() => setShowFolderAi(false)}
           onApplied={() => dirListing.refetch()}
         />
+      )}
+
+      {/* URL Download Dialog */}
+      {showUrlDownload && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget && !downloading) setShowUrlDownload(false); }}>
+          <div className="w-full max-w-md rounded-xl bg-white dark:bg-gray-800 p-5 shadow-xl">
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-3">Download from URL</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1 block">URL</label>
+                <input className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400"
+                  value={downloadUrl} onChange={(e) => setDownloadUrl(e.target.value)} placeholder="https://example.com/file.zip" disabled={downloading} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1 block">Save as (filename, optional)</label>
+                <input className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400"
+                  value={downloadDest} onChange={(e) => setDownloadDest(e.target.value)} placeholder="Auto-detect from URL" disabled={downloading} />
+              </div>
+              {downloadProgress && (
+                <div>
+                  <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    <span>Downloading...</span>
+                    <span>{downloadProgress.percent != null ? `${downloadProgress.percent}%` : `${Math.round(downloadProgress.downloaded / 1024)} KB`}</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                    {downloadProgress.percent != null ? (
+                      <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${downloadProgress.percent}%` }} />
+                    ) : (
+                      <div className="h-full bg-brand-500 rounded-full animate-pulse w-full" />
+                    )}
+                  </div>
+                </div>
+              )}
+              {downloadError && <p className="text-xs text-red-600 dark:text-red-400">{downloadError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowUrlDownload(false)} disabled={downloading}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">Cancel</button>
+              <button disabled={!downloadUrl.trim() || downloading}
+                onClick={async () => {
+                  setDownloading(true);
+                  setDownloadError(null);
+                  setDownloadProgress(null);
+                  try {
+                    const destFilename = downloadDest.trim() || downloadUrl.split('/').pop()?.split('?')[0] || 'download';
+                    const destPath = joinPath(currentPath, destFilename);
+                    const token = localStorage.getItem('auth_token');
+                    const base = (await import('@/lib/runtime-config')).config.API_URL || '';
+                    // Use the file-manager proxy to call /fetch-url
+                    const response = await fetch(`${base}/api/v1/clients/${clientId}/files/fetch-url`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                      body: JSON.stringify({ url: downloadUrl.trim(), path: destPath }),
+                    });
+                    if (!response.ok) {
+                      const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
+                      throw new Error(err.error?.message ?? 'Download failed');
+                    }
+                    const reader = response.body?.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (reader) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      buffer += decoder.decode(value, { stream: true });
+                      const lines = buffer.split('\n');
+                      buffer = lines.pop() ?? '';
+                      for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                          const msg = JSON.parse(line);
+                          if (msg.type === 'progress') setDownloadProgress({ percent: msg.percent, downloaded: msg.downloaded, total: msg.total });
+                          if (msg.type === 'error') throw new Error(msg.message);
+                        } catch (e) { if (e instanceof Error && e.message !== line) throw e; }
+                      }
+                    }
+                    setShowUrlDownload(false);
+                    dirListing.refetch();
+                  } catch (err) {
+                    setDownloadError(err instanceof Error ? err.message : 'Download failed');
+                  } finally {
+                    setDownloading(false);
+                  }
+                }}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+                {downloading ? <><Loader2 size={14} className="animate-spin inline mr-1" /> Downloading...</> : 'Download'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Context menu */}

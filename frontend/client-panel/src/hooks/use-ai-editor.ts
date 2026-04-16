@@ -71,7 +71,16 @@ export function useAiFileEdit(deploymentId: string) {
   return { edit, loading, error, result, clear };
 }
 
+export interface FolderOp {
+  op: 'read' | 'create' | 'modify' | 'delete' | 'rename' | 'download' | 'mkdir';
+  path?: string;
+  from?: string;
+  to?: string;
+  url?: string;
+}
+
 export interface AiFolderPlan {
+  operations: FolderOp[];
   filesToRead: string[];
   filesToCreate: string[];
   plan: string;

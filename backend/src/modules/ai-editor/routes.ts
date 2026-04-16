@@ -265,8 +265,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
       const result = await service.executeFolderEdit(app.db, {
         folderPath: parsed.data.folder_path,
-        filesToRead: planResult.filesToRead,
-        filesToCreate: planResult.filesToCreate,
+        operations: planResult.operations,
         plan: planResult.plan,
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,
@@ -292,11 +291,10 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const body = request.body as Record<string, unknown>;
-      const filesToRead = body.files_to_read as string[] | undefined ?? [];
-      const filesToCreate = body.files_to_create as string[] | undefined ?? [];
+      const operations = body.operations as service.FolderOp[] | undefined;
       const plan = body.plan as string | undefined;
-      if ((!filesToRead.length && !filesToCreate.length) || !plan) {
-        throw new ApiError('MISSING_REQUIRED_FIELD', 'files_to_read/files_to_create and plan required for folder-execute', 400);
+      if (!operations?.length || !plan) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'operations and plan required for folder-execute', 400);
       }
 
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -308,8 +306,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
       const result = await service.executeFolderEdit(app.db, {
         folderPath: parsed.data.folder_path,
-        filesToRead,
-        filesToCreate,
+        operations,
         plan,
         instruction: parsed.data.instruction,
         modelId: parsed.data.model_id,

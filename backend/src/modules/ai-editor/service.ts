@@ -238,24 +238,50 @@ export async function editFile(db: Database, input: FileEditInput): Promise<Edit
 
 const FOLDER_PLAN_PROMPT = `You are a code editor assistant. The user wants to modify files in a directory.
 
-Given the file listing below, determine which existing files you need to read and what new files to create.
+Given the file listing below, plan all operations needed. Available operations:
+
+- read: read an existing file to understand its content before modifying it
+- create: generate a new file (you will provide the content in the next step)
+- modify: change an existing file (you must read it first)
+- delete: remove a file or empty directory
+- rename: rename or move a file/directory (from → to)
+- download: fetch a URL and save to a local path (for images, libraries, assets — efficient, no token cost)
+- mkdir: create a directory
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "filesToRead": ["existing-file1.ext", "existing-file2.ext"],
-  "filesToCreate": ["new-file.ext"],
-  "plan": "Brief description of changes: which files will be modified and which will be created"
+  "operations": [
+    { "op": "read", "path": "existing-file.ext" },
+    { "op": "modify", "path": "existing-file.ext" },
+    { "op": "create", "path": "new-file.ext" },
+    { "op": "download", "url": "https://example.com/image.jpg", "path": "images/photo.jpg" },
+    { "op": "mkdir", "path": "images/gallery" },
+    { "op": "delete", "path": "old-file.ext" },
+    { "op": "rename", "from": "old-name.ext", "to": "new-name.ext" }
+  ],
+  "plan": "Brief description of what will happen"
 }
 
-filesToRead: existing files you need to examine before making changes.
-filesToCreate: new files that don't exist yet and need to be created from scratch.
-A file should appear in EITHER filesToRead OR filesToCreate, never both.`;
+Rules:
+- A file you want to modify MUST have a "read" operation BEFORE the "modify" operation.
+- Use "download" for binary files, images, CSS/JS libraries from CDNs — never generate binary content.
+- Use "create" only for text files you generate (HTML, CSS, JS, PHP, config files).
+- Paths are relative to the current directory.`;
 
-const FOLDER_APPLY_PROMPT = `You are a code editor assistant. Output ONLY the complete file content.
+const FOLDER_APPLY_PROMPT = `You are a code editor assistant. Output ONLY the complete modified file content.
 No explanation, no markdown fences, no commentary.`;
 
 const FOLDER_CREATE_PROMPT = `You are a code editor assistant. Create the requested file from scratch.
 Output ONLY the complete file content. No explanation, no markdown fences, no commentary.`;
+
+export type FolderOp =
+  | { op: 'read'; path: string }
+  | { op: 'create'; path: string }
+  | { op: 'modify'; path: string }
+  | { op: 'delete'; path: string }
+  | { op: 'rename'; from: string; to: string }
+  | { op: 'download'; url: string; path: string }
+  | { op: 'mkdir'; path: string };
 
 export interface FolderPlanInput {
   folderPath: string;
@@ -265,16 +291,17 @@ export interface FolderPlanInput {
 }
 
 export interface FolderPlanResult {
-  filesToRead: string[];
-  filesToCreate: string[];
+  operations: FolderOp[];
   plan: string;
   tokensUsed: { input: number; output: number };
+  // Derived convenience lists
+  filesToRead: string[];
+  filesToCreate: string[];
 }
 
 export interface FolderExecuteInput {
   folderPath: string;
-  filesToRead: string[];
-  filesToCreate: string[];
+  operations: FolderOp[];
   plan: string;
   instruction: string;
   modelId: string;
@@ -320,18 +347,26 @@ export async function planFolderEdit(db: Database, input: FolderPlanInput): Prom
     { role: 'user', content: `Directory: ${input.folderPath}\n\nFiles:\n${fileListStr}\n\nInstruction: ${input.instruction}` },
   ], { maxTokens: 1024 });
 
-  let plan: { filesToRead: string[]; filesToCreate?: string[]; plan: string };
+  let parsed: { operations?: FolderOp[]; plan: string; filesToRead?: string[]; filesToCreate?: string[] };
   try {
-    plan = JSON.parse(stripMarkdownFences(planResponse.content));
+    parsed = JSON.parse(stripMarkdownFences(planResponse.content));
   } catch {
     throw new Error('AI returned an invalid plan. Please try rephrasing your instruction.');
   }
 
+  // Support both new (operations array) and legacy (filesToRead/filesToCreate) formats
+  const operations: FolderOp[] = parsed.operations ?? [
+    ...(parsed.filesToRead ?? []).map((p): FolderOp => ({ op: 'read', path: p })),
+    ...(parsed.filesToRead ?? []).map((p): FolderOp => ({ op: 'modify', path: p })),
+    ...(parsed.filesToCreate ?? []).map((p): FolderOp => ({ op: 'create', path: p })),
+  ];
+
   return {
-    filesToRead: plan.filesToRead ?? [],
-    filesToCreate: plan.filesToCreate ?? [],
-    plan: plan.plan,
+    operations,
+    plan: parsed.plan,
     tokensUsed: { input: planResponse.tokensInput, output: planResponse.tokensOutput },
+    filesToRead: operations.filter((o) => o.op === 'read').map((o) => (o as { path: string }).path),
+    filesToCreate: operations.filter((o) => o.op === 'create').map((o) => (o as { path: string }).path),
   };
 }
 
@@ -353,74 +388,97 @@ export async function executeFolderEdit(db: Database, input: FolderExecuteInput)
   let totalInput = 0;
   let totalOutput = 0;
   const changes: EditChange[] = [];
+  const readCache = new Map<string, string>();
 
-  for (const fileName of input.filesToRead) {
-    const filePath = `${input.folderPath}/${fileName}`.replace(/\/\//g, '/');
-    let originalContent: string;
-    try {
-      originalContent = await input.readFile(filePath);
-    } catch {
-      continue;
-    }
+  for (const op of input.operations) {
+    const resolvePath = (p: string) => `${input.folderPath}/${p}`.replace(/\/\//g, '/');
 
-    const applyResponse = await adapter.call(model.modelName, [
-      { role: 'system', content: FOLDER_APPLY_PROMPT },
-      {
-        role: 'user',
-        content: `File: ${fileName}\nPlan: ${input.plan}\nInstruction: ${input.instruction}\n\nCurrent content:\n\`\`\`\n${originalContent}\n\`\`\``,
-      },
-    ], { maxTokens: model.maxOutputTokens });
+    switch (op.op) {
+      case 'read': {
+        const filePath = resolvePath(op.path);
+        try {
+          const content = await input.readFile(filePath);
+          readCache.set(op.path, content);
+        } catch { /* file not readable — skip */ }
+        break;
+      }
 
-    totalInput += applyResponse.tokensInput;
-    totalOutput += applyResponse.tokensOutput;
+      case 'modify': {
+        const filePath = resolvePath(op.path);
+        const originalContent = readCache.get(op.path);
+        if (originalContent === undefined) break; // wasn't read
 
-    let modifiedContent = stripMarkdownFences(applyResponse.content);
+        const applyResponse = await adapter.call(model.modelName, [
+          { role: 'system', content: FOLDER_APPLY_PROMPT },
+          {
+            role: 'user',
+            content: `File: ${op.path}\nPlan: ${input.plan}\nInstruction: ${input.instruction}\n\nCurrent content:\n\`\`\`\n${originalContent}\n\`\`\``,
+          },
+        ], { maxTokens: model.maxOutputTokens });
 
-    if (!input.isAdmin) {
-      const scanResult = scanOutput(modifiedContent);
-      if (scanResult.refused) continue;
-      modifiedContent = scanResult.content;
-    }
+        totalInput += applyResponse.tokensInput;
+        totalOutput += applyResponse.tokensOutput;
 
-    if (modifiedContent !== originalContent) {
-      changes.push({
-        path: filePath,
-        action: 'modify',
-        originalContent,
-        modifiedContent,
-      });
-    }
-  }
+        let modifiedContent = stripMarkdownFences(applyResponse.content);
+        if (!input.isAdmin) {
+          const scanResult = scanOutput(modifiedContent);
+          if (scanResult.refused) break;
+          modifiedContent = scanResult.content;
+        }
 
-  // Create new files
-  for (const fileName of (input.filesToCreate ?? [])) {
-    const filePath = `${input.folderPath}/${fileName}`.replace(/\/\//g, '/');
+        if (modifiedContent !== originalContent) {
+          changes.push({ path: filePath, action: 'modify', originalContent, modifiedContent });
+        }
+        break;
+      }
 
-    const createResponse = await adapter.call(model.modelName, [
-      { role: 'system', content: FOLDER_CREATE_PROMPT },
-      {
-        role: 'user',
-        content: `Create new file: ${fileName}\nPlan: ${input.plan}\nInstruction: ${input.instruction}`,
-      },
-    ], { maxTokens: model.maxOutputTokens });
+      case 'create': {
+        const filePath = resolvePath(op.path);
+        const createResponse = await adapter.call(model.modelName, [
+          { role: 'system', content: FOLDER_CREATE_PROMPT },
+          { role: 'user', content: `Create new file: ${op.path}\nPlan: ${input.plan}\nInstruction: ${input.instruction}` },
+        ], { maxTokens: model.maxOutputTokens });
 
-    totalInput += createResponse.tokensInput;
-    totalOutput += createResponse.tokensOutput;
+        totalInput += createResponse.tokensInput;
+        totalOutput += createResponse.tokensOutput;
 
-    let newContent = stripMarkdownFences(createResponse.content);
+        let newContent = stripMarkdownFences(createResponse.content);
+        if (!input.isAdmin) {
+          const scanResult = scanOutput(newContent);
+          if (scanResult.refused) break;
+          newContent = scanResult.content;
+        }
 
-    if (!input.isAdmin) {
-      const scanResult = scanOutput(newContent);
-      if (scanResult.refused) continue;
-      newContent = scanResult.content;
-    }
+        if (newContent.trim()) {
+          changes.push({ path: filePath, action: 'create', modifiedContent: newContent });
+        }
+        break;
+      }
 
-    if (newContent.trim()) {
-      changes.push({
-        path: filePath,
-        action: 'create',
-        modifiedContent: newContent,
-      });
+      case 'delete': {
+        const filePath = resolvePath(op.path);
+        changes.push({ path: filePath, action: 'delete' });
+        break;
+      }
+
+      case 'rename': {
+        const fromPath = resolvePath(op.from);
+        const toPath = resolvePath(op.to);
+        changes.push({ path: fromPath, action: 'modify', summary: `Rename → ${toPath}`, modifiedContent: toPath });
+        break;
+      }
+
+      case 'download': {
+        const filePath = resolvePath(op.path);
+        changes.push({ path: filePath, action: 'create', summary: `Download from ${op.url}`, modifiedContent: `__DOWNLOAD__:${op.url}` });
+        break;
+      }
+
+      case 'mkdir': {
+        const filePath = resolvePath(op.path);
+        changes.push({ path: filePath, action: 'create', summary: 'Create directory' });
+        break;
+      }
     }
   }
 
