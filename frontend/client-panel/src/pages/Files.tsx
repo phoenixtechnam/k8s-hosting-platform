@@ -1291,10 +1291,35 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
   const writeFile = useWriteFile();
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
 
   useEffect(() => {
     if (fileContent.data) { setContent(fileContent.data.content); setDirty(false); }
   }, [fileContent.data]);
+
+  const handleSave = useCallback(() => {
+    if (!dirty || writeFile.isPending) return;
+    writeFile.mutate({ path, content }, { onSuccess: () => setDirty(false) });
+  }, [dirty, writeFile, path, content]);
+
+  const handleClose = useCallback(() => {
+    if (dirty) { setShowUnsavedDialog(true); } else { onClose(); }
+  }, [dirty, onClose]);
+
+  // Keyboard shortcuts: Ctrl+S / Cmd+S to save, Esc to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        handleClose();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handleSave, handleClose]);
 
   const filename = path.split('/').pop() ?? '';
   const language = getLanguage(filename);
@@ -1309,11 +1334,12 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">{language}</span>
-          <button onClick={() => writeFile.mutate({ path, content }, { onSuccess: () => setDirty(false) })} disabled={!dirty || writeFile.isPending}
+          <span className="text-[10px] text-gray-400 hidden sm:inline">Ctrl+S to save</span>
+          <button onClick={handleSave} disabled={!dirty || writeFile.isPending}
             className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
             {writeFile.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
           </button>
-          <button onClick={onClose} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={16} /></button>
+          <button onClick={handleClose} className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" title="Close (Esc)"><X size={16} /></button>
         </div>
       </div>
       {fileContent.isLoading && <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-gray-400" /></div>}
@@ -1322,6 +1348,33 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
           onChange={(val) => { setContent(val ?? ''); setDirty(true); }}
           theme={document.documentElement.classList.contains('dark') ? 'vs-dark' : 'light'}
           options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, wordWrap: 'on', tabSize: 2, automaticLayout: true }} />
+      )}
+
+      {/* Unsaved changes dialog */}
+      {showUnsavedDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget) setShowUnsavedDialog(false); }}>
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2">Unsaved Changes</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              You have unsaved changes to <span className="font-medium text-gray-700 dark:text-gray-300">{filename}</span>. What would you like to do?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowUnsavedDialog(false)}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                Cancel
+              </button>
+              <button onClick={() => { setShowUnsavedDialog(false); onClose(); }}
+                className="rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                Discard
+              </button>
+              <button onClick={() => { writeFile.mutate({ path, content }, { onSuccess: () => { setDirty(false); setShowUnsavedDialog(false); onClose(); } }); }}
+                disabled={writeFile.isPending}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+                {writeFile.isPending ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
