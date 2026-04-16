@@ -132,6 +132,7 @@ export default function Files() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadWarning, setDownloadWarning] = useState<{ message: string; fileSize: string; freeSpace: string } | null>(null);
+  const downloadAbortRef = useRef<AbortController | null>(null);
 
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -681,14 +682,18 @@ export default function Files() {
               {downloadError && <p className="text-xs text-red-600 dark:text-red-400">{downloadError}</p>}
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button onClick={() => setShowUrlDownload(false)} disabled={downloading}
-                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">Cancel</button>
+              <button onClick={() => { if (downloading) { downloadAbortRef.current?.abort(); } else { setShowUrlDownload(false); } }}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                {downloading ? 'Cancel Download' : 'Cancel'}
+              </button>
               <button disabled={!downloadUrl.trim() || downloading}
                 onClick={async () => {
                   setDownloading(true);
                   setDownloadError(null);
                   setDownloadProgress(null);
                   setDownloadWarning(null);
+                  const abortCtrl = new AbortController();
+                  downloadAbortRef.current = abortCtrl;
                   try {
                     const destFilename = downloadDest.trim() || downloadUrl.split('/').pop()?.split('?')[0] || 'download';
                     const destPath = joinPath(currentPath, destFilename);
@@ -700,6 +705,7 @@ export default function Files() {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                         body: JSON.stringify({ url: downloadUrl.trim(), path: destPath, force }),
+                        signal: abortCtrl.signal,
                       });
                       if (!response.ok) {
                         const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
@@ -741,9 +747,14 @@ export default function Files() {
                     const result = await doFetch(!!downloadWarning);
                     if (result === 'complete') { setShowUrlDownload(false); dirListing.refetch(); }
                   } catch (err) {
-                    setDownloadError(err instanceof Error ? err.message : 'Download failed');
+                    if (err instanceof DOMException && err.name === 'AbortError') {
+                      setDownloadError('Download cancelled');
+                    } else {
+                      setDownloadError(err instanceof Error ? err.message : 'Download failed');
+                    }
                   } finally {
                     setDownloading(false);
+                    downloadAbortRef.current = null;
                   }
                 }}
                 className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">

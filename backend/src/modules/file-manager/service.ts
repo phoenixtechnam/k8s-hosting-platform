@@ -171,6 +171,68 @@ export async function proxyToFileManager(
 }
 
 /**
+ * Stream a response FROM the file-manager sidecar directly to the client.
+ * Unlike proxyToFileManager, this does NOT buffer — it pipes the K8s API
+ * proxy response directly to the outgoing HTTP response for real-time progress.
+ */
+export async function proxyToFileManagerStream(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  sidecarPath: string,
+  body: string,
+  clientRes: import('node:http').ServerResponse,
+): Promise<void> {
+  const kc = loadKubeConfig(kubeconfigPath);
+  const cluster = kc.getCurrentCluster();
+  if (!cluster) throw new Error('No active cluster in kubeconfig');
+
+  const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}`;
+
+  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
+  await kc.applyToHTTPSOptions(httpsOpts);
+
+  const headers: Record<string, string> = {
+    ...(httpsOpts.headers ?? {}),
+    'Content-Type': 'application/json',
+    'Content-Length': String(Buffer.byteLength(body)),
+  };
+
+  const user = kc.getCurrentUser();
+  if (user?.token) headers['Authorization'] = `Bearer ${user.token}`;
+
+  const { default: https } = await import('node:https');
+
+  return new Promise((resolve, reject) => {
+    const fullUrl = new URL(`${cluster.server}${proxyPath}`);
+    const req = https.request({
+      hostname: fullUrl.hostname,
+      port: fullUrl.port || 443,
+      path: fullUrl.pathname,
+      method: 'POST',
+      headers,
+      ca: httpsOpts.ca,
+      cert: httpsOpts.cert,
+      key: httpsOpts.key,
+      rejectUnauthorized: false,
+    }, (res) => {
+      const contentType = res.headers['content-type'] ?? 'application/json';
+      clientRes.writeHead(res.statusCode ?? 200, {
+        'Content-Type': contentType,
+        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-cache',
+      });
+      res.on('data', (chunk: Buffer) => clientRes.write(chunk));
+      res.on('end', () => { clientRes.end(); resolve(); });
+      res.on('error', (err) => { clientRes.end(); reject(err); });
+    });
+
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
  * Stream a request body directly to the file-manager sidecar.
  * Unlike proxyToFileManager, this does NOT buffer the body — it pipes
  * the incoming stream directly to the K8s API proxy.

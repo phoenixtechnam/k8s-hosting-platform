@@ -491,30 +491,29 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/clients/:clientId/files/fetch-url — download file from URL
+  // Uses streaming proxy (not buffered fileManagerRequest) for real-time progress
   app.post('/clients/:clientId/files/fetch-url', {
     schema: { tags: ['Files'], summary: 'Download file from URL to PVC', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
-    const { url, path: destPath } = request.body as { url?: string; path?: string };
+    const { url, path: destPath, force } = request.body as { url?: string; path?: string; force?: boolean };
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/fetch-url', {
-      method: 'POST',
-      body: JSON.stringify({ url, path: destPath }),
-      contentType: 'application/json',
-    });
+    // Ensure file-manager is running, then stream response directly
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
 
-    // Stream the NDJSON response through to the client for progress
-    reply.raw.writeHead(result.status, {
-      'Content-Type': result.headers['content-type'] ?? 'application/json',
-      'Transfer-Encoding': 'chunked',
-    });
-    reply.raw.write(result.body);
-    reply.raw.end();
+    const { proxyToFileManagerStream } = await import('./service.js');
+    await proxyToFileManagerStream(
+      kubeconfigPath,
+      namespace,
+      '/fetch-url',
+      JSON.stringify({ url, path: destPath, force: force ?? false }),
+      reply.raw,
+    );
     return reply;
   });
 }
