@@ -349,9 +349,12 @@ export async function planFolderEdit(db: Database, input: FolderPlanInput): Prom
 
   let parsed: { operations?: FolderOp[]; plan: string; filesToRead?: string[]; filesToCreate?: string[] };
   try {
-    parsed = JSON.parse(stripMarkdownFences(planResponse.content));
+    const cleaned = extractJson(planResponse.content);
+    parsed = JSON.parse(cleaned);
   } catch {
-    throw new Error('AI returned an invalid plan. Please try rephrasing your instruction.');
+    // Return a helpful error with what the AI actually said
+    const preview = planResponse.content.slice(0, 200);
+    throw new Error(`AI didn't return a valid JSON plan. Response preview: "${preview}..." — try rephrasing your instruction.`);
   }
 
   // Support both new (operations array) and legacy (filesToRead/filesToCreate) formats
@@ -524,7 +527,7 @@ export async function editFolder(db: Database, input: FolderEditInput): Promise<
 
   let plan: { filesToRead: string[]; plan: string };
   try {
-    plan = JSON.parse(stripMarkdownFences(planResponse.content));
+    plan = JSON.parse(extractJson(planResponse.content));
   } catch {
     throw new Error('AI returned an invalid plan. Please try rephrasing your instruction.');
   }
@@ -596,7 +599,29 @@ export async function editFolder(db: Database, input: FolderEditInput): Promise<
 
 function stripMarkdownFences(content: string): string {
   const trimmed = content.trim();
-  // Match ```lang\n...\n``` or ```\n...\n```
   const fenceMatch = trimmed.match(/^```(?:\w+)?\s*\n([\s\S]*?)\n```\s*$/);
   return fenceMatch ? fenceMatch[1] : trimmed;
+}
+
+/** Extract JSON from LLM output that may contain markdown fences, prose, or mixed content. */
+function extractJson(content: string): string {
+  const trimmed = content.trim();
+
+  // Try direct parse first
+  try { JSON.parse(trimmed); return trimmed; } catch { /* continue */ }
+
+  // Try stripping markdown fences
+  const stripped = stripMarkdownFences(trimmed);
+  try { JSON.parse(stripped); return stripped; } catch { /* continue */ }
+
+  // Find first { and last } — extract the JSON object
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+    try { JSON.parse(candidate); return candidate; } catch { /* continue */ }
+  }
+
+  // Last resort — return stripped version (will fail at caller)
+  return stripped;
 }

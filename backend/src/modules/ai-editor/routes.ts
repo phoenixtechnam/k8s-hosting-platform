@@ -243,12 +243,17 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
       if (lsResult.status !== 200) throw new ApiError('FILE_MANAGER_ERROR', 'Failed to list directory', 500);
       const entries = JSON.parse(lsResult.body).entries as Array<{ name: string; size: number; type: string }>;
 
-      const planResult = await service.planFolderEdit(app.db, {
-        folderPath: parsed.data.folder_path,
-        fileList: entries,
-        instruction: parsed.data.instruction,
-        modelId: parsed.data.model_id,
-      });
+      let planResult;
+      try {
+        planResult = await service.planFolderEdit(app.db, {
+          folderPath: parsed.data.folder_path,
+          fileList: entries,
+          instruction: parsed.data.instruction,
+          modelId: parsed.data.model_id,
+        });
+      } catch (err) {
+        throw new ApiError('AI_PLAN_ERROR', err instanceof Error ? err.message : 'AI planning failed', 422);
+      }
 
       if (parsed.data.mode === 'folder-plan') {
         return success(planResult);
