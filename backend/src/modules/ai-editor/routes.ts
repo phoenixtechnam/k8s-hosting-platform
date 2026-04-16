@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { fileManagerRequest } from '../file-manager/service.js';
+import * as deploymentService from '../deployments/service.js';
 import {
   createAiProviderSchema,
   updateAiProviderSchema,
@@ -222,7 +225,47 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (parsed.data.mode === 'folder') {
-      throw new ApiError('NOT_IMPLEMENTED', 'Folder mode requires file-manager integration (use the client panel)', 501);
+      if (!parsed.data.folder_path) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'folder_path required for folder mode', 400);
+      }
+
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const k8sClients = (() => { try { return createK8sClients(kubeconfigPath); } catch { return undefined; } })();
+      if (!k8sClients) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+
+      const namespace = await deploymentService.getClientNamespace(app.db, clientId);
+      const FM_IMAGE = 'file-manager-sidecar:latest';
+
+      // List files in folder via sidecar
+      const lsResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
+        query: { path: parsed.data.folder_path },
+      });
+      if (lsResult.status !== 200) throw new ApiError('FILE_MANAGER_ERROR', 'Failed to list directory', 500);
+      const entries = JSON.parse(lsResult.body).entries as Array<{ name: string; size: number; type: string }>;
+      const files = entries.filter((e) => e.type === 'file');
+
+      const result = await service.editFolder(app.db, {
+        folderPath: parsed.data.folder_path,
+        fileList: files,
+        instruction: parsed.data.instruction,
+        modelId: parsed.data.model_id,
+        clientId,
+        deploymentId: parsed.data.deployment_id ?? null,
+        isAdmin,
+        readFile: async (filePath: string) => {
+          const readResult = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
+            query: { path: filePath },
+          });
+          if (readResult.status !== 200) throw new Error(`Failed to read ${filePath}`);
+          return JSON.parse(readResult.body).content as string;
+        },
+      });
+
+      return success({
+        changes: result.changes,
+        tokensUsed: result.tokensUsed,
+        planSummary: result.planSummary,
+      });
     }
 
     if (parsed.data.mode === 'website') {

@@ -255,7 +255,7 @@ export interface FolderEditInput {
   instruction: string;
   modelId: string;
   clientId: string;
-  deploymentId: string;
+  deploymentId: string | null;
   isAdmin: boolean;
   readFile: (path: string) => Promise<string>;
 }
