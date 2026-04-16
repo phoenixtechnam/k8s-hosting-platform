@@ -6,8 +6,8 @@ import { useQuery } from '@tanstack/react-query';
 
 export function useAiModels() {
   return useQuery({
-    queryKey: ['ai-models'],
-    queryFn: () => apiFetch<{ data: AiModelResponse[] }>('/api/v1/admin/ai/models'),
+    queryKey: ['ai-models-enabled'],
+    queryFn: () => apiFetch<{ data: AiModelResponse[] }>('/api/v1/ai/models'),
     staleTime: 60_000,
   });
 }

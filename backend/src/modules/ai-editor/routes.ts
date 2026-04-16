@@ -170,6 +170,18 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
+  // ─── Client-facing: list enabled models (any authenticated user) ────
+
+  app.get('/ai/models', {
+    onRequest: [authenticate],
+  }, async () => {
+    const allModels = await service.listModels(app.db);
+    const allProviders = await service.listProviders(app.db);
+    const enabledProviderIds = new Set(allProviders.filter((p) => p.enabled && p.apiKeyEnc).map((p) => p.id));
+    const enabledModels = allModels.filter((m) => m.enabled && enabledProviderIds.has(m.providerId));
+    return success(enabledModels.map(formatModel));
+  });
+
   // ─── AI Edit ───────────────────────────────────────────────────────────
 
   app.post('/clients/:clientId/ai/edit', {
