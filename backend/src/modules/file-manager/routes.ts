@@ -522,8 +522,9 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['Files'], summary: 'Clone website to PVC', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
-    const { url, path: destPath, maxPages, maxDepth, prettify } = request.body as {
-      url?: string; path?: string; maxPages?: number; maxDepth?: number; prettify?: boolean;
+    const { url, path: destPath, maxPages, maxDepth, prettifyHtml, prettifyCss, prettifyJs } = request.body as {
+      url?: string; path?: string; maxPages?: number; maxDepth?: number;
+      prettifyHtml?: boolean; prettifyCss?: boolean; prettifyJs?: boolean;
     };
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
@@ -538,7 +539,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
       kubeconfigPath,
       namespace,
       '/clone-site',
-      JSON.stringify({ url, path: destPath, maxPages: maxPages ?? 50, maxDepth: maxDepth ?? 3, prettify: prettify ?? false }),
+      JSON.stringify({ url, path: destPath, maxPages: maxPages ?? 50, maxDepth: maxDepth ?? 3, prettifyHtml: prettifyHtml ?? false, prettifyCss: prettifyCss ?? false, prettifyJs: prettifyJs ?? false }),
       reply.raw,
     );
     return reply;

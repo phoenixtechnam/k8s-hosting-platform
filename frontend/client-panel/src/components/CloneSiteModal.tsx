@@ -30,7 +30,9 @@ export default function CloneSiteModal({ currentPath, onClose, onComplete }: Clo
   const [destFolder, setDestFolder] = useState('');
   const [maxPages, setMaxPages] = useState(50);
   const [maxDepth, setMaxDepth] = useState(3);
-  const [prettify, setPrettify] = useState(true);
+  const [prettifyHtml, setPrettifyHtml] = useState(true);
+  const [prettifyCss, setPrettifyCss] = useState(true);
+  const [prettifyJs, setPrettifyJs] = useState(true);
   const [cloning, setCloning] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +63,7 @@ export default function CloneSiteModal({ currentPath, onClose, onComplete }: Clo
       const response = await fetch(`${base}/api/v1/clients/${clientId}/files/clone-site`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ url: url.trim(), path: destPath, maxPages, maxDepth, prettify }),
+        body: JSON.stringify({ url: url.trim(), path: destPath, maxPages, maxDepth, prettifyHtml, prettifyCss, prettifyJs }),
         signal: abortCtrl.signal,
       });
 
@@ -169,11 +171,26 @@ export default function CloneSiteModal({ currentPath, onClose, onComplete }: Clo
                     value={maxDepth} onChange={(e) => setMaxDepth(parseInt(e.target.value) || 3)} />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                <input type="checkbox" checked={prettify} onChange={(e) => setPrettify(e.target.checked)}
-                  className="rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
-                Format HTML/CSS/JS for readability
-              </label>
+              <div>
+                <label className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5 block">Format for readability</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <input type="checkbox" checked={prettifyHtml} onChange={(e) => setPrettifyHtml(e.target.checked)}
+                      className="rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
+                    HTML
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <input type="checkbox" checked={prettifyCss} onChange={(e) => setPrettifyCss(e.target.checked)}
+                      className="rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
+                    CSS
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                    <input type="checkbox" checked={prettifyJs} onChange={(e) => setPrettifyJs(e.target.checked)}
+                      className="rounded border-gray-300 text-brand-500 focus:ring-brand-500" />
+                    JS
+                  </label>
+                </div>
+              </div>
             </>
           )}
 

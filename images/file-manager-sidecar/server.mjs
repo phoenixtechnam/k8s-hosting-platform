@@ -57,6 +57,24 @@ if (!uidNameCache.has(70)) uidNameCache.set(70, 'postgres');
 if (!gidNameCache.has(70)) gidNameCache.set(70, 'postgres');
 const BASE = '/data';
 
+const MIME_TYPES = {
+  '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+  '.mjs': 'application/javascript', '.json': 'application/json', '.xml': 'application/xml',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.ico': 'image/x-icon',
+  '.bmp': 'image/bmp', '.tiff': 'image/tiff', '.tif': 'image/tiff',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf', '.eot': 'application/vnd.ms-fontobject',
+  '.pdf': 'application/pdf', '.zip': 'application/zip', '.gz': 'application/gzip', '.tar': 'application/x-tar',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+  '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv',
+  '.php': 'text/x-php', '.py': 'text/x-python', '.sh': 'text/x-shellscript',
+  '.yaml': 'text/yaml', '.yml': 'text/yaml', '.toml': 'text/x-toml',
+};
+function getMimeType(filename) {
+  const ext = extname(filename).toLowerCase();
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
+
 // ─── Hidden platform paths ───────────────────────────────────────────────────
 // Files and directories that must never be visible through the file manager.
 // The backend uses a separate internal path (X-Platform-Internal header) to
@@ -308,8 +326,9 @@ async function handleDownload(req, res) {
 
     const name = basename(full);
     const encoded = encodeURIComponent(name).replace(/['()]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    const mimeType = getMimeType(name);
     res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
+      'Content-Type': mimeType,
       'Content-Disposition': `attachment; filename*=UTF-8''${encoded}`,
       'Content-Length': s.size,
     });
@@ -988,11 +1007,19 @@ function prettifyContent(content, filePath) {
   return content;
 }
 
+function shouldPrettify(filePath, html, css, js) {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  if ((ext === 'html' || ext === 'htm') && html) return true;
+  if ((ext === 'css' || ext === 'scss') && css) return true;
+  if ((ext === 'js' || ext === 'mjs') && js) return true;
+  return false;
+}
+
 // ─── Clone Site (website scraper) ────────────────────────────────────────────
 
 async function handleCloneSite(req, res) {
   const body = await readBody(req);
-  const { url, path: destPath, maxPages = 50, maxDepth = 3, prettify = false } = body;
+  const { url, path: destPath, maxPages = 50, maxDepth = 3, prettifyHtml = false, prettifyCss = false, prettifyJs = false } = body;
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'path required');
   if (!/^https?:\/\//i.test(url)) return sendError(res, 400, 'Only http/https URLs supported');
@@ -1148,7 +1175,7 @@ async function handleCloneSite(req, res) {
       // Rewrite URLs and save
       const rewritten = rewriteUrls(html, normalized);
       await mkdir(dirname(fullPath), { recursive: true });
-      const finalContent = prettify ? prettifyContent(rewritten, localPath) : rewritten;
+      const finalContent = shouldPrettify(localPath, prettifyHtml, prettifyCss, prettifyJs) ? prettifyContent(rewritten, localPath) : rewritten;
       await writeFile(fullPath, finalContent, 'utf-8');
       await fsChown(fullPath, DEFAULT_UID, DEFAULT_GID).catch(() => {});
       pagesDownloaded++;
@@ -1189,9 +1216,9 @@ async function handleCloneSite(req, res) {
 
       const fullPath = join(full, localPath);
       await mkdir(dirname(fullPath), { recursive: true });
-      // Prettify text assets (CSS/JS) if enabled; skip binary files
+      // Prettify text assets if enabled per-type
       const isTextAsset = /\.(css|scss|js|mjs|html?|svg|xml)$/i.test(localPath);
-      if (prettify && isTextAsset) {
+      if (isTextAsset && shouldPrettify(localPath, prettifyHtml, prettifyCss, prettifyJs)) {
         await writeFile(fullPath, prettifyContent(assetBuf.toString('utf-8'), localPath), 'utf-8');
       } else {
         await writeFile(fullPath, assetBuf);
