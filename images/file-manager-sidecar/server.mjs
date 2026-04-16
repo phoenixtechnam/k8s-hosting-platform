@@ -766,7 +766,6 @@ async function handleChown(req, res) {
 
 // ─── Fetch URL (download from internet) ─────────────────────────────────────
 
-const FETCH_MAX_SIZE = 500 * 1024 * 1024; // 500 MB (TODO: derive from client disk quota)
 const BLOCKED_URL_PATTERNS = [
   /^file:/i,
   /^ftp:/i,
@@ -779,8 +778,9 @@ const BLOCKED_URL_PATTERNS = [
 ];
 
 async function handleFetchUrl(req, res) {
+  const { statfs } = await import('node:fs/promises');
   const body = await readBody(req);
-  const { url, path: destPath } = body;
+  const { url, path: destPath, force } = body;
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'path required');
 
@@ -798,10 +798,14 @@ async function handleFetchUrl(req, res) {
   try {
     await mkdir(dirname(full), { recursive: true });
 
+    // Check available disk space on PVC
+    const fsStats = await statfs(BASE);
+    const freeBytes = fsStats.bsize * fsStats.bavail;
+
     async function fetchWithRedirects(fetchUrl, maxRedirects = 5) {
       const fetchProto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
       return new Promise((resolve, reject) => {
-        fetchProto.default.get(fetchUrl, { timeout: 30000 }, (response) => {
+        fetchProto.default.get(fetchUrl, { timeout: 60000 }, (response) => {
           if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
             if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return; }
             response.resume();
@@ -809,22 +813,42 @@ async function handleFetchUrl(req, res) {
             return;
           }
           resolve(response);
-        }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('Download timed out (30s)')); });
+        }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('Download timed out (60s)')); });
       });
     }
 
     await new Promise((resolve, reject) => {
       fetchWithRedirects(url).then((response) => {
-
         if (response.statusCode !== 200) {
           reject(new Error(`HTTP ${response.statusCode} from ${url}`));
           return;
         }
 
         const contentLength = parseInt(response.headers['content-length'] || '0', 10);
-        if (contentLength > FETCH_MAX_SIZE) {
-          reject(new Error(`File too large: ${contentLength} bytes (max ${FETCH_MAX_SIZE})`));
-          return;
+
+        // Check against PVC free space (not a hardcoded limit)
+        if (contentLength > 0) {
+          const usagePercent = ((contentLength / freeBytes) * 100);
+          if (usagePercent > 90) {
+            response.destroy();
+            reject(new Error(`Not enough disk space. File is ${formatBytes(contentLength)} but only ${formatBytes(freeBytes)} free (would use ${Math.round(usagePercent)}% of remaining space).`));
+            return;
+          }
+          if (usagePercent > 70 && !force) {
+            response.destroy();
+            sendJson(res, 200, {
+              type: 'warning',
+              message: `This file (${formatBytes(contentLength)}) will use ${Math.round(usagePercent)}% of remaining disk space (${formatBytes(freeBytes)} free). Continue?`,
+              fileSize: contentLength,
+              fileSizeFormatted: formatBytes(contentLength),
+              freeSpace: freeBytes,
+              freeSpaceFormatted: formatBytes(freeBytes),
+              usagePercent: Math.round(usagePercent),
+              needsConfirmation: true,
+            });
+            resolve();
+            return;
+          }
         }
 
         // Stream response with progress
@@ -835,11 +859,12 @@ async function handleFetchUrl(req, res) {
 
         response.on('data', (chunk) => {
           downloaded += chunk.length;
-          if (downloaded > FETCH_MAX_SIZE) {
+          // Runtime check: stop if we'd exceed 95% of free space during download
+          if (downloaded > freeBytes * 0.95) {
             response.destroy();
             ws.destroy();
             rm(full).catch(() => {});
-            res.write(JSON.stringify({ type: 'error', message: 'File too large' }) + '\n');
+            res.write(JSON.stringify({ type: 'error', message: `Download stopped: approaching disk space limit (${formatBytes(freeBytes)} free)` }) + '\n');
             res.end();
             return;
           }

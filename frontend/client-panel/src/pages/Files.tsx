@@ -131,6 +131,7 @@ export default function Files() {
   const [downloadProgress, setDownloadProgress] = useState<{ percent: number | null; downloaded: number; total: number | null } | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadWarning, setDownloadWarning] = useState<{ message: string; fileSize: string; freeSpace: string } | null>(null);
 
   const [dragging, setDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -670,6 +671,13 @@ export default function Files() {
                   </div>
                 </div>
               )}
+              {downloadWarning && (
+                <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  <p className="font-medium mb-1">Disk space warning</p>
+                  <p>{downloadWarning.message}</p>
+                  <p className="mt-1 text-[10px] text-amber-600/70">Click "Download Anyway" to proceed or "Cancel" to abort.</p>
+                </div>
+              )}
               {downloadError && <p className="text-xs text-red-600 dark:text-red-400">{downloadError}</p>}
             </div>
             <div className="flex justify-end gap-2 mt-4">
@@ -680,41 +688,58 @@ export default function Files() {
                   setDownloading(true);
                   setDownloadError(null);
                   setDownloadProgress(null);
+                  setDownloadWarning(null);
                   try {
                     const destFilename = downloadDest.trim() || downloadUrl.split('/').pop()?.split('?')[0] || 'download';
                     const destPath = joinPath(currentPath, destFilename);
                     const token = localStorage.getItem('auth_token');
                     const base = (await import('@/lib/runtime-config')).config.API_URL || '';
-                    // Use the file-manager proxy to call /fetch-url
-                    const response = await fetch(`${base}/api/v1/clients/${clientId}/files/fetch-url`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-                      body: JSON.stringify({ url: downloadUrl.trim(), path: destPath }),
-                    });
-                    if (!response.ok) {
-                      const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
-                      throw new Error(err.error?.message ?? 'Download failed');
-                    }
-                    const reader = response.body?.getReader();
-                    const decoder = new TextDecoder();
-                    let buffer = '';
-                    while (reader) {
-                      const { done, value } = await reader.read();
-                      if (done) break;
-                      buffer += decoder.decode(value, { stream: true });
-                      const lines = buffer.split('\n');
-                      buffer = lines.pop() ?? '';
-                      for (const line of lines) {
-                        if (!line.trim()) continue;
-                        try {
-                          const msg = JSON.parse(line);
-                          if (msg.type === 'progress') setDownloadProgress({ percent: msg.percent, downloaded: msg.downloaded, total: msg.total });
-                          if (msg.type === 'error') throw new Error(msg.message);
-                        } catch (e) { if (e instanceof Error && e.message !== line) throw e; }
+
+                    async function doFetch(force = false) {
+                      const response = await fetch(`${base}/api/v1/clients/${clientId}/files/fetch-url`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                        body: JSON.stringify({ url: downloadUrl.trim(), path: destPath, force }),
+                      });
+                      if (!response.ok) {
+                        const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
+                        throw new Error(err.error?.message ?? 'Download failed');
                       }
+
+                      // Check for warning (non-streaming JSON response)
+                      const contentType = response.headers.get('content-type') ?? '';
+                      if (contentType.includes('application/json')) {
+                        const data = await response.json();
+                        if (data.needsConfirmation) {
+                          setDownloadWarning({ message: data.message, fileSize: data.fileSizeFormatted, freeSpace: data.freeSpaceFormatted });
+                          return 'warning';
+                        }
+                      }
+
+                      // Streaming NDJSON progress
+                      const reader = response.body?.getReader();
+                      const decoder = new TextDecoder();
+                      let buffer = '';
+                      while (reader) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() ?? '';
+                        for (const line of lines) {
+                          if (!line.trim()) continue;
+                          try {
+                            const msg = JSON.parse(line);
+                            if (msg.type === 'progress') setDownloadProgress({ percent: msg.percent, downloaded: msg.downloaded, total: msg.total });
+                            if (msg.type === 'error') throw new Error(msg.message);
+                          } catch (e) { if (e instanceof Error && e.message !== line) throw e; }
+                        }
+                      }
+                      return 'complete';
                     }
-                    setShowUrlDownload(false);
-                    dirListing.refetch();
+
+                    const result = await doFetch(!!downloadWarning);
+                    if (result === 'complete') { setShowUrlDownload(false); dirListing.refetch(); }
                   } catch (err) {
                     setDownloadError(err instanceof Error ? err.message : 'Download failed');
                   } finally {
@@ -722,7 +747,7 @@ export default function Files() {
                   }
                 }}
                 className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
-                {downloading ? <><Loader2 size={14} className="animate-spin inline mr-1" /> Downloading...</> : 'Download'}
+                {downloading ? <><Loader2 size={14} className="animate-spin inline mr-1" /> Downloading...</> : downloadWarning ? 'Download Anyway' : 'Download'}
               </button>
             </div>
           </div>
