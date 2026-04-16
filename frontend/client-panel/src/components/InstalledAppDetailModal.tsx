@@ -3,9 +3,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
-import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLogs, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
-import type { LogLine } from '@/hooks/use-deployments';
 import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
@@ -131,9 +130,7 @@ export default function InstalledAppDetailModal({
   const availability = useResourceAvailability(clientId, editingResources ? deployment?.id : undefined);
   const avail = availability.data?.data;
   const [showLogs, setShowLogs] = useState(false);
-  const [showStreamLogs, setShowStreamLogs] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
-  const logs = useDeploymentLogs(clientId, deployment?.id, showLogs);
   const liveMetrics = useDeploymentLiveMetrics(clientId, deployment?.status === 'running' ? deployment?.id : undefined);
 
   // ─── Configuration editing ────────────────────────────────────────────────
@@ -707,77 +704,17 @@ export default function InstalledAppDetailModal({
           )}
         </div>
 
-        {/* Logs Section — one-shot snapshot */}
-        {showLogs && !showStreamLogs && (
+        {/* Unified Logs (static snapshot default, with Stream Live toggle) */}
+        {showLogs && deployment && (
           <div className="mb-6">
             <div className="flex items-center justify-between mb-2">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
                 <Terminal size={16} className="text-gray-600 dark:text-gray-400" />
-                Recent Logs
-                {logs.data?.data?.podName && (
-                  <span className="text-xs font-normal text-gray-400">({logs.data.data.podName})</span>
-                )}
-              </h3>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setShowStreamLogs(true); }}
-                  className="text-xs text-brand-500 hover:text-brand-700 dark:hover:text-brand-300"
-                >
-                  Stream live
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowLogs(false)}
-                  className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Hide
-                </button>
-              </div>
-            </div>
-            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-950 p-3 max-h-64 overflow-y-auto font-mono text-xs text-green-400 leading-relaxed">
-              {logs.isLoading && <p className="text-gray-500">Loading logs...</p>}
-              {logs.isError && <p className="text-red-400">Failed to load logs</p>}
-              {logs.data?.data?.terminationReason && (
-                <div className="text-red-500 font-bold mb-2">Pod terminated: {logs.data.data.terminationReason}</div>
-              )}
-              {[...(logs.data?.data?.lines ?? [])].reverse().map((line, i) => {
-                const isObj = typeof line === 'object' && line !== null;
-                const source = isObj ? (line as LogLine).source : 'APP';
-                const text = isObj ? (line as LogLine).text : String(line);
-                const level = isObj ? (line as LogLine).level : 'info';
-
-                const prefix = source === 'K8S' ? 'K8S: ' : 'APP: ';
-                const colorClass = level === 'error' ? 'text-red-400'
-                  : level === 'warning' ? 'text-amber-400'
-                  : source === 'K8S' ? 'text-blue-400'
-                  : 'text-green-400';
-
-                return (
-                  <div key={i} className={`whitespace-pre-wrap break-all ${colorClass}`}>
-                    {(line as LogLine).timestamp && source === 'K8S' && (
-                      <span className="opacity-40 mr-2">[{new Date((line as LogLine).timestamp as string).toLocaleTimeString()}]</span>
-                    )}
-                    <span className="opacity-60">{prefix}</span>{text}
-                  </div>
-                );
-              })}
-              {logs.data?.data?.lines.length === 0 && <p className="text-gray-500">No logs available</p>}
-            </div>
-          </div>
-        )}
-
-        {/* Live Log Stream */}
-        {showStreamLogs && deployment && (
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                <Terminal size={16} className="text-gray-600 dark:text-gray-400" />
-                Live Log Stream
+                Logs
               </h3>
               <button
                 type="button"
-                onClick={() => setShowStreamLogs(false)}
+                onClick={() => setShowLogs(false)}
                 className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
               >
                 Hide
@@ -815,26 +752,17 @@ export default function InstalledAppDetailModal({
         <div className="flex items-center justify-end gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
           <button
             type="button"
-            onClick={() => { setShowLogs(!showLogs); setShowStreamLogs(false); }}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            onClick={() => setShowLogs(!showLogs)}
+            className={clsx(
+              'inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
+              showLogs
+                ? 'border-brand-500 text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/20'
+                : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+            )}
             data-testid="logs-button"
           >
             <Terminal size={16} />
             Logs
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowStreamLogs(!showStreamLogs)}
-            className={clsx(
-              'inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors',
-              showStreamLogs
-                ? 'border-red-400 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30'
-                : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
-            )}
-            data-testid="stream-logs-button"
-          >
-            <Terminal size={16} />
-            {showStreamLogs ? 'Stop Live Logs' : 'Live Logs'}
           </button>
           <button
             type="button"
