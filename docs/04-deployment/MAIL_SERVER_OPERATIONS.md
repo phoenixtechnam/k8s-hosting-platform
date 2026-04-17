@@ -65,22 +65,7 @@ sender history and re-file.
 
 Mandatory for deliverability. Every IP that sends mail needs a PTR that forward-resolves back to the same IP (**FCrDNS**).
 
-```hcl
-# Terraform — hetznercloud/hcloud provider
-resource "hcloud_rdns" "mail_v4" {
-  server_id  = hcloud_server.mail.id
-  ip_address = hcloud_server.mail.ipv4_address
-  dns_ptr    = "mail.phoenix-host.net"
-}
-
-resource "hcloud_rdns" "mail_v6" {
-  server_id  = hcloud_server.mail.id
-  ip_address = hcloud_server.mail.ipv6_address
-  dns_ptr    = "mail.phoenix-host.net"
-}
-```
-
-Or via CLI:
+Set rDNS via Hetzner Cloud console or CLI:
 
 ```bash
 hcloud server set-rdns <server-id> --ip <ipv4> --hostname mail.phoenix-host.net
@@ -91,22 +76,21 @@ hcloud server set-rdns <server-id> --ip <ipv6> --hostname mail.phoenix-host.net
 
 ### 2.3 Hetzner Cloud Firewall for mail ports
 
-```hcl
-resource "hcloud_firewall" "mail" {
-  name = "mail-edge"
-  rule { direction = "in"; protocol = "tcp"; port = "25";   source_ips = ["0.0.0.0/0", "::/0"]; description = "SMTP" }
-  rule { direction = "in"; protocol = "tcp"; port = "465";  source_ips = ["0.0.0.0/0", "::/0"]; description = "SMTPS" }
-  rule { direction = "in"; protocol = "tcp"; port = "587";  source_ips = ["0.0.0.0/0", "::/0"]; description = "Submission" }
-  rule { direction = "in"; protocol = "tcp"; port = "143";  source_ips = ["0.0.0.0/0", "::/0"]; description = "IMAP" }
-  rule { direction = "in"; protocol = "tcp"; port = "993";  source_ips = ["0.0.0.0/0", "::/0"]; description = "IMAPS" }
-  rule { direction = "in"; protocol = "tcp"; port = "110";  source_ips = ["0.0.0.0/0", "::/0"]; description = "POP3" }
-  rule { direction = "in"; protocol = "tcp"; port = "995";  source_ips = ["0.0.0.0/0", "::/0"]; description = "POP3S" }
-  rule { direction = "in"; protocol = "tcp"; port = "4190"; source_ips = ["0.0.0.0/0", "::/0"]; description = "ManageSieve (optional)" }
-  rule { direction = "in"; protocol = "icmp"; source_ips = ["0.0.0.0/0", "::/0"]; description = "ICMP (no port field!)" }
-}
-```
+Create a firewall named `mail-edge` in Hetzner Cloud console (or via `hcloud firewall create`) with these inbound rules:
 
-⚠️ **Do NOT set `port` on ICMP rules** — terraform-provider-hcloud issue #415 causes recreate-on-every-apply.
+| Port | Protocol | Description |
+|------|----------|-------------|
+| 25 | TCP | SMTP |
+| 465 | TCP | SMTPS |
+| 587 | TCP | Submission |
+| 143 | TCP | IMAP |
+| 993 | TCP | IMAPS |
+| 110 | TCP | POP3 |
+| 995 | TCP | POP3S |
+| 4190 | TCP | ManageSieve (optional) |
+| — | ICMP | Ping |
+
+Source IPs: `0.0.0.0/0` and `::/0` for all rules.
 
 ### 2.4 Spamhaus DNSBL workaround (since 2025-02-19)
 

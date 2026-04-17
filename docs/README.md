@@ -98,7 +98,6 @@ Strategy for mixing multiple cloud providers across regions.
 - Cost analysis: Single vs multi-cloud
 - Operational complexity per phase
 - Migration path from single → multi-cloud
-- Terraform code examples
 - Risk analysis and mitigation
 - Decision matrix: When to adopt multi-cloud
 
@@ -146,7 +145,7 @@ Week-by-week implementation roadmap with complete GitHub integration.
 **Contents:**
 - Weeks 1-12: Detailed tasks, deliverables, dependencies
 - GitHub repository structure (monorepo layout with all directories)
-- GitHub Actions CI/CD pipelines (backend, frontend, terraform, deployment)
+- GitHub Actions CI/CD pipelines (backend, frontend, deployment)
 - Branch strategy (Git Flow: main, staging, production, feature/*)
 - Pull request workflow and approval process
 - Issue tracking with labels and templates
@@ -224,7 +223,7 @@ Complete CI/CD pipeline specification for development and production deployment.
 
 **Includes:**
 - ✅ Local development setup (Docker Compose)
-- ✅ 5 complete GitHub Actions workflows (backend CI, frontend CI, Terraform validate, deploy staging, deploy production)
+- ✅ 4 complete GitHub Actions workflows (backend CI, frontend CI, deploy staging, deploy production)
 - ✅ Database migration testing pipeline
 - ✅ Load testing (k6)
 - ✅ Security scanning (SonarQube, Trivy, OWASP ZAP)
@@ -1554,7 +1553,6 @@ Complete CI/CD pipeline specification for development and production deployment.
 2. Review pre-upgrade checklist and runbooks
 3. Set up staging cluster for testing upgrades
 4. Document your specific maintenance windows
-3. Reference Terraform code examples
 
 ### For Email Sending Limits & Monitoring
 1. Read `./06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md` (complete specification)
@@ -1958,7 +1956,7 @@ See: `./INFRASTRUCTURE_PLAN.md` Section 14 → "Cost Analysis"
 | `GITHUB_INTEGRATION_SUMMARY.md` | Monorepo structure, branch protection, secrets, issue templates, project board |
 | `INCIDENT_RESPONSE_RUNBOOK.md` | On-call runbook; severity levels; escalation matrix; common incident playbooks |
 | `MANAGEMENT_API_SPEC.md` | OpenAPI-style spec for the management API — all endpoints, request/response schemas |
-| `PHASE_1_ROADMAP.md` | 12-week Phase 1 plan with 65 GitHub Issues, Terraform setup, CI/CD pipeline |
+| `PHASE_1_ROADMAP.md` | 12-week Phase 1 plan with 65 GitHub Issues, CI/CD pipeline |
 | `SUBSCRIPTION_EXPIRY_NOTIFICATIONS.md` | Email notification schedule for subscription expiry; grace period policy |
 
 ### 05-advanced/ — Advanced Architecture Topics

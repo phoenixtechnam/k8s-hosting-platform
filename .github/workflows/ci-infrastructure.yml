@@ -4,31 +4,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'terraform/**'
       - 'k8s/**'
       - 'scripts/**'
       - 'catalog-images/**'
   pull_request:
     branches: [main]
     paths:
-      - 'terraform/**'
       - 'k8s/**'
       - 'scripts/**'
       - 'catalog-images/**'
 
 jobs:
-  terraform-validate:
-    name: Terraform Validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.9"
-      - run: terraform -chdir=terraform init -backend=false
-      - run: terraform -chdir=terraform validate
-      - run: terraform -chdir=terraform fmt -check
-
   kustomize-build:
     name: Kustomize Build
     runs-on: ubuntu-latest

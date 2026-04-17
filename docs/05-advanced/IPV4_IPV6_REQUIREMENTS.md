@@ -354,35 +354,7 @@ kubectl exec -n ingress-nginx ds/ingress-nginx-controller -- ss -tlnp | grep -E 
 
 **Requirement:** Configure Hetzner servers with both IPv4 and IPv6.
 
-Hetzner assigns one `/64` IPv6 prefix per server for free. The server's primary IPv6 address is the `::1` host within that prefix. No extra cost; simply enable IPv6 in Terraform.
-
-**Server Configuration (Terraform):**
-
-```hcl
-# terraform/modules/hetzner-cluster/main.tf
-resource "hcloud_server" "worker" {
-  count       = var.worker_count
-  name        = "worker-${var.location}-${count.index + 1}"
-  server_type = var.server_type
-  location    = var.location
-  image       = "debian-12"
-  ssh_keys    = [data.hcloud_ssh_key.admin.id]
-
-  # Enable IPv6 — Hetzner assigns a /64 prefix automatically
-  ipv4_enabled = true
-  ipv6_enabled = true
-
-  labels = var.labels
-}
-
-output "worker_ipv4" {
-  value = hcloud_server.worker[*].ipv4_address
-}
-
-output "worker_ipv6" {
-  value = hcloud_server.worker[*].ipv6_address  # Returns the ::1 host address in the /64
-}
-```
+Hetzner assigns one `/64` IPv6 prefix per server for free. The server's primary IPv6 address is the `::1` host within that prefix. No extra cost; enable IPv6 when creating the server in the Hetzner Cloud console (or via `hcloud server create --enable-ipv6`).
 
 **Network Configuration (on server):**
 
@@ -406,27 +378,16 @@ curl -6 https://ipv6.google.com
 
 **Firewall (Hetzner Cloud Firewall):**
 
-```hcl
-# terraform/modules/hetzner-cluster/firewall.tf
-resource "hcloud_firewall" "platform" {
-  name = "platform-firewall"
+Create a firewall named `platform-firewall` via Hetzner Cloud console with these inbound rules:
 
-  # Allow ICMP (IPv4 + IPv6 ping)
-  rule { direction = "in"; protocol = "icmp"; source_ips = ["0.0.0.0/0", "::/0"] }
-
-  # Allow HTTP + HTTPS from all (IPv4 + IPv6)
-  rule { direction = "in"; protocol = "tcp"; port = "80";  source_ips = ["0.0.0.0/0", "::/0"] }
-  rule { direction = "in"; protocol = "tcp"; port = "443"; source_ips = ["0.0.0.0/0", "::/0"] }
-
-  # Allow DNS (TCP + UDP) from all (for nameserver nodes)
-  rule { direction = "in"; protocol = "tcp"; port = "53"; source_ips = ["0.0.0.0/0", "::/0"] }
-  rule { direction = "in"; protocol = "udp"; port = "53"; source_ips = ["0.0.0.0/0", "::/0"] }
-
-  # Allow SSH + k3s API only from NetBird WireGuard mesh (admin-only)
-  rule { direction = "in"; protocol = "tcp"; port = "22";   source_ips = ["100.64.0.0/10"] }
-  rule { direction = "in"; protocol = "tcp"; port = "6443"; source_ips = ["100.64.0.0/10"] }
-}
-```
+| Port | Protocol | Source | Description |
+|------|----------|--------|-------------|
+| — | ICMP | `0.0.0.0/0`, `::/0` | Ping |
+| 80 | TCP | `0.0.0.0/0`, `::/0` | HTTP |
+| 443 | TCP | `0.0.0.0/0`, `::/0` | HTTPS |
+| 53 | TCP+UDP | `0.0.0.0/0`, `::/0` | DNS (nameserver nodes) |
+| 22 | TCP | `100.64.0.0/10` | SSH (NetBird mesh only) |
+| 6443 | TCP | `100.64.0.0/10` | k3s API (NetBird mesh only) |
 
 ### IP.2 OVH Cloud Dual-Stack
 
@@ -434,34 +395,7 @@ resource "hcloud_firewall" "platform" {
 
 OVH assigns a `/128` IPv6 address per VPS by default; a `/56` or `/64` block can be requested for network-level routing. Configure the gateway as documented in the OVH control panel.
 
-**Terraform Configuration:**
-
-```hcl
-# terraform/modules/ovh-cluster/main.tf
-resource "openstack_compute_instance_v2" "worker" {
-  count           = var.worker_count
-  name            = "worker-ovh-${count.index + 1}"
-  flavor_name     = var.flavor_name   # e.g. "b2-7"
-  image_name      = "Debian 12"
-  key_pair        = "platform-admin"
-
-  # OVH OpenStack — attach to network that has IPv6 enabled
-  network {
-    name = "Ext-Net"   # OVH public network (dual-stack)
-  }
-
-  metadata = var.labels
-}
-
-output "worker_ipv4" {
-  # OVH assigns IPv4 from Ext-Net
-  value = [for i in openstack_compute_instance_v2.worker : i.access_ip_v4]
-}
-
-output "worker_ipv6" {
-  value = [for i in openstack_compute_instance_v2.worker : i.access_ip_v6]
-}
-```
+**Provisioning:** Create VPS via OVH manager. Select Debian 12, attach to `Ext-Net` (dual-stack public network), and add your SSH key.
 
 ```bash
 # Post-provision: configure IPv6 default gateway on OVH (gateway is provider-specific)
@@ -488,40 +422,7 @@ systemctl restart systemd-networkd
 
 AWS requires an IPv6-enabled VPC and subnet. IPv6 CIDRs are allocated from Amazon's address pool (no cost for the addresses; data transfer charges still apply).
 
-**Terraform Configuration:**
-
-```hcl
-# terraform/modules/aws-cluster/vpc.tf
-resource "aws_vpc" "platform" {
-  cidr_block                       = "10.0.0.0/16"
-  assign_generated_ipv6_cidr_block = true   # AWS assigns a /56 from its pool
-  enable_dns_hostnames             = true
-}
-
-resource "aws_subnet" "workers" {
-  count                           = 2
-  vpc_id                          = aws_vpc.platform.id
-  cidr_block                      = cidrsubnet(aws_vpc.platform.cidr_block, 8, count.index)
-  ipv6_cidr_block                 = cidrsubnet(aws_vpc.platform.ipv6_cidr_block, 8, count.index)
-  assign_ipv6_address_on_creation = true
-  map_public_ip_on_launch         = true
-  availability_zone               = data.aws_availability_zones.available.names[count.index]
-}
-
-resource "aws_instance" "worker" {
-  count                       = var.worker_count
-  ami                         = data.aws_ami.debian.id
-  instance_type               = "t3.medium"
-  subnet_id                   = aws_subnet.workers[count.index % 2].id
-  ipv6_address_count          = 1    # Assign one IPv6 address from the subnet pool
-  associate_public_ip_address = true
-  key_name                    = "platform-admin"
-  tags                        = var.labels
-}
-
-output "worker_ipv4" { value = aws_instance.worker[*].public_ip }
-output "worker_ipv6" { value = [for i in aws_instance.worker : i.ipv6_addresses[0]] }
-```
+**Provisioning:** Create a VPC with IPv6 CIDR block enabled (`assign_generated_ipv6_cidr_block`), subnets with `assign_ipv6_address_on_creation`, and launch EC2 instances with `ipv6_address_count = 1`. Use the AWS Console or CLI.
 
 ### IP.4 Azure Dual-Stack
 
@@ -529,71 +430,7 @@ output "worker_ipv6" { value = [for i in aws_instance.worker : i.ipv6_addresses[
 
 Azure dual-stack requires a Basic or Standard Load Balancer with a separate IPv6 public IP. Standard VMs get IPv6 via the NIC configuration.
 
-**Terraform Configuration:**
-
-```hcl
-# terraform/modules/azure-cluster/main.tf
-resource "azurerm_virtual_network" "platform" {
-  name                = "platform-vnet"
-  address_space       = ["10.0.0.0/16", "2001:db8::/48"]   # IPv4 + IPv6
-  location            = var.location
-  resource_group_name = azurerm_resource_group.platform.name
-}
-
-resource "azurerm_subnet" "workers" {
-  name                 = "workers"
-  resource_group_name  = azurerm_resource_group.platform.name
-  virtual_network_name = azurerm_virtual_network.platform.name
-  address_prefixes     = ["10.0.1.0/24", "2001:db8::1:0/112"]
-}
-
-resource "azurerm_public_ip" "worker_ipv4" {
-  count               = var.worker_count
-  name                = "worker-pip4-${count.index}"
-  resource_group_name = azurerm_resource_group.platform.name
-  location            = var.location
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  ip_version          = "IPv4"
-}
-
-resource "azurerm_public_ip" "worker_ipv6" {
-  count               = var.worker_count
-  name                = "worker-pip6-${count.index}"
-  resource_group_name = azurerm_resource_group.platform.name
-  location            = var.location
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  ip_version          = "IPv6"
-}
-
-resource "azurerm_network_interface" "worker" {
-  count               = var.worker_count
-  name                = "worker-nic-${count.index}"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.platform.name
-
-  ip_configuration {
-    name                          = "ipv4"
-    subnet_id                     = azurerm_subnet.workers.id
-    private_ip_address_allocation = "Dynamic"
-    private_ip_address_version    = "IPv4"
-    public_ip_address_id          = azurerm_public_ip.worker_ipv4[count.index].id
-    primary                       = true
-  }
-
-  ip_configuration {
-    name                          = "ipv6"
-    subnet_id                     = azurerm_subnet.workers.id
-    private_ip_address_allocation = "Dynamic"
-    private_ip_address_version    = "IPv6"
-    public_ip_address_id          = azurerm_public_ip.worker_ipv6[count.index].id
-  }
-}
-
-output "worker_ipv4" { value = azurerm_public_ip.worker_ipv4[*].ip_address }
-output "worker_ipv6" { value = azurerm_public_ip.worker_ipv6[*].ip_address }
-```
+**Provisioning:** Create a VNet with dual-stack address space (IPv4 + IPv6), a subnet with both prefixes, Standard SKU public IPs for both v4 and v6, and NICs with dual ip_configuration blocks. Use the Azure Portal or CLI.
 
 ---
 
@@ -801,60 +638,9 @@ $ORIGIN example-client.com.
 www  60  IN  CNAME @
 ```
 
-**Terraform PowerDNS Zone:**
+**PowerDNS Zone (via REST API):**
 
-```hcl
-# terraform/modules/dns/client-zone.tf
-# Uses the powerdns Terraform provider (community: pan-net/powerdns)
-
-terraform {
-  required_providers {
-    powerdns = {
-      source  = "pan-net/powerdns"
-      version = "~> 1.5"
-    }
-  }
-}
-
-provider "powerdns" {
-  server_url = "http://powerdns.platform.svc.cluster.local:8081"
-  api_key    = var.pdns_api_key
-}
-
-resource "powerdns_zone" "client" {
-  name    = "${var.domain}."
-  kind    = "Native"
-  nameservers = [
-    "ns1.platform.example.com.",
-    "ns2.platform.example.com.",
-  ]
-}
-
-resource "powerdns_record" "a" {
-  zone    = powerdns_zone.client.id
-  name    = "${var.domain}."
-  type    = "A"
-  ttl     = 60
-  records = var.worker_ipv4_addresses  # list of all worker IPv4 IPs
-}
-
-resource "powerdns_record" "aaaa" {
-  count   = var.enable_ipv6 ? 1 : 0    # only in Phase 1.5+
-  zone    = powerdns_zone.client.id
-  name    = "${var.domain}."
-  type    = "AAAA"
-  ttl     = 60
-  records = var.worker_ipv6_addresses
-}
-
-resource "powerdns_record" "www_cname" {
-  zone    = powerdns_zone.client.id
-  name    = "www.${var.domain}."
-  type    = "CNAME"
-  ttl     = 3600
-  records = ["${var.domain}."]
-}
-```
+DNS zones are managed by the backend via the PowerDNS REST API (see `backend/src/modules/dns-records/`). The backend creates zones and records programmatically — A records point to worker IPv4 addresses, AAAA records (Phase 1.5+) to worker IPv6 addresses.
 
 ### D.2 DNS Testing
 

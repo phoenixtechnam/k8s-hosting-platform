@@ -15,13 +15,6 @@ build/
 # Vite
 frontend/*/dist/
 
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-*.tfvars
-!*.tfvars.example
-
 # Docker
 docker-compose.override.yml
 

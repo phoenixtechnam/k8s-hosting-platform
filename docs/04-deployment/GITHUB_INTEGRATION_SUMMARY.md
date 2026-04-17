@@ -66,7 +66,6 @@ hosting-platform/
 │   │   ├── staging/
 │   │   └── production/
 ├── helm/                     # Helm charts for platform services
-├── terraform/                # Infrastructure-as-code (Hetzner VPS provisioning)
 ├── catalog-images/           # Dockerfiles for workload catalog images
 ├── scripts/                  # Utility shell scripts (setup, backup, rotate secrets)
 └── docs/                     # Additional documentation (if not in /config/)
@@ -153,13 +152,6 @@ dist/
 npm-debug.log*
 yarn-error.log*
 
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfvars
-.terraform.lock.hcl
-
 # Kubernetes / Helm
 *.kubeconfig
 kubeconfig
@@ -206,15 +198,11 @@ Triggers: push/PR to `main` or `staging` affecting `backend/**`. Runs lint, type
 
 Triggers: push/PR to `main` or `staging` affecting `frontend/**`. Runs lint, type-check, Vitest unit tests, Vite build. Two jobs: `frontend-admin-ci` and `frontend-client-ci` (required status checks). See `CICD_PIPELINE_REQUIREMENTS.md §P1.2`.
 
-### 3. Terraform Validation (`terraform-validate.yml`)
-
-Triggers: push/PR affecting `terraform/**`. Runs `terraform fmt`, `terraform validate`, `terraform plan` (dry-run against Hetzner). See `CICD_PIPELINE_REQUIREMENTS.md §P1.3`.
-
-### 4. Deploy to Dev (`deploy-dev.yml`)
+### 3. Deploy to Dev (`deploy-dev.yml`)
 
 Triggers: push to `main` branch (after CI passes). Builds image, pushes to GHCR, updates Flux manifest in `k8s/overlays/dev/`, commits back — Flux auto-applies within 5 minutes. See `CICD_PIPELINE_REQUIREMENTS.md §P1.4`.
 
-### 5. Deploy to Production (`deploy-production.yml`)
+### 4. Deploy to Production (`deploy-production.yml`)
 
 Triggers: manual dispatch only (`workflow_dispatch`) with environment approval gate. Updates `k8s/overlays/production/` manifest — Flux auto-applies. Requires 1 approver in the `production` GitHub Environment. See `CICD_PIPELINE_REQUIREMENTS.md §P1.5`.
 

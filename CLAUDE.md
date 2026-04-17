@@ -18,7 +18,6 @@ frontend/
 k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
-terraform/                # Hetzner VPS provisioning
 scripts/                  # Utility scripts
 docs/                     # Architecture docs, ADRs, specs (read-only reference)
 ```

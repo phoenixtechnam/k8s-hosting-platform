@@ -63,7 +63,6 @@ frontend/
 k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
-terraform/                # Hetzner VPS provisioning
 catalog-images/           # Dockerfiles for workload types (nginx, apache, node, wordpress)
 scripts/                  # bootstrap.sh, provision, install scripts
 docs/                     # Architecture docs, ADRs, specs
@@ -224,7 +223,7 @@ GitHub Actions run on every push to `main`:
 | Backend CI | Lint, typecheck, unit tests, integration tests (MariaDB + Redis), coverage |
 | Admin Panel CI | Lint, typecheck, tests, build |
 | Client Panel CI | Lint, typecheck, tests, build |
-| Infrastructure CI | Terraform validate, Kustomize build, shellcheck, Docker build |
+| Infrastructure CI | Kustomize build, shellcheck, Docker build |
 
 ## Documentation
 

@@ -244,7 +244,7 @@ Key terms, acronyms, and concepts used throughout the platform documentation.
 
 **Tenancy** — Deployment model: single-tenant (dedicated per client) or multi-tenant (shared).
 
-**Terraform** — Infrastructure-as-Code tool (not used in MVP; future option for cluster provisioning).
+**Terraform** — Infrastructure-as-Code tool (not used; servers are provisioned manually).
 
 **TLS** — Transport Layer Security. Encrypts HTTP traffic (HTTPS). Platform uses Let's Encrypt certificates.
 

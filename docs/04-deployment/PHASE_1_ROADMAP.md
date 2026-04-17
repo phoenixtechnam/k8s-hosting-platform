@@ -83,7 +83,6 @@ hosting-platform/
 │       ├── staging/
 │       └── production/
 ├── helm/                     # Helm charts for platform services
-├── terraform/                # Hetzner VPS provisioning
 ├── # catalog-images/ removed — workload Dockerfiles live in external catalog repos (ADR-025)
 └── scripts/                  # Utility shell scripts
 ```
@@ -197,33 +196,9 @@ gh api repos/hosting-platform/hosting-platform/branches/staging/protection \
 <!-- How do we undo this if something breaks? -->
 
 ## Checklist
-- [ ] `terraform plan` reviewed (if Terraform change)
 - [ ] Secrets managed via Sealed Secrets (not plaintext in manifests)
 - [ ] Tested in staging before applying to production
 - [ ] Monitoring alerts updated (if new service)
-```
-
-### Terraform Code Location
-
-Infrastructure-as-code lives at `terraform/`. Structure:
-
-```
-terraform/
-├── main.tf                  # Hetzner provider + VPS resource
-├── variables.tf             # Input variables (node count, size, region)
-├── outputs.tf               # Node IPs, SSH fingerprints
-├── environments/
-│   ├── staging.tfvars       # Staging: 1 node, 4vCPU/8GB
-│   └── production.tfvars    # Production: 1+ nodes, 8vCPU/16GB
-└── modules/
-    └── hetzner-vps/         # VPS provisioning module
-```
-
-Usage:
-```bash
-terraform init
-terraform plan -var-file=environments/staging.tfvars
-terraform apply -var-file=environments/staging.tfvars
 ```
 
 ---
@@ -556,7 +531,7 @@ Rules:
 |-------|-------|-------|
 | `backend` | `#0075ca` | Node.js / API work |
 | `frontend` | `#e4e669` | React / UI work |
-| `infrastructure` | `#d93f0b` | k8s, Terraform, networking |
+| `infrastructure` | `#d93f0b` | k8s, networking |
 | `migration` | `#f9d0c4` | Plesk migration tooling |
 | `testing` | `#bfd4f2` | Test writing |
 | `docs` | `#cfd3d7` | Documentation |
@@ -600,7 +575,6 @@ Columns: `Backlog` | `This Week` | `In Progress` | `In Review` | `Done`
 | `NETBIRD_SETUP_KEY` | NetBird reusable setup key for CI runners |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook for deploy notifications |
 | `CODECOV_TOKEN` | Codecov upload token |
-| `HCLOUD_TOKEN` | Hetzner Cloud API token (for Terraform) |
 
 **Use in workflows:**
 

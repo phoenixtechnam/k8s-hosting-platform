@@ -416,8 +416,8 @@ etcdctl snapshot restore /var/lib/rancher/k3s/server/db/snapshots/pre-os-upgrade
 # This is complex, requires multi-node HA to work
 
 # Option 3: Rebuild node from scratch (single-node CP only)
-# Use infrastructure code (Terraform) to rebuild VM
-# Restore cluster from etcd snapshot to new node
+# Create a new VPS manually, then restore cluster from etcd snapshot
+
 ```
 
 ### Option B: Node Replacement (Lower Risk, More Effort)
@@ -443,7 +443,7 @@ sudo tar -czf /tmp/k3s-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
 # Store backup externally
 
 # Step 3: Create new node with fresh Debian 14
-# Using Terraform/IaC or manual VPS creation
+# Create new VPS manually via provider console
 # New node: k3s-cp-001-new
 # IP: 1.2.3.5 (temporary, will switch later)
 

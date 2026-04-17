@@ -429,84 +429,7 @@ jobs:
 
 ---
 
-### P1.3 Terraform CI Pipeline
-
-**File:** `.github/workflows/terraform-validate.yml`
-
-```yaml
-name: Terraform Validate
-
-on:
-  push:
-    branches: [main, staging]
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-validate.yml'
-  pull_request:
-    branches: [main, staging]
-    paths:
-      - 'terraform/**'
-
-jobs:
-  terraform:
-    name: Terraform Validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: terraform
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '~1.7'
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-
-      - name: Terraform Init
-        run: terraform init -backend=false
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Run tfsec (security scan)
-        uses: aquasecurity/tfsec-action@v1.0.0
-        with:
-          working_directory: terraform
-          soft_fail: true
-
-      - name: Terraform Plan (dry run, PR only)
-        if: github.event_name == 'pull_request'
-        run: terraform plan -no-color -var-file=environments/staging.tfvars
-        env:
-          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
-        continue-on-error: true
-
-      - name: Comment Plan on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const output = `#### Terraform Plan (Staging) 📖
-            \`\`\`
-            ${{ steps.plan.outputs.stdout }}
-            \`\`\``;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });
-```
-
----
-
-### P1.4 Deploy to Staging
+### P1.3 Deploy to Staging
 
 **File:** `.github/workflows/deploy-staging.yml`
 
@@ -1237,7 +1160,6 @@ After any failed deployment:
 
 ### Phase 1: MVP (Weeks 1-12)
 - Basic CI (lint, test, build) — `ci-backend.yml`, `ci-frontend.yml`
-- Terraform validation — `terraform-validate.yml`
 - Manual deployments to staging after CI passes — `deploy-staging.yml`
 - Manual deployments to production (workflow_dispatch + approval) — `deploy-production.yml`
 - Smoke test + automatic rollback on production failures

@@ -152,7 +152,7 @@ Each region runs a full independent k3s cluster with NGINX Ingress DaemonSet, Po
 | Global backup mesh | 4× StorageBox/Object Storage instances | 4 TB total | Each region backs up locally + cross-region nightly |
 | Management API | Frankfurt (primary) + OVH (replica) | Active/passive | OVH replica promoted on Frankfurt loss |
 
-Flux v2 GitOps manages all 4 clusters from a single `hosting-platform` Git repository using Kustomize overlays per region (`k8s/overlays/eu-frankfurt`, `eu-strasbourg`, `us-ashburn`, `apac-singapore`). Terraform workspace per region with shared backend in Hetzner S3-compatible Object Storage.
+Flux v2 GitOps manages all 4 clusters from a single `hosting-platform` Git repository using Kustomize overlays per region (`k8s/overlays/eu-frankfurt`, `eu-strasbourg`, `us-ashburn`, `apac-singapore`). Servers are provisioned manually per provider, then bootstrapped with `scripts/bootstrap.sh`.
 
 **How it works:**
 1. EU: Hetzner + OVH active-active with real-time sync
@@ -470,7 +470,6 @@ Supports 300+ clients globally with 0 min automated failover (Phase 3). Real-tim
 ### Automation to Reduce Complexity
 
 **Recommended tools:**
-- **Terraform:** Infrastructure-as-Code for all providers
 - **Flux v2:** GitOps for cluster deployments + syncing
 - **Velero + rsync --archive:** Automated cross-provider backups
 - **External DNS:** Automatic DNS management
@@ -553,7 +552,7 @@ Supports 300+ clients globally with 0 min automated failover (Phase 3). Real-tim
 - [ ] Implement daily backups to external SFTP
 - [ ] Set up PowerDNS for centralized DNS management
 - [ ] Document client → provider assignment logic
-- [ ] Create Terraform modules for reproducible deployments
+- [ ] Document manual server provisioning steps per provider
 
 ### Short Term (Months 3-6)
 
@@ -582,150 +581,31 @@ Supports 300+ clients globally with 0 min automated failover (Phase 3). Real-tim
 
 ---
 
-## Terraform: Multi-Cloud Infrastructure as Code
-
-All infrastructure is defined in `terraform/` using the monorepo structure from `PHASE_1_ROADMAP.md`. Provider credentials are stored as GitHub Secrets and passed via environment variables — never hardcoded.
-
-### Single Cloud Setup (Starting Point)
-
-```hcl
-# terraform/environments/frankfurt.tfvars
-region         = "hetzner-eu-central"
-control_planes = 1
-workers        = 1
-worker_type    = "cx31"   # 2 vCPU / 8 GB / €11/mo
-storage_gb     = 200
-
-# terraform/main.tf (simplified)
-module "frankfurt" {
-  source       = "./modules/hetzner-cluster"
-  location     = "nbg1"   # Nuremberg (Hetzner Frankfurt zone)
-  server_type  = var.worker_type
-  worker_count = var.workers
-  ssh_key_name = "platform-admin"
-  labels       = { region = "eu-frankfurt", role = "worker" }
-}
-
-output "worker_ips" {
-  value = module.frankfurt.worker_public_ips
-}
-```
-
-### Multi-Cloud Setup (Hetzner + OVH)
-
-```hcl
-# terraform/environments/multi-cloud.tfvars
-hetzner_workers = 2
-ovh_workers     = 1   # standby — smaller instance
-linode_workers  = 1   # US region
-
-# terraform/main.tf (multi-cloud)
-module "hetzner_eu" {
-  source       = "./modules/hetzner-cluster"
-  location     = "nbg1"
-  server_type  = "cx41"
-  worker_count = var.hetzner_workers
-  labels       = { region = "eu-frankfurt", role = "worker" }
-}
-
-module "ovh_eu" {
-  source       = "./modules/ovh-cluster"
-  region       = "GRA11"   # Gravelines / Strasbourg zone
-  flavor_name  = "b2-7"    # 2 vCPU / 7 GB
-  worker_count = var.ovh_workers
-  labels       = { region = "eu-strasbourg", role = "standby" }
-}
-
-module "linode_us" {
-  source       = "./modules/linode-cluster"
-  region       = "us-east"   # Ashburn, VA
-  type         = "g6-standard-4"   # 2 vCPU / 4 GB
-  worker_count = var.linode_workers
-  labels       = { region = "us-ashburn", role = "worker" }
-}
-```
-
-### Module: Reusable K8s Cluster
-
-```hcl
-# terraform/modules/hetzner-cluster/main.tf
-variable "location"     { type = string }
-variable "server_type"  { type = string }
-variable "worker_count" { type = number }
-variable "ssh_key_name" { type = string }
-variable "labels"       { type = map(string) }
-
-resource "hcloud_server" "worker" {
-  count       = var.worker_count
-  name        = "worker-${var.location}-${count.index + 1}"
-  server_type = var.server_type
-  location    = var.location
-  image       = "debian-12"
-  ssh_keys    = [data.hcloud_ssh_key.admin.id]
-  labels      = var.labels
-
-  user_data = templatefile("${path.module}/templates/k3s-agent.sh.tpl", {
-    k3s_url   = var.k3s_server_url
-    k3s_token = var.k3s_token
-    node_name = "worker-${var.location}-${count.index + 1}"
-  })
-}
-
-resource "hcloud_volume" "longhorn" {
-  count    = var.worker_count
-  name     = "longhorn-${var.location}-${count.index + 1}"
-  size     = 100   # GB per worker
-  location = var.location
-  format   = "ext4"
-}
-
-resource "hcloud_volume_attachment" "longhorn" {
-  count     = var.worker_count
-  volume_id = hcloud_volume.longhorn[count.index].id
-  server_id = hcloud_server.worker[count.index].id
-  automount = true
-}
-
-output "worker_public_ips" {
-  value = hcloud_server.worker[*].ipv4_address
-}
-```
-
----
-
 ## Migration Path: Single → Multi-Cloud
 
 ### Step 1: Deploy on Hetzner Only (Day 1)
 
 ```bash
-cd terraform
-terraform init
-terraform apply -var-file=environments/frankfurt.tfvars
+# Provision server manually via Hetzner Cloud console:
+#   - Debian 12, cx31 (2 vCPU / 8 GB), Nuremberg datacenter
+#   - Add SSH key, enable IPv6
+#   - Note the server IP
 
-# Bootstrap k3s on the provisioned nodes
-# (Terraform outputs the IPs; bootstrap script runs via NetBird mesh)
-./scripts/bootstrap-k3s.sh --role=server --ip=$(terraform output -raw control_plane_ip)
-./scripts/bootstrap-k3s.sh --role=agent  --ip=$(terraform output -raw worker_ip) \
-  --server=$(terraform output -raw control_plane_ip)
+# Bootstrap k3s on the provisioned server
+./scripts/bootstrap.sh --role=server --ip=<server-ip>
 
 # Verify cluster
 kubectl get nodes
-# NAME              STATUS   ROLES                  AGE
-# control-nbg1-1    Ready    control-plane,master   2m
-# worker-nbg1-1     Ready    <none>                 1m
 ```
 
 ### Step 2: Add OVH Standby (Month 3)
 
 ```bash
-# Provision OVH standby node
-terraform apply -var-file=environments/multi-cloud.tfvars \
-  -target=module.ovh_eu
-
-# Bootstrap k3s agent on OVH node — joins Frankfurt cluster
-./scripts/bootstrap-k3s.sh --role=agent \
-  --ip=$(terraform output -raw ovh_worker_ip) \
-  --server=$(terraform output -raw hetzner_control_plane_ip) \
+# Provision OVH standby node manually via OVH manager
+# Bootstrap k3s agent — joins Frankfurt cluster
+./scripts/bootstrap.sh --role=agent \
+  --ip=<ovh-server-ip> \
+  --server=<hetzner-control-plane-ip> \
   --label="region=eu-strasbourg,role=standby"
 
 # Set up nightly backup sync: Frankfurt SFTP → Strasbourg SFTP
@@ -739,13 +619,11 @@ kubectl exec -n platform deploy/powerdns -- \
 ### Step 3: Add Linode US (Month 6)
 
 ```bash
-# Provision Linode US node
-terraform apply -var-file=environments/multi-cloud.tfvars \
-  -target=module.linode_us
+# Provision Linode server manually via Linode dashboard
 
 # Bootstrap as independent k3s cluster (separate US region — not joined to EU)
-./scripts/bootstrap-k3s.sh --role=server \
-  --ip=$(terraform output -raw linode_us_ip) \
+./scripts/bootstrap.sh --role=server \
+  --ip=<linode-server-ip> \
   --region=us-ashburn
 
 # Deploy platform services to US cluster via Flux
