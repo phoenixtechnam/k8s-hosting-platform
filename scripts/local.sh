@@ -148,6 +148,11 @@ _image_input_hash() {
            "${PROJECT_DIR}/.dockerignore" \
            -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
       ;;
+    file-manager-sidecar)
+      find "${PROJECT_DIR}/images/file-manager-sidecar" \
+           "${PROJECT_DIR}/.dockerignore" \
+           -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
+      ;;
   esac
 }
 
@@ -213,14 +218,18 @@ _build_all_images() {
     return 1
   fi
 
-  # Sidecar images (sequential — small, rarely changed)
+  # Sidecar image — content-hashed like the others. Base manifests reference
+  # it by GHCR name, so on a real rebuild we also re-tag + re-import under
+  # that name. The tag itself is idempotent and free; we only re-save+import
+  # when the local image was actually rebuilt.
   if [[ -d "${PROJECT_DIR}/images/file-manager-sidecar" ]]; then
     _build_and_import "file-manager-sidecar" "images/file-manager-sidecar" "images/file-manager-sidecar/Dockerfile"
-    # Also tag with GHCR name so base manifests resolve
-    docker tag "hosting-platform/file-manager-sidecar:local" \
-      "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
-    docker save "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest" \
-      | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    if grep -q '^HP_IMAGE_CHANGED_file-manager-sidecar=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
+      docker tag "hosting-platform/file-manager-sidecar:local" \
+        "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
+      docker save "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest" \
+        | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    fi
   fi
   echo "  All images imported"
 }
@@ -350,16 +359,20 @@ cmd_up() {
 cmd_dev() {
   echo "═══ Fast-Dev Mode: Infra in k3s, apps on host ═══"
   echo ""
+  _phase "k3s infra"
   _ensure_k3s_running
+  _phase "kustomize apply"
   _apply_dev_overlay
-  # Scale down app deployments — run on host instead
+  _phase "scale down app pods"
   echo "Scaling down app pods (running on host instead)..."
   k3s_exec kubectl scale deploy platform-api admin-panel client-panel -n platform --replicas=0 2>/dev/null
-  # Wait for infra only
+  _phase "wait for infra pods"
   echo "Waiting for infrastructure pods..."
   k3s_exec kubectl wait --for=condition=Ready pod -l app=postgres -n platform --timeout=120s 2>/dev/null || true
   k3s_exec kubectl wait --for=condition=Ready pod -l app=redis -n platform --timeout=60s 2>/dev/null || true
+  _phase "post-bootstrap"
   _bootstrap_stalwart_reader
+  _phase_summary
   echo ""
   echo "════════════════════════════════════════════════"
   echo "  Infrastructure ready!"
