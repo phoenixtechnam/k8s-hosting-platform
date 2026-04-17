@@ -1,27 +1,30 @@
 import { z } from 'zod';
 
 /**
- * Response from GET /admin/mail/webadmin-url.
+ * GET /admin/mail/stalwart-credentials
  *
- * Returns everything the admin UI needs to launch Stalwart's web-admin
- * interface in a new tab. `url` is browser-reachable (via ingress),
- * `username` is the suggested login (fallback-admin user). The password
- * is deliberately NOT included — ops delivers it out-of-band or admins
- * already know it in dev.
+ * Returns the Stalwart fallback-admin credentials so the admin panel can
+ * surface them to a super_admin/admin/support user (who already has the
+ * power to `kubectl get secret` the cluster, so this is not a privilege
+ * escalation). The UI only reveals these on an explicit click.
  */
-// URL must parse and use a safe scheme. Zod's `.url()` alone accepts
-// `javascript:`, `data:`, etc. — we pin to http(s) so an operator-provided
-// STALWART_WEBADMIN_URL can't smuggle an XSS payload into an `<a href>`.
-const httpUrlSchema = z
-  .string()
-  .url()
-  .refine((u) => /^https?:\/\//i.test(u), {
-    message: 'URL must use http or https scheme',
-  });
-
-export const webadminUrlResponseSchema = z.object({
-  url: httpUrlSchema,
+export const stalwartCredentialsResponseSchema = z.object({
   username: z.string().min(1),
+  password: z.string().min(1),
 });
+export type StalwartCredentialsResponse = z.infer<typeof stalwartCredentialsResponseSchema>;
 
-export type WebadminUrlResponse = z.infer<typeof webadminUrlResponseSchema>;
+/**
+ * POST /admin/mail/rotate-stalwart-password
+ *
+ * Generates a fresh random password, writes both the cleartext and the
+ * bcrypt hash into the `stalwart-secrets` k8s Secret, then rolls Stalwart
+ * and platform-api so they pick up the new values. Returns the new
+ * credentials + the ISO timestamp the rotation was verified.
+ */
+export const rotateStalwartPasswordResponseSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+  rotatedAt: z.string().datetime(),
+});
+export type RotateStalwartPasswordResponse = z.infer<typeof rotateStalwartPasswordResponseSchema>;

@@ -113,4 +113,7 @@ spec:
             - name: STALWART_IMAP_PORT
               value: "143"
             - name: STALWART_ADMIN_PASSWORD
-              value: stalwart-dev-admin
+              valueFrom:
+                secretKeyRef:
+                  name: platform-stalwart-creds
+                  key: ADMIN_SECRET_PLAIN

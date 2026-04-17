@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X, Key, RefreshCw, Copy, ExternalLink } from 'lucide-react';
+import { Mail, Globe, Server, Shield, Loader2, CheckCircle, XCircle, Plus, Trash2, TestTube, X, Key, RefreshCw, Copy } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import StatCard from '@/components/ui/StatCard';
 import {
@@ -15,7 +15,7 @@ import {
   type DkimKey,
   type DkimRotateResult,
 } from '@/hooks/use-email';
-import { useStalwartWebadminUrl } from '@/hooks/use-mail-admin';
+import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -37,9 +37,6 @@ export default function EmailManagement() {
       <div className="flex items-center gap-3">
         <Mail size={28} className="text-gray-700 dark:text-gray-300" />
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="email-mgmt-heading">Email Management</h1>
-        <div className="ml-auto">
-          <StalwartWebadminLauncher />
-        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -64,35 +61,9 @@ export default function EmailManagement() {
 
       {tab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
       {tab === 'relays' && <SmtpRelaysSection />}
-    </div>
-  );
-}
 
-function StalwartWebadminLauncher() {
-  const { data, isLoading, error } = useStalwartWebadminUrl();
-  if (isLoading) {
-    return (
-      <button type="button" disabled
-        className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400">
-        <Loader2 size={14} className="animate-spin" /> Loading Stalwart…
-      </button>
-    );
-  }
-  if (error || !data?.data?.url) {
-    return null;
-  }
-  const { url, username } = data.data;
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700"
-      data-testid="stalwart-webadmin-launcher"
-      title={`Opens Stalwart web admin. Login as: ${username}`}
-    >
-      <Server size={14} /> Stalwart Admin <ExternalLink size={12} />
-    </a>
+      <StalwartAdminPanel />
+    </div>
   );
 }
 

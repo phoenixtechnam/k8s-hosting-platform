@@ -4,11 +4,15 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Re-resolve upstream on each request so a recreated backend container
-    # (docker-compose rebuild, k8s pod reschedule) doesn't leave us pointing
-    # at a dead IP. Pairs with the $backend_upstream variable below.
+    # Allow the admin panel to embed Stalwart's web-admin via an iframe served
+    # same-origin below. frame-ancestors 'self' blocks third-party embedding.
+    add_header Content-Security-Policy "frame-ancestors 'self'" always;
+
+    # Re-resolve upstreams on each request so a recreated pod doesn't leave
+    # us pointing at a dead IP. Pairs with the $*_upstream variables below.
     resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
-    set $backend_upstream http://${BACKEND_HOST}:${BACKEND_PORT};
+    set $backend_upstream  http://${BACKEND_HOST}:${BACKEND_PORT};
+    set $stalwart_upstream http://stalwart-mail-mgmt.mail.svc.cluster.local:8080;
 
     location /health {
         access_log off;
@@ -16,7 +20,77 @@ server {
         add_header Content-Type text/plain;
     }
 
-    # Reverse-proxy API requests to the backend.
+    # ─── Stalwart web-admin (same-origin proxy; NO public ingress) ─────────
+    # The Stalwart WASM SPA is embedded as an iframe on the Email Management
+    # page. Its compiled paths are absolute, so we proxy every path it
+    # fetches at root. Access is gated by the admin-panel origin only —
+    # there is no `mail.*` ingress.
+
+    # Trampoline: iframe src="/__stalwart/" strips the prefix and serves
+    # Stalwart's index.html. Subsequent asset + API fetches match the
+    # specific locations below.
+    location /__stalwart/ {
+        proxy_pass $stalwart_upstream/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;
+    }
+
+    # Stalwart SPA asset bundle: /webadmin-<hash>.js, /webadmin-<hash>_bg.wasm
+    location ~ ^/webadmin- {
+        proxy_pass $stalwart_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+    # Stalwart OAuth authorize + token endpoints (exact match so they beat
+    # the /api/ prefix fallback to platform-api).
+    location = /api/oauth {
+        proxy_pass $stalwart_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        # Stream the (small) body directly — nginx's default request
+        # buffering hangs when the client uses Transfer-Encoding: chunked
+        # (which happens when this request originates from the ingress
+        # controller or another front-end nginx).
+        proxy_request_buffering off;
+    }
+    location = /auth/token {
+        proxy_pass $stalwart_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_request_buffering off;
+    }
+
+    # Stalwart admin API surface. Regex listing is version-pinned; keep in
+    # sync with Stalwart upgrades. None of these prefixes collide with the
+    # platform's `/api/v1/*` routes.
+    location ~ ^/api/(queue|principal|settings|telemetry|reports?|dkim|tls|troubleshoot|sieve|spam-filter|logs|tracing|metrics|oauth/clients|api-keys|restart)(/|$) {
+        proxy_pass $stalwart_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 64m;
+        proxy_read_timeout 120s;
+        proxy_request_buffering off;
+    }
+
+    # ─── Platform API (unchanged — /api/v1/* lives here) ───────────────────
     location /api/ {
         proxy_pass $backend_upstream;
         proxy_set_header Host $host;
