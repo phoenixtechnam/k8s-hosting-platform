@@ -4,16 +4,22 @@ set -euo pipefail
 # local.sh — Manage the local development stack.
 #
 # All services run inside k3s using the same Kustomize manifests as production.
-# Two modes available:
 #
 # Integration mode (everything in k3s):
 #   ./scripts/local.sh up          Build images, deploy all pods to k3s
-#   ./scripts/local.sh rebuild     Rebuild app images + rollout restart
+#   ./scripts/local.sh rebuild     Rebuild app images + rollout restart (content-hash skip)
 #   ./scripts/local.sh down        Stop everything
 #   ./scripts/local.sh reset       Wipe volumes, restart fresh
 #
-# Fast-dev mode (infra in k3s, apps on host with hot-reload):
-#   ./scripts/local.sh dev         Start infra pods, print host dev instructions
+# `rebuild` is the iteration loop — 0s if nothing changed, ~20s per changed
+# service. For the topology where the browser is on a different machine than
+# the source tree, this is the only mode that works without port-forwarding.
+#
+# (A `dev` subcommand — apps on the workspace host, infra in k3s — exists in
+# the source but is unwired from dispatch because its printed URLs point at
+# localhost:3000/5173/5174 which aren't reachable from a remote browser. See
+# cmd_dev() if you want to revisit — needs ingress-routing to host ports, or
+# in-cluster HMR via hostPath + tsx/vite watch.)
 #
 # Shared commands:
 #   ./scripts/local.sh logs [pod]  Tail logs (all pods or specific one)
@@ -374,6 +380,15 @@ cmd_up() {
   cmd_status
 }
 
+# cmd_dev — currently unwired from dispatch. Left intact so we can revisit.
+#
+# The idea: run infrastructure (postgres, redis, dex, oauth2-proxy) in k3s and
+# scale the app deployments to 0, then run `npm run dev` on the host for HMR.
+# Problem in our topology: the workspace container is not the user's browser
+# machine, and the printed URLs (localhost:3000/5173/5174) aren't reachable
+# from outside. Revisiting this would mean either (a) publishing host dev
+# server ports in the 2010-2030 range with an ingress rewrite in front, or
+# (b) in-cluster HMR via hostPath + tsx watch / vite --host.
 cmd_dev() {
   echo "═══ Fast-Dev Mode: Infra in k3s, apps on host ═══"
   echo ""
@@ -767,7 +782,9 @@ cmd_help() {
 
 case "${1:-help}" in
   up)             cmd_up ;;
-  dev)            cmd_dev ;;
+  # dev mode is currently unwired — see the block comment at the top of this
+  # file. The function is preserved in case we come back to it.
+  # dev)          cmd_dev ;;
   down)           cmd_down ;;
   reset)          cmd_reset ;;
   rebuild)        cmd_rebuild ;;
