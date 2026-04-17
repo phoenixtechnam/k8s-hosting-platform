@@ -25,6 +25,7 @@ resources:
   - ../../../base/stalwart
   - secret.yaml
   - platform-postgres.yaml
+  - webadmin-ingress.yaml
 
 patches:
   - path: service-nodeport-patch.yaml

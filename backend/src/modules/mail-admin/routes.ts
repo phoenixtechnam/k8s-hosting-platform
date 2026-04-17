@@ -1,13 +1,19 @@
 /**
- * Phase 3 (post-Phase-3) G8 + G9: mail-admin proxy routes.
+ * mail-admin proxy routes.
  *
- *   GET /admin/mail/metrics  →  Stalwart Prometheus output, parsed
- *                                + summarized into a small JSON
- *                                shape the admin UI can render as
- *                                cards.
- *   GET /admin/mail/queue    →  Stalwart admin API queue contents
- *                                (per-envelope drill-down for
- *                                stuck-message debugging).
+ *   GET /admin/mail/metrics       →  Stalwart Prometheus output, parsed
+ *                                    + summarized into a small JSON
+ *                                    shape the admin UI can render as
+ *                                    cards.
+ *   GET /admin/mail/queue         →  Stalwart admin API queue contents
+ *                                    (per-envelope drill-down for
+ *                                    stuck-message debugging).
+ *   GET /admin/mail/webadmin-url  →  URL + suggested username for the
+ *                                    Stalwart web-admin UI, so the
+ *                                    admin panel can open it in a new
+ *                                    tab. Password is deliberately NOT
+ *                                    returned (ops delivers it, or the
+ *                                    browser remembers after first login).
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -15,6 +21,7 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
+import { buildWebadminUrl } from './webadmin-url.js';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -33,6 +40,26 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError(
         'STALWART_METRICS_UNAVAILABLE',
         'Could not fetch Stalwart metrics — see server logs',
+        503,
+      );
+    }
+  });
+
+  app.get('/admin/mail/webadmin-url', async () => {
+    const cfg = app.config as Record<string, unknown>;
+    try {
+      const result = buildWebadminUrl({
+        ingressBaseDomain: cfg.INGRESS_BASE_DOMAIN as string | undefined,
+        platformEnv: cfg.PLATFORM_ENV as string | undefined,
+        explicitUrl: process.env.STALWART_WEBADMIN_URL,
+        explicitUsername: process.env.STALWART_WEBADMIN_USERNAME,
+      });
+      return success(result);
+    } catch (err) {
+      app.log.warn({ err }, 'mail-admin: webadmin-url build failed');
+      throw new ApiError(
+        'STALWART_WEBADMIN_NOT_CONFIGURED',
+        'Stalwart web-admin URL is not configured on this platform.',
         503,
       );
     }

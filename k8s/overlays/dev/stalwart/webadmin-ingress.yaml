@@ -1,0 +1,31 @@
+# Dev overlay: expose Stalwart's web-admin UI at mail.k8s-platform.test.
+#
+# Browser reaches it via http://mail.k8s-platform.test:2010 (NGINX ingress HTTP
+# port published by docker-compose.local.yml). The admin panel's EmailManagement
+# page has a "Open Stalwart Admin" button that opens this URL in a new tab.
+#
+# Add to /etc/hosts on the machine running the browser:
+#   <unraid-ip>  mail.k8s-platform.test
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stalwart-webadmin
+  namespace: mail
+  annotations:
+    # The SPA is a Leptos/WASM app served from /. Keep upload sizes generous
+    # for DKIM key uploads + large config reloads.
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: mail.k8s-platform.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stalwart-mail-mgmt
+                port:
+                  number: 8080
