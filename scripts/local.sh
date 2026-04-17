@@ -94,12 +94,38 @@ _build_and_import() {
 }
 
 _build_all_images() {
-  echo "Building and importing images into k3s..."
-  # Build sequentially to avoid I/O storms on btrfs loopback
-  _build_and_import "backend"      "."  "backend/Dockerfile"
-  _build_and_import "admin-panel"  "."  "frontend/admin-panel/Dockerfile"
-  _build_and_import "client-panel" "."  "frontend/client-panel/Dockerfile"
-  # Sidecar images
+  echo "Building and importing images into k3s (parallel)..."
+  # Parallel builds — safe on direct filesystems (XFS/BTRFS), previously
+  # serialized only for shfs/FUSE mounts which are no longer used.
+  local pids=() logs=()
+  local names=("backend" "admin-panel" "client-panel")
+  local dockerfiles=("backend/Dockerfile" "frontend/admin-panel/Dockerfile" "frontend/client-panel/Dockerfile")
+  local i
+  for i in "${!names[@]}"; do
+    local log
+    log=$(mktemp)
+    logs+=("$log")
+    ( _build_and_import "${names[$i]}" "." "${dockerfiles[$i]}" ) >"$log" 2>&1 &
+    pids+=($!)
+  done
+
+  local failed=0
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      failed=$((failed + 1))
+      echo "  ✗ ${names[$i]} build failed — log below:"
+      sed 's/^/    /' "${logs[$i]}"
+    else
+      cat "${logs[$i]}"
+    fi
+    rm -f "${logs[$i]}"
+  done
+  if (( failed > 0 )); then
+    echo "ERROR: $failed image build(s) failed"
+    return 1
+  fi
+
+  # Sidecar images (sequential — small, rarely changed)
   if [[ -d "${PROJECT_DIR}/images/file-manager-sidecar" ]]; then
     _build_and_import "file-manager-sidecar" "images/file-manager-sidecar" "images/file-manager-sidecar/Dockerfile"
     # Also tag with GHCR name so base manifests resolve
@@ -158,6 +184,15 @@ _wait_for_pods() {
   }
 }
 
+_run_migrations_and_seed() {
+  echo "Running database migrations + seed..."
+  if ! k3s_exec kubectl exec -n platform deploy/platform-api -- node dist/db/migrate.js 2>&1 | tail -5 | sed 's/^/  /'; then
+    echo "  ERROR: migrations failed"
+    return 1
+  fi
+  k3s_exec kubectl exec -n platform deploy/platform-api -- node dist/db/seed.js 2>&1 | tail -8 | sed 's/^/  /' || true
+}
+
 _bootstrap_stalwart_reader() {
   # The Drizzle migration creates stalwart_reader as NOLOGIN. Set the dev password
   # so Stalwart can authenticate to the platform DB.
@@ -190,6 +225,7 @@ cmd_up() {
   _build_all_images
   _apply_dev_overlay
   _wait_for_pods platform
+  _run_migrations_and_seed
   _bootstrap_stalwart_reader
   _cleanup_stale_namespaces
   echo ""

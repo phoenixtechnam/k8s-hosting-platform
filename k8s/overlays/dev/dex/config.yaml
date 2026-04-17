@@ -13,10 +13,10 @@
 #
 # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
 # bootstrap.sh --env dev --domain <FQDN> regenerates this file with
-# correct hostnames. The defaults below use PLACEHOLDER.example.com
+# correct hostnames. The defaults below use dind.local:2015
 # to fail loudly if not overridden.
 
-issuer: http://PLACEHOLDER.example.com/dex
+issuer: http://dind.local:2015/dex
 
 storage:
   type: sqlite3
@@ -34,17 +34,17 @@ staticClients:
     name: Hosting Platform Admin
     secret: local-dev-secret-admin
     redirectURIs:
-      - http://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+      - http://dind.local:2012/api/v1/auth/oidc/callback
   - id: hosting-platform-client
     name: Hosting Platform Client
     secret: local-dev-secret-client
     redirectURIs:
-      - http://PLACEHOLDER.example.com/api/v1/auth/oidc/callback
+      - http://dind.local:2012/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
     secret: local-dev-secret-oauth2-proxy
     redirectURIs:
-      - http://PLACEHOLDER.example.com/oauth2/callback
+      - http://dind.local:2012/oauth2/callback
 
 connectors: []
 

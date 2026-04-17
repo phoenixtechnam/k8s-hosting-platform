@@ -15,17 +15,19 @@ resources:
   # Dev-only services
   - dev-secrets.yaml
   - nodeport-services.yaml
-  - postgres-initdb-patch.yaml
+  - postgres-initdb-configmap.yaml
+  - allow-intra-platform-netpol.yaml
   # Dev-only sub-stacks (core only — mail/webmail are opt-in via local.sh)
   - dex/
   - cert-manager/
 
 patches:
   - path: resource-quotas-patch.yaml
-  - path: oauth2-proxy-cookie-patch.yaml
+  - path: oauth2-proxy-patch.yaml
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
   - path: backend-patch.yaml
+  - path: postgres-initdb-patch.yaml
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

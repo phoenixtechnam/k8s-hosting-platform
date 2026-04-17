@@ -1,0 +1,23 @@
+# Dev overlay: allow intra-namespace traffic within `platform`.
+#
+# Base net-policies apply `default-deny-ingress` to the platform namespace
+# and only permit traffic from ingress-nginx to platform-api/admin/client/
+# oauth2-proxy. This blocks same-namespace flows that the app needs:
+#   - platform-api -> redis, postgres
+#   - oauth2-proxy -> dex
+# Production infra almost certainly provides these via more granular policies
+# or a service mesh; for local dev, this permissive intra-ns rule is sufficient.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-platform
+  namespace: platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
