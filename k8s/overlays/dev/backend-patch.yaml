@@ -10,8 +10,22 @@ spec:
     spec:
       # Faster rolling restarts in dev — the backend handles SIGTERM cleanly.
       terminationGracePeriodSeconds: 5
+      volumes:
+        # Mount the Stalwart admin mirror Secret as a file — kubelet
+        # auto-refreshes mounted Secret volumes (~60s) when the Secret
+        # changes, while env vars bound via `secretKeyRef` only update on
+        # pod restart. This lets the Rotate endpoint patch the Secret
+        # and have platform-api pick up the new value without needing
+        # to restart platform-api (which would kill the rotate response).
+        - name: stalwart-creds
+          secret:
+            secretName: platform-stalwart-creds
       containers:
         - name: api
+          volumeMounts:
+            - name: stalwart-creds
+              mountPath: /etc/stalwart-creds
+              readOnly: true
           # Dev-only probes: poll fast so pods reach Ready as soon as the
           # app responds, instead of waiting for the prod-conservative
           # initialDelaySeconds: 5 + periodSeconds: 10 windows.
@@ -112,8 +126,10 @@ spec:
               value: stalwart-mail.mail.svc.cluster.local
             - name: STALWART_IMAP_PORT
               value: "143"
-            - name: STALWART_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: platform-stalwart-creds
-                  key: ADMIN_SECRET_PLAIN
+            # STALWART_ADMIN_PASSWORD is read from the mounted secret file
+            # at /etc/stalwart-creds/ADMIN_SECRET_PLAIN — see credentials.ts.
+            # We set STALWART_ADMIN_CREDS_DIR so the backend knows where
+            # to look; the env var itself is intentionally NOT set from
+            # secretKeyRef because that would freeze the value at pod start.
+            - name: STALWART_ADMIN_CREDS_DIR
+              value: /etc/stalwart-creds

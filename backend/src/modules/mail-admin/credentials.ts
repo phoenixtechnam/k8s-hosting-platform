@@ -1,28 +1,34 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   stalwartCredentialsResponseSchema,
   type StalwartCredentialsResponse,
 } from '@k8s-hosting/api-contracts';
 
 /**
- * Resolve the Stalwart fallback-admin credentials from a given env map.
+ * Resolve the Stalwart fallback-admin credentials.
  *
- * Env precedence (first match wins):
- *   - STALWART_ADMIN_PASSWORD  (canonical)
- *   - STALWART_ADMIN_SECRET_PLAIN
- *   - ADMIN_SECRET_PLAIN       (legacy — matches the Secret key name)
+ * Sources (first match wins):
+ *   1. Secret volume mount at STALWART_ADMIN_CREDS_DIR (default
+ *      `/etc/stalwart-creds`). The Rotate endpoint patches the k8s
+ *      Secret; kubelet refreshes the mounted file within ~60s, so
+ *      platform-api picks up rotations without a pod restart.
+ *   2. STALWART_ADMIN_PASSWORD env (legacy, still honored)
+ *   3. STALWART_ADMIN_SECRET_PLAIN / ADMIN_SECRET_PLAIN (older names)
  *
- * Username defaults to `admin` (Stalwart's fallback-admin user).
- *
- * Throws when no password-like env var is usable, so the route can translate
- * that into a user-visible 503 without leaking which env names were tried.
+ * Throws when nothing works — the route converts that into a 503.
  */
 export function readStalwartCredentials(env: NodeJS.ProcessEnv): StalwartCredentialsResponse {
   const rawPassword =
-    env.STALWART_ADMIN_PASSWORD ?? env.STALWART_ADMIN_SECRET_PLAIN ?? env.ADMIN_SECRET_PLAIN ?? '';
+    readPasswordFromFile(env) ??
+    env.STALWART_ADMIN_PASSWORD ??
+    env.STALWART_ADMIN_SECRET_PLAIN ??
+    env.ADMIN_SECRET_PLAIN ??
+    '';
   const password = rawPassword.trim();
   if (!password) {
     throw new Error(
-      'STALWART_ADMIN_PASSWORD is not configured — set it (or ADMIN_SECRET_PLAIN) in the platform-api env.',
+      'Stalwart admin password is not configured — expected a mounted secret at STALWART_ADMIN_CREDS_DIR/ADMIN_SECRET_PLAIN or the STALWART_ADMIN_PASSWORD env var.',
     );
   }
   const rawUsername = env.STALWART_ADMIN_USER?.trim();
@@ -31,4 +37,19 @@ export function readStalwartCredentials(env: NodeJS.ProcessEnv): StalwartCredent
   // Pass through the shared schema so response shape stays in lockstep
   // with the contract package even if the fields evolve.
   return stalwartCredentialsResponseSchema.parse({ username, password });
+}
+
+function readPasswordFromFile(env: NodeJS.ProcessEnv): string | undefined {
+  const dir = env.STALWART_ADMIN_CREDS_DIR?.trim();
+  if (!dir) return undefined;
+  const file = path.join(dir, 'ADMIN_SECRET_PLAIN');
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    const trimmed = content.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    // Missing file → fall back to env. Don't log; this is the expected
+    // path in unit tests and non-mounted deployments.
+    return undefined;
+  }
 }

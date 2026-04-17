@@ -83,9 +83,12 @@ export async function rotateStalwartPasswordImpl(
     },
   });
 
-  // Stalwart restart must complete BEFORE platform-api restarts — otherwise
-  // platform-api picks up the new cleartext while Stalwart is still hashing
-  // against the old one, and every admin call 401s until Stalwart catches up.
+  // Restart Stalwart so its config re-reads the new ADMIN_SECRET hash
+  // from the mail-ns Secret. platform-api is NOT restarted — its env is
+  // bound to the mirror Secret via a volume mount (see backend-patch.yaml),
+  // and kubelet auto-refreshes mounted files within ~60s of the Secret
+  // change. Skipping the restart keeps the rotate response alive so the
+  // browser can seed the new password into the UI immediately.
   await deps.restartStatefulSet({
     namespace: opts.stalwartNamespace,
     name: opts.stalwartStatefulSetName,
@@ -93,16 +96,6 @@ export async function rotateStalwartPasswordImpl(
   await deps.waitForStatefulSetReady({
     namespace: opts.stalwartNamespace,
     name: opts.stalwartStatefulSetName,
-    timeoutMs: 120_000,
-  });
-
-  await deps.restartDeployment({
-    namespace: opts.platformNamespace,
-    name: opts.platformDeploymentName,
-  });
-  await deps.waitForDeploymentReady({
-    namespace: opts.platformNamespace,
-    name: opts.platformDeploymentName,
     timeoutMs: 120_000,
   });
 

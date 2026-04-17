@@ -70,13 +70,10 @@ describe('rotateStalwartPasswordImpl', () => {
       namespace: 'mail',
       name: 'stalwart-mail',
     });
-    expect(deps.restartDeployment).toHaveBeenCalledWith({
-      namespace: 'platform',
-      name: 'platform-api',
-    });
+    expect(deps.restartDeployment).not.toHaveBeenCalled();
   });
 
-  it('does the Stalwart restart BEFORE the platform-api restart (order matters for cred consistency)', async () => {
+  it('restarts Stalwart but NOT platform-api (platform-api reads from a mounted Secret volume)', async () => {
     const calls: string[] = [];
     const deps = stubDeps({
       restartStatefulSet: vi.fn(async () => { calls.push('stalwart'); }),
@@ -86,7 +83,9 @@ describe('rotateStalwartPasswordImpl', () => {
       verifyCredentials: vi.fn(async () => { calls.push('verify'); return true; }),
     });
     await rotateStalwartPasswordImpl(stubOpts(), deps);
-    expect(calls).toEqual(['stalwart', 'stalwart-ready', 'platform', 'platform-ready', 'verify']);
+    expect(calls).toEqual(['stalwart', 'stalwart-ready', 'verify']);
+    expect(deps.restartDeployment).not.toHaveBeenCalled();
+    expect(deps.waitForDeploymentReady).not.toHaveBeenCalled();
   });
 
   it('polls verifyCredentials after restart and succeeds once creds are accepted', async () => {
@@ -117,12 +116,13 @@ describe('rotateStalwartPasswordImpl', () => {
     );
   });
 
-  it('does not restart platform-api if Stalwart readiness fails', async () => {
+  it('aborts if Stalwart readiness fails (the Secret is already patched — caller must recover)', async () => {
     const deps = stubDeps({
       waitForStatefulSetReady: vi.fn(async () => { throw new Error('stalwart did not become Ready'); }),
     });
     await expect(rotateStalwartPasswordImpl(stubOpts(), deps)).rejects.toThrow(/stalwart/i);
     expect(deps.restartDeployment).not.toHaveBeenCalled();
+    expect(deps.verifyCredentials).not.toHaveBeenCalled();
   });
 
   it('generates a password at least 24 chars long and uses URL-safe characters', () => {

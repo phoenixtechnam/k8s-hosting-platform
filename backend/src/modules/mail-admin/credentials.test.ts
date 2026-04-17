@@ -1,7 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readStalwartCredentials } from './credentials.js';
 
 describe('readStalwartCredentials', () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'stalwart-creds-'));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('prefers the mounted Secret file over env vars (live rotation support)', () => {
+    writeFileSync(join(tmp, 'ADMIN_SECRET_PLAIN'), 'rotated-from-secret\n');
+    expect(readStalwartCredentials({
+      STALWART_ADMIN_CREDS_DIR: tmp,
+      STALWART_ADMIN_PASSWORD: 'stale-from-env',
+    })).toEqual({ username: 'admin', password: 'rotated-from-secret' });
+  });
+
   it('returns STALWART_ADMIN_USER + STALWART_ADMIN_PASSWORD when both set', () => {
     expect(readStalwartCredentials({
       STALWART_ADMIN_USER: 'svc-admin',
@@ -13,6 +32,14 @@ describe('readStalwartCredentials', () => {
     expect(readStalwartCredentials({
       ADMIN_SECRET_PLAIN: 'legacy-password',
     })).toEqual({ username: 'admin', password: 'legacy-password' });
+  });
+
+  it('ignores an empty/whitespace-only secret file and falls through to env', () => {
+    writeFileSync(join(tmp, 'ADMIN_SECRET_PLAIN'), '\n  \n');
+    expect(readStalwartCredentials({
+      STALWART_ADMIN_CREDS_DIR: tmp,
+      STALWART_ADMIN_PASSWORD: 'env-win',
+    })).toEqual({ username: 'admin', password: 'env-win' });
   });
 
   it('prefers STALWART_ADMIN_PASSWORD over legacy env names', () => {
@@ -34,8 +61,8 @@ describe('readStalwartCredentials', () => {
     })).toEqual({ username: 'admin', password: 'pw' });
   });
 
-  it('throws when no password-like env var is set', () => {
-    expect(() => readStalwartCredentials({})).toThrow(/STALWART_ADMIN_PASSWORD/);
+  it('throws when no password-like source is configured', () => {
+    expect(() => readStalwartCredentials({})).toThrow(/Stalwart admin password/i);
   });
 
   it('throws when password env var is whitespace only', () => {
