@@ -161,17 +161,35 @@ _image_label_hash() {
   docker image inspect "$tag" --format '{{ index .Config.Labels "hp.input-hash" }}' 2>/dev/null || true
 }
 
+_image_in_k3s() {
+  local tag="$1"
+  docker exec "$K3S_CONTAINER" ctr images ls -q 2>/dev/null \
+    | grep -qx "docker.io/${tag}"
+}
+
 _build_and_import() {
   local name="$1" context="$2" dockerfile="$3"
   local tag="hosting-platform/${name}:local"
 
-  # Content-hash skip: build only if inputs actually changed.
+  # Content-hash skip: compare desired input hash against the image's label.
   local want got
   want=$(_image_input_hash "$name")
   got=$(_image_label_hash "$tag")
+
   if [[ -n "$want" && "$want" == "$got" ]]; then
-    echo "  ✓ ${name}: unchanged (hash ${want:0:12}), skipping build + import"
-    echo "HP_IMAGE_UNCHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
+    # Build is unnecessary. But check k3s containerd actually still has the
+    # image — after `down -v` or `dev` mode wiping k3s volumes, the Docker
+    # daemon still has the tagged image but containerd does not, which caused
+    # ErrImagePull when deployments scaled back up.
+    if _image_in_k3s "$tag"; then
+      echo "  ✓ ${name}: unchanged (hash ${want:0:12}), skipping build + import"
+      echo "HP_IMAGE_UNCHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
+      return 0
+    fi
+    echo "  ↻ ${name}: unchanged but missing from k3s — re-importing"
+    docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    # Treat as changed so cmd_rebuild rolls out pods that may be stuck in ErrImagePull
+    echo "HP_IMAGE_CHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
     return 0
   fi
 
