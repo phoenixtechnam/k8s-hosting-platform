@@ -39,6 +39,16 @@ server {
         proxy_hide_header X-Frame-Options;
         proxy_hide_header Content-Security-Policy;
         add_header Content-Security-Policy "frame-ancestors 'self'" always;
+        # Stalwart's Leptos/WASM SPA reads window.location.pathname to
+        # route. Since we serve it at /__stalwart/ (not root), its router
+        # sees an unknown path and shows 404. Inject a one-line shim
+        # before the WASM module evaluates so the SPA sees pathname "/".
+        # sub_filter needs identity encoding upstream — disable gzip pass-
+        # through and advertise only identity to Stalwart.
+        proxy_set_header Accept-Encoding "";
+        sub_filter_once on;
+        sub_filter_types text/html;
+        sub_filter '<script type="module">' '<script>history.replaceState(null,"","/");</script><script type="module">';
     }
 
     # Stalwart SPA asset bundle: /webadmin-<hash>.js, /webadmin-<hash>_bg.wasm
