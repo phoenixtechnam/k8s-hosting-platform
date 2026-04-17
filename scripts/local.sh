@@ -56,7 +56,8 @@ fi
 DOCKER_HOST_NAME="${DOCKER_HOST_NAME:-dind.local}"
 PORT_INGRESS_HTTP="${PORT_INGRESS_HTTP:-2010}"
 PORT_INGRESS_HTTPS="${PORT_INGRESS_HTTPS:-2011}"
-PORT_API="${PORT_API:-2012}"
+# Backend API is not published — reach it via /api/* through the admin or
+# client panel ingress (http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}).
 PORT_DB="${PORT_DB:-2013}"
 PORT_REDIS="${PORT_REDIS:-2014}"
 PORT_DEX="${PORT_DEX:-2015}"
@@ -336,9 +337,8 @@ cmd_status() {
     echo "  Mode: integration (all pods in k3s)"
     echo ""
     echo "  Endpoints:"
-    echo "    Admin Panel:    http://admin.k8s-platform.local-dev:${PORT_INGRESS_HTTP}"
-    echo "    Client Panel:   http://client.k8s-platform.local-dev:${PORT_INGRESS_HTTP}"
-    echo "    Backend API:    http://${DOCKER_HOST_NAME}:${PORT_API}"
+    echo "    Admin Panel:    http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
+    echo "    Client Panel:   http://client.k8s-platform.test:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
     echo "    PostgreSQL:     ${DOCKER_HOST_NAME}:${PORT_DB}"
     echo "    Redis:          ${DOCKER_HOST_NAME}:${PORT_REDIS}"
     echo "    Dex OIDC:       ${DOCKER_HOST_NAME}:${PORT_DEX}"
@@ -362,7 +362,7 @@ cmd_status() {
     fi
   fi
 
-  echo "  Login: admin@k8s-platform.local-dev / admin"
+  echo "  Login: admin@k8s-platform.test / admin"
   echo "════════════════════════════════════════════════"
 }
 
@@ -526,7 +526,7 @@ spec:
     name: local-ca-issuer
     kind: ClusterIssuer
   dnsNames:
-    - sftp.k8s-platform.local-dev
+    - sftp.k8s-platform.test
   duration: 8760h
   renewBefore: 720h
 EOF

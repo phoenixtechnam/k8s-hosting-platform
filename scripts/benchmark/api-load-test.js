@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 
-const BASE_URL = __ENV.BASE_URL || 'http://dind.local:2012';
+const BASE_URL = __ENV.BASE_URL || 'http://admin.k8s-platform.test:2010';
 
 // Custom metrics
 const errorRate = new Rate('errors');
@@ -24,7 +24,7 @@ let authToken = '';
 
 export function setup() {
   const loginRes = http.post(`${BASE_URL}/api/v1/auth/login`,
-    JSON.stringify({ email: 'admin@k8s-platform.local-dev', password: 'admin' }),
+    JSON.stringify({ email: 'admin@k8s-platform.test', password: 'admin' }),
     { headers: { 'Content-Type': 'application/json' } }
   );
 

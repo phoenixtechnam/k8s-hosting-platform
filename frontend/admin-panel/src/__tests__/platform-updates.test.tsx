@@ -52,7 +52,7 @@ vi.mock('../hooks/use-platform-updates', () => ({
 
 vi.mock('../hooks/use-auth', () => ({
   useAuth: vi.fn(() => ({
-    user: { id: 'admin-1', email: 'admin@k8s-platform.local-dev', fullName: 'Admin User', role: 'admin' },
+    user: { id: 'admin-1', email: 'admin@k8s-platform.test', fullName: 'Admin User', role: 'admin' },
     token: 'test-token', isAuthenticated: true, isLoading: false, error: null,
     login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
   })),

@@ -550,7 +550,7 @@ If refactoring existing offset-based pagination:
 ```
 Deprecation: true
 Sunset: Wed, 31 Dec 2026 23:59:59 GMT
-Link: <https://docs.k8s-platform.local-dev/migration/pagination>; rel="deprecation"
+Link: <https://docs.k8s-platform.test/migration/pagination>; rel="deprecation"
 ```
 
 ---

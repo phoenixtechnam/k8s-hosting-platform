@@ -349,7 +349,7 @@ After every break-glass access event:
 
 ### Monitoring
 
-- Alert: `BreakGlassAccessUsed` — fires on any login by `emergency-admin@k8s-platform.local-dev`
+- Alert: `BreakGlassAccessUsed` — fires on any login by `emergency-admin@k8s-platform.test`
 - Severity: Critical (always pages on-call, even outside business hours)
 - Audit: All kubectl commands during break-glass sessions logged to immutable audit trail
 

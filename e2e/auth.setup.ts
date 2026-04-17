@@ -7,7 +7,7 @@ setup('authenticate as admin', async ({ page }) => {
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
 
-  await page.getByTestId('email-input').fill('admin@k8s-platform.local-dev');
+  await page.getByTestId('email-input').fill('admin@k8s-platform.test');
   await page.getByTestId('password-input').fill('admin');
   await page.getByTestId('login-button').click();
   await page.waitForURL('**/');

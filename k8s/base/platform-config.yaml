@@ -11,7 +11,7 @@ data:
   log-level: "info"
 
   # Ingress / TLS — overlays MUST patch these with real values.
-  ingress-base-domain: "k8s-platform.local-dev"
+  ingress-base-domain: "k8s-platform.test"
   ingress-default-ipv4: ""
   cluster-issuer-name: "letsencrypt-prod-http01"
 
@@ -20,9 +20,9 @@ data:
 
   # Frontend URLs — API is same-origin (empty = proxied by frontend nginx).
   # client-url is only needed by admin panel for impersonation links.
-  admin-url: "https://admin.k8s-platform.local-dev"
-  client-url: "https://client.k8s-platform.local-dev"
+  admin-url: "https://admin.k8s-platform.test"
+  client-url: "https://client.k8s-platform.test"
 
   # CORS — with same-origin proxy, CORS is not strictly needed for browser
   # requests. Kept for API consumers like Swagger UI or external tools.
-  cors-origins: "https://admin.k8s-platform.local-dev,https://client.k8s-platform.local-dev"
+  cors-origins: "https://admin.k8s-platform.test,https://client.k8s-platform.test"

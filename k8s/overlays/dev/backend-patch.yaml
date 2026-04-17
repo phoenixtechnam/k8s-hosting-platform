@@ -22,7 +22,7 @@ spec:
             - name: DISABLE_RATE_LIMIT
               value: "true"
             - name: ADMIN_EMAIL
-              value: admin@k8s-platform.local-dev
+              value: admin@k8s-platform.test
             - name: ADMIN_PASSWORD
               value: admin
             - name: ADMIN_NAME

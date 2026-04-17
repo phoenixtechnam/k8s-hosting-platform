@@ -794,10 +794,10 @@ After migration, verify:
 
 ## Support Resources
 
-- **Backup issues:** support@k8s-platform.local-dev
-- **Migration help:** migration-guide@k8s-platform.local-dev
-- **Password recovery:** password-recovery@k8s-platform.local-dev
-- **Documentation:** https://docs.k8s-platform.local-dev/backup-migration
+- **Backup issues:** support@k8s-platform.test
+- **Migration help:** migration-guide@k8s-platform.test
+- **Password recovery:** password-recovery@k8s-platform.test
+- **Documentation:** https://docs.k8s-platform.test/backup-migration
 
 ---
 

@@ -34,7 +34,8 @@ services:
       - "${PORT_INGRESS_HTTP:-2010}:80"       # NGINX Ingress HTTP
       - "${PORT_INGRESS_HTTPS:-2011}:443"     # NGINX Ingress HTTPS
       # ─── Platform services ─────────────────────────────────────────
-      - "${PORT_API:-2012}:30012"             # Backend API (NodePort)
+      # Backend API is NOT exposed — admin/client panels reverse-proxy /api/*
+      # internally to platform-api.platform.svc.cluster.local:3000.
       - "${PORT_DB:-2013}:30432"              # PostgreSQL (NodePort)
       - "${PORT_REDIS:-2014}:30379"           # Redis (NodePort)
       - "${PORT_DEX:-2015}:30556"             # Dex OIDC (NodePort)

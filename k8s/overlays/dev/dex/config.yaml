@@ -1,10 +1,10 @@
 # Dex configuration for k8s dev/staging environments
 #
 # Static users for testing:
-#   - admin@k8s-platform.local-dev  / admin  (maps to the platform's default super_admin)
-#   - admin2@k8s-platform.local-dev / admin  (second admin for multi-user testing)
-#   - user@k8s-platform.local-dev   / user   (unprivileged user for OIDC auto-provision testing)
-#   - user2@k8s-platform.local-dev  / user   (second unprivileged user)
+#   - admin@k8s-platform.test  / admin  (maps to the platform's default super_admin)
+#   - admin2@k8s-platform.test / admin  (second admin for multi-user testing)
+#   - user@k8s-platform.test   / user   (unprivileged user for OIDC auto-provision testing)
+#   - user2@k8s-platform.test  / user   (second unprivileged user)
 #
 # Static OIDC clients:
 #   - hosting-platform-admin   (admin panel SSO)
@@ -34,39 +34,39 @@ staticClients:
     name: Hosting Platform Admin
     secret: local-dev-secret-admin
     redirectURIs:
-      - http://dind.local:2012/api/v1/auth/oidc/callback
+      - http://admin.k8s-platform.test:2010/api/v1/auth/oidc/callback
   - id: hosting-platform-client
     name: Hosting Platform Client
     secret: local-dev-secret-client
     redirectURIs:
-      - http://dind.local:2012/api/v1/auth/oidc/callback
+      - http://client.k8s-platform.test:2010/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
     secret: local-dev-secret-oauth2-proxy
     redirectURIs:
-      - http://dind.local:2012/oauth2/callback
+      - http://dind.local:2018/oauth2/callback
 
 connectors: []
 
 enablePasswordDB: true
 
 staticPasswords:
-  - email: admin@k8s-platform.local-dev
+  - email: admin@k8s-platform.test
     # password: "admin"
     hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
     username: admin
     userID: "00000000-0000-0000-0000-000000000001"
-  - email: admin2@k8s-platform.local-dev
+  - email: admin2@k8s-platform.test
     # password: "admin"
     hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
     username: admin2
     userID: "00000000-0000-0000-0000-000000000002"
-  - email: user@k8s-platform.local-dev
+  - email: user@k8s-platform.test
     # password: "user"
     hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
     username: user
     userID: "00000000-0000-0000-0000-000000000003"
-  - email: user2@k8s-platform.local-dev
+  - email: user2@k8s-platform.test
     # password: "user"
     hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
     username: user2

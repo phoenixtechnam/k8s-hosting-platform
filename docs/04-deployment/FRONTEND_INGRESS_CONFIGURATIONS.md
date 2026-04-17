@@ -331,7 +331,7 @@ spec:
     secretName: frontend-tls-domain
   # Certificate for IP (wildcard DNS subdomain)
   - hosts:
-    - "*.panel-ip.k8s-platform.local-dev"
+    - "*.panel-ip.k8s-platform.test"
     secretName: frontend-tls-ip
   
   rules:
@@ -408,9 +408,9 @@ spec:
   secretName: frontend-tls-ip
   duration: 2160h  # 90 days
   renewBefore: 360h
-  commonName: "*.panel-ip.k8s-platform.local-dev"
+  commonName: "*.panel-ip.k8s-platform.test"
   dnsNames:
-  - "*.panel-ip.k8s-platform.local-dev"
+  - "*.panel-ip.k8s-platform.test"
   issuerRef:
     name: selfsigned-issuer  # Self-signed for local IPs
     kind: Issuer
@@ -436,8 +436,8 @@ spec:
 # Map IP to a subdomain
 
 # Example: If your platform IP is 1.2.3.4
-1.2.3.4  admin.panel-ip.k8s-platform.local-dev
-1.2.3.4  client.panel-ip.k8s-platform.local-dev
+1.2.3.4  admin.panel-ip.k8s-platform.test
+1.2.3.4  client.panel-ip.k8s-platform.test
 1.2.3.4  panel.platform.com
 ```
 
@@ -460,7 +460,7 @@ kubectl describe cert frontend-cert-ip -n platform
 
 # Test
 curl -I https://panel.platform.com/admin/
-curl -I https://admin.panel-ip.k8s-platform.local-dev/admin/
+curl -I https://admin.panel-ip.k8s-platform.test/admin/
 ```
 
 ---
@@ -689,10 +689,10 @@ spec:
   ingressClassName: nginx-internal
   tls:
   - hosts:
-    - panel-internal.k8s-platform.local-dev
+    - panel-internal.k8s-platform.test
     secretName: frontend-tls-internal
   rules:
-  - host: panel-internal.k8s-platform.local-dev
+  - host: panel-internal.k8s-platform.test
     http:
       paths:
       - path: /admin(/|$)(.*)
@@ -912,8 +912,8 @@ curl -k https://1.2.3.4/admin/  # -k ignores cert errors
 2. Option B: Map IP to DNS name:
 ```bash
 # /etc/hosts
-1.2.3.4 panel.k8s-platform.local-dev
-curl https://panel.k8s-platform.local-dev/admin/
+1.2.3.4 panel.k8s-platform.test
+curl https://panel.k8s-platform.test/admin/
 ```
 
 3. Option C: Issue wildcard certificate for IP (not possible with Let's Encrypt):

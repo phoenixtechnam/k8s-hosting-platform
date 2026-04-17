@@ -19,8 +19,8 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-API_URL="${API_URL:-http://${DOCKER_HOST_NAME:-dind.local}:${PORT_API:-2012}}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.local-dev}"
+API_URL="${API_URL:-http://admin.k8s-platform.test:${PORT_INGRESS_HTTP:-2010}}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 
 # Mail server endpoints (Phase 1, dev overlay via docker-compose NodePort mapping)

@@ -1,8 +1,8 @@
 # Dex configuration for staging environment
 #
 # Static users for testing:
-#   - admin@k8s-platform.local-dev / admin
-#   - user@k8s-platform.local-dev  / user
+#   - admin@k8s-platform.test / admin
+#   - user@k8s-platform.test  / user
 #
 # IMPORTANT: bootstrap.sh --env staging --domain <FQDN> regenerates
 # this file with correct hostnames. PLACEHOLDER.example.com will
@@ -43,12 +43,12 @@ connectors: []
 enablePasswordDB: true
 
 staticPasswords:
-  - email: admin@k8s-platform.local-dev
+  - email: admin@k8s-platform.test
     # password: "admin"
     hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
     username: admin
     userID: "00000000-0000-0000-0000-000000000001"
-  - email: user@k8s-platform.local-dev
+  - email: user@k8s-platform.test
     # password: "user"
     hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
     username: user

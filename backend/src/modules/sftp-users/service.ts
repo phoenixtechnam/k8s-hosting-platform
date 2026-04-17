@@ -328,7 +328,7 @@ export async function getSftpConnectionInfo(db: Database) {
   const settings = await db.select().from(platformSettings);
   const settingsMap = new Map(settings.map((s) => [s.key, s.value]));
 
-  const host = settingsMap.get('sftp_gateway_host') ?? 'sftp.k8s-platform.local-dev';
+  const host = settingsMap.get('sftp_gateway_host') ?? 'sftp.k8s-platform.test';
   const port = Number(settingsMap.get('sftp_gateway_port') ?? '2222');
   const ftpsPort = Number(settingsMap.get('sftp_gateway_ftps_port') ?? '2121');
 

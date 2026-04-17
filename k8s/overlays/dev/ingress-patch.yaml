@@ -1,5 +1,8 @@
 # Dev overlay: local hostnames with self-signed CA.
-# Access via http://admin.k8s-platform.local-dev:2010 (add /etc/hosts entry).
+# HTTP is on :2010, HTTPS (self-signed) on :2011 — both serve independently.
+# HTTPS redirect is disabled so that :2010 stays usable without the ingress
+# controller rewriting URLs to :443 (which isn't published).
+# Add /etc/hosts entries for admin.k8s-platform.test + client.k8s-platform.test.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,14 +10,16 @@ metadata:
   namespace: platform
   annotations:
     cert-manager.io/cluster-issuer: local-ca-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
   tls:
     - hosts:
-        - admin.k8s-platform.local-dev
-        - client.k8s-platform.local-dev
+        - admin.k8s-platform.test
+        - client.k8s-platform.test
       secretName: platform-dev-tls
   rules:
-    - host: admin.k8s-platform.local-dev
+    - host: admin.k8s-platform.test
       http:
         paths:
           - path: /
@@ -24,7 +29,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.k8s-platform.local-dev
+    - host: client.k8s-platform.test
       http:
         paths:
           - path: /

@@ -9,7 +9,7 @@ const mockLogout = vi.fn();
 
 vi.mock('../hooks/use-auth', () => ({
   useAuth: vi.fn(() => ({
-    user: { id: 'admin-1', email: 'admin@k8s-platform.local-dev', fullName: 'Admin User', role: 'admin' },
+    user: { id: 'admin-1', email: 'admin@k8s-platform.test', fullName: 'Admin User', role: 'admin' },
     token: 'test-token',
     isAuthenticated: true,
     isLoading: false,
@@ -65,7 +65,7 @@ describe('Admin Header user menu', () => {
 
     expect(screen.getByTestId('user-menu-dropdown')).toBeInTheDocument();
     expect(screen.getByTestId('user-menu-name')).toHaveTextContent('Admin User');
-    expect(screen.getByTestId('user-menu-email')).toHaveTextContent('admin@k8s-platform.local-dev');
+    expect(screen.getByTestId('user-menu-email')).toHaveTextContent('admin@k8s-platform.test');
   });
 
   it('shows Change Password and Sign Out options', async () => {

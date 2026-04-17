@@ -800,7 +800,7 @@ rules:
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get"]
-- apiGroups: ["k8s-platform.local-dev"]
+- apiGroups: ["k8s-platform.test"]
   resources: ["clients", "workloads", "databases", "domains"]
   verbs: ["list", "get"]
 

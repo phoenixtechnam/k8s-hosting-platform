@@ -15,11 +15,11 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - admin.k8s-platform.local-dev
-        - client.k8s-platform.local-dev
+        - admin.k8s-platform.test
+        - client.k8s-platform.test
       secretName: platform-tls
   rules:
-    - host: admin.k8s-platform.local-dev
+    - host: admin.k8s-platform.test
       http:
         paths:
           - path: /
@@ -29,7 +29,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.k8s-platform.local-dev
+    - host: client.k8s-platform.test
       http:
         paths:
           - path: /
