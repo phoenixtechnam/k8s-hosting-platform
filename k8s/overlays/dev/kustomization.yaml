@@ -17,6 +17,7 @@ resources:
   - nodeport-services.yaml
   - postgres-initdb-configmap.yaml
   - allow-intra-platform-netpol.yaml
+  - allow-mail-to-postgres-netpol.yaml
   # Dev-only sub-stacks (core only — mail/webmail are opt-in via local.sh)
   - dex/
   - cert-manager/

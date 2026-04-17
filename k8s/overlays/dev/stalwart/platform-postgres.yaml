@@ -24,26 +24,7 @@ spec:
     - name: postgres
       port: 5432
       protocol: TCP
----
-# Allow mail-ns pods (Stalwart) to reach postgres in platform-ns. The
-# platform namespace has `default-deny-ingress`, which blocks
-# cross-namespace access by default.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-mail-to-postgres
-  namespace: platform
-spec:
-  podSelector:
-    matchLabels:
-      app: postgres
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: mail
-      ports:
-        - protocol: TCP
-          port: 5432
+# The NetworkPolicy allowing mail→postgres lives in the main dev
+# overlay (../allow-mail-to-postgres-netpol.yaml) — placing it here
+# would be silently reparented to `mail` namespace by this
+# kustomization's `namespace: mail` directive.

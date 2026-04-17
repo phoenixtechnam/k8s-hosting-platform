@@ -1,0 +1,28 @@
+# Allow the Stalwart mail-server (mail ns) to reach postgres (platform ns).
+# Platform's `default-deny-ingress` blocks cross-namespace access by
+# default; without this rule, Stalwart's SQL directory lookups time
+# out on every admin auth and the WebAdmin SPA logs a 500.
+#
+# Lives in the main dev overlay (not under `stalwart/`) so kustomize
+# can keep its namespace — the stalwart/ kustomization has
+# `namespace: mail` which would otherwise reparent this policy into
+# the wrong namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mail-to-postgres
+  namespace: platform
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 5432
