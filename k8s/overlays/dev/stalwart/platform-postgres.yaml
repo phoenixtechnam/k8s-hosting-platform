@@ -1,16 +1,12 @@
 #
-# Dev-only bridge: a k8s Service + Endpoints in the `mail` namespace
-# that points at the docker-compose `postgres` container. Docker assigns
-# a new IP to the container on every restart, so the Endpoints resource
-# is created here with a placeholder IP and then patched at deploy time
-# by `scripts/local.sh mail-up` via `_patch_postgres_bridge`.
+# `platform-postgres.mail.svc.cluster.local` resolves to the platform
+# postgres Service via Kubernetes ExternalName (CNAME in cluster DNS).
+# Stalwart's config references the mail-ns DNS name; this indirection
+# lets us relocate the real Postgres without changing Stalwart config.
 #
-# Stalwart pods resolve `platform-postgres.mail.svc.cluster.local` via
-# k3s DNS, which returns the endpoints IP, and then k3s routes the packet
-# to the docker bridge network where the postgres container is listening.
-#
-# In production, this manifest is replaced by a real Service pointing at
-# the platform postgres deployment — same DNS name, different target.
+# No Endpoints resource is needed — ExternalName Services don't create
+# endpoints; the kubelet's DNS returns the target hostname directly and
+# the pod re-resolves it to the real Service IP.
 #
 apiVersion: v1
 kind: Service
@@ -22,35 +18,32 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: platform-db-bridge
 spec:
-  type: ClusterIP
-  clusterIP: None  # headless — endpoints drive the DNS response
+  type: ExternalName
+  externalName: postgres.platform.svc.cluster.local
   ports:
     - name: postgres
       port: 5432
-      targetPort: 5432
       protocol: TCP
 ---
-apiVersion: v1
-kind: Endpoints
+# Allow mail-ns pods (Stalwart) to reach postgres in platform-ns. The
+# platform namespace has `default-deny-ingress`, which blocks
+# cross-namespace access by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
-  name: platform-postgres
-  namespace: mail
-  labels:
-    app: stalwart-mail
-    app.kubernetes.io/part-of: hosting-platform
-    app.kubernetes.io/component: platform-db-bridge
-subsets:
-  - addresses:
-      # Placeholder — overwritten at deploy time by `./scripts/local.sh mail-up`
-      # which discovers the live postgres container IP via
-      # `docker inspect hosting-platform-postgres-1` and patches this field.
-      # The k8s API server rejects `0.0.0.0` (unspecified) and anything in
-      # 127.0.0.0/8 (loopback). We use 192.0.2.1 from RFC 5737 TEST-NET-1,
-      # which is a reserved documentation prefix guaranteed to never route
-      # to anything real — so if the patch step fails to run, Stalwart
-      # gets a clean "connection timeout" that's easy to diagnose.
-      - ip: 192.0.2.1
-    ports:
-      - name: postgres
-        port: 5432
-        protocol: TCP
+  name: allow-mail-to-postgres
+  namespace: platform
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 5432
