@@ -12,9 +12,14 @@
 #
 # Differences from the base:
 #   1. Service type LoadBalancer → NodePort (DinD k3s has no LB provider)
-#   2. Dev secrets (PLAINTEXT bcrypt hashes for admin / master user)
-#   3. Dev hostname mail.dind.local
-#   4. NetworkPolicy removed (DinD k3s has no NP enforcer)
+#   2. Dev hostname mail.dind.local
+#   3. NetworkPolicy removed (DinD k3s has no NP enforcer)
+#
+# The Stalwart admin + master credentials Secret is no longer checked in:
+# `./scripts/local.sh mail-up` calls `scripts/generate-stalwart-secret.sh`
+# which generates random passwords and writes the Secret at first deploy.
+# Re-runs are a no-op (use `--force` to rotate at bootstrap time; for
+# day-to-day rotation see the admin panel's "Rotate password" button).
 #
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -23,7 +28,6 @@ namespace: mail
 
 resources:
   - ../../../base/stalwart
-  - secret.yaml
   - platform-postgres.yaml
 
 patches:

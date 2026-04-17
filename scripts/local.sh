@@ -328,6 +328,21 @@ _bootstrap_stalwart_reader() {
     >/dev/null 2>&1 || true
 }
 
+_generate_stalwart_secret() {
+  # Invoke the shared helper that generates bcrypt-hashed admin + master
+  # credentials + the platform-ns mirror Secret. Helper is idempotent:
+  # if mail/stalwart-secrets already exists it's a no-op.
+  # We run the helper on the host (this machine) but target k3s inside DinD
+  # via `docker exec`.
+  KUBECTL="docker exec -i ${K3S_CONTAINER} kubectl" \
+    "${SCRIPT_DIR}/generate-stalwart-secret.sh" \
+      --hostname='mail.dind.local' \
+      --db-password='stalwart-dev-reader-pw' \
+      --db-host='platform-postgres.mail.svc.cluster.local' \
+      --db-name='hosting_platform' \
+      --db-user='stalwart_reader'
+}
+
 _cleanup_stale_namespaces() {
   local orphan_count
   orphan_count=$(k3s_exec kubectl get ns --no-headers 2>/dev/null \
@@ -584,6 +599,9 @@ cmd_k3s_status() {
 cmd_mail_up() {
   echo "Deploying Stalwart mail server..."
   _ensure_k3s_running
+  # Generate Stalwart admin/master Secrets before applying manifests. Helper is
+  # idempotent — it only generates on first run (or when --force).
+  _generate_stalwart_secret
   _sync_manifests
   k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart
   _bootstrap_stalwart_reader

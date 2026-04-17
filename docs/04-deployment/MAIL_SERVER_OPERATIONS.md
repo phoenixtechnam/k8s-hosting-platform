@@ -113,11 +113,14 @@ The local overlay uses:
 - `local-path` StorageClass
 - NodePort service (30025..30995)
 - `internal` directory (no platform Postgres needed)
-- Plaintext dev secrets (bcrypt hashes baked into `k8s/overlays/dev/stalwart/secret.yaml`)
+- Secrets auto-generated at first `mail-up` by
+  `scripts/generate-stalwart-secret.sh` (random password + bcrypt hash
+  written directly to the k8s Secret; nothing committed to the repo)
 - Hostname `mail.dind.local`
 
 ```bash
-# Deploy
+# Deploy (first run prints admin + master passwords once — save them, or
+# retrieve via the admin panel's "Show Stalwart Credentials" button later)
 ./scripts/local.sh mail-up
 
 # Verify
@@ -145,9 +148,13 @@ MAIL_E2E=1 bash scripts/smoke-test.sh      # includes end-to-end send+receive
 
 > On most DinD/remote-docker setups, the host port mappings are only reachable from the Docker host itself, not from sibling containers. The smoke test defaults to in-container NodePort probes (`MAIL_PROBE_MODE=k3s`) to be deterministic. To probe via the published host ports, set `MAIL_PROBE_MODE=host`.
 
-**Dev credentials (never use in production):**
-- `admin` / `stalwart-dev-admin` — WebAdmin UI + admin API
-- `master` / `stalwart-dev-master` — Roundcube SSO master (Phase 2)
+**Dev credentials:**
+- `admin` / `<random>` — WebAdmin UI + admin API (printed by `mail-up`; shown via the admin panel "Show Stalwart Credentials" button)
+- `master` / `<random>` — Roundcube SSO master (Phase 2)
+
+The admin password can be rotated at any time via the admin panel's
+"Rotate password" button, which runs the same patch-secret + rolling-
+restart flow the bootstrap helper uses.
 
 ### 3.1b Bootstrapping the `stalwart_reader` PostgreSQL role (Phase 2a)
 
@@ -180,23 +187,33 @@ Rotate the password by repeating steps 1–4.
 ### 3.2 Production (Hetzner k3s)
 
 1. Complete §2 (Hetzner prerequisites) first
-2. Generate real secrets:
+2. Bootstrap the cluster: `./scripts/bootstrap.sh --role=server …` (this does NOT deploy Stalwart — only the shared k3s + cert-manager + Flux layer).
+3. Decide the Postgres `stalwart_reader` password (§3.1b steps 1-2 above) and keep it at hand.
+4. Generate Stalwart's admin + master credentials and the `stalwart-secrets` k8s Secret:
+
    ```bash
-   # Generate Argon2id password hashes from any strong random passphrase
-   docker run --rm --entrypoint /bin/sh stalwartlabs/stalwart:v0.15.5 -c '
-     # Stalwart does not ship a hash command — use a Python one-liner or
-     # any argon2 CLI tool. Example with htpasswd-argon2:
-     echo "<paste-generated-hash-here>"
-   '
+   # Runs on the bootstrap host (must have kubectl + either htpasswd from
+   # apache2-utils, or docker to pull httpd:2.4-alpine for hashing).
+   # The helper is idempotent — re-runs are a no-op unless --force.
+   ./scripts/generate-stalwart-secret.sh \
+     --hostname=mail.phoenix-host.net \
+     --db-password="$PG_STALWART_PW"
+
+   # The admin + master passwords are printed ONCE to stderr. Save them
+   # in your secret manager, or retrieve later via the admin panel's
+   # "Show Stalwart Credentials" button on Email Management.
    ```
-3. Create the Secret:
-   ```bash
-   kubectl create namespace mail
-   kubectl create secret generic stalwart-secrets -n mail \
-     --from-literal=ADMIN_SECRET='$argon2id$v=19$...' \
-     --from-literal=MASTER_SECRET='$argon2id$v=19$...' \
-     --from-literal=STALWART_HOSTNAME='mail.phoenix-host.net'
-   ```
+
+   The helper also writes `platform/platform-stalwart-creds` so the
+   platform-api deployment's env can pick up the cleartext admin password
+   via `secretKeyRef` (k8s Secrets are namespace-scoped; the rotation
+   endpoint keeps both Secrets in sync on every rotation).
+
+5. If you have a custom flow using sealed-secrets or SOPS, set
+   `BOOTSTRAP_STALWART_SECRET=manual` to skip the helper and create the
+   Secret yourself. Required keys: `ADMIN_SECRET` (bcrypt hash),
+   `ADMIN_SECRET_PLAIN` (cleartext), `MASTER_SECRET`, `STALWART_HOSTNAME`,
+   and `STALWART_DB_*` (host/user/password/name).
 4. Apply the base manifests:
    ```bash
    kubectl apply -k k8s/base/stalwart/
