@@ -15,14 +15,14 @@
 # Environment:
 #   K3S_CONTAINER   — docker container running k3s (default: hosting-platform-k3s-server-1)
 #   API_URL         — platform API base URL (default: http://dind.local:2012)
-#   ADMIN_EMAIL     — admin login (default: admin@platform.local)
+#   ADMIN_EMAIL     — admin login (default: admin@k8s-platform.local-dev)
 #   ADMIN_PASSWORD  — admin password (default: admin)
 
 set -euo pipefail
 
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 API_URL="${API_URL:-http://dind.local:2012}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@platform.local}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.local-dev}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 
 DRY_RUN=false

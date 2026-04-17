@@ -1,225 +1,19 @@
-# Local development stack
-# Usage: ./scripts/local.sh up
-# Or:    docker compose --env-file .env.local -f docker-compose.local.yml up -d --build
+# Local development stack — k3s only.
+#
+# All platform services (Postgres, Redis, Backend, Admin, Client, Dex,
+# Stalwart, Roundcube, SFTP) run inside k3s as Kubernetes pods, using the
+# same Kustomize manifests as staging/production.
+#
+# Two modes:
+#   ./scripts/local.sh up   — Full integration: all pods in k3s
+#   ./scripts/local.sh dev  — Fast dev: infra in k3s, apps on host with hot-reload
+#
+# Host port range: 2010-2030 (no standard ports in DinD).
 
 services:
-  postgres:
-    image: postgres:18-alpine
-    ports:
-      - "${PORT_DB:-2013}:5432"
-    environment:
-      POSTGRES_DB: ${DB_NAME:-hosting_platform}
-      POSTGRES_USER: ${DB_USER:-platform}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-local-dev-password}
-      # Phase 3.A.5: Roundcube session DB, created by initdb script on
-      # first container start. These are passed through to the initdb
-      # shell script via the Postgres container's env.
-      ROUNDCUBE_DB_NAME: ${ROUNDCUBE_DB_NAME:-roundcube}
-      ROUNDCUBE_DB_USER: ${ROUNDCUBE_DB_USER:-roundcube}
-      ROUNDCUBE_DB_PASSWORD: ${ROUNDCUBE_DB_PASSWORD:-roundcube-local-dev-password}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./scripts/postgres-initdb:/docker-entrypoint-initdb.d:ro
-    # Note: k3s pods reach postgres via a k8s Service + Endpoints resource
-    # in the `mail` namespace that is dynamically populated with whatever
-    # IP docker assigns to this container on each boot. The `mail-up`
-    # command in scripts/local.sh patches the Endpoints on every deploy.
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-platform} -d ${DB_NAME:-hosting_platform}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "${PORT_REDIS:-2014}:6379"
-    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-    ports:
-      - "${PORT_API:-2012}:3000"
-    environment:
-      NODE_ENV: production
-      CERT_ENVIRONMENT: development
-      PORT: "3000"
-      LOG_LEVEL: debug
-      DATABASE_URL: "postgresql://${DB_USER:-platform}:${DB_PASSWORD:-local-dev-password}@postgres:5432/${DB_NAME:-hosting_platform}"
-      JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-not-for-production-use}
-      REDIS_URL: redis://redis:6379
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@platform.local}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
-      ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
-      CORS_ORIGINS: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_ADMIN:-2010},http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
-      OIDC_ENCRYPTION_KEY: ${OIDC_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
-      # Phase 3 T5.1: shared secret for the file-manager sidecar's
-      # platform-internal bypass header (used to read/write .platform/
-      # hidden paths like sendmail-auth). The backend injects this
-      # into each sidecar pod at creation time. Production deployments
-      # should generate a fresh random value and store it in a
-      # platform-level Kubernetes Secret instead of env.
-      PLATFORM_INTERNAL_SECRET: ${PLATFORM_INTERNAL_SECRET:-local-dev-platform-internal-secret-please-rotate}
-      # Phase 3 T2.1: Stalwart master SSO password (cleartext). Used by
-      # the IMAPSync job runner to authenticate as `<mailbox>%master`
-      # on the destination side. Must match the cleartext whose bcrypt
-      # hash lives in k8s/overlays/dev/stalwart/secret.yaml MASTER_SECRET.
-      STALWART_MASTER_SECRET: ${STALWART_MASTER_SECRET:-stalwart-dev-master}
-      STALWART_IMAP_HOST: ${STALWART_IMAP_HOST:-stalwart-mail.mail.svc.cluster.local}
-      STALWART_IMAP_PORT: ${STALWART_IMAP_PORT:-143}
-      # Phase 3 (post-Phase-3) G8/G9: cleartext Stalwart admin password.
-      # Used by the mail-admin proxy routes (/admin/mail/metrics +
-      # /admin/mail/queue) to authenticate to Stalwart's admin HTTP
-      # API via Basic Auth. Must match the cleartext whose bcrypt
-      # hash is in k8s/overlays/dev/stalwart/secret.yaml ADMIN_SECRET.
-      STALWART_ADMIN_PASSWORD: ${STALWART_ADMIN_PASSWORD:-stalwart-dev-admin}
-      DEFAULT_STORAGE_CLASS: ${DEFAULT_STORAGE_CLASS:-local-path}
-      CLUSTER_ISSUER_NAME: ${CLUSTER_ISSUER_NAME:-local-ca-issuer}
-      INGRESS_BASE_DOMAIN: ${INGRESS_BASE_DOMAIN:-ingress.localhost}
-      INGRESS_DEFAULT_IPV4: ${INGRESS_DEFAULT_IPV4:-127.0.0.1}
-      KUBECONFIG_PATH: /k8s/kubeconfig.yaml
-      DISABLE_RATE_LIMIT: "true"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      k3s-server:
-        condition: service_healthy
-    volumes:
-      - k3s-kubeconfig:/k8s:ro
-    extra_hosts:
-      - "dind.local:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/v1/healthz"]
-      interval: 15s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-
-  admin-panel:
-    build:
-      context: .
-      dockerfile: frontend/admin-panel/Dockerfile
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    ports:
-      - "${PORT_ADMIN:-2010}:80"
-    environment:
-      # Same-origin proxy: nginx proxies /api/* to the backend container.
-      API_URL: ""
-      CLIENT_PANEL_URL: "http://${DOCKER_HOST_NAME:-dind.local}:${PORT_CLIENT:-2011}"
-      BACKEND_HOST: backend
-      BACKEND_PORT: "3000"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
-      interval: 15s
-      timeout: 3s
-      retries: 3
-
-  client-panel:
-    build:
-      context: .
-      dockerfile: frontend/client-panel/Dockerfile
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    ports:
-      - "${PORT_CLIENT:-2011}:80"
-    environment:
-      API_URL: ""
-      BACKEND_HOST: backend
-      BACKEND_PORT: "3000"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
-      interval: 15s
-      timeout: 3s
-      retries: 3
-
-  dex:
-    image: ghcr.io/dexidp/dex:v2.39.1
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-    ports:
-      - "${PORT_DEX:-2015}:5556"
-    volumes:
-      - ./config/dex/config.yaml:/etc/dex/config.yaml:ro
-      - dex-data:/var/dex
-    command: ["dex", "serve", "/etc/dex/config.yaml"]
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/.well-known/openid-configuration"]
-      interval: 15s
-      timeout: 3s
-      retries: 3
-
-  oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-    command:
-      - --http-address=0.0.0.0:4180
-      - --upstream=static://200
-      - --email-domain=*
-      - --provider=oidc
-      - --oidc-issuer-url=http://dind.local:2015/dex
-      - --client-id=hosting-platform-oauth2-proxy
-      - --client-secret=local-dev-secret-oauth2-proxy
-      - --cookie-secure=false
-      - --cookie-samesite=lax
-      - --cookie-name=_platform_oauth2
-      - --redirect-url=http://dind.local:2018/oauth2/callback
-      - --skip-provider-button=true
-      - --reverse-proxy=true
-      - --set-xauthrequest=true
-      - --silence-ping-logging=true
-    environment:
-      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET}"
-    ports:
-      - "${PORT_OAUTH2_PROXY:-2018}:4180"
-    depends_on:
-      dex:
-        condition: service_healthy
-    extra_hosts:
-      - "dind.local:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4180/ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  # ─── k3s — Local Kubernetes cluster for testing PVCs, Helm, manifests ──────
   k3s-server:
     image: rancher/k3s:v1.31.4-k3s1
-    hostname: k8s-local  # Fixed so PV nodeAffinity stays stable across container restarts
+    hostname: k8s-local
     deploy:
       resources:
         limits:
@@ -236,21 +30,26 @@ services:
       - --node-name=k8s-local
       - --kubelet-arg=max-pods=50
     ports:
-      - "${PORT_K3S_API:-2016}:6443"
-      # Roundcube webmail (Phase 2b) — host 2017 → NodePort 30017 → pod 80
-      - "${PORT_WEBMAIL:-2017}:30017"
-      # Stalwart mail server NodePorts (exposed via docker-compose so host can
-      # reach them). k3s maps node ports 30025..30995 → Stalwart pod ports.
-      # Phase 1 mail decision D11. See docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md.
-      - "${PORT_MAIL_SMTP:-2025}:30025"        # SMTP            (prod 25)
-      - "${PORT_MAIL_SMTPS:-2465}:30465"       # SMTPS implicit  (prod 465)
-      - "${PORT_MAIL_SUBMISSION:-2587}:30587"  # Submission      (prod 587)
-      - "${PORT_MAIL_IMAP:-2143}:30143"        # IMAP STARTTLS   (prod 143)
-      - "${PORT_MAIL_IMAPS:-2993}:30993"       # IMAPS implicit  (prod 993)
-      - "${PORT_MAIL_POP3:-2110}:30110"        # POP3 STARTTLS   (prod 110)
-      - "${PORT_MAIL_POP3S:-2995}:30995"       # POP3S implicit  (prod 995)
-      # SFTP Gateway — host 2222 → NodePort 30222 → sftp-gateway pod 2222
-      - "${PORT_SFTP:-2222}:30222"
+      # ─── Ingress (NGINX) ───────────────────────────────────────────
+      - "${PORT_INGRESS_HTTP:-2010}:80"       # NGINX Ingress HTTP
+      - "${PORT_INGRESS_HTTPS:-2011}:443"     # NGINX Ingress HTTPS
+      # ─── Platform services ─────────────────────────────────────────
+      - "${PORT_API:-2012}:30012"             # Backend API (NodePort)
+      - "${PORT_DB:-2013}:30432"              # PostgreSQL (NodePort)
+      - "${PORT_REDIS:-2014}:30379"           # Redis (NodePort)
+      - "${PORT_DEX:-2015}:30556"             # Dex OIDC (NodePort)
+      - "${PORT_K3S_API:-2016}:6443"          # k3s API
+      - "${PORT_WEBMAIL:-2017}:30017"         # Roundcube webmail
+      - "${PORT_OAUTH2_PROXY:-2018}:30180"    # OAuth2 Proxy (NodePort)
+      - "${PORT_SFTP:-2019}:30222"            # SFTP Gateway
+      # ─── Mail server (Stalwart) ────────────────────────────────────
+      - "${PORT_MAIL_SMTP:-2020}:30025"       # SMTP
+      - "${PORT_MAIL_SUBMISSION:-2021}:30587"  # Submission
+      - "${PORT_MAIL_IMAP:-2022}:30143"       # IMAP
+      - "${PORT_MAIL_IMAPS:-2023}:30993"      # IMAPS
+      - "${PORT_MAIL_SMTPS:-2024}:30465"      # SMTPS
+      - "${PORT_MAIL_POP3:-2025}:30110"       # POP3
+      - "${PORT_MAIL_POP3S:-2026}:30995"      # POP3S
     environment:
       K3S_TOKEN: ${K3S_TOKEN:-local-dev-k3s-token}
     volumes:
@@ -268,7 +67,7 @@ services:
       retries: 10
       start_period: 30s
 
-  # Init job: wait for k3s ready, install NGINX ingress, verify storage
+  # Init job: install NGINX Ingress + cert-manager + namespaces
   k3s-init:
     image: rancher/k3s:v1.31.4-k3s1
     entrypoint: ["/bin/sh", "-c"]
@@ -277,7 +76,6 @@ services:
         echo "Waiting for kubeconfig..."
         until [ -f /kubeconfig/kubeconfig.yaml ]; do sleep 1; done
 
-        # Fix kubeconfig server URL so this container can reach k3s
         cp /kubeconfig/kubeconfig.yaml /tmp/kubeconfig.yaml
         sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /tmp/kubeconfig.yaml
         export KUBECONFIG=/tmp/kubeconfig.yaml
@@ -288,30 +86,28 @@ services:
         done
         echo "k3s is ready!"
 
-        # Also update the shared kubeconfig for backend access
+        # Fix shared kubeconfig for external access
         sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /kubeconfig/kubeconfig.yaml 2>/dev/null || true
 
-        # Verify local-path StorageClass (built into k3s)
         echo "Checking StorageClass..."
         kubectl get storageclass
-        echo ""
 
         # Install NGINX Ingress Controller
         echo "Installing NGINX Ingress Controller..."
-        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml 2>/dev/null || echo "NGINX ingress already installed or network unavailable — skipping"
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/cloud/deploy.yaml 2>/dev/null || echo "NGINX ingress already installed or network unavailable"
 
         echo "Waiting for ingress-nginx admission webhooks..."
-        kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s 2>/dev/null || echo "ingress-nginx controller not ready — continuing"
+        kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s 2>/dev/null || echo "ingress-nginx not ready — continuing"
 
-        # Enable snippet annotations for response headers
-        echo "Enabling NGINX Ingress snippet annotations..."
+        # Enable snippet annotations + ModSecurity WAF
+        echo "Configuring NGINX Ingress..."
         kubectl patch configmap ingress-nginx-controller -n ingress-nginx \
           --type=merge \
-          -p '{"data":{"allow-snippet-annotations":"true","annotations-risk-level":"Critical","enable-modsecurity":"true","enable-owasp-modsecurity-crs":"true","modsecurity-snippet":"SecRuleEngine On\nSecAuditEngine RelevantOnly\nSecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\nSecAuditLog /dev/stderr\nSecAuditLogType Serial\nSecAuditLogParts ABFHZ\n"}}' 2>/dev/null || echo "Failed to patch ingress-nginx ConfigMap — continuing"
+          -p '{"data":{"allow-snippet-annotations":"true","annotations-risk-level":"Critical","enable-modsecurity":"true","enable-owasp-modsecurity-crs":"true","modsecurity-snippet":"SecRuleEngine On\nSecAuditEngine RelevantOnly\nSecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\nSecAuditLog /dev/stderr\nSecAuditLogType Serial\nSecAuditLogParts ABFHZ\n"}}' 2>/dev/null || echo "Failed to patch ConfigMap"
 
         # Install cert-manager
         echo "Installing cert-manager..."
-        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml 2>/dev/null || echo "cert-manager already installed or network unavailable — skipping"
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml 2>/dev/null || echo "cert-manager already installed or network unavailable"
 
         echo "Waiting for cert-manager webhook..."
         kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=120s 2>/dev/null || echo "cert-manager webhook not ready — continuing"
@@ -350,31 +146,16 @@ services:
         CAEOF
         echo "cert-manager + local CA issuer ready"
 
-        # Create hosting-platform namespace
+        # Create namespaces
         kubectl create namespace hosting-platform 2>/dev/null || true
-
-        # Test PVC creation
-        echo "Testing PVC provisioning..."
-        kubectl apply -f - <<PVCEOF
-        apiVersion: v1
-        kind: PersistentVolumeClaim
-        metadata:
-          name: test-pvc
-          namespace: hosting-platform
-        spec:
-          accessModes: [ReadWriteOnce]
-          resources:
-            requests:
-              storage: 64Mi
-          storageClassName: local-path
-        PVCEOF
+        kubectl create namespace platform 2>/dev/null || true
+        kubectl create namespace mail 2>/dev/null || true
 
         echo ""
         echo "════════════════════════════════════════════════"
-        echo "  k3s cluster ready!"
+        echo "  k3s infrastructure ready!"
         echo "  Nodes:          $(kubectl get nodes --no-headers | wc -l)"
         echo "  StorageClass:   $(kubectl get sc --no-headers | head -1 | awk '{print $1}')"
-        echo "  Test PVC:       $(kubectl get pvc test-pvc -n hosting-platform --no-headers 2>/dev/null | awk '{print $2}')"
         echo "  cert-manager:   $(kubectl get deployment cert-manager -n cert-manager --no-headers 2>/dev/null | awk '{print $2}' || echo 'not installed')"
         echo "  CA Issuer:      $(kubectl get clusterissuer local-ca-issuer --no-headers 2>/dev/null | awk '{print $2}' || echo 'not ready')"
         echo "════════════════════════════════════════════════"
@@ -385,8 +166,6 @@ services:
         condition: service_healthy
 
 volumes:
-  postgres-data:
-  dex-data:
   k3s-data:
   k3s-kubeconfig:
   k3s-storage:

@@ -73,10 +73,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - webmail.platform.local
+        - webmail.k8s-platform.local-dev
       secretName: webmail-tls
   rules:
-    - host: webmail.platform.local
+    - host: webmail.k8s-platform.local-dev
       http:
         paths:
           - path: /

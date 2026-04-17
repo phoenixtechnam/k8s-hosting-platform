@@ -43,7 +43,7 @@ test.describe('Admin Settings Page', () => {
     const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
     await expect(userMenuBtn).toBeVisible();
     await userMenuBtn.click();
-    await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText('admin@k8s-platform.local-dev')).toBeVisible({ timeout: 2000 });
     await expect(page.getByText('Sign Out')).toBeVisible({ timeout: 2000 });
   });
 });

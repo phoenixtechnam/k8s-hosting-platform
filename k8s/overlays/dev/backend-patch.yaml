@@ -1,0 +1,95 @@
+# Dev overlay: additional env vars for local development.
+# Adds debug logging, disables rate limiting, injects Stalwart credentials.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-api
+  namespace: platform
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: LOG_LEVEL
+              value: debug
+            - name: CERT_ENVIRONMENT
+              value: development
+            - name: DISABLE_RATE_LIMIT
+              value: "true"
+            - name: ADMIN_EMAIL
+              value: admin@k8s-platform.local-dev
+            - name: ADMIN_PASSWORD
+              value: admin
+            - name: ADMIN_NAME
+              value: "Platform Admin"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-credentials
+                  key: url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-jwt-secret
+                  key: secret
+            - name: REDIS_URL
+              value: redis://redis.platform.svc.cluster.local:6379
+            - name: OIDC_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: oidc-encryption-key
+            - name: PLATFORM_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: internal-secret
+            - name: DEFAULT_STORAGE_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: default-storage-class
+                  optional: true
+            - name: INGRESS_BASE_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: ingress-base-domain
+                  optional: true
+            - name: INGRESS_DEFAULT_IPV4
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: ingress-default-ipv4
+                  optional: true
+            - name: CLUSTER_ISSUER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cluster-issuer-name
+                  optional: true
+            - name: PLATFORM_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: environment
+                  optional: true
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cors-origins
+                  optional: true
+            - name: STALWART_MASTER_SECRET
+              value: stalwart-dev-master
+            - name: STALWART_IMAP_HOST
+              value: stalwart-mail.mail.svc.cluster.local
+            - name: STALWART_IMAP_PORT
+              value: "143"
+            - name: STALWART_ADMIN_PASSWORD
+              value: stalwart-dev-admin

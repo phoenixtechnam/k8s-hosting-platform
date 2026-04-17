@@ -1,0 +1,85 @@
+# Dev overlay: NodePort Services so the host can reach infra pods.
+# docker-compose maps these NodePorts to host ports 2010-2030.
+#
+# Port map:
+#   Host 2013 → NodePort 30432 → PostgreSQL
+#   Host 2014 → NodePort 30379 → Redis
+#   Host 2015 → NodePort 30556 → Dex OIDC
+#   Host 2012 → NodePort 30012 → Backend API (debugging)
+#   Host 2018 → NodePort 30180 → OAuth2 Proxy
+#   Host 2019 → NodePort 30222 → SFTP Gateway
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-api-nodeport
+  namespace: platform
+spec:
+  type: NodePort
+  selector:
+    app: platform-api
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30012
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy-nodeport
+  namespace: platform
+spec:
+  type: NodePort
+  selector:
+    app: oauth2-proxy
+  ports:
+    - port: 4180
+      targetPort: 4180
+      nodePort: 30180
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-nodeport
+  namespace: platform
+spec:
+  type: NodePort
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30432
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-nodeport
+  namespace: platform
+spec:
+  type: NodePort
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+      nodePort: 30379
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex-nodeport
+  namespace: platform
+spec:
+  type: NodePort
+  selector:
+    app: dex
+  ports:
+    - port: 5556
+      targetPort: 5556
+      nodePort: 30556
+      protocol: TCP

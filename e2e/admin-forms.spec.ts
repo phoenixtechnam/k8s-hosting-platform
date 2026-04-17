@@ -215,7 +215,7 @@ test.describe('Admin Form Interactions', () => {
       await page.waitForTimeout(200);
 
       // Check that user email is shown in the dropdown
-      await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 2000 });
+      await expect(page.getByText('admin@k8s-platform.local-dev')).toBeVisible({ timeout: 2000 });
     });
   });
 });

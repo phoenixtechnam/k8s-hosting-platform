@@ -3,38 +3,37 @@ set -euo pipefail
 
 # local.sh — Manage the local development stack.
 #
-# k3s is ESSENTIAL and included in up/reset/rebuild by default.
+# All services run inside k3s using the same Kustomize manifests as production.
+# Two modes available:
 #
-# Usage:
-#   ./scripts/local.sh up          Build and start all services (incl. k3s + init)
-#   ./scripts/local.sh down        Stop all services
-#   ./scripts/local.sh reset       Stop, wipe volumes, and restart fresh (incl. k3s)
-#   ./scripts/local.sh logs        Tail logs from all services
-#   ./scripts/local.sh status      Show service status and endpoints
-#   ./scripts/local.sh rebuild     Rebuild app services (k3s/DB/Redis untouched)
-#   ./scripts/local.sh k3s-up      (Re-)run k3s cluster init standalone
-#   ./scripts/local.sh k3s-down    Stop k3s cluster
-#   ./scripts/local.sh k3s-reset   Wipe k3s cluster and restart fresh
-#   ./scripts/local.sh k3s-status  Show k3s cluster status
+# Integration mode (everything in k3s):
+#   ./scripts/local.sh up          Build images, deploy all pods to k3s
+#   ./scripts/local.sh rebuild     Rebuild app images + rollout restart
+#   ./scripts/local.sh down        Stop everything
+#   ./scripts/local.sh reset       Wipe volumes, restart fresh
+#
+# Fast-dev mode (infra in k3s, apps on host with hot-reload):
+#   ./scripts/local.sh dev         Start infra pods, print host dev instructions
+#
+# Shared commands:
+#   ./scripts/local.sh logs [pod]  Tail logs (all pods or specific one)
+#   ./scripts/local.sh status      Show status and endpoints
 #   ./scripts/local.sh k3s-shell   Open kubectl shell in k3s
-#   ./scripts/local.sh mail-up     Deploy Stalwart mail server to local k3s
-#   ./scripts/local.sh mail-down   Remove Stalwart mail server from local k3s
-#   ./scripts/local.sh mail-status Show mail server pod/service state
+#   ./scripts/local.sh mail-up     Deploy Stalwart mail server (opt-in)
+#   ./scripts/local.sh mail-down   Remove Stalwart
+#   ./scripts/local.sh mail-status Show mail server state
 #   ./scripts/local.sh mail-logs   Tail Stalwart logs
-#   ./scripts/local.sh mail-test   Send + receive a test mail via swaks
-#   ./scripts/local.sh webmail-up     Deploy Roundcube webmail to local k3s
-#   ./scripts/local.sh webmail-down   Remove Roundcube from local k3s
-#   ./scripts/local.sh webmail-status Show Roundcube pod state
+#   ./scripts/local.sh mail-test   Send + receive test mail
+#   ./scripts/local.sh webmail-up     Deploy Roundcube (opt-in)
+#   ./scripts/local.sh webmail-down   Remove Roundcube
+#   ./scripts/local.sh webmail-status Show Roundcube state
 #   ./scripts/local.sh webmail-logs   Tail Roundcube logs
-#   ./scripts/local.sh sftp-up     Deploy SFTP gateway to local k3s
-#   ./scripts/local.sh sftp-down   Remove SFTP gateway from local k3s
-#   ./scripts/local.sh sftp-status Show SFTP gateway pod/service state
+#   ./scripts/local.sh sftp-up     Deploy SFTP gateway (opt-in)
+#   ./scripts/local.sh sftp-down   Remove SFTP gateway
+#   ./scripts/local.sh sftp-status Show SFTP gateway state
 #   ./scripts/local.sh help        Show this help
 #
-# Environment:
-#   Override any variable from .env.local, e.g.:
-#     DOCKER_HOST_NAME=localhost PORT_ADMIN=8080 ./scripts/local.sh up
-#     DOCKER_HOST=tcp://dind:2375 ./scripts/local.sh up
+# Environment: override via .env.local (see .env.local.example)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
@@ -45,36 +44,33 @@ COMPOSE_FILE="${PROJECT_DIR}/docker-compose.local.yml"
 ENV_FILE="${PROJECT_DIR}/.env.local"
 ENV_LOCAL="${PROJECT_DIR}/.env.local.local"
 
-# Load env files (local overrides base)
+# Load env files
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$ENV_FILE"
-  set +a
+  set -a; source "$ENV_FILE"; set +a
 fi
 if [[ -f "$ENV_LOCAL" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$ENV_LOCAL"
-  set +a
+  set -a; source "$ENV_LOCAL"; set +a
 fi
 
-# Defaults
+# Defaults — all host ports in 2010-2030 range
 DOCKER_HOST_NAME="${DOCKER_HOST_NAME:-dind.local}"
-PORT_ADMIN="${PORT_ADMIN:-2010}"
-PORT_CLIENT="${PORT_CLIENT:-2011}"
+PORT_INGRESS_HTTP="${PORT_INGRESS_HTTP:-2010}"
+PORT_INGRESS_HTTPS="${PORT_INGRESS_HTTPS:-2011}"
 PORT_API="${PORT_API:-2012}"
 PORT_DB="${PORT_DB:-2013}"
 PORT_REDIS="${PORT_REDIS:-2014}"
+PORT_DEX="${PORT_DEX:-2015}"
 PORT_K3S_API="${PORT_K3S_API:-2016}"
-PORT_MAIL_SMTP="${PORT_MAIL_SMTP:-2025}"
-PORT_MAIL_SMTPS="${PORT_MAIL_SMTPS:-2465}"
-PORT_MAIL_SUBMISSION="${PORT_MAIL_SUBMISSION:-2587}"
-PORT_MAIL_IMAP="${PORT_MAIL_IMAP:-2143}"
-PORT_MAIL_IMAPS="${PORT_MAIL_IMAPS:-2993}"
-PORT_MAIL_POP3="${PORT_MAIL_POP3:-2110}"
-PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2995}"
 PORT_WEBMAIL="${PORT_WEBMAIL:-2017}"
+PORT_OAUTH2_PROXY="${PORT_OAUTH2_PROXY:-2018}"
+PORT_SFTP="${PORT_SFTP:-2019}"
+PORT_MAIL_SMTP="${PORT_MAIL_SMTP:-2020}"
+PORT_MAIL_SUBMISSION="${PORT_MAIL_SUBMISSION:-2021}"
+PORT_MAIL_IMAP="${PORT_MAIL_IMAP:-2022}"
+PORT_MAIL_IMAPS="${PORT_MAIL_IMAPS:-2023}"
+PORT_MAIL_SMTPS="${PORT_MAIL_SMTPS:-2024}"
+PORT_MAIL_POP3="${PORT_MAIL_POP3:-2025}"
+PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2026}"
 
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 
@@ -82,38 +78,163 @@ compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
-compose_k3s() {
-  compose "$@"
+k3s_exec() {
+  docker exec "$K3S_CONTAINER" "$@"
 }
 
-_ensure_cookie_secret() {
-  if ! grep -q 'OAUTH2_PROXY_COOKIE_SECRET' "$ENV_FILE" 2>/dev/null; then
-    local secret
-    secret=$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(24)).decode())')
-    echo "OAUTH2_PROXY_COOKIE_SECRET=$secret" >> "$ENV_FILE"
-    echo "  Generated OAuth2 proxy cookie secret"
+# ─── Image management ───────────────────────────────────────────────────────
+
+_build_and_import() {
+  local name="$1" context="$2" dockerfile="$3"
+  local tag="hosting-platform/${name}:local"
+  echo "  Building ${name}..."
+  docker build -t "$tag" -f "${PROJECT_DIR}/${dockerfile}" "${PROJECT_DIR}/${context}" -q >/dev/null
+  echo "  Importing ${name} into k3s..."
+  docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+}
+
+_build_all_images() {
+  echo "Building and importing images into k3s..."
+  # Build sequentially to avoid I/O storms on btrfs loopback
+  _build_and_import "backend"      "."  "backend/Dockerfile"
+  _build_and_import "admin-panel"  "."  "frontend/admin-panel/Dockerfile"
+  _build_and_import "client-panel" "."  "frontend/client-panel/Dockerfile"
+  # Sidecar images
+  if [[ -d "${PROJECT_DIR}/images/file-manager-sidecar" ]]; then
+    _build_and_import "file-manager-sidecar" "images/file-manager-sidecar" "images/file-manager-sidecar/Dockerfile"
+    # Also tag with GHCR name so base manifests resolve
+    docker tag "hosting-platform/file-manager-sidecar:local" \
+      "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
+    docker save "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest" \
+      | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+  fi
+  echo "  All images imported"
+}
+
+# ─── k3s infrastructure ─────────────────────────────────────────────────────
+
+_ensure_k3s_running() {
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "k3s-server"; then
+    echo "Starting k3s cluster..."
+    compose up -d k3s-server
+    echo "Running k3s init (ingress, cert-manager, namespaces)..."
+    compose up k3s-init
+  else
+    echo "k3s already running"
+  fi
+
+  # Wait for API
+  echo "Waiting for k3s API..."
+  local retries=0
+  while ! k3s_exec kubectl get nodes --no-headers &>/dev/null; do
+    retries=$((retries + 1))
+    if (( retries > 30 )); then
+      echo "ERROR: k3s API not available after 60s"
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+_sync_manifests() {
+  # Copy k8s manifests into k3s container for kubectl apply
+  docker exec "$K3S_CONTAINER" rm -rf /tmp/k8s-sync >/dev/null 2>&1 || true
+  docker cp "${PROJECT_DIR}/k8s" "${K3S_CONTAINER}:/tmp/k8s-sync" >/dev/null
+}
+
+_apply_dev_overlay() {
+  echo "Applying dev overlay..."
+  _sync_manifests
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev 2>&1 | grep -v "^$" | sed 's/^/  /'
+}
+
+_wait_for_pods() {
+  local ns="${1:-platform}"
+  echo "Waiting for pods in ${ns}..."
+  k3s_exec kubectl wait --for=condition=Ready pod --all -n "$ns" --timeout=180s 2>/dev/null || {
+    echo "Some pods not ready. Status:"
+    k3s_exec kubectl get pods -n "$ns" | sed 's/^/  /'
+    return 1
+  }
+}
+
+_bootstrap_stalwart_reader() {
+  # The Drizzle migration creates stalwart_reader as NOLOGIN. Set the dev password
+  # so Stalwart can authenticate to the platform DB.
+  k3s_exec kubectl exec -n platform postgres-0 -- \
+    psql -U platform -d hosting_platform \
+    -c "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD 'stalwart-dev-reader-pw';" \
+    >/dev/null 2>&1 || true
+}
+
+_cleanup_stale_namespaces() {
+  local orphan_count
+  orphan_count=$(k3s_exec kubectl get ns --no-headers 2>/dev/null \
+    | awk '/^client-smoke-test-/ {n++} END {print n+0}')
+  if (( orphan_count > 5 )); then
+    echo "  Cleaning up $orphan_count stale smoke-test namespaces..."
+    k3s_exec kubectl get ns --no-headers 2>/dev/null \
+      | awk '/^client-smoke-test-/ {print $1}' \
+      | while read -r ns; do
+          k3s_exec kubectl delete ns "$ns" --wait=false >/dev/null 2>&1 || true
+        done
   fi
 }
 
+# ─── Main commands ──────────────────────────────────────────────────────────
+
 cmd_up() {
-  echo "Building and starting local stack..."
-  _ensure_cookie_secret
-  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
-  compose build backend
-  compose build admin-panel
-  compose build client-panel
-  compose up -d
+  echo "═══ Integration Mode: Full k3s ═══"
   echo ""
-  echo "Waiting for k3s cluster init (PVC, ingress)..."
-  compose up k3s-init
-  echo ""
-  _rebuild_sidecar
-  _check_k3s_health
+  _ensure_k3s_running
+  _build_all_images
+  _apply_dev_overlay
+  _wait_for_pods platform
+  _bootstrap_stalwart_reader
   _cleanup_stale_namespaces
-  # If mail namespace exists, re-patch the postgres bridge IP (it changes
-  # on every container recreate and Stalwart can't authenticate without it).
-  _patch_postgres_bridge 2>/dev/null || true
+  echo ""
   cmd_status
+}
+
+cmd_dev() {
+  echo "═══ Fast-Dev Mode: Infra in k3s, apps on host ═══"
+  echo ""
+  _ensure_k3s_running
+  _apply_dev_overlay
+  # Scale down app deployments — run on host instead
+  echo "Scaling down app pods (running on host instead)..."
+  k3s_exec kubectl scale deploy platform-api admin-panel client-panel -n platform --replicas=0 2>/dev/null
+  # Wait for infra only
+  echo "Waiting for infrastructure pods..."
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=postgres -n platform --timeout=120s 2>/dev/null || true
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=redis -n platform --timeout=60s 2>/dev/null || true
+  _bootstrap_stalwart_reader
+  echo ""
+  echo "════════════════════════════════════════════════"
+  echo "  Infrastructure ready!"
+  echo ""
+  echo "  Services in k3s:"
+  echo "    PostgreSQL:   ${DOCKER_HOST_NAME}:${PORT_DB}"
+  echo "    Redis:        ${DOCKER_HOST_NAME}:${PORT_REDIS}"
+  echo "    Dex OIDC:     ${DOCKER_HOST_NAME}:${PORT_DEX}"
+  echo ""
+  echo "  Run in separate terminals:"
+  echo "    cd backend && DATABASE_URL=postgresql://platform:local-dev-password@${DOCKER_HOST_NAME}:${PORT_DB}/hosting_platform \\"
+  echo "      REDIS_URL=redis://${DOCKER_HOST_NAME}:${PORT_REDIS} \\"
+  echo "      JWT_SECRET=local-dev-jwt-secret-not-for-production-use \\"
+  echo "      OIDC_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \\"
+  echo "      PLATFORM_INTERNAL_SECRET=local-dev-platform-internal-secret-please-rotate \\"
+  echo "      DISABLE_RATE_LIMIT=true \\"
+  echo "      npm run dev"
+  echo ""
+  echo "    cd frontend/admin-panel && npm run dev"
+  echo "    cd frontend/client-panel && npm run dev"
+  echo ""
+  echo "  Access:"
+  echo "    Backend:      http://localhost:3000"
+  echo "    Admin Panel:  http://localhost:5173"
+  echo "    Client Panel: http://localhost:5174"
+  echo "════════════════════════════════════════════════"
 }
 
 cmd_down() {
@@ -122,150 +243,38 @@ cmd_down() {
 }
 
 cmd_reset() {
-  echo "Resetting local stack (wiping volumes)..."
+  echo "Resetting local stack (wiping all volumes)..."
   compose down -v
-  # Remove stale cookie secret so a fresh one is generated
-  if [[ -f "$ENV_FILE" ]]; then
-    sed -i '/^OAUTH2_PROXY_COOKIE_SECRET=/d' "$ENV_FILE"
-  fi
   echo "Starting fresh..."
-  _ensure_cookie_secret
-  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
-  compose build backend
-  compose build admin-panel
-  compose build client-panel
-  compose up -d
-  echo ""
-  echo "Waiting for k3s cluster init (PVC, ingress)..."
-  compose up k3s-init
-  echo ""
-  _rebuild_sidecar
-  _check_k3s_health
-  _patch_postgres_bridge 2>/dev/null || true
-  cmd_status
+  cmd_up
 }
 
 cmd_rebuild() {
-  echo "Rebuilding app services (backend, admin-panel, client-panel)..."
-  # Only rebuild app services — never touch k3s, PostgreSQL, or Redis
-  # This prevents accidental removal of infrastructure containers
-  # Build sequentially to avoid I/O storms on btrfs loopback (causes host lockups)
-  compose build backend
-  compose build admin-panel
-  compose build client-panel
-  compose up -d --no-deps backend admin-panel client-panel
+  echo "Rebuilding app images..."
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "k3s-server"; then
+    echo "ERROR: k3s is not running. Use ./scripts/local.sh up first."
+    return 1
+  fi
+  _build_all_images
+  echo "Rolling out restarts..."
+  k3s_exec kubectl rollout restart deploy/platform-api -n platform
+  k3s_exec kubectl rollout restart deploy/admin-panel -n platform
+  k3s_exec kubectl rollout restart deploy/client-panel -n platform
+  echo "Waiting for pods..."
+  _wait_for_pods platform
   echo ""
-  # Rebuild and reimport file-manager sidecar into k3s
-  _rebuild_sidecar
-  # Verify k3s is still running (warn if not)
-  _check_k3s_health
-  _cleanup_stale_namespaces
-  _patch_postgres_bridge 2>/dev/null || true
-  # Re-patch SFTP backend bridge (backend IP changes on container recreate)
-  _sftp_patch_backend_bridge 2>/dev/null || true
   cmd_status
 }
 
-_rebuild_sidecar() {
-  local k3s_name
-  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -z "$k3s_name" ]]; then
-    return
-  fi
-  echo "Rebuilding file-manager sidecar..."
-  docker build -t file-manager-sidecar:latest "${PROJECT_DIR}/images/file-manager-sidecar/" -q 2>/dev/null
-  # Tag with GHCR path too so manifests using the canonical image ref resolve
-  # locally without hitting the registry.
-  docker tag file-manager-sidecar:latest ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest
-  docker save file-manager-sidecar:latest ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest \
-    | docker exec -i "$k3s_name" ctr images import - 2>/dev/null
-  echo "  Sidecar image imported into k3s (both local + GHCR tags)"
-  # Restart running file-manager pods so they pick up the new image
-  local namespaces
-  namespaces=$(docker exec "$k3s_name" kubectl get deployments -A -l app=file-manager --no-headers 2>/dev/null | awk '{print $1}')
-  for ns in $namespaces; do
-    docker exec "$k3s_name" kubectl rollout restart deployment/file-manager -n "$ns" >/dev/null 2>&1 && \
-      echo "  Restarted file-manager in $ns" || true
-  done
-}
-
-_cleanup_stale_namespaces() {
-  local k3s_name
-  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
-  [[ -z "$k3s_name" ]] && return 0
-
-  local orphan_count
-  orphan_count=$(docker exec "$k3s_name" kubectl get ns --no-headers 2>/dev/null \
-    | awk '/^client-smoke-test-/ {n++} END {print n+0}')
-
-  if (( orphan_count > 5 )); then
-    echo "⚠  $orphan_count stale smoke-test namespaces found — cleaning up to prevent resource exhaustion..."
-    docker exec "$k3s_name" kubectl get ns --no-headers 2>/dev/null \
-      | awk '/^client-smoke-test-/ {print $1}' \
-      | while read -r ns; do
-          docker exec "$k3s_name" kubectl delete ns "$ns" --wait=false >/dev/null 2>&1 && echo "  ✓ deleted $ns" || true
-        done
-  elif (( orphan_count > 0 )); then
-    echo "  $orphan_count stale smoke-test namespace(s) found (run ./scripts/cleanup-orphaned-namespaces.sh to clean)"
-  fi
-}
-
-_check_k3s_health() {
-  local k3s_name
-  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -z "$k3s_name" ]]; then
-    echo "⚠️  k3s cluster is not running! Start it with: ./scripts/local.sh k3s-up"
-    return
-  fi
-  if ! docker exec "$k3s_name" kubectl get nodes --no-headers &>/dev/null; then
-    echo "⚠️  k3s cluster is running but not healthy"
-    return
-  fi
-  # Verify kubeconfig is accessible from backend
-  local backend_name
-  backend_name=$(docker ps --filter "name=backend" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -n "$backend_name" ]] && ! docker exec "$backend_name" test -f /k8s/kubeconfig.yaml 2>/dev/null; then
-    echo "⚠️  Backend cannot see kubeconfig! The k3s-kubeconfig volume may be empty."
-    echo "    Fix: ./scripts/local.sh k3s-up"
-    return
-  fi
-  # Auto-repair the stale kubeconfig server URL that occurs whenever k3s-server
-  # is recreated without re-running k3s-init. k3s writes its own kubeconfig
-  # with `https://127.0.0.1:6443` on every startup; that URL is wrong for the
-  # backend container which reaches k3s at `https://k3s-server:6443`.
-  _repair_kubeconfig || true
-}
-
-_repair_kubeconfig() {
-  local k3s_name
-  k3s_name=$(docker ps --filter "name=k3s-server" --format '{{.Names}}' 2>/dev/null | head -1)
-  [[ -z "$k3s_name" ]] && return 0
-  # Check current server URL in the shared kubeconfig
-  local current_url
-  current_url=$(docker exec "$k3s_name" sh -c 'grep "server:" /output/kubeconfig.yaml 2>/dev/null | head -1 | tr -d " "' 2>/dev/null || true)
-  if [[ "$current_url" == *"127.0.0.1:6443"* ]]; then
-    echo "⚠️  Stale kubeconfig detected (server URL points to 127.0.0.1). Repairing..."
-    docker exec "$k3s_name" sh -c \
-      'sed -i "s|https://127.0.0.1:6443|https://k3s-server:6443|g" /output/kubeconfig.yaml' 2>/dev/null || {
-        echo "  Failed to repair kubeconfig"
-        return 1
-      }
-    echo "  Kubeconfig server URL rewritten to https://k3s-server:6443"
-    # Backend caches the kubeconfig at startup — restart it so the admin panel
-    # stops reporting kubernetes as down.
-    local backend_name
-    backend_name=$(docker ps --filter "name=backend" --format '{{.Names}}' 2>/dev/null | head -1)
-    if [[ -n "$backend_name" ]]; then
-      echo "  Restarting backend to pick up new kubeconfig..."
-      docker restart "$backend_name" >/dev/null 2>&1 || true
-    fi
-    return 0
-  fi
-  return 0
-}
-
 cmd_logs() {
-  compose logs -f --tail 50
+  local target="${1:-}"
+  if [[ -n "$target" ]]; then
+    k3s_exec kubectl logs -f --tail=100 -l "app=${target}" -n platform 2>/dev/null || \
+      k3s_exec kubectl logs -f --tail=100 -l "app=${target}" -n mail 2>/dev/null || \
+      echo "No pods found for app=${target}"
+  else
+    k3s_exec kubectl logs -f --tail=50 -n platform --all-containers=true --max-log-requests=20
+  fi
 }
 
 cmd_status() {
@@ -273,52 +282,56 @@ cmd_status() {
   echo "  Local Stack — ${DOCKER_HOST_NAME}"
   echo "════════════════════════════════════════════════"
   echo ""
-  compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || compose ps
+  echo "  Platform pods:"
+  k3s_exec kubectl get pods -n platform -o wide 2>/dev/null | sed 's/^/    /' || echo "    (none)"
   echo ""
-  echo "  Endpoints:"
-  echo "    Admin Panel:  http://${DOCKER_HOST_NAME}:${PORT_ADMIN}"
-  echo "    Client Panel: http://${DOCKER_HOST_NAME}:${PORT_CLIENT}"
-  echo "    Backend API:  http://${DOCKER_HOST_NAME}:${PORT_API}"
-  echo "    PostgreSQL:   ${DOCKER_HOST_NAME}:${PORT_DB}"
-  echo "    Redis:        ${DOCKER_HOST_NAME}:${PORT_REDIS}"
 
-  # Show k3s if running
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "k3s-server"; then
-    echo "    k3s API:      https://${DOCKER_HOST_NAME}:${PORT_K3S_API}"
+  # Detect mode
+  local api_replicas
+  api_replicas=$(k3s_exec kubectl get deploy platform-api -n platform -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+  if [[ "$api_replicas" == "0" ]]; then
+    echo "  Mode: fast-dev (apps on host)"
+    echo ""
+    echo "  Infra endpoints:"
+    echo "    PostgreSQL:     ${DOCKER_HOST_NAME}:${PORT_DB}"
+    echo "    Redis:          ${DOCKER_HOST_NAME}:${PORT_REDIS}"
+    echo "    Dex OIDC:       ${DOCKER_HOST_NAME}:${PORT_DEX}"
+  else
+    echo "  Mode: integration (all pods in k3s)"
+    echo ""
+    echo "  Endpoints:"
+    echo "    Admin Panel:    http://admin.k8s-platform.local-dev:${PORT_INGRESS_HTTP}"
+    echo "    Client Panel:   http://client.k8s-platform.local-dev:${PORT_INGRESS_HTTP}"
+    echo "    Backend API:    http://${DOCKER_HOST_NAME}:${PORT_API}"
+    echo "    PostgreSQL:     ${DOCKER_HOST_NAME}:${PORT_DB}"
+    echo "    Redis:          ${DOCKER_HOST_NAME}:${PORT_REDIS}"
+    echo "    Dex OIDC:       ${DOCKER_HOST_NAME}:${PORT_DEX}"
   fi
 
+  echo "    k3s API:        https://${DOCKER_HOST_NAME}:${PORT_K3S_API}"
   echo ""
-  echo "  Login (local): admin@platform.local / admin"
-  echo "  Login (Dex):   admin@platform.local / admin"
-  echo "                 admin2@platform.local / admin"
-  echo "                 user@platform.local / user"
-  echo "                 user2@platform.local / user"
+
+  # Show mail/webmail/sftp if deployed
+  if k3s_exec kubectl get ns mail >/dev/null 2>&1; then
+    local mail_pods
+    mail_pods=$(k3s_exec kubectl get pods -n mail --no-headers 2>/dev/null | wc -l)
+    if (( mail_pods > 0 )); then
+      echo "  Mail server:"
+      echo "    SMTP:           ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
+      echo "    Submission:     ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
+      echo "    IMAP:           ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
+      echo "    IMAPS:          ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
+      echo "    Webmail:        http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}"
+      echo ""
+    fi
+  fi
+
+  echo "  Login: admin@k8s-platform.local-dev / admin"
   echo "════════════════════════════════════════════════"
 }
 
-# ─── k3s commands ────────────────────────────────────────────────────────────
-
-cmd_k3s_up() {
-  echo "Starting k3s cluster..."
-  compose_k3s up -d k3s-server
-  echo "Waiting for k3s to become healthy..."
-  compose_k3s up k3s-init
-  echo ""
-  cmd_k3s_status
-}
-
-cmd_k3s_down() {
-  echo "Stopping k3s cluster..."
-  compose_k3s stop k3s-server
-}
-
-cmd_k3s_reset() {
-  echo "Resetting k3s cluster (wiping data)..."
-  compose_k3s down -v --remove-orphans 2>/dev/null || true
-  # Remove only k3s volumes
-  docker volume rm hosting-platform_k3s-data hosting-platform_k3s-kubeconfig hosting-platform_k3s-storage 2>/dev/null || true
-  echo "Starting fresh k3s..."
-  cmd_k3s_up
+cmd_k3s_shell() {
+  docker exec -it "$K3S_CONTAINER" /bin/sh
 }
 
 cmd_k3s_status() {
@@ -328,130 +341,34 @@ cmd_k3s_status() {
   echo ""
   compose ps k3s-server --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  k3s not running"
   echo ""
-
-  # Try to show cluster info
-  if docker exec hosting-platform-k3s-server-1 kubectl get nodes --no-headers 2>/dev/null; then
+  if k3s_exec kubectl get nodes --no-headers 2>/dev/null; then
     echo ""
     echo "  StorageClasses:"
-    docker exec hosting-platform-k3s-server-1 kubectl get sc --no-headers 2>/dev/null | sed 's/^/    /'
+    k3s_exec kubectl get sc --no-headers 2>/dev/null | sed 's/^/    /'
     echo ""
-    echo "  PVCs (all namespaces):"
-    docker exec hosting-platform-k3s-server-1 kubectl get pvc -A --no-headers 2>/dev/null | sed 's/^/    /' || echo "    none"
+    echo "  All pods:"
+    k3s_exec kubectl get pods -A --no-headers 2>/dev/null | sed 's/^/    /'
   else
-    echo "  k3s cluster not ready or not running"
+    echo "  k3s cluster not ready"
   fi
   echo ""
-  echo "  Kubeconfig: docker exec hosting-platform-k3s-server-1 cat /output/kubeconfig.yaml"
-  echo "  kubectl:    docker exec -it hosting-platform-k3s-server-1 kubectl <args>"
+  echo "  Shell: docker exec -it ${K3S_CONTAINER} /bin/sh"
   echo "════════════════════════════════════════════════"
 }
 
-cmd_k3s_shell() {
-  echo "Opening kubectl shell in k3s..."
-  docker exec -it hosting-platform-k3s-server-1 /bin/sh
-}
-
-# ─── Mail commands (Phase 1 — Stalwart Mail Server) ──────────────────────────
-
-_mail_k3s_exec() {
-  docker exec "$K3S_CONTAINER" "$@"
-}
-
-_mail_sync_manifests() {
-  # Copy current k8s manifests into the k3s-server container at a stable path.
-  # docker cp semantics: when the destination exists as a directory, the
-  # source is placed INSIDE it. Remove the stale target first so the copy
-  # always produces a fresh `/tmp/mail-k8s-sync` whose layout matches the
-  # project's k8s/ directory (overlays/, base/, ...).
-  docker exec "$K3S_CONTAINER" rm -rf /tmp/mail-k8s-sync >/dev/null 2>&1 || true
-  docker cp "${PROJECT_DIR}/k8s" "${K3S_CONTAINER}:/tmp/mail-k8s-sync" >/dev/null
-}
-
-_patch_postgres_bridge() {
-  # Phase 2a bridge: the `platform-postgres` Service in the `mail` namespace
-  # is backed by a manual Endpoints resource that must point at the docker
-  # IP of the postgres container. Docker reassigns IPs whenever the container
-  # is recreated, so patch it at every mail-up.
-  local pg_name pg_ip network_name
-  pg_name=$(docker ps --filter "name=hosting-platform-postgres" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -z "$pg_name" ]]; then
-    echo "  (platform-postgres bridge: postgres container not running — skipping)"
-    return 0
-  fi
-  # Extract the IP on the specific project network. Using `{{range}}` with
-  # `{{.IPAddress}}` concatenates addresses from multi-homed containers
-  # into a single string that is not a valid IP. Targeting the named
-  # project network guarantees we get exactly one valid address.
-  network_name="${COMPOSE_PROJECT_NAME:-hosting-platform}_default"
-  pg_ip=$(docker inspect "$pg_name" \
-    --format "{{with index .NetworkSettings.Networks \"${network_name}\"}}{{.IPAddress}}{{end}}" \
-    2>/dev/null)
-  # Validate it looks like an IPv4 address before patching — anything else
-  # means we looked at the wrong network or the container is not attached.
-  if ! [[ "$pg_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    echo "  ⚠  (platform-postgres bridge: no valid IP for $pg_name on $network_name; got '$pg_ip')"
-    return 1
-  fi
-  echo "  Patching platform-postgres Endpoints → $pg_ip"
-  local patch_err
-  if ! patch_err=$(_mail_k3s_exec kubectl patch endpoints platform-postgres -n mail \
-      --type=json \
-      -p="[{\"op\":\"replace\",\"path\":\"/subsets/0/addresses/0/ip\",\"value\":\"$pg_ip\"}]" \
-      2>&1); then
-    echo "  ⚠  kubectl patch failed: $patch_err"
-    return 1
-  fi
-  # Bootstrap the stalwart_reader role password (migration now creates
-  # the role NOLOGIN; we need to grant login + a dev password).
-  _bootstrap_stalwart_reader || true
-  # Restart Stalwart pod so it picks up the new endpoint (kube-dns
-  # already has it, but a fresh pod makes debugging clearer)
-  _mail_k3s_exec kubectl rollout restart statefulset/stalwart-mail -n mail >/dev/null 2>&1 || true
-  return 0
-}
-
-_bootstrap_stalwart_reader() {
-  # Phase 2a: the Drizzle migration creates `stalwart_reader` as NOLOGIN
-  # with no password — committing one to SQL would leak into production.
-  # This helper sets the dev password so Stalwart can authenticate.
-  # The password MUST match the STALWART_DB_PASSWORD value in
-  # k8s/overlays/dev/stalwart/secret.yaml.
-  local pg_name dev_password
-  pg_name=$(docker ps --filter "name=hosting-platform-postgres" --format '{{.Names}}' 2>/dev/null | head -1)
-  [[ -z "$pg_name" ]] && return 0
-  dev_password="stalwart-dev-reader-pw"
-  docker exec "$pg_name" psql -U "${DB_USER:-platform}" -d "${DB_NAME:-hosting_platform}" \
-    -c "ALTER ROLE stalwart_reader WITH LOGIN PASSWORD '$dev_password';" >/dev/null 2>&1 || {
-      echo "  ⚠  Failed to bootstrap stalwart_reader password"
-      return 1
-    }
-  echo "  Bootstrapped stalwart_reader LOGIN password"
-  return 0
-}
+# ─── Mail commands (Stalwart) ────────────────────────────────────────────────
 
 cmd_mail_up() {
-  echo "Deploying Stalwart mail server to local k3s..."
-  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
-    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
-    return 1
-  fi
-  # Self-heal: make sure the backend can still reach k3s (guards against the
-  # kubeconfig URL drift after a k3s-server recreate)
-  _repair_kubeconfig || true
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/stalwart"
-  # Phase 2a: patch the platform-postgres Endpoints with the live postgres
-  # container IP so Stalwart's SQL directory can reach the platform DB.
-  _patch_postgres_bridge
+  echo "Deploying Stalwart mail server..."
+  _ensure_k3s_running
+  _sync_manifests
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart
+  _bootstrap_stalwart_reader
   echo ""
-  echo "Waiting for Stalwart pod to be ready (up to 2 minutes)..."
-  _mail_k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-mail -n mail --timeout=120s || {
-    echo ""
-    echo "Pod did not become ready. Recent events:"
-    _mail_k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
-    echo ""
-    echo "Pod describe:"
-    _mail_k3s_exec kubectl describe pod -l app=stalwart-mail -n mail
+  echo "Waiting for Stalwart pod (up to 2 minutes)..."
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-mail -n mail --timeout=120s || {
+    echo "Pod not ready. Events:"
+    k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
     return 1
   }
   echo ""
@@ -459,124 +376,36 @@ cmd_mail_up() {
 }
 
 cmd_mail_down() {
-  echo "Removing Stalwart mail server from local k3s..."
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl delete -k "/tmp/mail-k8s-sync/overlays/dev/stalwart" --ignore-not-found=true
+  _sync_manifests
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart --ignore-not-found=true
 }
 
 cmd_mail_status() {
   echo "════════════════════════════════════════════════"
-  echo "  Stalwart Mail Server — Local Dev"
+  echo "  Stalwart Mail Server"
   echo "════════════════════════════════════════════════"
   echo ""
-  if ! _mail_k3s_exec kubectl get ns mail >/dev/null 2>&1; then
-    echo "  Mail namespace not found. Run: ./scripts/local.sh mail-up"
+  if ! k3s_exec kubectl get ns mail >/dev/null 2>&1; then
+    echo "  Not deployed. Run: ./scripts/local.sh mail-up"
     return
   fi
   echo "  Pods:"
-  _mail_k3s_exec kubectl get pods -n mail -o wide 2>/dev/null | sed 's/^/    /'
+  k3s_exec kubectl get pods -n mail -o wide 2>/dev/null | sed 's/^/    /'
   echo ""
-  echo "  Services:"
-  _mail_k3s_exec kubectl get svc -n mail 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  PVCs:"
-  _mail_k3s_exec kubectl get pvc -n mail 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  Host endpoints (via docker-compose port mappings):"
-  echo "    SMTP           ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
-  echo "    SMTPS implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTPS}"
-  echo "    Submission     ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
-  echo "    IMAP STARTTLS  ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
-  echo "    IMAPS implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
-  echo "    POP3 STARTTLS  ${DOCKER_HOST_NAME}:${PORT_MAIL_POP3}"
-  echo "    POP3S implicit ${DOCKER_HOST_NAME}:${PORT_MAIL_POP3S}"
-  echo ""
-  echo "  Credentials (dev only):"
-  echo "    Admin:  admin / stalwart-dev-admin  (WebAdmin via kubectl port-forward)"
-  echo "    Master: master / stalwart-dev-master"
+  echo "  Endpoints:"
+  echo "    SMTP:       ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
+  echo "    Submission: ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
+  echo "    IMAP:       ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
+  echo "    IMAPS:      ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
   echo "════════════════════════════════════════════════"
 }
 
 cmd_mail_logs() {
-  _mail_k3s_exec kubectl logs -n mail -l app=stalwart-mail --tail=100 -f
-}
-
-# ─── Webmail commands (Phase 2b — Roundcube) ─────────────────────────────────
-
-cmd_webmail_up() {
-  echo "Deploying Roundcube webmail to local k3s..."
-  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
-    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
-    return 1
-  fi
-  _repair_kubeconfig || true
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl apply -k "/tmp/mail-k8s-sync/overlays/dev/roundcube"
-  echo ""
-  echo "Waiting for Roundcube pod to be ready (up to 3 minutes)..."
-  _mail_k3s_exec kubectl wait --for=condition=Ready pod -l app=roundcube -n mail --timeout=180s || {
-    echo ""
-    echo "Roundcube did not become ready. Recent events:"
-    _mail_k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
-    echo ""
-    echo "Pod logs:"
-    _mail_k3s_exec kubectl logs -l app=roundcube -n mail --tail=30 || true
-    return 1
-  }
-  echo ""
-  cmd_webmail_status
-}
-
-cmd_webmail_down() {
-  echo "Removing Roundcube webmail from local k3s..."
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl delete -k "/tmp/mail-k8s-sync/overlays/dev/roundcube" --ignore-not-found=true
-}
-
-cmd_webmail_status() {
-  echo "════════════════════════════════════════════════"
-  echo "  Roundcube Webmail — Local Dev"
-  echo "════════════════════════════════════════════════"
-  echo ""
-  if ! _mail_k3s_exec kubectl get ns mail >/dev/null 2>&1; then
-    echo "  Mail namespace not found. Run: ./scripts/local.sh mail-up first"
-    return
-  fi
-  echo "  Pod:"
-  _mail_k3s_exec kubectl get pods -n mail -l app=roundcube -o wide 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  Service:"
-  _mail_k3s_exec kubectl get svc roundcube -n mail 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  Host endpoint:"
-  echo "    http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}/"
-  echo ""
-  echo "  Test SSO flow (after running mail-up + mail-test for the test mailbox):"
-  echo "    1) curl http://${DOCKER_HOST_NAME}:${PORT_API}/api/v1/email/webmail-token"
-  echo "       (with admin token + mailbox_id) to get a JWT"
-  echo "    2) Open the returned webmailUrl in a browser"
-  echo "════════════════════════════════════════════════"
-}
-
-cmd_webmail_logs() {
-  _mail_k3s_exec kubectl logs -n mail -l app=roundcube --tail=100 -f
+  k3s_exec kubectl logs -n mail -l app=stalwart-mail --tail=100 -f
 }
 
 cmd_mail_test() {
-  # Recipient is currently hard-coded inside the swaks call below;
-  # this argument is reserved for the future when the test allows
-  # an override. Keep it as a positional but don't bind it to a
-  # local — shellcheck would otherwise flag SC2034.
-  : "${1:-testuser@mail.dind.local}"
-  echo "Running mail send + retrieve cycle against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
-  echo ""
-  echo "NOTE: This test first creates the test account via stalwart-cli, then"
-  echo "      sends a message via SMTP submission and retrieves it via IMAP."
-  echo ""
-  # Create the test account if it doesn't exist (idempotent)
-  _mail_k3s_exec kubectl exec -n mail stalwart-mail-0 -- \
-    stalwart-cli -u http://127.0.0.1:8080 -c "admin:stalwart-dev-admin" \
-    server database maintenance 2>&1 | head -5 || true
+  echo "Running mail test against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
   echo ""
   echo "TCP probes:"
   for port_var in PORT_MAIL_SMTP PORT_MAIL_SUBMISSION PORT_MAIL_IMAP PORT_MAIL_IMAPS; do
@@ -589,17 +418,56 @@ cmd_mail_test() {
   done
 }
 
-# ─── SFTP Gateway commands ───────────────────────────────────────────────────
+# ─── Webmail commands (Roundcube) ────────────────────────────────────────────
+
+cmd_webmail_up() {
+  echo "Deploying Roundcube webmail..."
+  _ensure_k3s_running
+  _sync_manifests
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/roundcube
+  echo ""
+  echo "Waiting for Roundcube pod (up to 3 minutes)..."
+  k3s_exec kubectl wait --for=condition=Ready pod -l app=roundcube -n mail --timeout=180s || {
+    echo "Roundcube not ready. Logs:"
+    k3s_exec kubectl logs -l app=roundcube -n mail --tail=30 || true
+    return 1
+  }
+  echo ""
+  cmd_webmail_status
+}
+
+cmd_webmail_down() {
+  _sync_manifests
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/roundcube --ignore-not-found=true
+}
+
+cmd_webmail_status() {
+  echo "════════════════════════════════════════════════"
+  echo "  Roundcube Webmail"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  echo "  Pod:"
+  k3s_exec kubectl get pods -n mail -l app=roundcube -o wide 2>/dev/null | sed 's/^/    /'
+  echo ""
+  echo "  Endpoint: http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}/"
+  echo "════════════════════════════════════════════════"
+}
+
+cmd_webmail_logs() {
+  k3s_exec kubectl logs -n mail -l app=roundcube --tail=100 -f
+}
+
+# ─── SFTP Gateway commands ──────────────────────────────────────────────────
 
 _sftp_ensure_host_key() {
-  # Generate SSH host key Secret if it doesn't exist
-  if ! _mail_k3s_exec kubectl get secret sftp-host-keys -n platform-system >/dev/null 2>&1; then
+  if ! k3s_exec kubectl get secret sftp-host-keys -n platform-system >/dev/null 2>&1; then
     echo "  Generating SSH host key..."
     local tmpdir
     tmpdir=$(mktemp -d)
     ssh-keygen -t ed25519 -N "" -f "$tmpdir/ssh_host_ed25519_key" -q
     docker cp "$tmpdir/ssh_host_ed25519_key" "${K3S_CONTAINER}:/tmp/sftp-hostkey"
-    _mail_k3s_exec kubectl create secret generic sftp-host-keys \
+    k3s_exec kubectl create namespace platform-system 2>/dev/null || true
+    k3s_exec kubectl create secret generic sftp-host-keys \
       --from-file=ssh_host_ed25519_key=/tmp/sftp-hostkey \
       -n platform-system
     rm -rf "$tmpdir"
@@ -608,8 +476,7 @@ _sftp_ensure_host_key() {
 }
 
 _sftp_ensure_tls_cert() {
-  # Create FTPS TLS certificate via cert-manager (local CA issuer)
-  if ! _mail_k3s_exec kubectl get certificate sftp-gateway-tls -n platform-system >/dev/null 2>&1; then
+  if ! k3s_exec kubectl get certificate sftp-gateway-tls -n platform-system >/dev/null 2>&1; then
     echo "  Creating FTPS TLS certificate..."
     docker exec "$K3S_CONTAINER" sh -c 'cat > /tmp/sftp-tls-cert.yaml <<EOF
 apiVersion: cert-manager.io/v1
@@ -623,100 +490,43 @@ spec:
     name: local-ca-issuer
     kind: ClusterIssuer
   dnsNames:
-    - sftp.platform.local
-    - sftp.ingress.localhost
+    - sftp.k8s-platform.local-dev
   duration: 8760h
   renewBefore: 720h
 EOF
 kubectl apply -f /tmp/sftp-tls-cert.yaml'
-    echo "  Waiting for certificate to be ready..."
-    _mail_k3s_exec kubectl wait --for=condition=Ready certificate/sftp-gateway-tls \
-      -n platform-system --timeout=60s 2>/dev/null || echo "  ⚠  Certificate not ready yet (FTPS will start once it is)"
+    k3s_exec kubectl wait --for=condition=Ready certificate/sftp-gateway-tls \
+      -n platform-system --timeout=60s 2>/dev/null || echo "  Certificate not ready yet"
   fi
-}
-
-_sftp_patch_backend_bridge() {
-  # Create Service + Endpoints in platform-system that routes to the backend
-  # Docker container (same pattern as _patch_postgres_bridge for mail).
-  local backend_name backend_ip network_name
-  backend_name=$(docker ps --filter "name=hosting-platform-backend" --format '{{.Names}}' 2>/dev/null | head -1)
-  if [[ -z "$backend_name" ]]; then
-    echo "  ⚠  Backend container not running — SFTP auth will fail"
-    return 1
-  fi
-  network_name="${COMPOSE_PROJECT_NAME:-hosting-platform}_default"
-  backend_ip=$(docker inspect "$backend_name" \
-    --format "{{with index .NetworkSettings.Networks \"${network_name}\"}}{{.IPAddress}}{{end}}" \
-    2>/dev/null)
-  if ! [[ "$backend_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    echo "  ⚠  No valid IP for $backend_name on $network_name; got '$backend_ip'"
-    return 1
-  fi
-  echo "  Patching backend bridge → $backend_ip"
-  # Apply Service + Endpoints via temp file inside k3s container
-  docker exec "$K3S_CONTAINER" sh -c "cat > /tmp/backend-bridge.yaml <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend
-  namespace: platform-system
-spec:
-  ports:
-  - port: 3000
-    targetPort: 3000
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: backend
-  namespace: platform-system
-subsets:
-- addresses:
-  - ip: ${backend_ip}
-  ports:
-  - port: 3000
-EOF
-kubectl apply -f /tmp/backend-bridge.yaml" 2>&1
 }
 
 cmd_sftp_up() {
-  echo "Deploying SFTP gateway to local k3s..."
-  if ! docker ps --format '{{.Names}}' | grep -q "^${K3S_CONTAINER}$"; then
-    echo "ERROR: k3s-server container is not running. Run: ./scripts/local.sh k3s-up"
-    return 1
-  fi
-  _repair_kubeconfig || true
+  echo "Deploying SFTP gateway..."
+  _ensure_k3s_running
 
-  # Ensure namespace exists
-  _mail_k3s_exec kubectl create namespace platform-system 2>/dev/null || true
-
-  # Ensure secrets
+  k3s_exec kubectl create namespace platform-system 2>/dev/null || true
   _sftp_ensure_host_key
   _sftp_ensure_tls_cert
 
   # Build and import sftp-gateway image
   echo "  Building sftp-gateway image..."
-  docker build -t sftp-gateway:latest "${PROJECT_DIR}/images/sftp-gateway/" -q || { echo "  ERROR: sftp-gateway build failed"; return 1; }
-  # Tag with GHCR path so the base manifest's canonical image ref resolves
-  # locally without hitting the registry.
-  docker tag sftp-gateway:latest ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest
-  docker save sftp-gateway:latest ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest \
-    | docker exec -i "$K3S_CONTAINER" ctr images import - 2>/dev/null
-  echo "  sftp-gateway image imported into k3s (both local + GHCR tags)"
+  if [[ -d "${PROJECT_DIR}/images/sftp-gateway" ]]; then
+    _build_and_import "sftp-gateway" "images/sftp-gateway" "images/sftp-gateway/Dockerfile"
+    docker tag "hosting-platform/sftp-gateway:local" \
+      "ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest"
+    docker save "ghcr.io/phoenixtechnam/hosting-platform/sftp-gateway:latest" \
+      | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+  fi
 
-  # Apply manifests
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl apply -f /tmp/mail-k8s-sync/base/sftp-gateway.yaml
-  _mail_k3s_exec kubectl apply -f /tmp/mail-k8s-sync/base/sftp-gateway-netpol.yaml 2>/dev/null || true
-
-  # Create backend bridge
-  _sftp_patch_backend_bridge
+  _sync_manifests
+  k3s_exec kubectl apply -f /tmp/k8s-sync/base/sftp-gateway.yaml
+  k3s_exec kubectl apply -f /tmp/k8s-sync/base/sftp-gateway-netpol.yaml 2>/dev/null || true
 
   echo ""
-  echo "Waiting for SFTP gateway pod to be ready..."
-  _mail_k3s_exec kubectl rollout status deployment/sftp-gateway -n platform-system --timeout=60s || {
-    echo "Pod did not become ready. Events:"
-    _mail_k3s_exec kubectl get events -n platform-system --sort-by=.lastTimestamp | tail -10
+  echo "Waiting for SFTP gateway pod..."
+  k3s_exec kubectl rollout status deployment/sftp-gateway -n platform-system --timeout=60s || {
+    echo "Pod not ready. Events:"
+    k3s_exec kubectl get events -n platform-system --sort-by=.lastTimestamp | tail -10
     return 1
   }
   echo ""
@@ -724,58 +534,39 @@ cmd_sftp_up() {
 }
 
 cmd_sftp_down() {
-  echo "Removing SFTP gateway from local k3s..."
-  _mail_sync_manifests
-  _mail_k3s_exec kubectl delete -f /tmp/mail-k8s-sync/base/sftp-gateway.yaml --ignore-not-found=true
-  _mail_k3s_exec kubectl delete -f /tmp/mail-k8s-sync/base/sftp-gateway-netpol.yaml --ignore-not-found=true
-  _mail_k3s_exec kubectl delete svc backend -n platform-system --ignore-not-found=true
-  _mail_k3s_exec kubectl delete endpoints backend -n platform-system --ignore-not-found=true
+  _sync_manifests
+  k3s_exec kubectl delete -f /tmp/k8s-sync/base/sftp-gateway.yaml --ignore-not-found=true
+  k3s_exec kubectl delete -f /tmp/k8s-sync/base/sftp-gateway-netpol.yaml --ignore-not-found=true
 }
 
 cmd_sftp_status() {
   echo "════════════════════════════════════════════════"
-  echo "  SFTP Gateway — Local Dev"
+  echo "  SFTP Gateway"
   echo "════════════════════════════════════════════════"
   echo ""
-  if ! _mail_k3s_exec kubectl get deployment sftp-gateway -n platform-system >/dev/null 2>&1; then
-    echo "  SFTP gateway not deployed. Run: ./scripts/local.sh sftp-up"
-    return
-  fi
   echo "  Pod:"
-  _mail_k3s_exec kubectl get pods -n platform-system -l app=sftp-gateway -o wide 2>/dev/null | sed 's/^/    /'
+  k3s_exec kubectl get pods -n platform-system -l app=sftp-gateway -o wide 2>/dev/null | sed 's/^/    /'
   echo ""
-  echo "  Service:"
-  _mail_k3s_exec kubectl get svc sftp-gateway -n platform-system 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  Backend bridge:"
-  _mail_k3s_exec kubectl get endpoints backend -n platform-system 2>/dev/null | sed 's/^/    /'
-  echo ""
-  echo "  TLS Certificate:"
-  _mail_k3s_exec kubectl get certificate sftp-gateway-tls -n platform-system 2>/dev/null | sed 's/^/    /' || echo "    not configured"
-  echo ""
-  echo "  Host endpoint:"
-  echo "    SFTP: ${DOCKER_HOST_NAME}:${PORT_SFTP:-2222}"
-  echo ""
-  echo "  Protocols: SFTP, SCP, rsync (+ FTPS if TLS cert is ready)"
+  echo "  Endpoint: ${DOCKER_HOST_NAME}:${PORT_SFTP}"
   echo "════════════════════════════════════════════════"
 }
 
+# ─── Help & dispatch ─────────────────────────────────────────────────────────
+
 cmd_help() {
-  sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '3,36p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 case "${1:-help}" in
-  up)          cmd_up ;;
-  down)        cmd_down ;;
-  reset)       cmd_reset ;;
-  rebuild)     cmd_rebuild ;;
-  logs)        cmd_logs ;;
-  status)      cmd_status ;;
-  k3s-up)      cmd_k3s_up ;;
-  k3s-down)    cmd_k3s_down ;;
-  k3s-reset)   cmd_k3s_reset ;;
-  k3s-status)  cmd_k3s_status ;;
-  k3s-shell)   cmd_k3s_shell ;;
+  up)             cmd_up ;;
+  dev)            cmd_dev ;;
+  down)           cmd_down ;;
+  reset)          cmd_reset ;;
+  rebuild)        cmd_rebuild ;;
+  logs)           shift; cmd_logs "${1:-}" ;;
+  status)         cmd_status ;;
+  k3s-shell)      cmd_k3s_shell ;;
+  k3s-status)     cmd_k3s_status ;;
   mail-up)        cmd_mail_up ;;
   mail-down)      cmd_mail_down ;;
   mail-status)    cmd_mail_status ;;
@@ -789,5 +580,5 @@ case "${1:-help}" in
   sftp-down)      cmd_sftp_down ;;
   sftp-status)    cmd_sftp_status ;;
   help|-h)        cmd_help ;;
-  *)           echo "Unknown command: $1"; cmd_help; exit 1 ;;
+  *)              echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

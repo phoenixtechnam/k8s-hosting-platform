@@ -18,6 +18,6 @@ test.describe('Admin Users Management', () => {
 
   test('shows user table with at least the current admin', async ({ page }) => {
     // There should always be at least one admin user (the logged-in user)
-    await expect(page.getByText('admin@platform.local')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText('admin@k8s-platform.local-dev')).toBeVisible({ timeout: 2000 });
   });
 });

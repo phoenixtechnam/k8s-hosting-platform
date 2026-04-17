@@ -189,7 +189,7 @@ For code development, unit tests, and quick E2E testing. Runs entirely in Docker
 - Admin Panel: http://dind.local:2010
 - Client Panel: http://dind.local:2011
 - Backend API: http://dind.local:2012
-- Login: admin@platform.local / admin
+- Login: admin@k8s-platform.local-dev / admin
 
 **Configuration:**
 - Copy `.env.local.example` to `.env.local` and adjust values

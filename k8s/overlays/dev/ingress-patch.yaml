@@ -1,23 +1,18 @@
-# Platform ingress — admin and client panels only.
-# The API is not publicly exposed. Each frontend's nginx container
-# reverse-proxies /api/* to platform-api:3000 internally.
+# Dev overlay: local hostnames with self-signed CA.
+# Access via http://admin.k8s-platform.local-dev:2010 (add /etc/hosts entry).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: platform-ingress
   namespace: platform
-  labels:
-    app.kubernetes.io/part-of: hosting-platform
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    cert-manager.io/cluster-issuer: local-ca-issuer
 spec:
-  ingressClassName: nginx
   tls:
     - hosts:
         - admin.k8s-platform.local-dev
         - client.k8s-platform.local-dev
-      secretName: platform-tls
+      secretName: platform-dev-tls
   rules:
     - host: admin.k8s-platform.local-dev
       http:

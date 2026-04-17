@@ -21,7 +21,7 @@ spec:
     commit:
       author:
         name: Flux Image Automation
-        email: flux@platform.local
+        email: flux@k8s-platform.local-dev
       messageTemplate: |
         chore: update staging images
 

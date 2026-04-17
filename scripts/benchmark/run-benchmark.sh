@@ -15,7 +15,7 @@ get_token() {
   local response
   response=$(curl -s "$BASE_URL/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
-    -d '{"email":"admin@platform.local","password":"admin"}')
+    -d '{"email":"admin@k8s-platform.local-dev","password":"admin"}')
 
   if command -v jq &>/dev/null; then
     echo "$response" | jq -r '.data.token // empty'
@@ -52,7 +52,7 @@ benchmark_endpoint() {
     if [ "$method" = "POST" ]; then
       status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE_URL$path" \
         -H 'Content-Type: application/json' \
-        -d '{"email":"admin@platform.local","password":"admin"}')
+        -d '{"email":"admin@k8s-platform.local-dev","password":"admin"}')
     else
       status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE_URL$path" \
         -H "$auth_header")

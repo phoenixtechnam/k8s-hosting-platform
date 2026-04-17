@@ -1237,7 +1237,7 @@ View switch history with timeline and outcomes.
       "source_image": "apache-php83",
       "target_image": "nginx-php84",
       "status": "completed",
-      "initiated_by": "admin@platform.local",
+      "initiated_by": "admin@k8s-platform.local-dev",
       "reason": "Performance optimization",
       "created_at": "2025-02-28T14:30:00Z",
       "completed_at": "2025-02-28T14:33:15Z",

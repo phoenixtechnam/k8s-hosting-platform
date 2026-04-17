@@ -43,7 +43,7 @@ console.log('  Seeded hosting plans');
 // Catalog entries are populated by syncing catalog repositories — no built-in seed.
 
 // Default admin user
-const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@platform.local';
+const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@k8s-platform.local-dev';
 const adminPassword = process.env.ADMIN_PASSWORD;
 if (!adminPassword) {
   throw new Error('ADMIN_PASSWORD environment variable is required for seeding. Set a strong password.');

@@ -10,7 +10,7 @@ export async function loginAsAdmin(page: Page) {
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
 
-  await page.getByTestId('email-input').fill('admin@platform.local');
+  await page.getByTestId('email-input').fill('admin@k8s-platform.local-dev');
   await page.getByTestId('password-input').fill('admin');
   await page.getByTestId('login-button').click();
 
@@ -59,7 +59,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     const loginRes = await fetch(`${API_BASE}/api/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' }),
+      body: JSON.stringify({ email: 'admin@k8s-platform.local-dev', password: 'admin' }),
     });
     const loginData = await loginRes.json() as { data: { token: string } };
     adminToken = loginData.data.token;
@@ -73,7 +73,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
   // Check if test client already exists
   const clientsRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
   const clientsData = await clientsRes.json() as { data: { id: string; companyEmail: string }[] };
-  let clientId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@platform.local')?.id;
+  let clientId = clientsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.local-dev')?.id;
 
   // Create test client if not exists
   if (!clientId) {
@@ -92,7 +92,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
       headers,
       body: JSON.stringify({
         company_name: 'E2E Test Client',
-        company_email: 'e2e-test@platform.local',
+        company_email: 'e2e-test@k8s-platform.local-dev',
         plan_id: planId,
         region_id: regionId,
       }),
@@ -105,7 +105,7 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
       await new Promise(r => setTimeout(r, 1000));
       const retryRes = await fetch(`${API_BASE}/api/v1/clients?limit=100`, { headers });
       const retryData = await retryRes.json() as { data: { id: string; companyEmail: string }[] };
-      clientId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@platform.local')?.id;
+      clientId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.local-dev')?.id;
       if (!clientId) {
         throw new Error(`Failed to create or find test client: ${JSON.stringify(createData)}`);
       }

@@ -3,14 +3,14 @@
 # Docker-compose then maps host ports 2025..2995 → these node ports on the
 # k3s-server container, making the mail server reachable from the host.
 #
-# Host port mapping (set in docker-compose.local.yml):
-#   host 2025  → k3s-server 30025 → Stalwart smtp (25)
-#   host 2465  → k3s-server 30465 → Stalwart submissions (465)
-#   host 2587  → k3s-server 30587 → Stalwart submission (587)
-#   host 2143  → k3s-server 30143 → Stalwart imap (143)
-#   host 2993  → k3s-server 30993 → Stalwart imaps (993)
-#   host 2110  → k3s-server 30110 → Stalwart pop3 (110)
-#   host 2995  → k3s-server 30995 → Stalwart pop3s (995)
+# Host port mapping (set in docker-compose.local.yml, all within 2010-2030):
+#   host 2020 → k3s-server 30025 → Stalwart smtp (25)
+#   host 2024 → k3s-server 30465 → Stalwart submissions (465)
+#   host 2021 → k3s-server 30587 → Stalwart submission (587)
+#   host 2022 → k3s-server 30143 → Stalwart imap (143)
+#   host 2023 → k3s-server 30993 → Stalwart imaps (993)
+#   host 2025 → k3s-server 30110 → Stalwart pop3 (110)
+#   host 2026 → k3s-server 30995 → Stalwart pop3s (995)
 #
 apiVersion: v1
 kind: Service

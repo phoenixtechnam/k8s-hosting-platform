@@ -24,7 +24,7 @@ let authToken = '';
 
 export function setup() {
   const loginRes = http.post(`${BASE_URL}/api/v1/auth/login`,
-    JSON.stringify({ email: 'admin@platform.local', password: 'admin' }),
+    JSON.stringify({ email: 'admin@k8s-platform.local-dev', password: 'admin' }),
     { headers: { 'Content-Type': 'application/json' } }
   );
 
