@@ -12,19 +12,20 @@ metadata:
     cert-manager.io/cluster-issuer: local-ca-issuer
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    # Disable WAF on this ingress in dev. The cluster-wide k3s-init
-    # enables ModSecurity + OWASP CRS — rule 920420 (Request content type
-    # is not allowed by policy) rejects the Stalwart web-admin SPA's
-    # POST /auth/token because it uses `Content-Type: text/plain` (a
-    # Leptos form-submission quirk). Per-ingress opt-out is the cleanest
-    # dev-only override; in prod we'd add a narrow rule exclusion instead.
-    nginx.ingress.kubernetes.io/enable-modsecurity: "false"
-    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "false"
-    # The global modsecurity-snippet in k3s-init force-enables SecRuleEngine
-    # even when the per-ingress annotations above are set, so we also emit
-    # a snippet at this ingress to explicitly turn the engine off.
+    # WAF stays ON. Narrow OWASP CRS exclusions for the embedded
+    # Stalwart web-admin SPA (served at same-origin via the admin-panel
+    # nginx proxy). All other checks (SQLi, XSS, scanner detection, etc.)
+    # still apply to every endpoint.
+    #
+    # Rule 920420 "Request content type is not allowed by policy":
+    # Stalwart's Leptos SPA submits POST /auth/token with
+    # `Content-Type: text/plain`. The CRS allow-list omits text/plain,
+    # so the anomaly score hits 5 and 949110 returns 403. Remove 920420
+    # only for this exact path. IDs in 1100000-1199999 are reserved for
+    # user rules (won't collide with CRS or future CRS updates).
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
-      SecRuleEngine Off
+      SecRule REQUEST_URI "@beginsWith /auth/token" \
+          "id:1100001,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
 spec:
   tls:
     - hosts:
