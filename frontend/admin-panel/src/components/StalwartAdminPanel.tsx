@@ -101,6 +101,10 @@ export default function StalwartAdminPanel() {
               setConfirmRotate(false);
               rotate.reset();
               setRevealed(true);
+              // If the Stalwart iframe was open, close it — its cached
+              // SPA state references the old token and will not pick up
+              // the rotated password without a clean reload.
+              setShowIframe(false);
             } catch {
               // error state is surfaced via rotate.error
             }
