@@ -1,0 +1,21 @@
+# Dev overlay: frontends are static nginx — SIGTERM is fast, no need to wait
+# for the default 30s grace period on rolling restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-panel
+  namespace: platform
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-panel
+  namespace: platform
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 2

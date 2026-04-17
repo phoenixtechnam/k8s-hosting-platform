@@ -75,6 +75,45 @@ PORT_MAIL_POP3S="${PORT_MAIL_POP3S:-2026}"
 
 K3S_CONTAINER="${K3S_CONTAINER:-hosting-platform-k3s-server-1}"
 
+# ─── Phase timing helpers ───────────────────────────────────────────────────
+_PHASE_TIMINGS=()
+_PHASE_START_EPOCH=""
+_DEPLOY_START_EPOCH=""
+
+_phase() {
+  local label="$1"
+  local now
+  now=$(date +%s)
+  if [[ -n "$_PHASE_START_EPOCH" ]]; then
+    local prev_label="$_PHASE_CURRENT"
+    local elapsed=$((now - _PHASE_START_EPOCH))
+    _PHASE_TIMINGS+=("${elapsed}s  ${prev_label}")
+  fi
+  _PHASE_START_EPOCH="$now"
+  _PHASE_CURRENT="$label"
+  if [[ -z "$_DEPLOY_START_EPOCH" ]]; then
+    _DEPLOY_START_EPOCH="$now"
+  fi
+}
+
+_phase_summary() {
+  # Close the current phase
+  _phase "(end)"
+  local total=$(( $(date +%s) - _DEPLOY_START_EPOCH ))
+  echo ""
+  echo "─── Phase timings ────────────────────────────────"
+  for line in "${_PHASE_TIMINGS[@]}"; do
+    printf "  %s\n" "$line"
+  done
+  printf "  ──\n  %ds  TOTAL\n" "$total"
+  echo "──────────────────────────────────────────────────"
+  # Reset for next invocation
+  _PHASE_TIMINGS=()
+  _PHASE_START_EPOCH=""
+  _DEPLOY_START_EPOCH=""
+  _PHASE_CURRENT=""
+}
+
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
@@ -85,17 +124,65 @@ k3s_exec() {
 
 # ─── Image management ───────────────────────────────────────────────────────
 
+# Compute a content hash of inputs relevant to a given image. Used to skip
+# docker build + ctr import when nothing the image depends on has changed.
+_image_input_hash() {
+  local name="$1"
+  case "$name" in
+    backend)
+      # shellcheck disable=SC2038
+      find "${PROJECT_DIR}/backend/src" "${PROJECT_DIR}/packages/api-contracts/src" \
+           "${PROJECT_DIR}/backend/package.json" "${PROJECT_DIR}/backend/tsconfig.json" \
+           "${PROJECT_DIR}/backend/Dockerfile" "${PROJECT_DIR}/backend/docker-entrypoint.sh" \
+           "${PROJECT_DIR}/packages/api-contracts/package.json" \
+           "${PROJECT_DIR}/packages/api-contracts/tsconfig.json" \
+           "${PROJECT_DIR}/.dockerignore" \
+           -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
+      ;;
+    admin-panel|client-panel)
+      local panel="$name"
+      find "${PROJECT_DIR}/frontend/${panel}" "${PROJECT_DIR}/packages/api-contracts/src" \
+           "${PROJECT_DIR}/packages/api-contracts/package.json" \
+           "${PROJECT_DIR}/packages/api-contracts/tsconfig.json" \
+           "${PROJECT_DIR}/frontend/docker-entrypoint.sh" \
+           "${PROJECT_DIR}/.dockerignore" \
+           -type f 2>/dev/null | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
+      ;;
+  esac
+}
+
+_image_label_hash() {
+  local tag="$1"
+  docker image inspect "$tag" --format '{{ index .Config.Labels "hp.input-hash" }}' 2>/dev/null || true
+}
+
 _build_and_import() {
   local name="$1" context="$2" dockerfile="$3"
   local tag="hosting-platform/${name}:local"
+
+  # Content-hash skip: build only if inputs actually changed.
+  local want got
+  want=$(_image_input_hash "$name")
+  got=$(_image_label_hash "$tag")
+  if [[ -n "$want" && "$want" == "$got" ]]; then
+    echo "  ✓ ${name}: unchanged (hash ${want:0:12}), skipping build + import"
+    echo "HP_IMAGE_UNCHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
+    return 0
+  fi
+
   echo "  Building ${name}..."
-  docker build -t "$tag" -f "${PROJECT_DIR}/${dockerfile}" "${PROJECT_DIR}/${context}" -q >/dev/null
+  DOCKER_BUILDKIT=1 docker build \
+    --label "hp.input-hash=${want}" \
+    -t "$tag" -f "${PROJECT_DIR}/${dockerfile}" "${PROJECT_DIR}/${context}" -q >/dev/null
   echo "  Importing ${name} into k3s..."
   docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+  echo "HP_IMAGE_CHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
 }
 
 _build_all_images() {
-  echo "Building and importing images into k3s (parallel)..."
+  echo "Building and importing images into k3s (parallel, content-hash skip)..."
+  # Reset build-state file so cmd_rebuild knows exactly which images changed.
+  : > "${PROJECT_DIR}/.local.build-state"
   # Parallel builds — safe on direct filesystems (XFS/BTRFS), previously
   # serialized only for shfs/FUSE mounts which are no longer used.
   local pids=() logs=()
@@ -144,23 +231,28 @@ _ensure_k3s_running() {
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "k3s-server"; then
     echo "Starting k3s cluster..."
     compose up -d k3s-server
-    echo "Running k3s init (ingress, cert-manager, namespaces)..."
-    compose up k3s-init
+    # Wait for k3s API before running init (avoids retry loop inside init container)
+    echo "Waiting for k3s API..."
+    local retries=0
+    while ! docker exec "$K3S_CONTAINER" kubectl get nodes --no-headers &>/dev/null; do
+      retries=$((retries + 1))
+      if (( retries > 30 )); then
+        echo "ERROR: k3s API not available after 60s"
+        return 1
+      fi
+      sleep 2
+    done
+    # Skip init if ingress-nginx + cert-manager already installed (volumes preserved)
+    if k3s_exec kubectl get deploy ingress-nginx-controller -n ingress-nginx >/dev/null 2>&1 \
+       && k3s_exec kubectl get deploy cert-manager -n cert-manager >/dev/null 2>&1; then
+      echo "k3s infra already installed — skipping init"
+    else
+      echo "Running k3s init (ingress, cert-manager, namespaces)..."
+      compose up k3s-init
+    fi
   else
     echo "k3s already running"
   fi
-
-  # Wait for API
-  echo "Waiting for k3s API..."
-  local retries=0
-  while ! k3s_exec kubectl get nodes --no-headers &>/dev/null; do
-    retries=$((retries + 1))
-    if (( retries > 30 )); then
-      echo "ERROR: k3s API not available after 60s"
-      return 1
-    fi
-    sleep 2
-  done
 }
 
 _sync_manifests() {
@@ -222,13 +314,35 @@ _cleanup_stale_namespaces() {
 cmd_up() {
   echo "═══ Integration Mode: Full k3s ═══"
   echo ""
+  # Run k3s infra bringup and image builds in parallel — they are
+  # independent on a cold start (k8s API downloads + pod rollouts vs
+  # local docker build). Image build typically finishes within the
+  # time k3s-init waits for cert-manager + ingress-nginx.
+  _phase "k3s infra + image build (overlapped)"
+  local build_log
+  build_log=$(mktemp)
+  (_build_all_images) >"$build_log" 2>&1 &
+  local build_pid=$!
   _ensure_k3s_running
-  _build_all_images
+  if ! wait "$build_pid"; then
+    echo "ERROR: image build failed — log:"
+    sed 's/^/  /' "$build_log"
+    rm -f "$build_log"
+    return 1
+  fi
+  sed 's/^/  /' "$build_log"
+  rm -f "$build_log"
+
+  _phase "kustomize apply"
   _apply_dev_overlay
+  _phase "wait for pods"
   _wait_for_pods platform
+  _phase "migrations + seed"
   _run_migrations_and_seed
+  _phase "post-bootstrap"
   _bootstrap_stalwart_reader
   _cleanup_stale_namespaces
+  _phase_summary
   echo ""
   cmd_status
 }
@@ -292,13 +406,40 @@ cmd_rebuild() {
     echo "ERROR: k3s is not running. Use ./scripts/local.sh up first."
     return 1
   fi
+  _phase "image build"
   _build_all_images
-  echo "Rolling out restarts..."
-  k3s_exec kubectl rollout restart deploy/platform-api -n platform
-  k3s_exec kubectl rollout restart deploy/admin-panel -n platform
-  k3s_exec kubectl rollout restart deploy/client-panel -n platform
+
+  # Only restart deployments whose image actually changed (content-hash skip).
+  # shellcheck disable=SC1090,SC1091
+  local state_file="${PROJECT_DIR}/.local.build-state"
+  local changed_deploys=()
+  if grep -q '^HP_IMAGE_CHANGED_backend=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/platform-api)
+  fi
+  if grep -q '^HP_IMAGE_CHANGED_admin-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/admin-panel)
+  fi
+  if grep -q '^HP_IMAGE_CHANGED_client-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/client-panel)
+  fi
+
+  if (( ${#changed_deploys[@]} == 0 )); then
+    echo "  No images changed — skipping rollout."
+    _phase_summary
+    echo ""
+    cmd_status
+    return 0
+  fi
+
+  _phase "rollout restart"
+  echo "Rolling out restarts for: ${changed_deploys[*]}"
+  k3s_exec kubectl rollout restart "${changed_deploys[@]}" -n platform
+  _phase "wait for pods"
   echo "Waiting for pods..."
-  _wait_for_pods platform
+  for d in "${changed_deploys[@]}"; do
+    k3s_exec kubectl rollout status "$d" -n platform --timeout=120s
+  done
+  _phase_summary
   echo ""
   cmd_status
 }

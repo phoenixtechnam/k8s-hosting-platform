@@ -1,17 +1,20 @@
+# syntax=docker/dockerfile:1.7
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # Build shared API contracts first
 COPY packages/api-contracts/ ./packages/api-contracts/
-RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build
 
 # Build backend
 COPY backend/package.json backend/tsconfig.json ./
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 # Fix tsconfig reference path for Docker flat layout
 RUN sed -i 's|\.\./packages/api-contracts|./packages/api-contracts|' tsconfig.json
-RUN npm install --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install --ignore-scripts --prefer-offline --no-audit --no-fund
 COPY backend/src/ src/
 RUN npx tsc
 
@@ -22,7 +25,8 @@ WORKDIR /app
 COPY --from=builder /app/packages/api-contracts/ ./packages/api-contracts/
 COPY backend/package.json ./
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
-RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund
 
 COPY --from=builder /app/dist/ dist/
 COPY backend/src/db/migrations/ dist/db/migrations/

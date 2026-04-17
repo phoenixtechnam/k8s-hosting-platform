@@ -58,3 +58,4 @@ test-artifacts/
 
 # Claude Code IDE config
 .claude/
+.local.build-state

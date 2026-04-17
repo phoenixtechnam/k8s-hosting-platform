@@ -1,0 +1,62 @@
+# Ignore heavy/unnecessary paths from Docker build contexts.
+# Without this, the entire monorepo (node_modules etc.) is shipped to the
+# Docker daemon on every build, turning a few-MB context into 100s of MB.
+
+# Dependencies
+**/node_modules
+**/.pnpm-store
+
+# Build outputs
+**/dist
+**/build
+**/.next
+**/.turbo
+**/.vite
+**/coverage
+**/.nyc_output
+# tsc --build uses this to skip emit; exclude so the container rebuild
+# always produces fresh dist output (otherwise the Dockerfile copies
+# dist but the host had none, yet tsc thinks it's up to date).
+**/tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+
+# Tests / artifacts
+test-results
+test-artifacts
+playwright-report
+e2e
+
+# VCS and editor
+.git
+.gitignore
+.github
+.vscode
+.idea
+**/.DS_Store
+
+# Env / local config (each Dockerfile COPYs what it needs explicitly)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Docs & misc that don't belong in any image
+docs
+*.md
+!packages/api-contracts/README.md
+
+# Claude / tooling
+.claude
+.ecc
+
+# Backups + misc artifacts
+*.bak
+*.log
+images
+catalog-images
+config
+
+# Compose + k8s — not consumed by app images
+docker-compose*.yml
+k8s
+terraform

@@ -8,8 +8,29 @@ metadata:
 spec:
   template:
     spec:
+      # Faster rolling restarts in dev — the backend handles SIGTERM cleanly.
+      terminationGracePeriodSeconds: 5
       containers:
         - name: api
+          # Dev-only probes: poll fast so pods reach Ready as soon as the
+          # app responds, instead of waiting for the prod-conservative
+          # initialDelaySeconds: 5 + periodSeconds: 10 windows.
+          startupProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
+            periodSeconds: 1
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/healthz
+              port: 3000
+            periodSeconds: 30
           env:
             - name: NODE_ENV
               value: production

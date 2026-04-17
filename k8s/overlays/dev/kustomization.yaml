@@ -27,6 +27,7 @@ patches:
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
   - path: backend-patch.yaml
+  - path: frontends-grace-patch.yaml
   - path: postgres-initdb-patch.yaml
 
 images:

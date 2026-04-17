@@ -1,15 +1,18 @@
+# syntax=docker/dockerfile:1.7
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # Build shared API contracts first
 COPY packages/api-contracts/ ./packages/api-contracts/
-RUN cd packages/api-contracts && npm install --ignore-scripts && npx tsc --build
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build
 
 # Build admin panel
 COPY frontend/admin-panel/package.json ./package.json
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
-RUN npm install --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install --ignore-scripts --prefer-offline --no-audit --no-fund
 COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/tailwind.config.js frontend/admin-panel/postcss.config.js ./
 COPY frontend/admin-panel/src/ src/
 COPY frontend/admin-panel/public/ public/
