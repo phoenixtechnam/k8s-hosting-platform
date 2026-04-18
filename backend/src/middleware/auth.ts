@@ -77,50 +77,6 @@ export function authenticate(
   }
 }
 
-/**
- * Session-based authentication for idempotent, read-only endpoints that
- * need to work from ambient browser state. In practice: the nginx
- * auth_request gate for the Stalwart web-admin subdomain — the browser
- * sends the platform_session cookie with every iframe request, and
- * nginx sub-requests this endpoint to decide 200 vs 401.
- *
- * Bearer still wins when present (supports curl-testing the endpoint).
- * Callers MUST NOT use this on mutating routes — ambient cookie +
- * SameSite=Lax leaves tenant subdomains able to trigger subresource
- * POSTs. See middleware/auth.ts for the full rationale.
- */
-export function authenticateSession(
-  request: FastifyRequest,
-  _reply: FastifyReply,
-  done: (err?: Error) => void,
-): void {
-  const authHeader = request.headers.authorization;
-  let token: string | undefined;
-  if (authHeader?.startsWith('Bearer ')) {
-    token = authHeader.slice(7);
-  } else {
-    token = extractPlatformSessionCookie(request.headers.cookie);
-  }
-
-  if (!token) {
-    done(missingToken());
-    return;
-  }
-
-  if (isTokenDenied(token)) {
-    done(invalidToken());
-    return;
-  }
-
-  try {
-    const decoded = request.server.jwt.verify<JwtPayload>(token);
-    request.user = decoded;
-    done();
-  } catch {
-    done(invalidToken());
-  }
-}
-
 export function requirePanel(panel: 'admin' | 'client') {
   return function checkPanel(
     request: FastifyRequest,

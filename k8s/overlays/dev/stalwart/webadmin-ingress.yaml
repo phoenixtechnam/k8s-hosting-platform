@@ -39,12 +39,15 @@ metadata:
     # sub-request. 2xx → pass, 401/403 → redirect to admin-panel login.
     nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
     nginx.ingress.kubernetes.io/auth-signin: "https://admin.k8s-platform.test:2011/login?redirect=/settings/mail"
-    # Explicitly forward the Cookie header on the auth_request sub-request.
-    # ingress-nginx's auth module passes client headers by default, but
-    # some CRS configs strip Cookie — force it on so the backend's
-    # authenticateSession middleware always sees platform_session.
+    # Sub-request to the verify endpoint must ONLY carry the browser's
+    # platform_session cookie. We strip Authorization so Stalwart's own
+    # OAuth Bearer (set by its SPA on XHR calls) can't reach our JWT
+    # verifier — if it did, the verify endpoint would 401, nginx would
+    # redirect to /login cross-origin, and the iframe would CORS-fail.
+    # Cookie is forwarded explicitly because some CRS configs strip it.
     nginx.ingress.kubernetes.io/auth-snippet: |
       proxy_set_header Cookie $http_cookie;
+      proxy_set_header Authorization "";
     # Stalwart's Leptos login POST /auth/token uses Content-Type: text/plain
     # which trips OWASP CRS 920420 ("content type not allowed"). Narrowly
     # remove just that rule for just that path on this host. SQLi/XSS/etc

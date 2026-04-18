@@ -247,7 +247,12 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(204);
     });
 
-    it('returns 204 with a valid admin-panel Bearer token', async () => {
+    it('ignores Authorization Bearer (cookie-only gate — prevents Stalwart OAuth contamination)', async () => {
+      // The gated UI (Stalwart web-admin) sends its own Authorization
+      // Bearer on XHR calls. auth_request forwards headers, so Bearer
+      // MUST NOT be consulted here — otherwise Stalwart's OAuth token
+      // lands at our JWT verifier, fails, and the iframe redirects
+      // cross-origin to /login (→ CORS "Failed to fetch" in browser).
       const token = app.jwt.sign({
         sub: 'u1', role: 'super_admin', panel: 'admin',
         exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
@@ -257,7 +262,7 @@ describe('auth routes', () => {
         url: '/api/v1/auth/verify-admin-session',
         headers: { authorization: `Bearer ${token}` },
       });
-      expect(res.statusCode).toBe(204);
+      expect(res.statusCode).toBe(401);
     });
 
     it('returns 401 without any credential', async () => {
@@ -295,7 +300,7 @@ describe('auth routes', () => {
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/auth/verify-admin-session',
-        headers: { authorization: `Bearer ${token}` },
+        headers: { cookie: `platform_session=${token}` },
       });
       expect(res.statusCode).toBe(403);
     });

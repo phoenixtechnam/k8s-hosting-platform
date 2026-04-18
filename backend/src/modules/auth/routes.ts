@@ -5,7 +5,7 @@ import { authenticateUser, verifyPassword, hashNewPassword } from './service.js'
 import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
-import { authenticateSession, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
+import { extractPlatformSessionCookie, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
 
 // Session cookie lifetime matches the JWT exp (60 min). The cookie lets
 // nginx auth_request gate subdomains like mail-admin.k8s-platform.test
@@ -266,15 +266,34 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // GET /auth/verify-admin-session — nginx auth_request gate for admin-only
-  // subdomains (mail-admin.k8s-platform.test etc). Returns:
+  // subdomains (mail-admin.k8s-platform.test etc).
+  //
+  // COOKIE-ONLY on purpose. auth_request forwards every header from the
+  // browser's request, including any Authorization header the gated app
+  // (Stalwart's web-admin) sets itself on its XHR calls. If we accepted
+  // Bearer here, Stalwart's own OAuth token would hit our JWT verifier,
+  // fail, and the whole iframe would be redirected to /login cross-origin
+  // (→ CORS "Failed to fetch" in the browser). The platform_session
+  // cookie is always the authoritative signal for this gate.
+  //
+  // Returns:
   //   204 — authenticated admin-panel staff with a non-read-only role
-  //   401 — no credential, invalid token, or expired session
-  //   403 — authenticated but not allowed to hit admin-only subdomains
+  //   401 — no cookie, invalid cookie, or expired session
+  //   403 — authenticated but not allowed on admin-only subdomains
   //         (client-panel session, or admin-panel read_only role)
-  // The endpoint intentionally sends no body — nginx only cares about status.
-  app.get('/auth/verify-admin-session', { preHandler: [authenticateSession] }, async (request, reply) => {
-    const user = request.user as JwtPayload | undefined;
-    if (!user) {
+  // No body — nginx only inspects status.
+  app.get('/auth/verify-admin-session', async (request, reply) => {
+    const token = extractPlatformSessionCookie(request.headers.cookie);
+    if (!token) {
+      return reply.code(401).send();
+    }
+    if (isTokenDenied(token)) {
+      return reply.code(401).send();
+    }
+    let user: JwtPayload;
+    try {
+      user = request.server.jwt.verify<JwtPayload>(token);
+    } catch {
       return reply.code(401).send();
     }
     if (user.panel !== 'admin') {
