@@ -29,6 +29,7 @@ namespace: mail
 resources:
   - ../../../base/stalwart
   - platform-postgres.yaml
+  - webadmin-ingress.yaml
 
 patches:
   - path: service-nodeport-patch.yaml

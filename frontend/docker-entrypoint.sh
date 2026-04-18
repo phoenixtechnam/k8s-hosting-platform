@@ -10,7 +10,7 @@ if [ -z "${API_URL+x}" ]; then
 fi
 
 if [ -f "$CONFIG_TEMPLATE" ]; then
-  envsubst '$API_URL $CLIENT_PANEL_URL' < "$CONFIG_TEMPLATE" > "$CONFIG_OUTPUT"
+  envsubst '$API_URL $CLIENT_PANEL_URL $STALWART_ADMIN_URL' < "$CONFIG_TEMPLATE" > "$CONFIG_OUTPUT"
 fi
 
 # ── Nginx proxy backend target ──

@@ -31,6 +31,16 @@ spec:
                   name: platform-config
                   key: client-url
                   optional: true
+            # Separate hostname for Stalwart's embedded web-admin SPA.
+            # Gated by ingress auth_request — the browser's platform_session
+            # cookie authenticates the whole iframe. Empty in prod until
+            # the mail-admin.<apex> ingress is provisioned.
+            - name: STALWART_ADMIN_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: stalwart-admin-url
+                  optional: true
           resources:
             requests:
               cpu: 50m

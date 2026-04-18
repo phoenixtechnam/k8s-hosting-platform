@@ -188,4 +188,116 @@ describe('auth routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().data.message).toBe('Password updated successfully');
   });
+
+  // ─── Session cookie (Phase 7: subdomain auth_request) ───
+
+  describe('platform_session cookie', () => {
+    it('POST /auth/login sets platform_session cookie with HttpOnly/Secure/SameSite=Lax', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: 'admin@example.com', password: 'correct-password' },
+      });
+      expect(res.statusCode).toBe(200);
+      const setCookie = res.headers['set-cookie'];
+      const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
+      expect(header).toMatch(/platform_session=/);
+      expect(header).toMatch(/HttpOnly/i);
+      expect(header).toMatch(/SameSite=Lax/i);
+      expect(header).toMatch(/Secure/i);
+      expect(header).toMatch(/Path=\//);
+      expect(header).toMatch(/Max-Age=3600/);
+    });
+
+    it('POST /auth/logout clears platform_session cookie (Max-Age=0)', async () => {
+      const token = app.jwt.sign({
+        sub: 'u1', role: 'admin', panel: 'admin',
+        exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
+      });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/logout',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const setCookie = res.headers['set-cookie'];
+      const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
+      expect(header).toMatch(/platform_session=/);
+      expect(header).toMatch(/Max-Age=0/);
+    });
+  });
+
+  // ─── GET /auth/verify-admin-session (Phase 7: auth_request gate) ───
+
+  describe('GET /auth/verify-admin-session', () => {
+    it('returns 204 with a valid admin-panel cookie', async () => {
+      // Use jti to avoid colliding with tokens the logout test added to the
+      // in-memory denylist — they share sub/role/panel and are signed in the
+      // same second, so without a differentiator the payloads are identical.
+      const token = app.jwt.sign({
+        sub: 'verify-cookie', role: 'admin', panel: 'admin',
+        exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
+        jti: 'verify-cookie-jti',
+      });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-session',
+        headers: { cookie: `platform_session=${token}` },
+      });
+      expect(res.statusCode).toBe(204);
+    });
+
+    it('returns 204 with a valid admin-panel Bearer token', async () => {
+      const token = app.jwt.sign({
+        sub: 'u1', role: 'super_admin', panel: 'admin',
+        exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
+      });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-session',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(204);
+    });
+
+    it('returns 401 without any credential', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/auth/verify-admin-session' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 401 with an invalid cookie token', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-session',
+        headers: { cookie: 'platform_session=garbage.not.jwt' },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 403 for a client-panel session (admin gate only)', async () => {
+      const token = app.jwt.sign({
+        sub: 'cu', role: 'client_user', panel: 'client', clientId: 'c1',
+        exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
+      });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-session',
+        headers: { cookie: `platform_session=${token}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 403 for an admin-panel read_only role (write gate for Stalwart UI)', async () => {
+      const token = app.jwt.sign({
+        sub: 'ro', role: 'read_only', panel: 'admin',
+        exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000),
+      });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-session',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
 });

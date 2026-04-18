@@ -28,6 +28,10 @@ export async function apiFetch<T>(
     headers['Content-Type'] = 'application/json';
   }
 
+  // Default `credentials: 'same-origin'` is correct here — the admin
+  // panel and its /api/v1/* proxy both live on admin.<apex>, so cookies
+  // flow without `include`. State-changing routes use Bearer-only auth
+  // server-side regardless, so cookie handling is orthogonal.
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {

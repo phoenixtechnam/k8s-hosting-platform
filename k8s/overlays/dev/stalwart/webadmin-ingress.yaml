@@ -1,0 +1,80 @@
+# Dedicated subdomain for Stalwart's embedded web-admin SPA.
+#
+# URL (dev): https://mail-admin.k8s-platform.test:2011/
+# Backend:   stalwart-mail-mgmt.mail.svc.cluster.local:8080
+#
+# Why a separate subdomain (vs same-origin proxy on admin.*):
+#   - Stalwart's SPA reads window.location.pathname — serving it at a
+#     sub-path required an injected history.replaceState shim.
+#   - Its Trunk build emits absolute /webadmin-*.js, /output-*.css,
+#     /favicon-*.png, /logo.svg references that had to be manually
+#     allow-listed via a regex location.
+#   - POST /auth/token (Content-Type: text/plain) tripped OWASP CRS
+#     920420 on every login.
+# A subdomain eliminates all three problems: the SPA sees "/" as its
+# base, every asset path is trivially served by Stalwart, and the WAF
+# exclusion stays scoped to this hostname only.
+#
+# Access control:
+#   nginx auth_request calls /api/v1/auth/verify-admin-session on the
+#   platform backend. The browser's platform_session cookie (issued by
+#   /api/v1/auth/login with Domain=.k8s-platform.test) is forwarded on
+#   the sub-request. Only admin-panel staff (super_admin/admin/billing/
+#   support) pass; read_only, client_admin, client_user → 403.
+#
+# No public DNS equivalent is provisioned — this stays behind the
+# ingress controller, reachable by /etc/hosts entries in dev.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stalwart-webadmin-ingress
+  namespace: mail
+  annotations:
+    cert-manager.io/cluster-issuer: local-ca-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    # auth_request gate — every request (including WebSocket upgrades)
+    # is short-circuited to the platform backend's verify endpoint.
+    # The platform_session cookie is forwarded automatically via the
+    # sub-request. 2xx → pass, 401/403 → redirect to admin-panel login.
+    nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.k8s-platform.test:2011/login?redirect=/settings/mail"
+    # Explicitly forward the Cookie header on the auth_request sub-request.
+    # ingress-nginx's auth module passes client headers by default, but
+    # some CRS configs strip Cookie — force it on so the backend's
+    # authenticateSession middleware always sees platform_session.
+    nginx.ingress.kubernetes.io/auth-snippet: |
+      proxy_set_header Cookie $http_cookie;
+    # Stalwart's Leptos login POST /auth/token uses Content-Type: text/plain
+    # which trips OWASP CRS 920420 ("content type not allowed"). Narrowly
+    # remove just that rule for just that path on this host. SQLi/XSS/etc
+    # checks still apply. 1100002 is in the user-rule ID range (1100000-
+    # 1199999) so CRS updates won't collide.
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRule REQUEST_URI "@beginsWith /auth/token" \
+          "id:1100002,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
+    # Stalwart's web-admin is embedded as an iframe in the admin panel —
+    # restrict who may embed. frame-ancestors is the modern CSP
+    # replacement for X-Frame-Options; it covers the full origin list.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Content-Security-Policy: frame-ancestors https://admin.k8s-platform.test:2011 https://admin.k8s-platform.test";
+    # WebSocket support for live metrics / log streaming.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mail-admin.k8s-platform.test
+      secretName: stalwart-webadmin-dev-tls
+  rules:
+    - host: mail-admin.k8s-platform.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stalwart-mail-mgmt
+                port:
+                  number: 8080

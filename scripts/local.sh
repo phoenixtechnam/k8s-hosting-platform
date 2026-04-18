@@ -614,6 +614,20 @@ cmd_mail_up() {
   }
   echo ""
   cmd_mail_status
+  echo ""
+  echo "════════════════════════════════════════════════"
+  echo "  Stalwart web-admin (iframe-embedded in admin panel)"
+  echo "════════════════════════════════════════════════"
+  echo "  URL: https://mail-admin.k8s-platform.test:${PORT_INGRESS_HTTPS}/"
+  echo ""
+  echo "  Add this line to /etc/hosts (once) so your browser resolves it:"
+  echo ""
+  echo "    127.0.0.1  mail-admin.k8s-platform.test"
+  echo ""
+  echo "  The subdomain is gated by the platform_session cookie (same"
+  echo "  session as the admin panel). Access: admin panel → Email"
+  echo "  Management → Open Stalwart."
+  echo "════════════════════════════════════════════════"
 }
 
 cmd_mail_down() {

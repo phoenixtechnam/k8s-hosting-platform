@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { registerAuth, authenticate, requireRole, requireClientRoleByMethod } from './auth.js';
+import { registerAuth, authenticate, authenticateSession, requireRole, requireClientRoleByMethod } from './auth.js';
 import { errorHandler } from './error-handler.js';
 
 describe('auth middleware', () => {
@@ -27,6 +27,12 @@ describe('auth middleware', () => {
 
     // Auth-only route (any role)
     app.get('/auth-only', { preHandler: [authenticate] }, async (request) => {
+      return { user: request.user };
+    });
+
+    // Session-cookie route (used by nginx auth_request on the Stalwart
+    // subdomain). Bearer still works too for curl-testability.
+    app.get('/session-only', { preHandler: [authenticateSession] }, async (request) => {
       return { user: request.user };
     });
 
@@ -109,7 +115,7 @@ describe('auth middleware', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('should reject non-Bearer auth schemes', async () => {
+  it('should reject non-Bearer auth schemes (Bearer-only guard)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/auth-only',
@@ -117,6 +123,70 @@ describe('auth middleware', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(res.json().error.code).toBe('MISSING_BEARER_TOKEN');
+  });
+
+  it('ignores platform_session cookie on Bearer-only routes (CSRF-safe)', async () => {
+    // The shared authenticate() middleware deliberately rejects cookie-
+    // only requests so that SameSite=Lax + subdomain-hosted tenant
+    // content can't CSRF state-changing API calls. Cookie support lives
+    // on authenticateSession() for read-only gates (see below).
+    const res = await app.inject({
+      method: 'GET',
+      url: '/auth-only',
+      headers: { cookie: `platform_session=${validToken}` },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('MISSING_BEARER_TOKEN');
+  });
+
+  describe('authenticateSession (cookie-aware, read-only gate)', () => {
+    it('accepts a platform_session cookie when no Authorization header', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/session-only',
+        headers: { cookie: `platform_session=${validToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().user.sub).toBe('user-1');
+    });
+
+    it('Authorization header wins over platform_session cookie', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/session-only',
+        headers: {
+          authorization: `Bearer ${validToken}`,
+          cookie: `platform_session=${supportToken}`,
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().user.role).toBe('admin');
+    });
+
+    it('rejects an invalid cookie-supplied token', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/session-only',
+        headers: { cookie: 'platform_session=not.a.valid.jwt' },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('INVALID_TOKEN');
+    });
+
+    it('ignores unrelated cookies', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/session-only',
+        headers: { cookie: `foo=bar; platform_session=${validToken}; other=baz` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('rejects when no credential is present at all', async () => {
+      const res = await app.inject({ method: 'GET', url: '/session-only' });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('MISSING_BEARER_TOKEN');
+    });
   });
 
   describe('requireClientRoleByMethod (Phase 6)', () => {

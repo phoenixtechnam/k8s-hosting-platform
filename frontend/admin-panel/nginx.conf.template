@@ -4,15 +4,19 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Allow the admin panel to embed Stalwart's web-admin via an iframe served
-    # same-origin below. frame-ancestors 'self' blocks third-party embedding.
+    # Allow embedding Stalwart's web-admin via an iframe. The iframe runs
+    # on mail-admin.k8s-platform.test (separate subdomain, gated by
+    # auth_request at the ingress). frame-ancestors restricts which
+    # parents may embed — limit to admin.* (this panel) and localhost
+    # for vite dev. The ingress-level CSP on the Stalwart subdomain is
+    # authoritative; this header is belt-and-braces for the admin panel
+    # itself.
     add_header Content-Security-Policy "frame-ancestors 'self'" always;
 
-    # Re-resolve upstreams on each request so a recreated pod doesn't leave
-    # us pointing at a dead IP. Pairs with the $*_upstream variables below.
+    # Re-resolve upstream on each request so a recreated pod doesn't leave
+    # us pointing at a dead IP.
     resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
     set $backend_upstream  http://${BACKEND_HOST}:${BACKEND_PORT};
-    set $stalwart_upstream http://stalwart-mail-mgmt.mail.svc.cluster.local:8080;
 
     location /health {
         access_log off;
@@ -20,76 +24,7 @@ server {
         add_header Content-Type text/plain;
     }
 
-    # ─── Stalwart web-admin (same-origin proxy; NO public ingress) ─────────
-    # The Stalwart WASM SPA is embedded as an iframe on the Email Management
-    # page. Its compiled paths are absolute, so we proxy every path it
-    # fetches at root. Access is gated by the admin-panel origin only —
-    # there is no `mail.*` ingress.
-
-    # Trampoline: iframe src="/__stalwart/" strips the prefix and serves
-    # Stalwart's index.html. Subsequent asset + API fetches match the
-    # specific locations below.
-    location /__stalwart/ {
-        proxy_pass $stalwart_upstream/;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_hide_header X-Frame-Options;
-        proxy_hide_header Content-Security-Policy;
-        add_header Content-Security-Policy "frame-ancestors 'self'" always;
-        # Stalwart's Leptos/WASM SPA reads window.location.pathname to
-        # route. Since we serve it at /__stalwart/ (not root), its router
-        # sees an unknown path and shows 404. Inject a one-line shim
-        # before the WASM module evaluates so the SPA sees pathname "/".
-        # sub_filter needs identity encoding upstream — disable gzip pass-
-        # through and advertise only identity to Stalwart.
-        proxy_set_header Accept-Encoding "";
-        sub_filter_once on;
-        sub_filter_types text/html;
-        sub_filter '<script type="module">' '<script>history.replaceState(null,"","/");</script><script type="module">';
-    }
-
-    # Stalwart SPA static assets. Everything the Leptos/Trunk build emits
-    # at root: /webadmin-<hash>.js, /webadmin-<hash>_bg.wasm, the compiled
-    # CSS (/output-<hash>.css), favicons/app icons, the webmanifest, and
-    # the logo SVG. Admin panel doesn't serve any of these names at root,
-    # so there is no collision.
-    location ~ ^/(webadmin-|output-|favicon-|android-chrome-|apple-touch-icon\.png|site\.webmanifest|logo\.svg) {
-        proxy_pass $stalwart_upstream;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-    }
-
-    # Stalwart OAuth endpoints. Even though `location /api/` below is a
-    # catch-all for Stalwart, we keep exact matches for the hot path so
-    # nginx skips regex scanning — and historically the catch-all alone
-    # hung on POST /api/oauth in this topology; the exact match was
-    # consistently responsive.
-    location = /api/oauth {
-        proxy_pass $stalwart_upstream;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_request_buffering off;
-    }
-    location = /auth/token {
-        proxy_pass $stalwart_upstream;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_request_buffering off;
-    }
-
-    # ─── Platform API (longer prefix wins over /api/ below) ─────────────
+    # ─── Platform API ───────────────────────────────────────────────────
     location /api/v1/ {
         proxy_pass $backend_upstream;
         proxy_set_header Host $host;
@@ -102,27 +37,6 @@ server {
         proxy_set_header Connection "upgrade";
         client_max_body_size 64m;
         proxy_read_timeout 3600s;
-        proxy_request_buffering off;
-    }
-
-    # ─── Stalwart admin API (catch-all for /api/* that isn't /api/v1/*) ─
-    # Covers every endpoint the Stalwart SPA hits: /api/oauth, /api/queue,
-    # /api/principal, /api/settings, /api/store, /api/reports, /api/dkim,
-    # /api/tls, /api/sieve, /api/logs, /api/tracing, /api/metrics,
-    # /api/oauth/clients, /api/api-keys, /api/restart, etc. Future
-    # additions in Stalwart upgrades Just Work without nginx edits.
-    #
-    # `proxy_request_buffering off` is required — without it, POSTs with
-    # Transfer-Encoding: chunked (which the ingress controller and some
-    # clients send) hang because nginx tries to buffer before forwarding.
-    location /api/ {
-        proxy_pass $stalwart_upstream;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        client_max_body_size 64m;
-        proxy_read_timeout 120s;
         proxy_request_buffering off;
     }
 

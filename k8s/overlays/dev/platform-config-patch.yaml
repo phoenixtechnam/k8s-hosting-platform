@@ -11,4 +11,12 @@ data:
   cluster-issuer-name: "selfsigned-issuer"
   admin-url: "http://admin.k8s-platform.test"
   client-url: "http://client.k8s-platform.test"
+  # Stalwart web-admin subdomain. Lives on :2011 (HTTPS w/ self-signed CA)
+  # same as admin.* and client.*. Requires /etc/hosts entry mapping
+  # mail-admin.k8s-platform.test to 127.0.0.1 — `./scripts/local.sh mail-up`
+  # prints the line to add.
+  stalwart-admin-url: "https://mail-admin.k8s-platform.test:2011/"
   cors-origins: "http://admin.k8s-platform.test,http://client.k8s-platform.test,http://localhost:5173,http://localhost:5174"
+  # Cookie domain for platform_session — covers admin.*, client.*, and
+  # mail-admin.* so a single login works across all three hostnames.
+  session-cookie-domain: ".k8s-platform.test"

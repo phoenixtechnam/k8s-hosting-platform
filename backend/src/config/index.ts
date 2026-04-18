@@ -20,6 +20,10 @@ const configSchema = z.object({
   PLATFORM_NAMESPACE: z.string().default('platform'),
   FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/file-manager:latest'),
   DISABLE_RATE_LIMIT: z.string().optional(),
+  // Domain attribute for the platform_session cookie. Empty → host-only
+  // (admin.<apex> only). Set to `.<apex>` to share the session across
+  // subdomains (required for the Stalwart web-admin auth_request gate).
+  SESSION_COOKIE_DOMAIN: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

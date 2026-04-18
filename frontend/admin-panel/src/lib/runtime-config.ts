@@ -12,6 +12,7 @@
 interface RuntimeConfig {
   API_URL: string;
   CLIENT_PANEL_URL: string;
+  STALWART_ADMIN_URL: string;
 }
 
 declare global {
@@ -30,6 +31,14 @@ function getConfig(): RuntimeConfig {
     CLIENT_PANEL_URL:
       runtime.CLIENT_PANEL_URL ||
       import.meta.env.VITE_CLIENT_PANEL_URL ||
+      '',
+    // Separate hostname for the Stalwart web-admin iframe. Gated by
+    // ingress auth_request against the platform backend's verify
+    // endpoint — the browser's platform_session cookie travels along
+    // because it was issued with Domain=.<apex>.
+    STALWART_ADMIN_URL:
+      runtime.STALWART_ADMIN_URL ||
+      import.meta.env.VITE_STALWART_ADMIN_URL ||
       '',
   };
 }

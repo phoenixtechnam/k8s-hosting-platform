@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { useStalwartCredentials, useRotateStalwartPassword } from '@/hooks/use-stalwart';
+import { config } from '@/lib/runtime-config';
 
 /**
  * Admin panel controls for the Stalwart mail-server.
@@ -208,12 +209,14 @@ function StalwartIframeModal({ onClose }: { readonly onClose: () => void }) {
           </button>
         </div>
         <iframe
-          // Same-origin proxy. The SPA will show its own login screen the
-          // first time; the user pastes the credentials from "Show Stalwart
-          // credentials". Stalwart stores its token in localStorage under the
-          // admin-panel origin, so subsequent opens skip login until the
-          // token expires.
-          src="/__stalwart/"
+          // Dedicated subdomain gated by ingress auth_request — the
+          // browser's platform_session cookie (Domain=.<apex>) authenticates
+          // the whole SPA traffic, including WebSocket upgrades for live
+          // metrics. First open still shows Stalwart's own login screen;
+          // paste the credentials from "Show Stalwart credentials". Stalwart
+          // stores its own token in localStorage under THIS origin, so
+          // subsequent opens skip login until the token expires.
+          src={config.STALWART_ADMIN_URL || '/__stalwart/'}
           title="Stalwart Web Admin"
           className="flex-1 w-full border-0 bg-white"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"

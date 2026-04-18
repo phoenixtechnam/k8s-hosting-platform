@@ -88,6 +88,17 @@ spec:
                   name: platform-config
                   key: cors-origins
                   optional: true
+            # Cookie Domain attribute for the platform_session cookie. Empty
+            # means "no Domain=" (host-only cookie, only admin.* gets it).
+            # Set to ".<apex>" to share the session across all platform
+            # subdomains — required for the Stalwart web-admin auth_request
+            # gate since that request lands on mail-admin.<apex>, not admin.
+            - name: SESSION_COOKIE_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: session-cookie-domain
+                  optional: true
           resources:
             requests:
               cpu: 100m

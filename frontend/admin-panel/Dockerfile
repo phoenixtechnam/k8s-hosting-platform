@@ -30,6 +30,7 @@ RUN chmod +x /docker-entrypoint.sh
 # Runtime config defaults (same-origin API, k8s service DNS for proxy backend)
 ENV API_URL=""
 ENV CLIENT_PANEL_URL=""
+ENV STALWART_ADMIN_URL=""
 ENV BACKEND_HOST="platform-api.platform.svc.cluster.local"
 ENV BACKEND_PORT="3000"
 

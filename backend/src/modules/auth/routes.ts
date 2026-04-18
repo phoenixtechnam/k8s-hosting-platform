@@ -1,10 +1,40 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { loginSchema, changePasswordSchema, updateProfileSchema } from './schema.js';
 import { authenticateUser, verifyPassword, hashNewPassword } from './service.js';
 import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
+import { authenticateSession, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
+
+// Session cookie lifetime matches the JWT exp (60 min). The cookie lets
+// nginx auth_request gate subdomains like mail-admin.k8s-platform.test
+// without the browser needing to inject a Bearer header.
+const SESSION_MAX_AGE_SECONDS = 3600;
+
+function buildSessionCookie(token: string, maxAge: number): string {
+  const domain = process.env.SESSION_COOKIE_DOMAIN;
+  // Secure is always on — dev uses self-signed TLS on :2011 and prod is
+  // TLS everywhere. Browsers accept Secure cookies on https://*.test.
+  const parts = [
+    `${PLATFORM_SESSION_COOKIE}=${token}`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Lax',
+    `Max-Age=${maxAge}`,
+  ];
+  if (domain) parts.push(`Domain=${domain}`);
+  return parts.join('; ');
+}
+
+function setSessionCookie(reply: FastifyReply, token: string): void {
+  reply.header('Set-Cookie', buildSessionCookie(token, SESSION_MAX_AGE_SECONDS));
+}
+
+function clearSessionCookie(reply: FastifyReply): void {
+  reply.header('Set-Cookie', buildSessionCookie('', 0));
+}
 
 // In-memory token denylist (Phase 1). Replace with Redis in production.
 // Map stores token → expiry timestamp for TTL-based eviction.
@@ -96,6 +126,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const token = app.jwt.sign(jwtPayload as any);
+
+    setSessionCookie(reply, token);
 
     return reply.send({
       data: {
@@ -229,7 +261,33 @@ export async function authRoutes(app: FastifyInstance) {
     if (authHeader?.startsWith('Bearer ')) {
       tokenDenylist.set(authHeader.slice(7), decoded.exp ?? Math.floor(Date.now() / 1000) + 3600);
     }
+    clearSessionCookie(reply);
     return reply.send({ data: { message: 'Logged out successfully' } });
+  });
+
+  // GET /auth/verify-admin-session — nginx auth_request gate for admin-only
+  // subdomains (mail-admin.k8s-platform.test etc). Returns:
+  //   204 — authenticated admin-panel staff with a non-read-only role
+  //   401 — no credential, invalid token, or expired session
+  //   403 — authenticated but not allowed to hit admin-only subdomains
+  //         (client-panel session, or admin-panel read_only role)
+  // The endpoint intentionally sends no body — nginx only cares about status.
+  app.get('/auth/verify-admin-session', { preHandler: [authenticateSession] }, async (request, reply) => {
+    const user = request.user as JwtPayload | undefined;
+    if (!user) {
+      return reply.code(401).send();
+    }
+    if (user.panel !== 'admin') {
+      return reply.code(403).send();
+    }
+    // read_only is an admin-panel role, but it's a reporting role (dashboard
+    // reads only). The Stalwart web-admin is a write UI, so we exclude
+    // read_only from the gate. super_admin / admin / billing / support pass.
+    const allowed: ReadonlyArray<JwtPayload['role']> = ['super_admin', 'admin', 'billing', 'support'];
+    if (!allowed.includes(user.role)) {
+      return reply.code(403).send();
+    }
+    return reply.code(204).send();
   });
 
   // POST /auth/refresh — issue a new token and revoke the old one
@@ -270,6 +328,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (originalPayload.impersonatedBy) refreshPayload.impersonatedBy = originalPayload.impersonatedBy;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newToken = app.jwt.sign(refreshPayload as any);
+
+    setSessionCookie(reply, newToken);
 
     return reply.send({
       data: {
