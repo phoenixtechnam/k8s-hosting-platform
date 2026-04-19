@@ -1,11 +1,13 @@
 # Dev overlay: split browser-facing and cluster-internal URLs for oauth2-proxy.
 #
-# In dev, pods cannot DNS-resolve the browser-facing hostname (dind.local),
-# and the NodePort (2015) isn't reachable from inside the cluster either.
-# We disable OIDC discovery and set each URL explicitly:
-#   - login-url       → browser-facing Dex (host NodePort)
-#   - redeem/jwks-url → in-cluster Dex service
-# The issuer string must still match what Dex advertises for JWT verification.
+# Pods can't validate the self-signed cert that the dev ingress presents on
+# dex.k8s-platform.test:2011, so we keep the redeem/jwks calls on the
+# cluster-internal Service DNS. The browser-facing login URL uses the
+# ingress subdomain so the user sees HTTPS with the dev CA.
+#
+#   - login-url       → https://dex.<base>:2011 (browser, self-signed CA)
+#   - redeem/jwks-url → http://dex.platform.svc.cluster.local:5556 (cluster)
+# The issuer string must match what Dex advertises for JWT verification.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,9 +23,9 @@ spec:
             - --upstream=static://200
             - --email-domain=*
             - --provider=oidc
-            - --oidc-issuer-url=http://dind.local:2015/dex
+            - --oidc-issuer-url=https://dex.k8s-platform.test:2011/dex
             - --skip-oidc-discovery=true
-            - --login-url=http://dind.local:2015/dex/auth
+            - --login-url=https://dex.k8s-platform.test:2011/dex/auth
             - --redeem-url=http://dex.platform.svc.cluster.local:5556/dex/token
             - --oidc-jwks-url=http://dex.platform.svc.cluster.local:5556/dex/keys
             - --client-id=$(OAUTH2_PROXY_CLIENT_ID)

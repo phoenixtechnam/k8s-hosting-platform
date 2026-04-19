@@ -1,0 +1,39 @@
+# Dex OIDC issuer exposed at https://dex.<PLATFORM_BASE_DOMAIN>:2011 (dev) /
+# :443 (prod). Replaces the dind.local:2015 NodePort — Dex now shares the
+# platform ingress listener on :2011/:443 so the URL works the same in dev
+# and prod (only the port differs).
+#
+# Browser-facing redirect target for both admin-panel and client-panel
+# OIDC login buttons. The internal URL
+# dex.platform.svc.cluster.local:5556 is still used by oauth2-proxy for
+# token redemption (where the cluster-internal path is faster + skips the
+# self-signed cert in dev).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dex-ingress
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: identity-provider
+  annotations:
+    cert-manager.io/cluster-issuer: local-ca-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - dex.k8s-platform.test
+      secretName: dex-dev-tls
+  rules:
+    - host: dex.k8s-platform.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dex
+                port:
+                  number: 5556

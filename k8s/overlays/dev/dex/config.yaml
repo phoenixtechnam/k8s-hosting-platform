@@ -12,11 +12,12 @@
 #   - hosting-platform-oauth2-proxy (OAuth2 Proxy session)
 #
 # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
-# bootstrap.sh --env dev --domain <FQDN> regenerates this file with
-# correct hostnames. The defaults below use dind.local:2015
-# to fail loudly if not overridden.
+# In dev, Dex is reached at https://dex.k8s-platform.test:2011/dex through
+# the ingress (was formerly http://dind.local:2015 on a NodePort — see
+# k8s/overlays/dev/dex/ingress.yaml for the transition). Production
+# bootstrap.sh --domain <FQDN> regenerates this file with real hostnames.
 
-issuer: http://dind.local:2015/dex
+issuer: https://dex.k8s-platform.test:2011/dex
 
 storage:
   type: sqlite3
@@ -44,7 +45,13 @@ staticClients:
     name: OAuth2 Proxy
     secret: local-dev-secret-oauth2-proxy
     redirectURIs:
-      - http://dind.local:2018/oauth2/callback
+      # Transparent oauth2-proxy: the callback URL is on the PROTECTED
+      # domain, not on a shared oauth2 hostname. Each protected panel
+      # Ingress routes /oauth2/* to the oauth2-proxy Service. See
+      # backend/src/modules/system-settings/ingress-reconciler.ts for
+      # the /oauth2 path rule that makes this work.
+      - https://admin.k8s-platform.test:2011/oauth2/callback
+      - https://client.k8s-platform.test:2011/oauth2/callback
 
 connectors: []
 

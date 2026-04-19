@@ -94,7 +94,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: ["platform-api", "admin-panel", "client-panel", "oauth2-proxy"]
+        values: ["platform-api", "admin-panel", "client-panel", "oauth2-proxy", "dex"]
   policyTypes:
     - Ingress
   ingress:
@@ -104,8 +104,12 @@ spec:
               kubernetes.io/metadata.name: ingress-nginx
       ports:
         - protocol: TCP
-          port: 3000
+          port: 3000  # platform-api
         - protocol: TCP
-          port: 80
+          port: 80    # admin-panel / client-panel
+        - protocol: TCP
+          port: 4180  # oauth2-proxy
+        - protocol: TCP
+          port: 5556  # dex (OIDC issuer behind dex.<base> Ingress)
         - protocol: TCP
           port: 4180
