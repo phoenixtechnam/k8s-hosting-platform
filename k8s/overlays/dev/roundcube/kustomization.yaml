@@ -22,6 +22,7 @@ namespace: mail
 resources:
   - ../../../base/roundcube
   - secret.yaml
+  - ingress.yaml
 
 patches:
   - path: service-nodeport-patch.yaml

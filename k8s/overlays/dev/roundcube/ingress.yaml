@@ -1,0 +1,35 @@
+# Platform-wide Roundcube at https://webmail.<PLATFORM_BASE_DOMAIN>.
+# Per-customer webmail.<clientdomain> Ingresses are created by the
+# backend's email-domains module per email domain with webmail_enabled=1
+# — those live in each client's namespace and share the same upstream
+# Roundcube via ExternalName. This Ingress is the platform-wide fallback
+# / admin-access entry point.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-webmail-ingress
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+  annotations:
+    cert-manager.io/cluster-issuer: local-ca-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - webmail.k8s-platform.test
+      secretName: platform-webmail-dev-tls
+  rules:
+    - host: webmail.k8s-platform.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: roundcube
+                port:
+                  number: 80
