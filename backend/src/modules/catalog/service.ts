@@ -393,6 +393,38 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       // Build the remote manifestUrl for display (even though we read locally)
       const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
 
+      // Validate per-component volume references: each entry in a component's
+      // `volumes: [...]` must match a top-level volume's `local_path` basename.
+      // Typos here would silently produce empty mounts at install time, so we
+      // fail loudly at sync instead.
+      const topVolumeKeys = new Set(
+        (manifest.volumes ?? [])
+          .map(v => {
+            const lp = (v as { local_path?: string }).local_path;
+            const cp = (v as { container_path?: string }).container_path;
+            const src = (lp && lp.length > 0 ? lp : cp) ?? '';
+            return src.replace(/\/+$/, '').split('/').pop() ?? '';
+          })
+          .filter(k => k !== ''),
+      );
+      let componentVolumeError: string | null = null;
+      for (const c of (manifest.components ?? [])) {
+        const cv = (c as { volumes?: string[]; name?: string }).volumes;
+        const cname = (c as { name?: string }).name ?? '?';
+        if (!Array.isArray(cv)) continue;
+        for (const k of cv) {
+          if (!topVolumeKeys.has(k)) {
+            componentVolumeError = `component "${cname}" references unknown volume key "${k}" (top-level keys: ${[...topVolumeKeys].join(', ') || 'none'})`;
+            break;
+          }
+        }
+        if (componentVolumeError) break;
+      }
+      if (componentVolumeError) {
+        manifestErrors.push(`${code}: ${componentVolumeError}`);
+        continue;
+      }
+
       const entryCode = manifest.code ?? code;
       const [existing] = await db
         .select()

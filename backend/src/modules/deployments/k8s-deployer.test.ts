@@ -71,6 +71,94 @@ function makeComponent(type: DeployComponentInput['type'], overrides: Partial<De
   } as DeployComponentInput;
 }
 
+describe('deployCatalogEntry: per-component volume scoping', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it('WordPress-shaped install: wordpress only mounts content, mariadb only database, redis nothing, wp-cron gets content', async () => {
+    const { k8s, calls } = makeK8sMock();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await deployCatalogEntry(k8s, baseInput({
+      components: [
+        makeComponent('deployment', { name: 'wordpress', image: 'wordpress:6.9', ports: [{ port: 80, protocol: 'TCP' }], volumes: ['content'] } as Partial<DeployComponentInput>),
+        makeComponent('deployment', { name: 'mariadb',   image: 'mariadb:11.8',  ports: [{ port: 3306, protocol: 'TCP' }], volumes: ['database'] } as Partial<DeployComponentInput>),
+        makeComponent('deployment', { name: 'redis',     image: 'redis:8',       ports: [{ port: 6379, protocol: 'TCP' }], volumes: [] } as Partial<DeployComponentInput>),
+        makeComponent('cronjob',    { name: 'wp-cron',   image: 'wordpress:6.9', schedule: '*/15 * * * *', volumes: ['content'] } as Partial<DeployComponentInput>),
+      ],
+      volumes: [
+        { container_path: '/var/www/html/wp-content', local_path: 'applications/wordpress/content' },
+        { container_path: '/var/lib/mysql',            local_path: 'applications/wordpress/database' },
+      ],
+      storagePath: 'applications/wordpress/my-wp',
+    }));
+    warnSpy.mockRestore();
+
+    expect(calls.createDeployment).toHaveBeenCalledTimes(3);
+    expect(calls.createCronJob).toHaveBeenCalledTimes(1);
+
+    const wpBody = calls.createDeployment.mock.calls.find((c: [{ body: { metadata: { name: string } } }]) => c[0].body.metadata.name === 'my-wp-wordpress')![0].body;
+    const mariadbBody = calls.createDeployment.mock.calls.find((c: [{ body: { metadata: { name: string } } }]) => c[0].body.metadata.name === 'my-wp-mariadb')![0].body;
+    const redisBody = calls.createDeployment.mock.calls.find((c: [{ body: { metadata: { name: string } } }]) => c[0].body.metadata.name === 'my-wp-redis')![0].body;
+    const cronBody = calls.createCronJob.mock.calls[0][0].body;
+
+    // wordpress: only content
+    const wpMounts = wpBody.spec.template.spec.containers[0].volumeMounts;
+    expect(wpMounts).toHaveLength(1);
+    expect(wpMounts[0]).toMatchObject({ mountPath: '/var/www/html/wp-content', subPath: 'applications/wordpress/my-wp/content' });
+
+    // mariadb: only database
+    const mdbMounts = mariadbBody.spec.template.spec.containers[0].volumeMounts;
+    expect(mdbMounts).toHaveLength(1);
+    expect(mdbMounts[0]).toMatchObject({ mountPath: '/var/lib/mysql', subPath: 'applications/wordpress/my-wp/database' });
+
+    // redis: nothing — no volumeMounts, no podVolumes, no init-dirs
+    expect(redisBody.spec.template.spec.containers[0].volumeMounts).toBeUndefined();
+    expect(redisBody.spec.template.spec.volumes).toBeUndefined();
+    expect(redisBody.spec.template.spec.initContainers).toBeUndefined();
+
+    // wp-cron: content mount inside jobTemplate
+    const cronPodSpec = cronBody.spec.jobTemplate.spec.template.spec;
+    const cronMounts = cronPodSpec.containers[0].volumeMounts;
+    expect(cronMounts).toHaveLength(1);
+    expect(cronMounts[0]).toMatchObject({ mountPath: '/var/www/html/wp-content', subPath: 'applications/wordpress/my-wp/content' });
+    expect(cronPodSpec.volumes).toBeDefined();
+    expect(cronPodSpec.initContainers).toBeDefined();
+  });
+
+  it('component without `volumes` key falls back to share-all (legacy behavior)', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [
+        // `volumes` unset deliberately.
+        makeComponent('deployment', { name: 'app', image: 'app:1', ports: [{ port: 80, protocol: 'TCP' }] }),
+      ],
+      volumes: [
+        { container_path: '/app/a', local_path: 'x/a' },
+        { container_path: '/app/b', local_path: 'x/b' },
+      ],
+      storagePath: 'x/inst',
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    const mounts = body.spec.template.spec.containers[0].volumeMounts;
+    expect(mounts.map((m: { subPath: string }) => m.subPath).sort()).toEqual(['x/inst/a', 'x/inst/b']);
+  });
+
+  it('Job component mounts its declared volumes', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [
+        makeComponent('job', { name: 'migrate', image: 'mig:1', volumes: ['data'] } as Partial<DeployComponentInput>),
+      ],
+      volumes: [{ container_path: '/work', local_path: 'app/data' }],
+      storagePath: 'app/inst',
+    }));
+    const body = calls.createJob.mock.calls[0][0].body;
+    const podSpec = body.spec.template.spec;
+    expect(podSpec.containers[0].volumeMounts).toEqual([{ name: 'client-storage', mountPath: '/work', subPath: 'app/inst/data' }]);
+    expect(podSpec.initContainers).toHaveLength(1);
+    expect(podSpec.volumes).toBeDefined();
+  });
+});
+
 describe('deployCatalogEntry: component type → k8s resource mapping', () => {
   beforeEach(() => {
     vi.restoreAllMocks();

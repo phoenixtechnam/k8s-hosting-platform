@@ -62,6 +62,7 @@ function resolveComponents(
     ports?: Array<{ port: number; protocol: string; ingress?: boolean }>;
     optional?: boolean;
     schedule?: string;
+    volumes?: string[];
   }>;
 
   if (baseComponents.length === 0) {
@@ -87,6 +88,7 @@ function resolveComponents(
       ports: comp.ports ?? [],
       optional: comp.optional ?? false,
       schedule: comp.schedule,
+      volumes: comp.volumes,
     };
   });
 }

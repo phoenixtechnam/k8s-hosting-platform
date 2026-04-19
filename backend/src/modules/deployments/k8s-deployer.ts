@@ -28,6 +28,13 @@ export interface DeployComponentInput {
   readonly ports: Array<{ port: number; protocol: string; ingress?: boolean }>;
   readonly optional?: boolean;
   readonly schedule?: string;
+  /**
+   * Per-component volume scoping. Each entry must match a top-level volume's
+   * `local_path` basename (e.g. `content`, `database`). Unset = legacy behavior
+   * (component mounts every app-level volume). Empty array = component mounts
+   * nothing (useful for stateless caches like redis/collabora).
+   */
+  readonly volumes?: readonly string[];
 }
 
 export interface DeployCatalogEntryInput {
@@ -91,6 +98,78 @@ function deploymentLabels(deploymentName: string, componentName: string): Record
 function k8sResourceName(deploymentName: string, componentName: string, componentCount: number): string {
   if (componentCount <= 1) return deploymentName;
   return `${deploymentName}-${componentName}`;
+}
+
+/**
+ * Derive a stable per-volume subdirectory key from the manifest's `local_path`
+ * (author-chosen, e.g. `content`, `database`) with fallbacks to
+ * `container_path` basename and `volN` for last-resort uniqueness.
+ */
+function volumeKey(v: { container_path: string; local_path?: string }, idx: number): string {
+  const localBase = v.local_path ? v.local_path.replace(/\/+$/, '').split('/').pop() : undefined;
+  const containerBase = v.container_path.replace(/\/+$/, '').split('/').pop();
+  const key = (localBase && localBase !== '')
+    ? localBase
+    : (containerBase && containerBase !== '' ? containerBase : `vol${idx}`);
+  return key;
+}
+
+/**
+ * Filter the app-level volumes array down to the set this component actually
+ * needs. When `componentVolumes` is undefined (legacy manifests without per-
+ * component bindings) the full array is returned — preserves pre-scoping
+ * behavior. An explicit empty array returns nothing (stateless component).
+ */
+function filterVolumesForComponent(
+  appVolumes: Array<{ container_path: string; local_path?: string }>,
+  componentVolumes: readonly string[] | undefined,
+): Array<{ container_path: string; local_path?: string }> {
+  if (componentVolumes === undefined) return appVolumes;
+  if (componentVolumes.length === 0) return [];
+  const want = new Set(componentVolumes);
+  return appVolumes.filter((v, idx) => want.has(volumeKey(v, idx)));
+}
+
+/**
+ * Produce volumeMounts + the init-dirs init container + the pod-level volumes
+ * entry for a given set of volumes, all referencing the shared client PVC.
+ * Returns `null` when the component mounts nothing (caller skips PVC entirely).
+ */
+function buildVolumeMountSpec(
+  volumes: Array<{ container_path: string; local_path?: string }>,
+  storagePath: string,
+  namespace: string,
+): {
+  mounts: Array<{ name: string; mountPath: string; subPath: string }>;
+  podVolumes: Array<Record<string, unknown>>;
+  initDirsContainer: Record<string, unknown>;
+} | null {
+  if (volumes.length === 0) return null;
+
+  const seen = new Set<string>();
+  const mounts = volumes.map((v, idx) => {
+    let key = volumeKey(v, idx);
+    if (seen.has(key)) key = `${key}-${idx}`;
+    seen.add(key);
+    const subPath = storagePath ? `${storagePath}/${key}` : key;
+    return { name: 'client-storage', mountPath: v.container_path, subPath };
+  });
+
+  const mkdirCmd = mounts
+    .map(m => `mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`)
+    .join(' && ');
+
+  const initDirsContainer = {
+    name: 'init-dirs',
+    image: 'busybox:1.36',
+    command: ['sh', '-c', mkdirCmd],
+    volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
+    resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
+  };
+
+  const podVolumes = [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }];
+
+  return { mounts, podVolumes, initDirsContainer };
 }
 
 function buildEnvVars(fixed?: Record<string, string>, configuration?: Record<string, unknown>): Array<{ name: string; value: string }> {
@@ -159,9 +238,13 @@ export async function deployCatalogEntry(
       ...(env.length > 0 ? { env } : {}),
     };
 
+    // Scope volumes to what this component actually needs. Undefined on the
+    // component preserves legacy share-all; empty array means mounts nothing.
+    const componentVolumes = filterVolumesForComponent(volumes, component.volumes);
+
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes, passwordResetContainer, env);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env);
         break;
 
       case 'statefulset':
@@ -172,16 +255,16 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes, passwordResetContainer, env);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env);
         break;
 
       case 'cronjob':
-        await deployK8sCronJob(k8s, namespace, name, labels, container, component.schedule ?? '0 * * * *');
+        await deployK8sCronJob(k8s, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, componentVolumes);
         break;
 
       case 'job':
         // Jobs are one-shot; create only
-        await deployK8sJob(k8s, namespace, name, labels, container);
+        await deployK8sJob(k8s, namespace, name, labels, container, input.storagePath, componentVolumes);
         break;
     }
 
@@ -205,70 +288,19 @@ async function deployK8sDeployment(
   envVars?: Array<{ name: string; value: string }>,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
+  const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
 
-  // Each volume gets its own subdirectory under storagePath so multi-volume
-  // apps (e.g. WordPress = wp-content + mysql data) don't collide into a
-  // single PVC directory. Priority:
-  //   1. basename(local_path)  — catalog author's intended name
-  //   2. basename(container_path) — reasonable fallback for older manifests
-  //   3. `vol${index}` — last-resort unique suffix if both collide
-  const seenSubPaths = new Set<string>();
-  const volumeMounts = volumes.map((v, idx) => {
-    const localBase = v.local_path ? v.local_path.replace(/\/+$/, '').split('/').pop() : undefined;
-    const containerBase = v.container_path.replace(/\/+$/, '').split('/').pop();
-    let key = (localBase && localBase !== '') ? localBase : (containerBase && containerBase !== '' ? containerBase : `vol${idx}`);
-    if (seenSubPaths.has(key)) key = `${key}-${idx}`;
-    seenSubPaths.add(key);
-    const subPath = storagePath ? `${storagePath}/${key}` : key;
-    return {
-      name: 'client-storage',
-      mountPath: v.container_path,
-      subPath,
-      _subPath: subPath, // kept for the init-dirs mkdir list below
-    };
-  });
-
-  const cleanVolumeMounts = volumeMounts.map(({ name, mountPath, subPath }) => ({ name, mountPath, subPath }));
-
-  const containerWithMounts = volumes.length > 0
-    ? { ...container, volumeMounts: cleanVolumeMounts }
+  const containerWithMounts = spec
+    ? { ...container, volumeMounts: spec.mounts }
     : container;
 
-  // Build init containers list
   const initContainersList: Record<string, unknown>[] = [];
-
-  // 1. Password-reset init container (runs before init-dirs, needs the DB data)
   if (passwordResetContainer) {
-    // Inject env vars so the password reset script can read $MARIADB_ROOT_PASSWORD etc.
+    // Inject env vars so the reset script can read $MARIADB_ROOT_PASSWORD etc.
     initContainersList.push({ ...passwordResetContainer, ...(envVars?.length ? { env: envVars } : {}) });
   }
-
-  // 2. Init-dirs container: ensures every per-volume subPath exists on the
-  //    shared PVC. Without this, Kubernetes creates the subPath for us but
-  //    with root-owned 755 perms — app containers running as non-root can't
-  //    write. `chmod 777` is coarse but matches the shared-PVC model where
-  //    per-client isolation is enforced at the namespace/PVC boundary, not
-  //    at the directory-permissions level.
-  const allSubPaths = volumeMounts.map(v => v._subPath);
-  if (storagePath || allSubPaths.length > 0) {
-    const mkdirTargets = allSubPaths.length > 0 ? allSubPaths : [storagePath];
-    const mkdirCmd = mkdirTargets
-      .map(p => `mkdir -p /data/${p} && chmod 777 /data/${p}`)
-      .join(' && ');
-    initContainersList.push({
-      name: 'init-dirs',
-      image: 'busybox:1.36',
-      command: ['sh', '-c', mkdirCmd],
-      volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
-      resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
-    });
-  }
-
+  if (spec) initContainersList.push(spec.initDirsContainer);
   const initContainers = initContainersList.length > 0 ? initContainersList : undefined;
-
-  const podVolumes = volumes.length > 0
-    ? [{ name: 'client-storage', persistentVolumeClaim: { claimName: `${namespace}-storage` } }]
-    : undefined;
 
   const body = {
     metadata: { name, namespace, labels },
@@ -280,7 +312,7 @@ async function deployK8sDeployment(
         spec: {
           ...(initContainers ? { initContainers } : {}),
           containers: [containerWithMounts],
-          ...(podVolumes ? { volumes: podVolumes } : {}),
+          ...(spec ? { volumes: spec.podVolumes } : {}),
         },
       },
     },
@@ -304,7 +336,13 @@ async function deployK8sCronJob(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   schedule: string,
+  storagePath: string = '',
+  volumes: Array<{ container_path: string; local_path?: string }> = [],
 ): Promise<void> {
+  const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
+  const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
+  const initContainers = spec ? [spec.initDirsContainer] : undefined;
+
   const body = {
     metadata: { name, namespace, labels },
     spec: {
@@ -315,8 +353,10 @@ async function deployK8sCronJob(
           template: {
             metadata: { labels },
             spec: {
-              containers: [container],
+              ...(initContainers ? { initContainers } : {}),
+              containers: [containerWithMounts],
               restartPolicy: 'OnFailure',
+              ...(spec ? { volumes: spec.podVolumes } : {}),
             },
           },
         },
@@ -341,15 +381,23 @@ async function deployK8sJob(
   name: string,
   labels: Record<string, string>,
   container: Record<string, unknown>,
+  storagePath: string = '',
+  volumes: Array<{ container_path: string; local_path?: string }> = [],
 ): Promise<void> {
+  const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
+  const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
+  const initContainers = spec ? [spec.initDirsContainer] : undefined;
+
   const body = {
     metadata: { name, namespace, labels },
     spec: {
       template: {
         metadata: { labels },
         spec: {
-          containers: [container],
+          ...(initContainers ? { initContainers } : {}),
+          containers: [containerWithMounts],
           restartPolicy: 'Never',
+          ...(spec ? { volumes: spec.podVolumes } : {}),
         },
       },
       backoffLimit: 3,
