@@ -16,6 +16,20 @@ export async function createClient(db: Database, input: CreateClientInput, creat
   const id = crypto.randomUUID();
   const namespace = generateNamespace(input.company_name);
 
+  // Resolve the default timezone: explicit input wins, otherwise fall back
+  // to the platform default configured in System Settings. Lazy import to
+  // avoid a circular dep with system-settings/service.
+  let timezone: string | null = input.timezone ?? null;
+  if (!timezone) {
+    try {
+      const { getSettings } = await import('../system-settings/service.js');
+      const settings = await getSettings(db);
+      timezone = settings.timezone ?? 'UTC';
+    } catch {
+      timezone = 'UTC';
+    }
+  }
+
   await db.insert(clients).values({
     id,
     regionId: input.region_id,
@@ -26,6 +40,7 @@ export async function createClient(db: Database, input: CreateClientInput, creat
     kubernetesNamespace: namespace,
     planId: input.plan_id,
     createdBy,
+    timezone,
     subscriptionExpiresAt: input.subscription_expires_at ? new Date(input.subscription_expires_at) : null,
   });
 

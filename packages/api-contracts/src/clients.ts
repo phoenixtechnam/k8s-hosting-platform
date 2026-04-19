@@ -11,6 +11,10 @@ export const createClientSchema = z.object({
   plan_id: uuidField,
   region_id: uuidField,
   subscription_expires_at: z.string().datetime().optional(),
+  // Optional: admin can override the system default timezone per client.
+  // Any IANA zone. When absent, the service falls back to the system
+  // default (SystemSettings.timezone, itself defaulting to UTC).
+  timezone: z.string().min(1).max(50).optional(),
 });
 
 export const updateClientSchema = z.object({

@@ -8,6 +8,26 @@ import websocket from '@fastify/websocket';
 import { errorHandler } from './middleware/error-handler.js';
 import { registerAuditHook } from './middleware/audit.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
+import { getSettings as getSystemSettings } from './modules/system-settings/service.js';
+
+/**
+ * Resolve the effective API rate limit (req/min) from, in priority order:
+ * (1) the system_settings row set via the admin panel, (2) the API_RATE_LIMIT
+ * env var, (3) the built-in default. Read once at startup — the rate-limit
+ * plugin wraps all routes and can't be re-registered, so changing the DB
+ * value requires a platform-api restart. The System Settings UI surfaces
+ * this.
+ */
+async function resolveRateLimitMax(db: Database): Promise<number> {
+  try {
+    const s = await getSystemSettings(db);
+    if (typeof s.apiRateLimit === 'number' && s.apiRateLimit > 0) return s.apiRateLimit;
+  } catch {
+    // Table not yet migrated or DB unreachable — fall through
+  }
+  const envVal = process.env.API_RATE_LIMIT ? parseInt(process.env.API_RATE_LIMIT, 10) : NaN;
+  return Number.isFinite(envVal) && envVal > 0 ? envVal : 100;
+}
 import { registerAuth, authenticate, requireRole } from './middleware/auth.js';
 import { createCacheMiddleware, cacheOnSendHook } from './middleware/cache.js';
 import { clientRoutes } from './modules/clients/routes.js';
@@ -101,11 +121,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(fastifyCompress, { global: true });
   await app.register(websocket);
   await app.register(fastifyJwt, { secret: deps.config.JWT_SECRET });
-  await registerRateLimit(app);
 
-  // Decorate
+  // Decorate DB first so registerRateLimit can read the configured limit
+  // from the system_settings row. Falls back to env (API_RATE_LIMIT) then
+  // to the built-in default of 100 req/min.
   app.decorate('db', deps.db);
   app.decorate('config', deps.config);
+  const rateLimitMax = await resolveRateLimitMax(deps.db);
+  await registerRateLimit(app, { max: rateLimitMax });
   registerAuth(app);
 
   // Error handler

@@ -55,6 +55,78 @@ describe('getClientById', () => {
 });
 
 describe('createClient', () => {
+  it('applies the system default timezone when input does not specify one', async () => {
+    // getSettings is mocked via the drizzle chain — first select goes to
+    // systemSettings (returning our default), second select returns the
+    // created client row back.
+    const systemDefault = { id: 'system', timezone: 'Europe/Berlin', platformName: 'X', apiRateLimit: 100 };
+    const createdClient = { id: 'c-new', companyName: 'NC', timezone: 'Europe/Berlin' };
+
+    // Alternate select results in order: systemSettings row, then created client
+    const selects: unknown[][] = [[systemDefault], [createdClient]];
+    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(selects.shift() ?? []));
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    // Capture the values passed to insert(clients).values(...) so we can
+    // assert the timezone was applied.
+    const insertValuesCalls: Array<Record<string, unknown>> = [];
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const insertValues = vi.fn((row: Record<string, unknown>) => {
+      insertValuesCalls.push(row);
+      return { onConflictDoUpdate };
+    });
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
+    const db = {
+      select: selectFn,
+      insert: insertFn,
+    } as unknown as Parameters<typeof createClient>[0];
+
+    await createClient(db, {
+      company_name: 'NC',
+      company_email: 'admin@nc.com',
+      plan_id: '550e8400-e29b-41d4-a716-446655440000',
+      region_id: '550e8400-e29b-41d4-a716-446655440001',
+    }, 'creator');
+
+    const clientRow = insertValuesCalls[0];
+    expect(clientRow.timezone).toBe('Europe/Berlin');
+  });
+
+  it('keeps explicit timezone input when provided', async () => {
+    const systemDefault = { id: 'system', timezone: 'Europe/Berlin', platformName: 'X', apiRateLimit: 100 };
+    const createdClient = { id: 'c-new', companyName: 'NC', timezone: 'America/Los_Angeles' };
+
+    const selects: unknown[][] = [[systemDefault], [createdClient]];
+    const whereFn = vi.fn().mockImplementation(() => Promise.resolve(selects.shift() ?? []));
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const insertValuesCalls: Array<Record<string, unknown>> = [];
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const insertValues = vi.fn((row: Record<string, unknown>) => {
+      insertValuesCalls.push(row);
+      return { onConflictDoUpdate };
+    });
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
+    const db = {
+      select: selectFn,
+      insert: insertFn,
+    } as unknown as Parameters<typeof createClient>[0];
+
+    await createClient(db, {
+      company_name: 'NC',
+      company_email: 'admin@nc.com',
+      plan_id: '550e8400-e29b-41d4-a716-446655440000',
+      region_id: '550e8400-e29b-41d4-a716-446655440001',
+      timezone: 'America/Los_Angeles',
+    }, 'creator');
+
+    expect(insertValuesCalls[0].timezone).toBe('America/Los_Angeles');
+  });
+
   it('should insert and return created client', async () => {
     const createdClient = {
       id: 'new-uuid',
