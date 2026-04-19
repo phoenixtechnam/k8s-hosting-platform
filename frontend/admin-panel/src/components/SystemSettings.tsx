@@ -17,8 +17,6 @@ export default function SystemSettingsForm() {
   const [supportEmail, setSupportEmail] = useState('');
   const [supportUrl, setSupportUrl] = useState('');
   const [ingressBaseDomain, setIngressBaseDomain] = useState('');
-  const [mailHostname, setMailHostname] = useState('');
-  const [webmailUrl, setWebmailUrl] = useState('');
   const [apiRateLimit, setApiRateLimit] = useState(100);
   const [timezone, setTimezone] = useState('UTC');
   const [saved, setSaved] = useState(false);
@@ -32,8 +30,6 @@ export default function SystemSettingsForm() {
       setSupportEmail(settings.supportEmail ?? '');
       setSupportUrl(settings.supportUrl ?? '');
       setIngressBaseDomain(settings.ingressBaseDomain ?? '');
-      setMailHostname(settings.mailHostname ?? '');
-      setWebmailUrl(settings.webmailUrl ?? '');
       setApiRateLimit(settings.apiRateLimit);
       setTimezone(settings.timezone ?? 'UTC');
     }
@@ -50,8 +46,6 @@ export default function SystemSettingsForm() {
         supportEmail: supportEmail || null,
         supportUrl: supportUrl || null,
         ingressBaseDomain: ingressBaseDomain || null,
-        mailHostname: mailHostname || null,
-        webmailUrl: webmailUrl || null,
         apiRateLimit,
         timezone,
       },
@@ -186,39 +180,6 @@ export default function SystemSettingsForm() {
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             Base domain used for CNAME routing targets (e.g., slug.ingress.example.com).
           </p>
-        </div>
-      </div>
-
-      {/* Mail Server */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">Mail Server</h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Mail Hostname
-            </label>
-            <input
-              type="text"
-              value={mailHostname}
-              onChange={(e) => setMailHostname(e.target.value)}
-              className={INPUT_CLASS}
-              placeholder="mail.example.com"
-              data-testid="mail-hostname-input"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Webmail URL
-            </label>
-            <input
-              type="url"
-              value={webmailUrl}
-              onChange={(e) => setWebmailUrl(e.target.value)}
-              className={INPUT_CLASS}
-              placeholder="https://webmail.example.com"
-              data-testid="webmail-url-input"
-            />
-          </div>
         </div>
       </div>
 

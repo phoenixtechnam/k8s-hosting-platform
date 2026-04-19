@@ -16,6 +16,7 @@ import {
   type DkimRotateResult,
 } from '@/hooks/use-email';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
+import MailServerSettings from '@/components/MailServerSettings';
 import type { FormEvent } from 'react';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -61,6 +62,8 @@ export default function EmailManagement() {
 
       {tab === 'domains' && <EmailDomainsTable domains={domains} isLoading={domainsLoading} />}
       {tab === 'relays' && <SmtpRelaysSection />}
+
+      <MailServerSettings />
 
       <StalwartAdminPanel />
     </div>
