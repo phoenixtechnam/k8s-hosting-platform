@@ -1,14 +1,24 @@
 import { useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, Loader2, Copy, CheckCircle, KeyRound } from 'lucide-react';
-import { useCreateClient } from '@/hooks/use-clients';
+import { useCreateClient, useDeleteClient } from '@/hooks/use-clients';
+import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { usePlans, useRegions } from '@/hooks/use-plans';
+import ProvisioningProgressModal from './ProvisioningProgressModal';
 
 interface CreateClientModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
 }
 
+interface CreatedClient {
+  readonly id: string;
+  readonly name: string;
+  readonly credentials: { email: string; password: string } | null;
+}
+
 export default function CreateClientModal({ open, onClose }: CreateClientModalProps) {
+  const navigate = useNavigate();
   const [companyName, setCompanyName] = useState('');
   const [companyEmail, setCompanyEmail] = useState('');
   const [contactEmail, setContactEmail] = useState('');
@@ -18,7 +28,12 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
   const createClient = useCreateClient();
-  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
+  const deleteClient = useDeleteClient();
+  const triggerProvisioning = useTriggerProvisioning();
+  // Three internal views: form (before submit), credentials (after submit,
+  // before ack), provisioning (credentials acked, watching k8s steps).
+  const [createdClient, setCreatedClient] = useState<CreatedClient | null>(null);
+  const [view, setView] = useState<'form' | 'credentials' | 'provisioning'>('form');
   const [copied, setCopied] = useState(false);
 
   const plans = plansData?.data ?? [];
@@ -30,7 +45,8 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
     setContactEmail('');
     setPlanId('');
     setRegionId('');
-    setCreatedCredentials(null);
+    setCreatedClient(null);
+    setView('form');
     setCopied(false);
     createClient.reset();
   };
@@ -50,19 +66,79 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
         plan_id: planId,
         region_id: regionId,
       });
-      // Show generated credentials
-      const clientUser = (result as { data: { clientUser?: { email: string; generatedPassword: string } } }).data?.clientUser;
-      if (clientUser?.generatedPassword) {
-        setCreatedCredentials({ email: clientUser.email, password: clientUser.generatedPassword });
-      } else {
+      const data = (result as { data: Record<string, unknown> & { id?: string; clientUser?: { email: string; generatedPassword: string } } }).data;
+      const id = typeof data?.id === 'string' ? data.id : '';
+      const clientUser = data?.clientUser;
+      if (!id) {
+        // Missing id in response — cannot proceed to provisioning view.
         handleClose();
+        return;
       }
+      setCreatedClient({
+        id,
+        name: companyName,
+        credentials: clientUser?.generatedPassword
+          ? { email: clientUser.email, password: clientUser.generatedPassword }
+          : null,
+      });
+      setView(clientUser?.generatedPassword ? 'credentials' : 'provisioning');
     } catch {
       // error displayed in modal
     }
   };
 
+  const handleProceedToProvisioning = () => {
+    setView('provisioning');
+  };
+
+  const handleProvisioningSuccess = () => {
+    if (!createdClient) return;
+    const clientId = createdClient.id;
+    // Close modal first so navigation doesn't race with the unmount.
+    handleClose();
+    navigate(`/clients/${clientId}`);
+  };
+
+  const handleCleanupArtifacts = async () => {
+    if (!createdClient) return;
+    try {
+      await deleteClient.mutateAsync(createdClient.id);
+      handleClose();
+    } catch {
+      // error surfaced through the mutation — let user retry
+    }
+  };
+
+  const handleRetryProvisioning = async () => {
+    if (!createdClient) return;
+    try {
+      await triggerProvisioning.mutateAsync({ clientId: createdClient.id });
+    } catch {
+      // surfaced via task poll — error stays visible in modal
+    }
+  };
+
   if (!open) return null;
+
+  // When we've advanced to provisioning view, render ProvisioningProgressModal
+  // as the sole dialog. Credentials (if any) are pinned on top so the admin
+  // still has one chance to copy them.
+  if (view === 'provisioning' && createdClient) {
+    return (
+      <ProvisioningProgressModal
+        clientId={createdClient.id}
+        clientName={createdClient.name}
+        onClose={handleClose}
+        onSuccess={handleProvisioningSuccess}
+        onCleanup={handleCleanupArtifacts}
+        onRetry={handleRetryProvisioning}
+        isCleaningUp={deleteClient.isPending}
+        isRetrying={triggerProvisioning.isPending}
+      />
+    );
+  }
+
+  const credentials = createdClient?.credentials ?? null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" data-testid="create-client-modal">
@@ -79,7 +155,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
           </button>
         </div>
 
-        {createdCredentials && (
+        {view === 'credentials' && credentials && (
           <div className="space-y-4" data-testid="client-credentials">
             <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
               <CheckCircle size={20} />
@@ -92,13 +168,13 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
               </div>
               <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">Save these credentials now. The password will not be shown again.</p>
               <div className="space-y-2 text-sm">
-                <div><span className="text-gray-500">Email:</span> <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{createdCredentials.email}</span></div>
-                <div><span className="text-gray-500">Password:</span> <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{createdCredentials.password}</span></div>
+                <div><span className="text-gray-500">Email:</span> <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{credentials.email}</span></div>
+                <div><span className="text-gray-500">Password:</span> <span className="font-mono font-medium text-gray-900 dark:text-gray-100">{credentials.password}</span></div>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  navigator.clipboard.writeText(`Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`);
+                  navigator.clipboard.writeText(`Email: ${credentials.email}\nPassword: ${credentials.password}`);
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
                 }}
@@ -110,18 +186,25 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
               </button>
             </div>
             <div className="flex justify-end">
-              <button type="button" onClick={handleClose} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="close-credentials">Done</button>
+              <button
+                type="button"
+                onClick={handleProceedToProvisioning}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
+                data-testid="close-credentials"
+              >
+                Continue
+              </button>
             </div>
           </div>
         )}
 
-        {!createdCredentials && createClient.error && (
+        {view === 'form' && createClient.error && (
           <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-testid="create-error">
             {createClient.error instanceof Error ? createClient.error.message : 'Failed to create client'}
           </div>
         )}
 
-        {!createdCredentials && <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-client-form">
+        {view === 'form' && <form onSubmit={handleSubmit} className="space-y-4" data-testid="create-client-form">
           <div>
             <label htmlFor="company-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Company Name *
