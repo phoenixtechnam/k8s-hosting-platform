@@ -18,6 +18,14 @@ interface BadgeSpec {
   readonly icon: 'check' | 'alert' | 'x' | 'dot' | 'loader';
 }
 
+// All DNS tooltips append this disclaimer so admins don't misread a
+// red/amber badge as a definitive "the internet can't see this". The probe
+// runs from inside the cluster using the node's default resolver (CoreDNS
+// → upstream), which is usually public DNS but may be a corporate/split
+// resolver on some deploys.
+const DNS_PERSPECTIVE_NOTE =
+  ' · probed from this cluster — external visitors may see a different result depending on DNS propagation';
+
 function dnsBadge(health: PanelUrlHealth | undefined): BadgeSpec {
   if (!health || health.dns.status === 'not-configured') {
     return { label: 'DNS', color: 'gray', tooltip: 'No URL configured yet.', icon: 'dot' };
@@ -28,25 +36,30 @@ function dnsBadge(health: PanelUrlHealth | undefined): BadgeSpec {
       return {
         label: 'DNS',
         color: 'green',
-        tooltip: `Resolves to: ${(addresses ?? []).join(', ') || 'unknown'}`,
+        tooltip: `Resolves to: ${(addresses ?? []).join(', ') || 'unknown'}${DNS_PERSPECTIVE_NOTE}`,
         icon: 'check',
       };
     case 'unresolved':
       return {
         label: 'DNS',
         color: 'amber',
-        tooltip: reason ?? 'Hostname not found in public DNS.',
+        tooltip: (reason ?? 'Hostname not found in DNS.') + DNS_PERSPECTIVE_NOTE,
         icon: 'alert',
       };
     case 'timeout':
       return {
         label: 'DNS',
         color: 'amber',
-        tooltip: reason ?? 'DNS lookup timed out.',
+        tooltip: (reason ?? 'DNS lookup timed out.') + DNS_PERSPECTIVE_NOTE,
         icon: 'loader',
       };
     case 'error':
-      return { label: 'DNS', color: 'red', tooltip: reason ?? 'DNS lookup failed.', icon: 'x' };
+      return {
+        label: 'DNS',
+        color: 'red',
+        tooltip: (reason ?? 'DNS lookup failed.') + DNS_PERSPECTIVE_NOTE,
+        icon: 'x',
+      };
     default:
       return { label: 'DNS', color: 'gray', tooltip: 'Unknown DNS state.', icon: 'dot' };
   }
