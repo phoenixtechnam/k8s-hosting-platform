@@ -64,6 +64,40 @@ spec:
                   name: platform-config
                   key: ingress-base-domain
                   optional: true
+            # System-settings defaults populated by seed.ts on a fresh install.
+            # All optional — when unset the seed leaves the column NULL and
+            # the admin can fill it in via the UI later. Values come from
+            # bootstrap.sh's platform-config ConfigMap in production.
+            - name: ADMIN_PANEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: admin-url
+                  optional: true
+            - name: CLIENT_PANEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: client-url
+                  optional: true
+            - name: SUPPORT_EMAIL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: support-email
+                  optional: true
+            - name: SUPPORT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: support-url
+                  optional: true
+            - name: PLATFORM_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: platform-name
+                  optional: true
             - name: INGRESS_DEFAULT_IPV4
               valueFrom:
                 configMapKeyRef:

@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
-import { rbacRoles, regions, hostingPlans, users, catalogRepositories, oidcProviders } from './schema.js';
+import { rbacRoles, regions, hostingPlans, users, catalogRepositories, oidcProviders, systemSettings } from './schema.js';
 import { encrypt } from '../modules/oidc/crypto.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -13,6 +13,55 @@ if (!databaseUrl) {
 const db = getDb(databaseUrl);
 
 console.log('Seeding database...');
+
+// System Settings (single row, id='system'). The row may already exist
+// because getSettings() auto-creates a minimal version on first API call,
+// so we use ON CONFLICT DO UPDATE with COALESCE — only NULL columns get
+// populated from env. Admin-configured values (non-NULL) are always
+// preserved; re-seeding never clobbers them.
+const adminPanelUrl = process.env.ADMIN_PANEL_URL ?? null;
+const clientPanelUrl = process.env.CLIENT_PANEL_URL ?? null;
+const supportEmail = process.env.SUPPORT_EMAIL ?? null;
+const supportUrl = process.env.SUPPORT_URL ?? null;
+const ingressBaseDomain = process.env.INGRESS_BASE_DOMAIN ?? null;
+const platformName = process.env.PLATFORM_NAME ?? 'Hosting Platform';
+const platformTimezone = process.env.PLATFORM_TIMEZONE ?? 'UTC';
+const apiRateLimit = process.env.API_RATE_LIMIT ? parseInt(process.env.API_RATE_LIMIT, 10) : 100;
+
+await db.insert(systemSettings).values({
+  id: 'system',
+  platformName,
+  adminPanelUrl,
+  clientPanelUrl,
+  supportEmail,
+  supportUrl,
+  ingressBaseDomain,
+  apiRateLimit,
+  timezone: platformTimezone,
+}).onConflictDoUpdate({
+  target: systemSettings.id,
+  set: {
+    // COALESCE(existing, new) — if existing value is already set, keep it.
+    // Only fill in NULL columns from env. Respect what the admin chose.
+    adminPanelUrl: sql`COALESCE(${systemSettings.adminPanelUrl}, ${adminPanelUrl})`,
+    clientPanelUrl: sql`COALESCE(${systemSettings.clientPanelUrl}, ${clientPanelUrl})`,
+    supportEmail: sql`COALESCE(${systemSettings.supportEmail}, ${supportEmail})`,
+    supportUrl: sql`COALESCE(${systemSettings.supportUrl}, ${supportUrl})`,
+    ingressBaseDomain: sql`COALESCE(${systemSettings.ingressBaseDomain}, ${ingressBaseDomain})`,
+  },
+});
+// Also mirror ingressBaseDomain into the platform_settings kv table so
+// existing consumers (ingress-routes/service.ts) see it without waiting
+// for the admin to open the UI. Only writes if not already set.
+if (ingressBaseDomain) {
+  await db.execute(sql`
+    INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+    VALUES ('ingress_base_domain', ${ingressBaseDomain}, NOW())
+    ON CONFLICT (setting_key) DO UPDATE
+    SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value)
+  `);
+}
+console.log('  Seeded system settings (fills NULL columns only)');
 
 // RBAC Roles
 await db.insert(rbacRoles).values([
