@@ -1,4 +1,17 @@
 # Platform ingress — admin and client panels only.
+#
+# spec.rules + spec.tls are intentionally empty here. They are owned by
+# platform-api's ingress-reconciler (backend/src/modules/system-settings/
+# ingress-reconciler.ts), which server-side-applies them with
+# fieldManager: platform-api from the adminPanelUrl / clientPanelUrl
+# values stored in system_settings. See `startup: ingress hosts
+# reconciled from DB` in the platform-api logs.
+#
+# An empty rules list would make this Ingress non-functional before the
+# reconciler runs — but platform-api's onReady hook fires within ~1s of
+# pod start, populating the spec from the DB (seeded by local.sh /
+# bootstrap.sh with the operator's hostnames).
+#
 # The API is not publicly exposed. Each frontend's nginx container
 # reverse-proxies /api/* to platform-api:3000 internally.
 apiVersion: networking.k8s.io/v1
@@ -13,29 +26,12 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "64m"
 spec:
   ingressClassName: nginx
-  tls:
-    - hosts:
-        - admin.k8s-platform.test
-        - client.k8s-platform.test
-      secretName: platform-tls
-  rules:
-    - host: admin.k8s-platform.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: admin-panel
-                port:
-                  number: 80
-    - host: client.k8s-platform.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: client-panel
-                port:
-                  number: 80
+  # K8s rejects an Ingress with no rules AND no defaultBackend. This serves
+  # as a placeholder until platform-api's reconciler rewrites spec.rules
+  # from the DB. Any request that reaches this backend is evidence the
+  # reconciler hasn't run yet — likely platform-api isn't ready.
+  defaultBackend:
+    service:
+      name: admin-panel
+      port:
+        number: 80

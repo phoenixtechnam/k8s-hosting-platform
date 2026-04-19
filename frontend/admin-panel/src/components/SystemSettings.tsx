@@ -105,7 +105,7 @@ export default function SystemSettingsForm() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Admin Panel Display URL
+                Admin Panel URL
               </label>
               <input
                 type="url"
@@ -116,12 +116,12 @@ export default function SystemSettingsForm() {
                 data-testid="admin-panel-url-input"
               />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Display-only. Shown in outbound emails and the admin panel footer. Does <strong>not</strong> reconfigure ingress routing &mdash; actual hostnames are set in the kustomize overlay.
+                Hostname is applied to the platform Ingress on save. cert-manager issues a TLS cert automatically. DNS must be configured externally to point at the cluster LB.
               </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Client Panel Display URL
+                Client Panel URL
               </label>
               <input
                 type="url"
@@ -132,7 +132,7 @@ export default function SystemSettingsForm() {
                 data-testid="client-panel-url-input"
               />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Display-only. Used in client-facing emails and the client panel footer.
+                Same routing semantics as Admin Panel URL.
               </p>
             </div>
           </div>

@@ -1,4 +1,16 @@
-# Dev overlay: local hostnames with self-signed CA.
+# Dev overlay for platform-ingress.
+#
+# NOTE: spec.rules + spec.tls intentionally NOT set here — platform-api's
+# ingress-reconciler owns them (server-side apply with
+# fieldManager: platform-api), sourced from system_settings.admin_panel_url /
+# client_panel_url. The reconciler runs on every platform-api startup and on
+# every PATCH /admin/system-settings, so a fresh reset + up converges as
+# soon as the platform-api pod's onReady hook fires.
+#
+# This overlay only sets annotations: cluster-issuer (self-signed CA) + the
+# WAF rule override. If you need to force specific dev hosts, set them in
+# system_settings via local.sh's _run_migrations_and_seed (env exports).
+#
 # HTTP is on :2010, HTTPS (self-signed) on :2011 — both serve independently.
 # HTTPS redirect is disabled so that :2010 stays usable without the ingress
 # controller rewriting URLs to :443 (which isn't published).
@@ -22,30 +34,3 @@ metadata:
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRule REQUEST_URI "@beginsWith /" \
           "id:1100010,phase:1,pass,nolog,ctl:ruleRemoveById=911100"
-spec:
-  tls:
-    - hosts:
-        - admin.k8s-platform.test
-        - client.k8s-platform.test
-      secretName: platform-dev-tls
-  rules:
-    - host: admin.k8s-platform.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: admin-panel
-                port:
-                  number: 80
-    - host: client.k8s-platform.test
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: client-panel
-                port:
-                  number: 80
