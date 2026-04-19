@@ -111,19 +111,20 @@ describe('K8s Provisioner Service', () => {
       );
     });
 
-    it('should create NetworkPolicy allowing only ingress-nginx', async () => {
+    it('should create two NetworkPolicies: deny cross-ns + allow intra-ns', async () => {
       const { applyNetworkPolicy } = await import('./service.js');
       await applyNetworkPolicy(mockK8s, 'test-ns');
-      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          namespace: 'test-ns',
-          body: expect.objectContaining({
-            spec: expect.objectContaining({
-              policyTypes: ['Ingress'],
-            }),
-          }),
-        }),
-      );
+      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledTimes(2);
+
+      const mockFn = mockK8s.networking.createNamespacedNetworkPolicy as unknown as ReturnType<typeof vi.fn>;
+      const calls = mockFn.mock.calls as Array<[{ body: { metadata: { name: string }; spec: { ingress: Array<{ _from?: unknown[] }> } } }]>;
+      const names = calls.map(c => c[0].body.metadata.name).sort();
+      expect(names).toEqual(['allow-intra-namespace', 'default-deny-ingress']);
+
+      // The intra-namespace rule is the critical one for multi-component
+      // apps — without it, default-deny-ingress blocks wordpress → mariadb.
+      const intra = calls.find(c => c[0].body.metadata.name === 'allow-intra-namespace')![0].body;
+      expect(intra.spec.ingress[0]._from).toEqual([{ podSelector: {} }]);
     });
 
     it('should create PVC with correct storage class and size', async () => {

@@ -92,11 +92,15 @@ export async function reconcileDeploymentStatuses(
   let updated = 0;
   const errors: string[] = [];
 
-  // Get all deployments in active states
+  // Include `failed` so a deployment that recovers (e.g. after an RBAC
+  // patch or a dependency coming up late) can flip back to `running`
+  // without manual intervention. Without this, once a row is marked
+  // failed the reconciler ignores it forever and the UI shows it as
+  // broken even though the pods are healthy.
   const activeDeployments = await db
     .select()
     .from(deployments)
-    .where(inArray(deployments.status, ['running', 'pending', 'deploying']));
+    .where(inArray(deployments.status, ['running', 'pending', 'deploying', 'failed']));
 
   if (activeDeployments.length === 0) {
     return { checked: 0, updated: 0, errors: [] };

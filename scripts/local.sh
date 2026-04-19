@@ -272,7 +272,21 @@ _build_all_images() {
   # when the local image was actually rebuilt.
   if [[ -d "${PROJECT_DIR}/images/file-manager-sidecar" ]]; then
     _build_and_import "file-manager-sidecar" "images/file-manager-sidecar" "images/file-manager-sidecar/Dockerfile"
+    # Backend references this image as the bare `file-manager-sidecar:latest`
+    # (see FM_IMAGE constant in routes.ts / service.ts / k8s-provisioner).
+    # Also keep the GHCR-prefixed tag for production parity — both point at
+    # the same image. Re-import when the build changed OR when the target
+    # tag is missing from k3s containerd (e.g. after `down -v` wiped it).
+    local sidecar_changed=false
     if grep -q '^HP_IMAGE_CHANGED_file-manager-sidecar=' "${PROJECT_DIR}/.local.build-state" 2>/dev/null; then
+      sidecar_changed=true
+    fi
+    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "file-manager-sidecar:latest"; then
+      docker tag "hosting-platform/file-manager-sidecar:local" "file-manager-sidecar:latest"
+      docker save "file-manager-sidecar:latest" \
+        | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    fi
+    if [[ "$sidecar_changed" == true ]] || ! _image_in_k3s "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"; then
       docker tag "hosting-platform/file-manager-sidecar:local" \
         "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
       docker save "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest" \

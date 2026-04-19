@@ -193,14 +193,25 @@ export async function applyNetworkPolicy(
   k8s: K8sClients,
   namespace: string,
 ): Promise<void> {
-  try {
-    await k8s.networking.createNamespacedNetworkPolicy({
-      namespace,
+  // Two NetworkPolicies per tenant namespace:
+  //
+  // 1. default-deny-ingress — blanket deny for cross-namespace ingress,
+  //    except from ingress-nginx (so the user's web app remains reachable
+  //    from the load balancer).
+  //
+  // 2. allow-intra-namespace — pods within the same tenant namespace may
+  //    freely reach each other. Required for multi-component apps (e.g.
+  //    WordPress's wordpress pod connects to the mariadb sibling on :3306,
+  //    Immich's immich-server calls immich-ml, etc). Without this, the
+  //    default-deny rule blocks pod-to-pod traffic inside the tenant.
+  //
+  // Cross-tenant isolation is preserved — the podSelector/namespaceSelector
+  // here scopes to the same namespace only.
+  const policies: Array<{ name: string; body: Record<string, unknown> }> = [
+    {
+      name: 'default-deny-ingress',
       body: {
-        metadata: {
-          name: 'default-deny-ingress',
-          namespace,
-        },
+        metadata: { name: 'default-deny-ingress', namespace },
         spec: {
           podSelector: {},
           policyTypes: ['Ingress'],
@@ -209,9 +220,7 @@ export async function applyNetworkPolicy(
               _from: [
                 {
                   namespaceSelector: {
-                    matchLabels: {
-                      'kubernetes.io/metadata.name': 'ingress-nginx',
-                    },
+                    matchLabels: { 'kubernetes.io/metadata.name': 'ingress-nginx' },
                   },
                 },
               ],
@@ -219,10 +228,31 @@ export async function applyNetworkPolicy(
           ],
         },
       },
-    });
-  } catch (err: unknown) {
-    // Already exists — safe to ignore (policy is immutable)
-    if (!isK8s409(err)) throw err;
+    },
+    {
+      name: 'allow-intra-namespace',
+      body: {
+        metadata: { name: 'allow-intra-namespace', namespace },
+        spec: {
+          podSelector: {},
+          policyTypes: ['Ingress'],
+          ingress: [{ _from: [{ podSelector: {} }] }],
+        },
+      },
+    },
+  ];
+
+  for (const policy of policies) {
+    try {
+      await k8s.networking.createNamespacedNetworkPolicy({
+        namespace,
+        body: policy.body as Parameters<typeof k8s.networking.createNamespacedNetworkPolicy>[0]['body'],
+      });
+    } catch (err: unknown) {
+      // Already exists — safe to ignore (policies are effectively immutable;
+      // if their spec ever changes, operators can delete + recreate).
+      if (!isK8s409(err)) throw err;
+    }
   }
 }
 

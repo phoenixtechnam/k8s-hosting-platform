@@ -35,6 +35,21 @@ export interface DeployComponentInput {
    * nothing (useful for stateless caches like redis/collabora).
    */
   readonly volumes?: readonly string[];
+  /**
+   * Container entrypoint override. Needed for one-shot install jobs that run
+   * a bootstrap script (e.g. WordPress's wp-install job executes `wp core
+   * install`). When unset, the image's default ENTRYPOINT + CMD are used.
+   */
+  readonly command?: readonly string[];
+  readonly args?: readonly string[];
+  /**
+   * Per-component resource override. One-shot jobs (wp-install, migrate
+   * jobs) should declare small footprints — sharing the app-level
+   * `cpuRequest`/`memoryRequest` of a WordPress deploy (250m/512Mi) wastes
+   * client ResourceQuota on a container that runs for 15 seconds. When
+   * unset, falls back to the top-level `cpuRequest`/`memoryRequest`.
+   */
+  readonly resources?: { readonly cpu?: string; readonly memory?: string };
 }
 
 export interface DeployCatalogEntryInput {
@@ -302,15 +317,19 @@ export async function deployCatalogEntry(
     const name = k8sResourceName(deploymentName, component.name, componentCount);
     const labels = deploymentLabels(deploymentName, component.name);
 
+    const compCpu = component.resources?.cpu ?? cpuRequest;
+    const compMem = component.resources?.memory ?? memoryRequest;
     const container = {
       name: component.name,
       image: component.image,
       imagePullPolicy: 'Always' as const,
       ports: component.ports.map(p => ({ containerPort: p.port })),
       resources: {
-        requests: { cpu: cpuRequest, memory: memoryRequest },
-        limits: { cpu: cpuRequest, memory: memoryRequest },
+        requests: { cpu: compCpu, memory: compMem },
+        limits: { cpu: compCpu, memory: compMem },
       },
+      ...(component.command && component.command.length > 0 ? { command: [...component.command] } : {}),
+      ...(component.args && component.args.length > 0 ? { args: [...component.args] } : {}),
       ...(env.length > 0 ? { env } : {}),
     };
 

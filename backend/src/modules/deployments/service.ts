@@ -63,6 +63,9 @@ function resolveComponents(
     optional?: boolean;
     schedule?: string;
     volumes?: string[];
+    command?: string[];
+    args?: string[];
+    resources?: { cpu?: string; memory?: string };
   }>;
 
   if (baseComponents.length === 0) {
@@ -89,6 +92,9 @@ function resolveComponents(
       optional: comp.optional ?? false,
       schedule: comp.schedule,
       volumes: comp.volumes,
+      command: comp.command,
+      args: comp.args,
+      resources: comp.resources,
     };
   });
 }
