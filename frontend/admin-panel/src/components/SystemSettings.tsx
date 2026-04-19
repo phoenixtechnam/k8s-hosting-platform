@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
+import { useUrlHealth } from '@/hooks/use-url-health';
 import TimezoneSelect from './TimezoneSelect';
+import UrlStatusBadges from './UrlStatusBadges';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -9,6 +11,7 @@ const INPUT_CLASS =
 export default function SystemSettingsForm() {
   const { data: response, isLoading, isError, error } = useSystemSettings();
   const updateSettings = useUpdateSystemSettings();
+  const { data: health } = useUrlHealth();
   const settings = response?.data;
 
   const [platformName, setPlatformName] = useState('Hosting Platform');
@@ -104,9 +107,12 @@ export default function SystemSettingsForm() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Admin Panel URL
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Admin Panel URL
+                </label>
+                <UrlStatusBadges panel="admin" health={health?.admin} />
+              </div>
               <input
                 type="url"
                 value={adminPanelUrl}
@@ -120,9 +126,12 @@ export default function SystemSettingsForm() {
               </p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Client Panel URL
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Client Panel URL
+                </label>
+                <UrlStatusBadges panel="client" health={health?.client} />
+              </div>
               <input
                 type="url"
                 value={clientPanelUrl}
