@@ -74,6 +74,7 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
+  timezone: varchar('timezone', { length: 50 }),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('users_email_unique').on(table.email),

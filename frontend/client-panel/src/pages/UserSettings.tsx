@@ -1,12 +1,13 @@
 import { useState, type FormEvent } from 'react';
-import { User, KeyRound, Save, Loader2 } from 'lucide-react';
+import { User, KeyRound, Save, Loader2, Clock } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useChangePassword } from '@/hooks/use-password';
 import { useUpdateProfile } from '@/hooks/use-profile';
 import { ApiError } from '@/lib/api-client';
+import TimezoneSelect from '@/components/TimezoneSelect';
 
 const INPUT_CLASS =
-  'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+  'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 export default function UserSettings() {
   const { user } = useAuth();
@@ -23,6 +24,7 @@ export default function UserSettings() {
       <ProfileForm
         initialName={user?.fullName ?? ''}
         initialEmail={user?.email ?? ''}
+        initialTimezone={(user as unknown as { timezone?: string | null })?.timezone ?? ''}
       />
 
       <PasswordForm />
@@ -33,13 +35,16 @@ export default function UserSettings() {
 function ProfileForm({
   initialName,
   initialEmail,
+  initialTimezone,
 }: {
   readonly initialName: string;
   readonly initialEmail: string;
+  readonly initialTimezone: string;
 }) {
   const updateProfile = useUpdateProfile();
   const [fullName, setFullName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
+  const [timezone, setTimezone] = useState(initialTimezone);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -49,12 +54,22 @@ function ProfileForm({
     setErrorMessage('');
 
     try {
-      const result = await updateProfile.mutateAsync({ full_name: fullName, email });
+      const result = await updateProfile.mutateAsync({
+        full_name: fullName,
+        email,
+        timezone: timezone === '' ? null : timezone,
+      });
+      // Update local storage with new user data
       const storedUser = localStorage.getItem('auth_user');
       if (storedUser) {
         try {
           const parsed = JSON.parse(storedUser);
-          const updated = { ...parsed, fullName: result.data.fullName, email: result.data.email };
+          const updated = {
+            ...parsed,
+            fullName: result.data.fullName,
+            email: result.data.email,
+            timezone: result.data.timezone ?? null,
+          };
           localStorage.setItem('auth_user', JSON.stringify(updated));
         } catch {
           // ignore parse errors
@@ -101,11 +116,21 @@ function ProfileForm({
             data-testid="profile-email"
           />
         </div>
+        <div>
+          <label htmlFor="timezone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            <Clock size={14} className="inline -mt-0.5 mr-1" />
+            Timezone
+          </label>
+          <TimezoneSelect value={timezone} onChange={setTimezone} placeholder="Use system default" className="mt-1" />
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Used when displaying dates and times in the UI. Leave empty to inherit the system default.
+          </p>
+        </div>
         {successMessage && (
-          <p className="text-sm text-green-600" data-testid="profile-success">{successMessage}</p>
+          <p className="text-sm text-green-600 dark:text-green-400" data-testid="profile-success">{successMessage}</p>
         )}
         {errorMessage && (
-          <p className="text-sm text-red-600" data-testid="profile-error">{errorMessage}</p>
+          <p className="text-sm text-red-600 dark:text-red-400" data-testid="profile-error">{errorMessage}</p>
         )}
         <button
           type="submit"
@@ -205,10 +230,10 @@ function PasswordForm() {
           />
         </div>
         {successMessage && (
-          <p className="text-sm text-green-600" data-testid="password-success">{successMessage}</p>
+          <p className="text-sm text-green-600 dark:text-green-400" data-testid="password-success">{successMessage}</p>
         )}
         {errorMessage && (
-          <p className="text-sm text-red-600" data-testid="password-error">{errorMessage}</p>
+          <p className="text-sm text-red-600 dark:text-red-400" data-testid="password-error">{errorMessage}</p>
         )}
         <button
           type="submit"

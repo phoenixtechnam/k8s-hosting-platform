@@ -4,6 +4,7 @@ import { apiFetch } from '@/lib/api-client';
 interface UpdateProfileInput {
   readonly full_name?: string;
   readonly email?: string;
+  readonly timezone?: string | null;
 }
 
 interface ProfileResponse {
@@ -12,6 +13,7 @@ interface ProfileResponse {
     readonly email: string;
     readonly fullName: string;
     readonly role: string;
+    readonly timezone?: string | null;
   };
 }
 

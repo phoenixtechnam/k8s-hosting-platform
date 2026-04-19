@@ -166,6 +166,7 @@ export async function authRoutes(app: FastifyInstance) {
         role: user.roleName,
         panel: user.panel ?? 'admin',
         clientId: user.clientId ?? null,
+        timezone: user.timezone ?? null,
       },
     };
   });
@@ -186,6 +187,7 @@ export async function authRoutes(app: FastifyInstance) {
     const updateValues: Record<string, unknown> = {};
     if (parsed.data.full_name !== undefined) updateValues.fullName = parsed.data.full_name;
     if (parsed.data.email !== undefined) updateValues.email = parsed.data.email;
+    if (parsed.data.timezone !== undefined) updateValues.timezone = parsed.data.timezone;
 
     if (Object.keys(updateValues).length === 0) {
       throw new ApiError('VALIDATION_ERROR', 'No fields provided to update', 400);
@@ -208,6 +210,7 @@ export async function authRoutes(app: FastifyInstance) {
         email: updated.email,
         fullName: updated.fullName,
         role: updated.roleName,
+        timezone: updated.timezone ?? null,
       },
     });
   });

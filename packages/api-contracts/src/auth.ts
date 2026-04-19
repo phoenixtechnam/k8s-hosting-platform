@@ -15,6 +15,9 @@ export const changePasswordSchema = z.object({
 export const updateProfileSchema = z.object({
   full_name: z.string().min(1).max(255).optional(),
   email: z.string().email().optional(),
+  // IANA timezone string, e.g. "Europe/Berlin". Null clears the user-level
+  // override and falls back to the system default on display.
+  timezone: z.string().min(1).max(50).nullable().optional(),
 });
 
 // ─── Response Schemas ────────────────────────────────────────────────────────
