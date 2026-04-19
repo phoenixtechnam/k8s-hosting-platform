@@ -15,6 +15,12 @@ const configSchema = z.object({
   PLATFORM_INTERNAL_SECRET: z.string().optional(),
   DEFAULT_STORAGE_CLASS: z.string().default('local-path'),
   INGRESS_BASE_DOMAIN: z.string().optional(),
+  // Canonical apex domain. All service subdomains (admin, client, dex,
+  // webmail, mail, mail-admin) derive from this in
+  // backend/src/config/domains.ts. INGRESS_BASE_DOMAIN above is kept as a
+  // legacy fallback alias so existing ConfigMaps don't break; prefer
+  // PLATFORM_BASE_DOMAIN on new deploys.
+  PLATFORM_BASE_DOMAIN: z.string().optional(),
   INGRESS_DEFAULT_IPV4: z.string().optional(),
   CLUSTER_ISSUER_NAME: z.string().optional(),
   // Secret that holds the TLS cert for the platform Ingress. The ingress

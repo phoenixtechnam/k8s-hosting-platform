@@ -8,6 +8,11 @@ data:
   log-level: "debug"
   default-storage-class: "local-path"
   ingress-base-domain: "k8s-platform.test"
+  # Canonical apex domain. Drives admin/client/dex/webmail/mail subdomains.
+  # Prefer this over ingress-base-domain on new deploys — both are read as
+  # fallbacks by backend/src/config/domains.ts, so the rename is backwards-
+  # compatible.
+  platform-base-domain: "k8s-platform.test"
   cluster-issuer-name: "selfsigned-issuer"
   # Display URLs for outbound emails + UI footer. These are what the
   # operator visits in their browser, so they include the dev NodePort :2010.

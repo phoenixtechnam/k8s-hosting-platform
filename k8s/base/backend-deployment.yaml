@@ -64,6 +64,15 @@ spec:
                   name: platform-config
                   key: ingress-base-domain
                   optional: true
+            # Canonical apex domain. Prefer this over INGRESS_BASE_DOMAIN on
+            # new deploys. Subdomains (admin, client, dex, webmail, mail,
+            # mail-admin) derive from this via config/domains.ts.
+            - name: PLATFORM_BASE_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: platform-base-domain
+                  optional: true
             # System-settings defaults populated by seed.ts on a fresh install.
             # All optional — when unset the seed leaves the column NULL and
             # the admin can fill it in via the UI later. Values come from

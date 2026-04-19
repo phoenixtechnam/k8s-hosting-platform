@@ -816,6 +816,7 @@ create_platform_configmap() {
     --from-literal=default-storage-class="${DEFAULT_STORAGE_CLASS:-longhorn}" \
     --from-literal=cluster-issuer-name="$issuer_name" \
     --from-literal=ingress-base-domain="${PLATFORM_DOMAIN:-}" \
+    --from-literal=platform-base-domain="${PLATFORM_DOMAIN:-}" \
     --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
     --from-literal=api-url="https://api.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
