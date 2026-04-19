@@ -40,13 +40,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list"]
-  # Subresource: pods/exec — not called directly, but RBAC privilege-escalation
-  # prevention requires platform-api to hold any permission it grants via a Role.
-  # The file-manager provisioner creates a Role with pods/exec for the
-  # sftp-gateway ServiceAccount; without this, creating that Role returns 403.
+  # Subresource: pods/exec — used directly by SQL Manager (kubectl exec into
+  # DB pods to run queries) and indirectly via RBAC privilege-escalation
+  # prevention (platform-api must hold any permission it grants to
+  # sub-roles like sftp-gateway's file-manager role). @kubernetes/client-node
+  # v1 establishes the exec channel via a WebSocket GET, so `get` is also
+  # required alongside `create`.
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get", "create"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["*"]

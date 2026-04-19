@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, ChevronRight } from 'lucide-react';
 
 interface ParameterDef {
   readonly key: string;
@@ -8,6 +8,7 @@ interface ParameterDef {
   readonly default?: unknown;
   readonly required?: boolean;
   readonly description?: string;
+  readonly advanced?: boolean;
 }
 
 interface ParameterFormProps {
@@ -77,79 +78,118 @@ function BooleanSwitch({
   );
 }
 
+function ParamField({
+  param,
+  value,
+  onChange,
+}: {
+  readonly param: ParameterDef;
+  readonly value: unknown;
+  readonly onChange: (key: string, val: unknown) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+        {param.label}
+        {param.required && <span className="ml-0.5 text-red-500">*</span>}
+      </label>
+
+      {param.type === 'string' && (
+        <input
+          type="text"
+          value={typeof value === 'string' ? value : ''}
+          onChange={(e) => onChange(param.key, e.target.value)}
+          placeholder={param.default != null ? String(param.default) : undefined}
+          className={INPUT_CLASS}
+        />
+      )}
+
+      {param.type === 'secret' && (
+        <SecretInput
+          value={typeof value === 'string' ? value : ''}
+          onChange={(val) => onChange(param.key, val)}
+          placeholder={param.default != null ? String(param.default) : undefined}
+        />
+      )}
+
+      {param.type === 'boolean' && (
+        <BooleanSwitch
+          checked={Boolean(value)}
+          onChange={(val) => onChange(param.key, val)}
+        />
+      )}
+
+      {param.type === 'integer' && (
+        <input
+          type="number"
+          value={typeof value === 'number' ? value : ''}
+          onChange={(e) => onChange(param.key, e.target.value === '' ? '' : Number(e.target.value))}
+          placeholder={param.default != null ? String(param.default) : undefined}
+          className={INPUT_CLASS}
+        />
+      )}
+
+      {param.type === 'string[]' && (
+        <input
+          type="text"
+          value={typeof value === 'string' ? value : ''}
+          onChange={(e) => onChange(param.key, e.target.value)}
+          placeholder="comma-separated values"
+          className={INPUT_CLASS}
+        />
+      )}
+
+      {param.description && (
+        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">{param.description}</p>
+      )}
+    </div>
+  );
+}
+
 export default function ParameterForm({ parameters, values, onChange }: ParameterFormProps) {
   const handleChange = useCallback(
-    (key: string, value: unknown) => {
-      onChange(key, value);
-    },
+    (key: string, value: unknown) => onChange(key, value),
     [onChange],
+  );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const { required, advanced } = parameters.reduce(
+    (acc, p) => {
+      (p.advanced ? acc.advanced : acc.required).push(p);
+      return acc;
+    },
+    { required: [] as ParameterDef[], advanced: [] as ParameterDef[] },
   );
 
   return (
     <div className="space-y-4">
-      {parameters.map((param) => {
-        const currentValue = values[param.key];
+      {required.map((param) => (
+        <ParamField key={param.key} param={param} value={values[param.key]} onChange={handleChange} />
+      ))}
 
-        return (
-          <div key={param.key}>
-            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              {param.label}
-              {param.required && <span className="ml-0.5 text-red-500">*</span>}
-            </label>
-
-            {param.type === 'string' && (
-              <input
-                type="text"
-                value={typeof currentValue === 'string' ? currentValue : ''}
-                onChange={(e) => handleChange(param.key, e.target.value)}
-                placeholder={param.default != null ? String(param.default) : undefined}
-                className={INPUT_CLASS}
-              />
-            )}
-
-            {param.type === 'secret' && (
-              <SecretInput
-                value={typeof currentValue === 'string' ? currentValue : ''}
-                onChange={(val) => handleChange(param.key, val)}
-                placeholder={param.default != null ? String(param.default) : undefined}
-              />
-            )}
-
-            {param.type === 'boolean' && (
-              <BooleanSwitch
-                checked={Boolean(currentValue)}
-                onChange={(val) => handleChange(param.key, val)}
-              />
-            )}
-
-            {param.type === 'integer' && (
-              <input
-                type="number"
-                value={typeof currentValue === 'number' ? currentValue : ''}
-                onChange={(e) =>
-                  handleChange(param.key, e.target.value === '' ? '' : Number(e.target.value))
-                }
-                placeholder={param.default != null ? String(param.default) : undefined}
-                className={INPUT_CLASS}
-              />
-            )}
-
-            {param.type === 'string[]' && (
-              <input
-                type="text"
-                value={typeof currentValue === 'string' ? currentValue : ''}
-                onChange={(e) => handleChange(param.key, e.target.value)}
-                placeholder="comma-separated values"
-                className={INPUT_CLASS}
-              />
-            )}
-
-            {param.description && (
-              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">{param.description}</p>
-            )}
-          </div>
-        );
-      })}
+      {advanced.length > 0 && (
+        <div className="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="flex items-center gap-1 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            aria-expanded={advancedOpen}
+          >
+            <ChevronRight
+              size={14}
+              className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}
+            />
+            Advanced settings ({advanced.length})
+          </button>
+          {advancedOpen && (
+            <div className="mt-3 space-y-4 border-l-2 border-gray-100 dark:border-gray-800 pl-3">
+              {advanced.map((param) => (
+                <ParamField key={param.key} param={param} value={values[param.key]} onChange={handleChange} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

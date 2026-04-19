@@ -286,7 +286,7 @@ export const catalogEntries = pgTable('catalog_entries', {
   volumes: jsonb('volumes').$type<Array<{ local_path: string; container_path: string; description?: string; optional?: boolean }> | null>(),
   resources: jsonb('resources').$type<{ recommended: { cpu: string; memory: string; storage?: string }; minimum: { cpu: string; memory: string; storage?: string } } | null>(),
   healthCheck: jsonb('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
-  parameters: jsonb('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string }> | null>(),
+  parameters: jsonb('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string; advanced?: boolean }> | null>(),
   tags: jsonb('tags').$type<string[] | null>(),
   // Runtime/database/service-specific fields
   runtime: varchar('runtime', { length: 50 }),

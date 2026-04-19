@@ -49,6 +49,14 @@ export interface DeployCatalogEntryInput {
   readonly storageRequest?: string;
   readonly configuration?: Record<string, unknown>;
   readonly envVars?: { fixed?: Record<string, string> };
+  /**
+   * Whitelist of env-var names the user may override via `configuration`.
+   * When set, arbitrary `configuration` keys no longer leak into the pod env —
+   * only keys in this list (plus env_vars.fixed / generated) are injected.
+   * Leaving undefined preserves pre-filter (legacy) behavior so older call
+   * sites keep working unchanged.
+   */
+  readonly configurableEnvKeys?: readonly string[];
   /** When true, adds a password-reset init container for reused data */
   readonly reuseExistingData?: boolean;
   /** Catalog entry code (e.g. 'mariadb', 'mysql', 'postgresql') — needed for password reset */
@@ -172,28 +180,90 @@ function buildVolumeMountSpec(
   return { mounts, podVolumes, initDirsContainer };
 }
 
-function buildEnvVars(fixed?: Record<string, string>, configuration?: Record<string, unknown>): Array<{ name: string; value: string }> {
-  const seen = new Set<string>();
-  const envVars: Array<{ name: string; value: string }> = [];
+/**
+ * Expand template tokens in a single env-var value:
+ *   {{SERVICE:<component-name>}} → `${deploymentName}-${component}` (or just
+ *       `${deploymentName}` when the app has one component).
+ *   {{ENV:<env-var-name>}} → value of that env var if already declared in
+ *       this deployment's env map, else throws.
+ *
+ * Unknown component refs throw loudly — a typo would otherwise produce a
+ * silent empty string and confuse debugging later.
+ */
+function expandTokens(
+  raw: string,
+  ctx: { deploymentName: string; componentNames: readonly string[]; componentCount: number; envMap: Map<string, string> },
+): string {
+  let out = raw;
+  out = out.replace(/\{\{SERVICE:([^}]+)\}\}/g, (_m, comp: string) => {
+    const name = comp.trim();
+    if (!ctx.componentNames.includes(name)) {
+      throw new Error(`env template: unknown component "${name}" referenced via {{SERVICE:${name}}}`);
+    }
+    return ctx.componentCount <= 1 ? ctx.deploymentName : `${ctx.deploymentName}-${name}`;
+  });
+  out = out.replace(/\{\{ENV:([^}]+)\}\}/g, (_m, envName: string) => {
+    const name = envName.trim();
+    const v = ctx.envMap.get(name);
+    if (v === undefined) {
+      throw new Error(`env template: unknown env var "${name}" referenced via {{ENV:${name}}}`);
+    }
+    return v;
+  });
+  return out;
+}
 
-  // Fixed env vars take precedence
+function buildEnvVars(
+  fixed: Record<string, string> | undefined,
+  configuration: Record<string, unknown> | undefined,
+  opts: {
+    deploymentName: string;
+    componentNames: readonly string[];
+    componentCount: number;
+    configurableEnvKeys?: readonly string[];
+  },
+): Array<{ name: string; value: string }> {
+  const envMap = new Map<string, string>();
+
+  // Pass 1: fixed env vars — these may contain {{SERVICE:*}} / {{ENV:*}}.
   if (fixed) {
     for (const [key, value] of Object.entries(fixed)) {
-      seen.add(key);
-      envVars.push({ name: key, value });
+      envMap.set(key, value); // raw; tokens expanded in pass 3
     }
   }
 
+  // Pass 2: values from configuration.
+  // - If configurableEnvKeys is set, only those keys + any already-fixed key
+  //   flow through. Arbitrary meta params (e.g. `wordpress.siteTitle`) stay
+  //   in `deployment.configuration` for platform use but aren't container env.
+  // - If unset, pre-filter legacy behavior: every stringish key passes through.
   if (configuration) {
+    const allowed = opts.configurableEnvKeys
+      ? new Set(opts.configurableEnvKeys)
+      : null;
     for (const [key, value] of Object.entries(configuration)) {
-      if (seen.has(key)) continue; // Already set by fixed
+      if (envMap.has(key)) continue; // fixed wins
+      if (allowed && !allowed.has(key)) continue;
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        envVars.push({ name: key, value: String(value) });
+        envMap.set(key, String(value));
       }
     }
   }
 
-  return envVars;
+  // Pass 3: resolve tokens. Uses the map accumulated so far, so {{ENV:X}}
+  // references can point at generated or configurable values.
+  const ctx = {
+    deploymentName: opts.deploymentName,
+    componentNames: opts.componentNames,
+    componentCount: opts.componentCount,
+    envMap,
+  };
+  const expanded = new Map<string, string>();
+  for (const [k, v] of envMap) {
+    expanded.set(k, expandTokens(v, ctx));
+  }
+
+  return Array.from(expanded, ([name, value]) => ({ name, value }));
 }
 
 // ─── Deploy ─────────────────────────────────────────────────────────────────
@@ -202,9 +272,15 @@ export async function deployCatalogEntry(
   k8s: K8sClients,
   input: DeployCatalogEntryInput,
 ): Promise<void> {
-  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars, timezone } = input;
+  const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars, timezone, configurableEnvKeys } = input;
   const componentCount = components.length;
-  const env = buildEnvVars(envVars?.fixed, configuration);
+  const componentNames = components.map(c => c.name);
+  const env = buildEnvVars(envVars?.fixed, configuration, {
+    deploymentName,
+    componentNames,
+    componentCount,
+    configurableEnvKeys,
+  });
 
   // Inject client timezone as TZ env var (respected by most Linux base images)
   if (timezone && !env.some((e) => e.name === 'TZ')) {

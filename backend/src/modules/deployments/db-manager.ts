@@ -141,7 +141,13 @@ async function execInPod(
           tryResolve();
         },
       )
-      .catch(reject);
+      .catch((err) => {
+        // ErrorEvent (from @kubernetes/client-node's WebSocket implementation)
+        // serializes to `{}` — .message still carries the real text. Unwrap it
+        // so the route handler + query-result surfaces a useful error.
+        const msg = err?.message ?? (typeof err === 'string' ? err : 'exec.exec() failed');
+        reject(err instanceof Error ? err : new Error(msg));
+      });
   });
 
   return { stdout: stdout.trim(), stderr: stderr.trim() };
@@ -215,11 +221,17 @@ async function findPodName(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
+  componentName?: string,
 ): Promise<string> {
-  const pods = await k8s.core.listNamespacedPod({
-    namespace,
-    labelSelector: `app=${deploymentName}`,
-  });
+  // The deployer labels pods with `app=<deploymentName>` and, for
+  // multi-component apps, also `component=<componentName>`. Single-component
+  // apps have the component label equal to the entry code — but for selection
+  // purposes the app label alone is enough; for multi-component we must pin
+  // to the DB component or we'll match the wordpress pod instead.
+  const selector = componentName
+    ? `app=${deploymentName},component=${componentName}`
+    : `app=${deploymentName}`;
+  const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: selector });
   const podList =
     (pods as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> })
       .items ?? [];
@@ -229,7 +241,7 @@ async function findPodName(
       'POD_NOT_FOUND',
       'No running pod found for this deployment',
       503,
-      { deployment: deploymentName, namespace },
+      { deployment: deploymentName, namespace, component: componentName },
       'Ensure the database deployment is running before managing databases',
     );
   }
@@ -1049,7 +1061,11 @@ export async function buildDbContext(
   componentName?: string,
 ): Promise<DbManagerContext> {
   const engine = dbEngine ?? detectEngine(catalogEntry);
-  const podName = await findPodName(k8s, namespace, deploymentName);
+  // Pod is labeled `app=<deploymentName>` (raw, same for every component of
+  // the deployment) and — for multi-component apps — `component=<name>`. We
+  // pin both so we don't accidentally target the app pod (e.g. wordpress)
+  // when the DB is just one of several components.
+  const podName = await findPodName(k8s, namespace, deploymentName, componentName);
 
   // Container name: for multi-component apps, use the DB component name;
   // for standalone databases, use the catalog entry code

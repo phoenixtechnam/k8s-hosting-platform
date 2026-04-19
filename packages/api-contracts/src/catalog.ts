@@ -63,6 +63,8 @@ export const parameterSchema = z.object({
   default: z.unknown().optional(),
   required: z.boolean().optional(),
   description: z.string().optional(),
+  /** When true, UI should render this parameter inside a collapsed "Advanced" section on first deploy. */
+  advanced: z.boolean().optional(),
 });
 
 export const catalogEntryResponseSchema = z.object({

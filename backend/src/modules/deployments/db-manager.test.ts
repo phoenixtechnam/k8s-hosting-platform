@@ -184,6 +184,26 @@ describe('db-manager', () => {
         buildDbContext(k8s, undefined, 'client-abc', 'mydb', { runtime: 'mariadb', code: 'mariadb' }, {}),
       ).rejects.toThrow('No running pod found');
     });
+
+    it('multi-component lookup uses component label to disambiguate the DB pod', async () => {
+      // Deployer labels every pod in the deployment with `app=my-wp2` plus
+      // `component=<componentName>`. DB-manager must pin both so it doesn't
+      // pick the wordpress pod when asked for the mariadb one.
+      const listSpy = vi.fn().mockResolvedValue({
+        items: [{ metadata: { name: 'my-wp2-mariadb-xyz' }, status: { phase: 'Running' } }],
+      });
+      const k8s = { core: { listNamespacedPod: listSpy }, apps: {}, networking: {}, custom: {} } as unknown as K8sClients;
+
+      await buildDbContext(
+        k8s, undefined, 'ns-xyz', 'my-wp2',
+        { runtime: undefined, code: 'wordpress' },
+        { MARIADB_ROOT_PASSWORD: 's3cr3t' },
+        'mariadb', 'mariadb',
+      );
+      const args = listSpy.mock.calls[0][0];
+      expect(args.namespace).toBe('ns-xyz');
+      expect(args.labelSelector).toBe('app=my-wp2,component=mariadb');
+    });
   });
 
   describe('listDatabases', () => {

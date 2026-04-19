@@ -425,6 +425,52 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         continue;
       }
 
+      // Validate env_vars template tokens:
+      //   {{SERVICE:<name>}} must reference a declared component.
+      //   {{ENV:<name>}} must reference a declared env var (fixed / generated /
+      //   configurable). Circular or missing references fail here instead of
+      //   at deploy-time where the user sees "deployment failed".
+      const declaredComponents = new Set(
+        ((manifest.components ?? []) as Array<{ name?: string }>)
+          .map(c => c.name).filter((n): n is string => !!n),
+      );
+      const envVarsManifest = (manifest as { env_vars?: { fixed?: Record<string, string>; generated?: string[]; configurable?: string[] } }).env_vars;
+      const declaredEnvNames = new Set<string>([
+        ...Object.keys(envVarsManifest?.fixed ?? {}),
+        ...(envVarsManifest?.generated ?? []),
+        ...(envVarsManifest?.configurable ?? []),
+      ]);
+      let envTplError: string | null = null;
+      const SERVICE_TOKEN = /\{\{SERVICE:([^}]+)\}\}/g;
+      const ENV_TOKEN = /\{\{ENV:([^}]+)\}\}/g;
+      for (const [key, raw] of Object.entries(envVarsManifest?.fixed ?? {})) {
+        if (typeof raw !== 'string') continue;
+        for (const m of raw.matchAll(SERVICE_TOKEN)) {
+          const comp = m[1].trim();
+          if (!declaredComponents.has(comp)) {
+            envTplError = `env_vars.fixed.${key}: {{SERVICE:${comp}}} references unknown component (known: ${[...declaredComponents].join(', ') || 'none'})`;
+            break;
+          }
+        }
+        if (envTplError) break;
+        for (const m of raw.matchAll(ENV_TOKEN)) {
+          const ref = m[1].trim();
+          if (!declaredEnvNames.has(ref)) {
+            envTplError = `env_vars.fixed.${key}: {{ENV:${ref}}} references unknown env var (declared: ${[...declaredEnvNames].join(', ') || 'none'})`;
+            break;
+          }
+          if (ref === key) {
+            envTplError = `env_vars.fixed.${key}: {{ENV:${ref}}} self-references`;
+            break;
+          }
+        }
+        if (envTplError) break;
+      }
+      if (envTplError) {
+        manifestErrors.push(`${code}: ${envTplError}`);
+        continue;
+      }
+
       const entryCode = manifest.code ?? code;
       const [existing] = await db
         .select()

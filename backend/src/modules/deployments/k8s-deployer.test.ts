@@ -159,6 +159,90 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
   });
 });
 
+describe('deployCatalogEntry: env var filtering + templating', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  function envOf(body: { spec: { template: { spec: { containers: Array<{ env?: Array<{ name: string; value: string }> }> } } } }): Record<string, string> {
+    const env = body.spec.template.spec.containers[0].env ?? [];
+    return Object.fromEntries(env.map(e => [e.name, e.value]));
+  }
+
+  it('{{SERVICE:<component>}} resolves to the sibling service name', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      deploymentName: 'my-wp',
+      components: [
+        makeComponent('deployment', { name: 'wordpress', image: 'wp:1', ports: [{ port: 80, protocol: 'TCP' }] }),
+        makeComponent('deployment', { name: 'mariadb',   image: 'mariadb:11.8', ports: [{ port: 3306, protocol: 'TCP' }] }),
+      ],
+      envVars: { fixed: { WORDPRESS_DB_HOST: '{{SERVICE:mariadb}}' } },
+    }));
+    const wpBody = calls.createDeployment.mock.calls.find((c: [{ body: { metadata: { name: string } } }]) => c[0].body.metadata.name === 'my-wp-wordpress')![0].body;
+    expect(envOf(wpBody).WORDPRESS_DB_HOST).toBe('my-wp-mariadb');
+  });
+
+  it('{{ENV:<name>}} resolves to another env var value (password aliasing)', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      deploymentName: 'my-wp',
+      components: [makeComponent('deployment', { name: 'wordpress', image: 'wp:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      envVars: {
+        fixed: { WORDPRESS_DB_PASSWORD: '{{ENV:SHARED_DB_PW}}' },
+        // SHARED_DB_PW comes from generated (stored in configuration by service.ts)
+      },
+      configuration: { SHARED_DB_PW: 'letmein-generated' },
+      configurableEnvKeys: ['SHARED_DB_PW'],
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    const env = envOf(body);
+    expect(env.WORDPRESS_DB_PASSWORD).toBe('letmein-generated');
+  });
+
+  it('unrecognized configuration keys are not leaked into container env', async () => {
+    // The preexisting bug: wordpress.siteTitle etc. landed in pod env.
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'wordpress', image: 'wp:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      envVars: { fixed: { WORDPRESS_DB_NAME: 'wordpress' } },
+      configuration: {
+        'wordpress.siteTitle': 'My Blog',                 // meta param — NOT an env var
+        'WORDPRESS_TABLE_PREFIX': 'wp_',                   // declared configurable — IS an env var
+        'MARIADB_ROOT_PASSWORD': 'autogen-xyz',            // declared generated — IS an env var
+      },
+      configurableEnvKeys: ['WORDPRESS_TABLE_PREFIX', 'MARIADB_ROOT_PASSWORD'],
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    const env = envOf(body);
+    expect(env).toHaveProperty('WORDPRESS_DB_NAME', 'wordpress');
+    expect(env).toHaveProperty('WORDPRESS_TABLE_PREFIX', 'wp_');
+    expect(env).toHaveProperty('MARIADB_ROOT_PASSWORD', 'autogen-xyz');
+    expect(env).not.toHaveProperty('wordpress.siteTitle');
+  });
+
+  it('legacy input (no configurableEnvKeys provided) still accepts configuration keys (backward compat)', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'app', image: 'a:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      configuration: { FOO: 'bar', 'some.meta': 'x' },
+      // configurableEnvKeys deliberately unset
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    const env = envOf(body);
+    // Legacy behavior: all stringish config keys pass through.
+    expect(env.FOO).toBe('bar');
+    expect(env['some.meta']).toBe('x');
+  });
+
+  it('unresolved {{SERVICE:x}} for missing component throws', async () => {
+    const { k8s } = makeK8sMock();
+    await expect(deployCatalogEntry(k8s, baseInput({
+      deploymentName: 'my-wp',
+      components: [makeComponent('deployment', { name: 'wordpress', image: 'wp:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      envVars: { fixed: { WORDPRESS_DB_HOST: '{{SERVICE:nowhere}}' } },
+    }))).rejects.toThrow(/unknown component/i);
+  });
+});
+
 describe('deployCatalogEntry: component type → k8s resource mapping', () => {
   beforeEach(() => {
     vi.restoreAllMocks();

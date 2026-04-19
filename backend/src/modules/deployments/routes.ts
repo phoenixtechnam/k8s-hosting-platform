@@ -388,14 +388,11 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const config = service.parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
 
-    // For multi-component apps, the DB pod name is {deployment}-{componentName}
-    // For single-component, it's just {deployment}
-    const dbPodDeploymentName = components.length > 1
-      ? `${deployment.name}-${dbComponent.name}`
-      : deployment.name;
-
+    // Pods are labeled `app=<deployment.name>` (same label for every
+    // component); the component distinguishes which pod is the DB one.
+    // `buildDbContext` uses both labels to find the DB pod.
     const ctx = await dbManager.buildDbContext(
-      k8s, kubeconfigPath, namespace, dbPodDeploymentName, entry,
+      k8s, kubeconfigPath, namespace, deployment.name, entry,
       config, dbComponent.database as dbManager.Engine, dbComponent.name,
     );
     const deploymentSubPath = deployment.storagePath ?? `databases/${deployment.name}`;

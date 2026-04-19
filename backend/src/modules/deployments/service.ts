@@ -100,6 +100,7 @@ export interface ResolvedDeploymentConfig {
   readonly volumes: Array<{ container_path: string }>;
   readonly fixedEnvVars: Record<string, string>;
   readonly generatedEnvKeys: readonly string[];
+  readonly configurableEnvKeys: readonly string[];
   readonly installedVersion: string | null;
 }
 
@@ -162,11 +163,24 @@ export async function resolveVersionAwareDeploymentConfig(
     ...(versionEnvVars?.fixed ?? {}),
   };
 
+  // Env-var names that may come from `configuration` at deploy time.
+  // Includes both user-configurable names AND generated-secret names, because
+  // service.ts stores generated values in `configuration` so the deployer
+  // can hand them off as container env vars and SQL Manager can read them
+  // later. Meta parameters (e.g. `wordpress.siteTitle`) intentionally stay
+  // out of this list so they don't leak into the pod env.
+  const versionConfigurable = versionEnvVars?.configurable && versionEnvVars.configurable.length > 0
+    ? versionEnvVars.configurable
+    : (entryEnvVars?.configurable ?? []);
+  const generated = entryEnvVars?.generated ?? [];
+  const configurableEnvKeys = Array.from(new Set([...versionConfigurable, ...generated]));
+
   return {
     components,
     volumes,
     fixedEnvVars,
     generatedEnvKeys: entryEnvVars?.generated ?? [],
+    configurableEnvKeys,
     installedVersion: versionRecord?.version ?? null,
   };
 }
@@ -203,7 +217,7 @@ export async function createDeployment(
 
   // Resolve version-aware configuration: components, volumes, env vars
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);
-  const { components, volumes, fixedEnvVars, generatedEnvKeys, installedVersion } = resolved;
+  const { components, volumes, fixedEnvVars, generatedEnvKeys, configurableEnvKeys, installedVersion } = resolved;
   const namespace = client.kubernetesNamespace;
 
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
@@ -280,6 +294,7 @@ export async function createDeployment(
         storageRequest,
         configuration: finalConfiguration,
         envVars: finalEnvVars,
+        configurableEnvKeys,
         reuseExistingData: input.storage_mode === 'custom',
         catalogCode: entry.code,
         passwordEnvVar,
@@ -745,6 +760,7 @@ export async function updateDeploymentResources(
           storageRequest,
           configuration: config,
           envVars: { fixed: resolved.fixedEnvVars },
+          configurableEnvKeys: resolved.configurableEnvKeys,
         });
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
@@ -860,6 +876,7 @@ export async function redeployWithCurrentConfig(
     storageRequest,
     configuration: config,
     envVars: { fixed: resolved.fixedEnvVars },
+    configurableEnvKeys: resolved.configurableEnvKeys,
   });
 
   // Force pod restart by deleting existing pods — K8s recreates from updated spec.
