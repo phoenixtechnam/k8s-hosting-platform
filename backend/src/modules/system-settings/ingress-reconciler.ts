@@ -64,15 +64,36 @@ const PANEL_SERVICES: Record<'admin' | 'client', string> = {
  * Extract a bare hostname from a URL string. Returns null for empty,
  * malformed, or unparseable input — caller must treat null as "skip this
  * rule", never as "omit the host field" in the Ingress spec.
+ *
+ * Enforces that the hostname is something cert-manager can realistically
+ * issue a cert for:
+ *   - must be a DNS name, not an IPv4/IPv6 literal (Let's Encrypt can't
+ *     issue for bare IPs; putting one into spec.tls.hosts would leave the
+ *     Certificate stuck in pending forever)
+ *   - must not be `localhost` or a single-label name (same reason)
+ *   - must pass a conservative FQDN regex (RFC-1123 labels, at least one
+ *     dot). Wildcard not allowed at the API level.
+ * Invalid input → null, logged at the call site as "skipping bad host".
  */
+const FQDN_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$/i;
+const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
 export function extractHost(url: string | null | undefined): string | null {
   if (!url || typeof url !== 'string') return null;
+  let host: string;
   try {
-    const parsed = new URL(url);
-    return parsed.hostname || null;
+    host = new URL(url).hostname;
   } catch {
     return null;
   }
+  if (!host) return null;
+  // Strip surrounding brackets on IPv6 literals
+  const normalized = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (IPV4_RE.test(normalized)) return null;
+  if (normalized.includes(':')) return null; // IPv6 literal
+  if (normalized === 'localhost') return null;
+  if (!FQDN_RE.test(normalized)) return null;
+  return normalized.toLowerCase();
 }
 
 // ─── Core reconciler ─────────────────────────────────────────────────────

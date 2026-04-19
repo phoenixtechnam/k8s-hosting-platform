@@ -12,6 +12,9 @@ describe('extractHost', () => {
   it('extracts host from URL with path', () => {
     expect(extractHost('https://admin.example.com/panel')).toBe('admin.example.com');
   });
+  it('normalizes uppercase hostnames to lowercase', () => {
+    expect(extractHost('https://ADMIN.Example.COM')).toBe('admin.example.com');
+  });
   it('returns null for empty string', () => {
     expect(extractHost('')).toBeNull();
   });
@@ -22,6 +25,25 @@ describe('extractHost', () => {
   it('returns null for malformed URL', () => {
     expect(extractHost('not-a-url')).toBeNull();
     expect(extractHost('://missing-scheme')).toBeNull();
+  });
+  it('rejects IPv4 literals (cert-manager cannot issue for bare IPs)', () => {
+    expect(extractHost('https://192.168.1.1')).toBeNull();
+    expect(extractHost('http://10.0.0.1:2010')).toBeNull();
+  });
+  it('rejects IPv6 literals', () => {
+    expect(extractHost('https://[::1]')).toBeNull();
+    expect(extractHost('https://[2001:db8::1]')).toBeNull();
+  });
+  it('rejects localhost and other single-label names', () => {
+    expect(extractHost('https://localhost')).toBeNull();
+    expect(extractHost('https://intranet')).toBeNull();
+  });
+  it('accepts nested subdomains', () => {
+    expect(extractHost('https://a.b.c.example.com')).toBe('a.b.c.example.com');
+  });
+  it('rejects labels that start or end with a hyphen', () => {
+    expect(extractHost('https://-invalid.example.com')).toBeNull();
+    expect(extractHost('https://invalid-.example.com')).toBeNull();
   });
 });
 
