@@ -152,4 +152,97 @@ describe('reconcileIngressHosts', () => {
     expect(applied.spec.rules).toHaveLength(1);
     expect(applied.spec.rules[0].host).toBe('my.example.com');
   });
+
+  describe('oauth2-proxy /oauth2 path routing', () => {
+    it('adds a /oauth2 path rule to the admin host when protectAdminViaProxy is true', async () => {
+      const deps = mockDeps();
+      await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        clientPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectAdminViaProxy: true,
+      }, deps);
+      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const adminRule = applied.spec.rules.find((r: { host: string }) => r.host === 'admin.example.com');
+      expect(adminRule).toBeDefined();
+      // Expect TWO paths on the admin rule: /oauth2 (for oauth2-proxy) + /
+      // (for the admin panel). Order matters — nginx-ingress uses longest
+      // prefix match, but explicit /oauth2 first makes the intent clear.
+      expect(adminRule.http.paths).toHaveLength(2);
+      const oauth2Path = adminRule.http.paths.find((p: { path: string }) => p.path === '/oauth2');
+      expect(oauth2Path).toBeDefined();
+      expect(oauth2Path.pathType).toBe('Prefix');
+      expect(oauth2Path.backend.service.name).toBe('oauth2-proxy');
+      expect(oauth2Path.backend.service.port.number).toBe(4180);
+      const rootPath = adminRule.http.paths.find((p: { path: string }) => p.path === '/');
+      expect(rootPath.backend.service.name).toBe('admin-panel');
+    });
+
+    it('adds /oauth2 to the client host when protectClientViaProxy is true (admin unchanged)', async () => {
+      const deps = mockDeps();
+      await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        clientPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectClientViaProxy: true,
+      }, deps);
+      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const adminRule = applied.spec.rules.find((r: { host: string }) => r.host === 'admin.example.com');
+      const clientRule = applied.spec.rules.find((r: { host: string }) => r.host === 'my.example.com');
+      expect(adminRule.http.paths).toHaveLength(1); // admin has no /oauth2 — not protected
+      expect(clientRule.http.paths).toHaveLength(2);
+      const oauth2Path = clientRule.http.paths.find((p: { path: string }) => p.path === '/oauth2');
+      expect(oauth2Path.backend.service.name).toBe('oauth2-proxy');
+    });
+
+    it('emits /oauth2 on both hosts when both panels are protected', async () => {
+      const deps = mockDeps();
+      await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        clientPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectAdminViaProxy: true,
+        protectClientViaProxy: true,
+      }, deps);
+      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      for (const rule of applied.spec.rules) {
+        expect(rule.http.paths.some((p: { path: string }) => p.path === '/oauth2')).toBe(true);
+      }
+    });
+
+    it('does not add /oauth2 when neither flag is set (default behaviour unchanged)', async () => {
+      const deps = mockDeps();
+      await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        clientPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+      }, deps);
+      const applied = (deps.serverSideApply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      for (const rule of applied.spec.rules) {
+        expect(rule.http.paths).toHaveLength(1);
+        expect(rule.http.paths[0].path).toBe('/');
+      }
+    });
+
+    it('reconciles when toggling protection (current has /oauth2, desired does not)', async () => {
+      const deps = mockDeps({
+        rules: [
+          { host: 'admin.example.com', serviceName: 'admin-panel' },
+          { host: 'my.example.com', serviceName: 'client-panel' },
+        ],
+        tlsHosts: ['admin.example.com', 'my.example.com'],
+        tlsSecret: 'platform-tls',
+      });
+      const result = await reconcileIngressHosts({
+        adminPanelUrl: 'https://admin.example.com',
+        clientPanelUrl: 'https://my.example.com',
+        tlsSecretName: 'platform-tls',
+        protectAdminViaProxy: true,
+      }, deps);
+      // Hosts are the same but protection flag added → the reconciler
+      // MUST call serverSideApply to add the /oauth2 path rule.
+      expect(result.changed).toBe(true);
+      expect(deps.serverSideApply).toHaveBeenCalled();
+    });
+  });
 });

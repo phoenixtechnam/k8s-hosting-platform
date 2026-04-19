@@ -21,6 +21,20 @@ export interface IngressReconcileInput {
   readonly adminPanelUrl: string | null;
   readonly clientPanelUrl: string | null;
   readonly tlsSecretName: string;
+  /**
+   * When true, the reconciler emits a `/oauth2` prefix path rule on the
+   * admin host pointing at the oauth2-proxy Service. Required for
+   * transparent oauth2-proxy protection: without this rule, the browser's
+   * redirect to `admin.<base>/oauth2/start` 404s because the Ingress only
+   * routes `/` to the admin panel.
+   *
+   * The auth_request annotations set by ingress-proxy-manager live in
+   * Ingress metadata and are preserved across reconciles; this flag only
+   * affects spec.rules.
+   */
+  readonly protectAdminViaProxy?: boolean;
+  /** Same as protectAdminViaProxy but for the client panel host. */
+  readonly protectClientViaProxy?: boolean;
 }
 
 export interface IngressReconcileResult {
@@ -28,7 +42,12 @@ export interface IngressReconcileResult {
 }
 
 export interface IngressCurrentSpec {
-  readonly rules: ReadonlyArray<{ readonly host: string; readonly serviceName: string }>;
+  readonly rules: ReadonlyArray<{
+    readonly host: string;
+    readonly serviceName: string;
+    /** Backend service at the /oauth2 prefix if present (non-panel route). */
+    readonly oauth2Backend?: string | null;
+  }>;
   readonly tlsHosts: ReadonlyArray<string>;
   readonly tlsSecret: string | null;
 }
@@ -57,6 +76,9 @@ const PANEL_SERVICES: Record<'admin' | 'client', string> = {
   admin: 'admin-panel',
   client: 'client-panel',
 };
+
+const OAUTH2_PROXY_SERVICE = 'oauth2-proxy';
+const OAUTH2_PROXY_PORT = 4180;
 
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
@@ -114,15 +136,39 @@ export async function reconcileIngressHosts(
     return { changed: false };
   }
 
-  const desiredRules: Array<{ host: string; serviceName: string }> = [];
-  if (adminHost) desiredRules.push({ host: adminHost, serviceName: PANEL_SERVICES.admin });
-  if (clientHost) desiredRules.push({ host: clientHost, serviceName: PANEL_SERVICES.client });
+  interface DesiredRule {
+    host: string;
+    serviceName: string;
+    oauth2: boolean;
+  }
+  const desiredRules: DesiredRule[] = [];
+  if (adminHost) {
+    desiredRules.push({
+      host: adminHost,
+      serviceName: PANEL_SERVICES.admin,
+      oauth2: input.protectAdminViaProxy === true,
+    });
+  }
+  if (clientHost) {
+    desiredRules.push({
+      host: clientHost,
+      serviceName: PANEL_SERVICES.client,
+      oauth2: input.protectClientViaProxy === true,
+    });
+  }
 
   const current = await d.readCurrent();
   if (current) {
     const same =
       current.rules.length === desiredRules.length &&
-      current.rules.every((r, i) => r.host === desiredRules[i].host && r.serviceName === desiredRules[i].serviceName) &&
+      current.rules.every((r, i) => {
+        const currentOauth2 = r.oauth2Backend === OAUTH2_PROXY_SERVICE;
+        return (
+          r.host === desiredRules[i].host &&
+          r.serviceName === desiredRules[i].serviceName &&
+          currentOauth2 === desiredRules[i].oauth2
+        );
+      }) &&
       current.tlsSecret === input.tlsSecretName &&
       current.tlsHosts.length === desiredRules.length &&
       current.tlsHosts.every((h, i) => h === desiredRules[i].host);
@@ -145,16 +191,25 @@ export async function reconcileIngressHosts(
     },
     spec: {
       ingressClassName,
-      rules: desiredRules.map(({ host, serviceName }) => ({
-        host,
-        http: {
-          paths: [{
-            path: '/',
+      rules: desiredRules.map(({ host, serviceName, oauth2 }) => {
+        const paths: Array<Record<string, unknown>> = [];
+        // List /oauth2 FIRST — nginx-ingress uses longest-prefix match so
+        // order is cosmetic, but putting the more-specific path first keeps
+        // kubectl describe output readable.
+        if (oauth2) {
+          paths.push({
+            path: '/oauth2',
             pathType: 'Prefix',
-            backend: { service: { name: serviceName, port: { number: 80 } } },
-          }],
-        },
-      })),
+            backend: { service: { name: OAUTH2_PROXY_SERVICE, port: { number: OAUTH2_PROXY_PORT } } },
+          });
+        }
+        paths.push({
+          path: '/',
+          pathType: 'Prefix',
+          backend: { service: { name: serviceName, port: { number: 80 } } },
+        });
+        return { host, http: { paths } };
+      }),
       tls: [{
         hosts: desiredRules.map((r) => r.host),
         secretName: input.tlsSecretName,
@@ -180,10 +235,18 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
     readCurrent: async () => {
       try {
         const res = await networking.readNamespacedIngress({ namespace, name: ingressName });
-        const rules = (res.spec?.rules ?? []).map((r) => ({
-          host: r.host ?? '',
-          serviceName: r.http?.paths?.[0]?.backend?.service?.name ?? '',
-        }));
+        const rules = (res.spec?.rules ?? []).map((r) => {
+          const paths = r.http?.paths ?? [];
+          // Panel route: whichever path maps to `/` (or the only path).
+          const panelPath = paths.find((p) => p.path === '/') ?? paths[paths.length - 1];
+          // /oauth2 route: explicit match on path prefix.
+          const oauth2Path = paths.find((p) => p.path === '/oauth2');
+          return {
+            host: r.host ?? '',
+            serviceName: panelPath?.backend?.service?.name ?? '',
+            oauth2Backend: oauth2Path?.backend?.service?.name ?? null,
+          };
+        });
         const tls = res.spec?.tls?.[0];
         return {
           rules,

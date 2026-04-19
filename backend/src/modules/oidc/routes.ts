@@ -236,6 +236,30 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
           await syncOAuth2ProxySecret(k8s, cookieSecret);
         }
       }
+
+      // Also reconcile spec.rules so the /oauth2 path rule is added/removed
+      // on each protected panel host. syncProxyIngressAnnotations only
+      // touches metadata.annotations — without this call, enabling
+      // protection 302s the browser to /oauth2/start which nginx-ingress
+      // has no path rule for, falling through to the panel backend and
+      // producing a 404.
+      const { getSettings } = await import('../system-settings/service.js');
+      const { reconcileIngressHosts } = await import('../system-settings/ingress-reconciler.js');
+      const sysSettings = await getSettings(app.db);
+      const cfg = app.config as Record<string, unknown>;
+      const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
+      const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
+      await reconcileIngressHosts(
+        {
+          adminPanelUrl: sysSettings.adminPanelUrl ?? null,
+          clientPanelUrl: sysSettings.clientPanelUrl ?? null,
+          tlsSecretName,
+          protectAdminViaProxy: settings.protectAdminViaProxy,
+          protectClientViaProxy: settings.protectClientViaProxy,
+        },
+        undefined,
+        { kubeconfigPath, clusterIssuerName },
+      );
     } catch (err) {
       app.log.warn({ err }, 'Failed to sync OAuth2 proxy Ingress annotations — K8s may be unavailable');
     }

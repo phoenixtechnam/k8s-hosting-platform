@@ -106,11 +106,17 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       const tlsSecretName = resolveTlsSecretName(app.config);
       const clusterIssuerName = (app.config as Record<string, unknown>).CLUSTER_ISSUER_NAME as string | undefined;
       try {
+        // Read OIDC proxy settings so /oauth2 path rules stay in sync
+        // with the current protection state.
+        const { getGlobalSettings } = await import('../oidc/service.js');
+        const oidc = await getGlobalSettings(app.db);
         const result = await reconcileIngressHosts(
           {
             adminPanelUrl: updated.adminPanelUrl ?? null,
             clientPanelUrl: updated.clientPanelUrl ?? null,
             tlsSecretName,
+            protectAdminViaProxy: oidc.protectAdminViaProxy,
+            protectClientViaProxy: oidc.protectClientViaProxy,
           },
           undefined,
           { kubeconfigPath, clusterIssuerName },

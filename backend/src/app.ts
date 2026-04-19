@@ -320,7 +320,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       try {
         const { getSettings } = await import('./modules/system-settings/service.js');
         const { reconcileIngressHosts } = await import('./modules/system-settings/ingress-reconciler.js');
-        const settings = await getSettings(app.db);
+        const { getGlobalSettings: getOidcSettings } = await import('./modules/oidc/service.js');
+        const [settings, oidc] = await Promise.all([
+          getSettings(app.db),
+          getOidcSettings(app.db),
+        ]);
         const cfg = app.config as Record<string, unknown>;
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
         const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
@@ -330,6 +334,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             adminPanelUrl: settings.adminPanelUrl ?? null,
             clientPanelUrl: settings.clientPanelUrl ?? null,
             tlsSecretName,
+            protectAdminViaProxy: oidc.protectAdminViaProxy,
+            protectClientViaProxy: oidc.protectClientViaProxy,
           },
           undefined,
           { kubeconfigPath, clusterIssuerName },
