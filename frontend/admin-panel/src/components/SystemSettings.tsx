@@ -116,7 +116,7 @@ export default function SystemSettingsForm() {
                 data-testid="admin-panel-url-input"
               />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Hostname is applied to the platform Ingress on save. cert-manager issues a TLS cert automatically. DNS must be configured externally to point at the cluster LB.
+                Hostname is applied to the platform Ingress on save. cert-manager issues a TLS cert automatically.
               </p>
             </div>
             <div>
@@ -135,6 +135,15 @@ export default function SystemSettingsForm() {
                 Same routing semantics as Admin Panel URL.
               </p>
             </div>
+          </div>
+
+          <div
+            className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200"
+            data-testid="panel-url-dns-note"
+          >
+            <span className="leading-5">
+              <strong>Before saving in production:</strong> point the hostname&apos;s DNS record at the cluster&apos;s load balancer IP first. With Let&apos;s Encrypt (HTTP-01), cert-manager can&apos;t issue a cert until the hostname resolves — HTTPS will serve a stale cert for 30-60s until DNS propagates. Hostnames must be FQDNs; IP literals and <code className="font-mono">localhost</code> are rejected at save.
+            </span>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
