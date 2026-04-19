@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Loader2,
   AlertTriangle,
+  Info,
   X,
 } from 'lucide-react';
 import { useStalwartCredentials, useRotateStalwartPassword } from '@/hooks/use-stalwart';
@@ -44,6 +45,29 @@ export default function StalwartAdminPanel() {
         not exposed publicly — it is served through the admin panel origin,
         so only authenticated platform admins can reach it.
       </p>
+
+      <div
+        role="note"
+        data-testid="stalwart-sql-directory-note"
+        className="flex items-start gap-2.5 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-900/20 px-3 py-2.5 text-sm text-blue-900 dark:text-blue-200"
+      >
+        <Info size={16} className="mt-0.5 shrink-0 text-blue-600 dark:text-blue-300" />
+        <div>
+          <p>
+            Platform mailboxes and domains <strong>will not appear</strong> in
+            Stalwart&apos;s <em>Accounts</em> or <em>Domains</em> pages.
+            Stalwart reads them directly from the platform database via a
+            read-only SQL directory, so they&apos;re invisible to Stalwart&apos;s
+            internal principal store — but authentication, routing, and
+            delivery all work normally.
+          </p>
+          <p className="mt-1 text-blue-800 dark:text-blue-300">
+            Use this admin panel for per-tenant mailboxes and domains. Use the
+            Stalwart UI for operational mail-server config (spam scoring, DNSBL,
+            TLS, ACLs, queue inspection).
+          </p>
+        </div>
+      </div>
 
       <div className="flex flex-wrap gap-3">
         <button
