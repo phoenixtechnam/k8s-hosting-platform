@@ -196,3 +196,62 @@ describe('ClientDetail resource tabs', () => {
     expect(screen.getByTestId('resource-tabs')).toBeInTheDocument();
   });
 });
+
+describe('ClientDetail impersonation', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('opens the impersonation tab at the URL configured in System Settings, not the build-time env', async () => {
+    // /system-info returns an admin-chosen clientPanelUrl. The
+    // "Login as Client" button must use THIS value, not the runtime-config
+    // fallback. A trailing slash on the configured URL must be stripped
+    // so we don't produce "https://x//login".
+    mockApiFetch.mockImplementation((path: string, options?: { method?: string }) => {
+      if (options?.method === 'POST' && path.includes('/impersonate/')) {
+        return Promise.resolve({
+          data: {
+            token: 'imp-token-xyz',
+            user: { id: 'user-999', email: 'admin@acme.com', role: 'client_admin' },
+            impersonatedBy: 'super-admin',
+          },
+        });
+      }
+      if (path.includes('/system-info')) {
+        return Promise.resolve({
+          data: {
+            platformName: 'Acme Host',
+            supportEmail: null,
+            supportUrl: null,
+            adminPanelUrl: 'https://admin.acme.com',
+            clientPanelUrl: 'https://my.acme.com/', // trailing slash on purpose
+          },
+        });
+      }
+      if (path.includes('/deployments')) return Promise.resolve(MOCK_DEPLOYMENTS);
+      if (path.includes('/backups')) return Promise.resolve(MOCK_BACKUPS);
+      if (path.includes('/mailboxes')) return Promise.resolve(MOCK_MAILBOXES);
+      if (path.includes('/email/domains')) return Promise.resolve(MOCK_EMAIL_DOMAINS);
+      if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
+      if (path.match(/\/clients\/client-001$/)) return Promise.resolve(MOCK_CLIENT);
+      return Promise.resolve({ data: [] });
+    });
+
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    renderClientDetail();
+    await waitFor(() => {
+      expect(screen.getByTestId('impersonate-button')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('impersonate-button'));
+
+    await waitFor(() => {
+      expect(openSpy).toHaveBeenCalledTimes(1);
+    });
+    const openedUrl = openSpy.mock.calls[0][0] as string;
+    // DB URL wins, trailing slash stripped, token + user encoded.
+    expect(openedUrl).toMatch(/^https:\/\/my\.acme\.com\/login\?token=imp-token-xyz&user=/);
+    expect(openedUrl).not.toContain('//login'); // double slash check
+    openSpy.mockRestore();
+  });
+});

@@ -14,6 +14,7 @@ import { useDeployments, useRestartDeployment, useBulkRestartDeployments } from 
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
 import { useImpersonate } from '@/hooks/use-impersonate';
+import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
 import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type MailSubmitRotateResult, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
@@ -50,6 +51,7 @@ export default function ClientDetail() {
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
   const impersonate = useImpersonate();
+  const systemInfo = useSystemInfo();
   const triggerProvision = useTriggerProvisioning();
   const triggerDecommission = useTriggerDecommission();
   const bulkRestart = useBulkRestartDeployments();
@@ -142,10 +144,21 @@ export default function ClientDetail() {
           <button
             onClick={async () => {
               if (!id) return;
+              // Prefer the admin-configured clientPanelUrl from System Settings
+              // (served via /api/v1/system-info) over the build-time env fallback
+              // (config.CLIENT_PANEL_URL) — the former is what the operator
+              // actually wants customers to see and what the Ingress reconciler
+              // points at. Trim trailing slash so we don't build "https://x//login".
+              const rawFromDb = systemInfo.data?.clientPanelUrl ?? '';
+              const clientPanelUrl = (rawFromDb.trim() || config.CLIENT_PANEL_URL).replace(/\/+$/, '');
+              if (!clientPanelUrl) {
+                // Neither source populated — bail before opening a broken tab.
+                alert('Client Panel URL is not configured. Set it in System Settings before using "Login as Client".');
+                return;
+              }
               try {
                 const res = await impersonate.mutateAsync(id);
                 const data = res.data;
-                const clientPanelUrl = config.CLIENT_PANEL_URL;
                 const userJson = encodeURIComponent(JSON.stringify(data.user));
                 window.open(`${clientPanelUrl}/login?token=${data.token}&user=${userJson}`, '_blank');
               } catch { /* error shown via impersonate.error */ }
