@@ -312,6 +312,38 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         console.warn('[redis] Failed to connect on startup:', err instanceof Error ? err.message : String(err));
       }
 
+      // Reconcile platform-ingress hosts from the DB-configured panel URLs.
+      // Kustomize overlays no longer hardcode spec.rules/tls — platform-api
+      // owns them via server-side apply. On every startup we sync the live
+      // Ingress with whatever URLs are currently in system_settings so
+      // restarts and redeploys converge to the desired state.
+      try {
+        const { getSettings } = await import('./modules/system-settings/service.js');
+        const { reconcileIngressHosts } = await import('./modules/system-settings/ingress-reconciler.js');
+        const settings = await getSettings(app.db);
+        const cfg = app.config as Record<string, unknown>;
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined) ?? 'platform-dev-tls';
+        const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
+        const result = await reconcileIngressHosts(
+          {
+            adminPanelUrl: settings.adminPanelUrl ?? null,
+            clientPanelUrl: settings.clientPanelUrl ?? null,
+            tlsSecretName,
+          },
+          undefined,
+          { kubeconfigPath, clusterIssuerName },
+        );
+        if (result.changed) {
+          app.log.info(
+            { adminPanelUrl: settings.adminPanelUrl, clientPanelUrl: settings.clientPanelUrl },
+            'startup: ingress hosts reconciled from DB',
+          );
+        }
+      } catch (err) {
+        app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
+      }
+
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
 

@@ -3,6 +3,7 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
+import { reconcileIngressHosts } from './ingress-reconciler.js';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -67,6 +68,40 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
     }
 
     const updated = await service.updateSettings(app.db, parsed.data);
+
+    // If either panel URL changed, reconcile the Ingress hosts so traffic
+    // to the new hostname is actually served. Non-blocking on failure —
+    // the DB write is the authoritative change; the reconciler will retry
+    // on next startup if this call hits a transient k8s error.
+    if (parsed.data.adminPanelUrl !== undefined || parsed.data.clientPanelUrl !== undefined) {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      const tlsSecretName = (app.config as Record<string, unknown>).PLATFORM_TLS_SECRET_NAME as string | undefined
+        ?? 'platform-dev-tls';
+      const clusterIssuerName = (app.config as Record<string, unknown>).CLUSTER_ISSUER_NAME as string | undefined;
+      try {
+        const result = await reconcileIngressHosts(
+          {
+            adminPanelUrl: updated.adminPanelUrl ?? null,
+            clientPanelUrl: updated.clientPanelUrl ?? null,
+            tlsSecretName,
+          },
+          undefined,
+          { kubeconfigPath, clusterIssuerName },
+        );
+        if (result.changed) {
+          app.log.info(
+            { adminPanelUrl: updated.adminPanelUrl, clientPanelUrl: updated.clientPanelUrl },
+            'system-settings: ingress hosts reconciled',
+          );
+        }
+      } catch (err) {
+        app.log.warn(
+          { err, adminPanelUrl: updated.adminPanelUrl, clientPanelUrl: updated.clientPanelUrl },
+          'system-settings: ingress reconcile failed (non-blocking)',
+        );
+      }
+    }
+
     return success(updated);
   });
 }
