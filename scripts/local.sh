@@ -383,8 +383,35 @@ cmd_up() {
 
   _phase "kustomize apply"
   _apply_dev_overlay
+
+  # Rollout-restart any deployments whose image actually changed. Without this,
+  # a rebuild with the same `:local` tag leaves the old pod running because the
+  # Deployment spec didn't change. cmd_rebuild does this too — the warm-path
+  # of cmd_up needs the same behaviour.
+  local state_file="${PROJECT_DIR}/.local.build-state"
+  local changed_deploys=()
+  if grep -q '^HP_IMAGE_CHANGED_backend=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/platform-api)
+  fi
+  if grep -q '^HP_IMAGE_CHANGED_admin-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/admin-panel)
+  fi
+  if grep -q '^HP_IMAGE_CHANGED_client-panel=' "$state_file" 2>/dev/null; then
+    changed_deploys+=(deploy/client-panel)
+  fi
+  if (( ${#changed_deploys[@]} > 0 )); then
+    _phase "rollout restart (changed images)"
+    echo "Rolling out: ${changed_deploys[*]}"
+    k3s_exec kubectl rollout restart "${changed_deploys[@]}" -n platform
+  fi
+
   _phase "wait for pods"
   _wait_for_pods platform
+  if (( ${#changed_deploys[@]} > 0 )); then
+    for d in "${changed_deploys[@]}"; do
+      k3s_exec kubectl rollout status "$d" -n platform --timeout=120s
+    done
+  fi
   _phase "migrations + seed"
   _run_migrations_and_seed
   _phase "post-bootstrap"
