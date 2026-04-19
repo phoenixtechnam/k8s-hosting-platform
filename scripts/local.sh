@@ -316,7 +316,20 @@ _run_migrations_and_seed() {
     echo "  ERROR: migrations failed"
     return 1
   fi
-  k3s_exec kubectl exec -n platform deploy/platform-api -- node dist/db/seed.js 2>&1 | tail -8 | sed 's/^/  /' || true
+  # Inject local-dev system_settings defaults so a fresh `reset` + `up`
+  # comes up with usable branding already populated. seed.ts respects
+  # admin-configured values (uses COALESCE in ON CONFLICT DO UPDATE), so
+  # running this repeatedly never clobbers a value the admin has changed.
+  # kubectl exec has no --env flag (that's for `kubectl run`), so we wrap
+  # in sh -c and export each value inline.
+  k3s_exec kubectl exec -n platform deploy/platform-api -- sh -c '
+    export ADMIN_PANEL_URL="http://admin.k8s-platform.test:2010"
+    export CLIENT_PANEL_URL="http://client.k8s-platform.test:2010"
+    export SUPPORT_EMAIL="admin@k8s-platform.test"
+    export INGRESS_BASE_DOMAIN="k8s-platform.test"
+    export PLATFORM_NAME="Hosting Platform (local dev)"
+    node dist/db/seed.js
+  ' 2>&1 | tail -10 | sed 's/^/  /' || true
 }
 
 _bootstrap_stalwart_reader() {

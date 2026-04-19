@@ -802,6 +802,13 @@ create_platform_configmap() {
     issuer_name="local-ca-issuer"
   fi
 
+  # Support-email default: reuse the operator's ACME email if available —
+  # that's already a verified contact address, and the operator typically
+  # wants support requests to route to them on a fresh install. Override
+  # post-install via the System Settings UI.
+  local support_email="${SUPPORT_EMAIL:-${ACME_EMAIL:-}}"
+  local platform_name_value="${PLATFORM_NAME:-Hosting Platform}"
+
   kctl create configmap platform-config \
     --namespace=platform \
     --from-literal=environment="$PLATFORM_ENV" \
@@ -814,6 +821,9 @@ create_platform_configmap() {
     --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=client-url="https://client.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=cors-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=support-email="$support_email" \
+    --from-literal=support-url="${SUPPORT_URL:-}" \
+    --from-literal=platform-name="$platform_name_value" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }

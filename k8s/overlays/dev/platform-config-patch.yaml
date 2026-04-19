@@ -9,8 +9,13 @@ data:
   default-storage-class: "local-path"
   ingress-base-domain: "k8s-platform.test"
   cluster-issuer-name: "selfsigned-issuer"
-  admin-url: "http://admin.k8s-platform.test"
-  client-url: "http://client.k8s-platform.test"
+  # Display URLs for outbound emails + UI footer. These are what the
+  # operator visits in their browser, so they include the dev NodePort :2010.
+  # NOT what the in-cluster services use for routing.
+  admin-url: "http://admin.k8s-platform.test:2010"
+  client-url: "http://client.k8s-platform.test:2010"
+  support-email: "admin@k8s-platform.test"
+  platform-name: "Hosting Platform (local dev)"
   # Stalwart web-admin subdomain. Lives on :2011 (HTTPS w/ self-signed CA)
   # same as admin.* and client.*. Requires /etc/hosts entry mapping
   # mail-admin.k8s-platform.test to 127.0.0.1 — `./scripts/local.sh mail-up`
