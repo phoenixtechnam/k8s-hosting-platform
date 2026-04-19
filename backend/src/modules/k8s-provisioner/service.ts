@@ -23,6 +23,60 @@ function isK8s409(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Extract a single-line, human-readable message from a k8s client error.
+ * @kubernetes/client-node v1.4 throws HttpException whose `.message` embeds
+ * the full response (code, headers, JSON body). Raw, this is useless in a UI —
+ * we want just the `status.message` field when available, otherwise the first
+ * line of the error message.
+ */
+export function formatK8sError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+
+  // @kubernetes/client-node v1.4 embeds the response body as
+  // `Body: "<json-stringified-Status>"`. The body is double-escaped (a JSON
+  // string wrapping a JSON string), so keys/values look like \"message\":\"...\".
+  // Try progressively fewer escape levels until JSON.parse succeeds, then
+  // read `.message`. This is more robust than a hand-rolled regex.
+  const bodyMatch = raw.match(/Body:\s*(.+?)(?:\n|$)/s);
+  if (bodyMatch) {
+    let candidate = bodyMatch[1].trim();
+    // Strip an outer set of quotes if present
+    if (candidate.startsWith('"') && candidate.endsWith('"')) {
+      candidate = candidate.slice(1, -1);
+    }
+    // Try up to 3 unescape levels
+    for (let i = 0; i < 3; i++) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object' && typeof (parsed as { message?: unknown }).message === 'string') {
+          const body = parsed as { message: string; code?: number };
+          const codeSuffix = typeof body.code === 'number' ? ` (HTTP ${body.code})` : '';
+          return `${body.message}${codeSuffix}`;
+        }
+        // Parsed but not a Status body — stop
+        break;
+      } catch {
+        // Not valid JSON at this level — unescape one level and retry
+        candidate = candidate.replace(/\\(["\\/bfnrt])/g, (_, ch) => {
+          const map: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+          return map[ch] ?? ch;
+        });
+      }
+    }
+  }
+
+  // Fall back to first line — truncated to a sensible length.
+  const firstLine = raw.split('\n')[0].trim();
+  return firstLine.length > 500 ? `${firstLine.slice(0, 500)}…` : firstLine;
+}
+
+/** Returns false if the client row was deleted — orchestrator should abort. */
+async function clientStillExists(db: Database, clientId: string): Promise<boolean> {
+  const [row] = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, clientId)).limit(1);
+  return !!row;
+}
+
 // ─── Step Definitions ────────────────────────────────────────────────────────
 
 export const PROVISION_STEPS = [
@@ -264,29 +318,49 @@ export async function runProvisionNamespace(
     provisioningStatus: 'provisioning',
   }).where(eq(clients.id, clientId));
 
+  // Abort early if the client was deleted before/while we started.
+  // Protects against the "delete a failed client while retry is still
+  // running in the background" race — without this guard the orchestrator
+  // would happily recreate resources in a namespace that's being torn down.
+  const guardClientExists = async (): Promise<boolean> => {
+    if (await clientStillExists(db, clientId)) return true;
+    await db.update(provisioningTasks).set({
+      status: 'failed',
+      errorMessage: 'Client deleted during provisioning — aborted',
+      completedAt: new Date(),
+      stepsLog,
+    }).where(eq(provisioningTasks.id, taskId));
+    return false;
+  };
+
   try {
     // Step 1: Create Namespace
+    if (!(await guardClientExists())) return;
     await updateProgress('Create Namespace', 'running');
     await applyNamespace(k8s, namespace, clientId);
     await updateProgress('Create Namespace', 'completed');
 
     // Step 2: Create ResourceQuota
+    if (!(await guardClientExists())) return;
     await updateProgress('Create ResourceQuota', 'running');
     await applyResourceQuota(k8s, namespace, { cpu: cpuLimit, memory: memoryLimit, storage: storageLimit });
     await updateProgress('Create ResourceQuota', 'completed');
 
     // Step 3: Create NetworkPolicy
+    if (!(await guardClientExists())) return;
     await updateProgress('Create NetworkPolicy', 'running');
     await applyNetworkPolicy(k8s, namespace);
     await updateProgress('Create NetworkPolicy', 'completed');
 
     // Step 4: Create shared PVC (all components use Deployment + subPath on this PVC)
+    if (!(await guardClientExists())) return;
     await updateProgress('Create PVC', 'running');
     const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);
     await updateProgress('Create PVC', 'completed');
 
     // Step 5: Start file-manager sidecar (Deployment + Service)
+    if (!(await guardClientExists())) return;
     await updateProgress('Start File Manager', 'running');
     const FM_IMAGE = 'file-manager-sidecar:latest';
     await ensureFileManagerRunning(k8s, namespace, FM_IMAGE);
@@ -304,7 +378,14 @@ export async function runProvisionNamespace(
       provisioningStatus: 'provisioned',
     }).where(eq(clients.id, clientId));
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = formatK8sError(err);
+
+    // Also mark the currently-running step as failed so the UI surfaces
+    // which step errored (previously only `errorMessage` was set).
+    const runningStep = stepsLog.find(s => s.status === 'running');
+    if (runningStep) {
+      stepsLog = updateStepStatus(stepsLog, runningStep.name, 'failed', message);
+    }
 
     await db.update(provisioningTasks).set({
       status: 'failed',
@@ -313,9 +394,15 @@ export async function runProvisionNamespace(
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
 
-    await db.update(clients).set({
-      provisioningStatus: 'failed',
-    }).where(eq(clients.id, clientId));
+    // Client may have been deleted between the last guard and the throw —
+    // don't let that turn a provisioning failure into an unhandled rejection.
+    try {
+      await db.update(clients).set({
+        provisioningStatus: 'failed',
+      }).where(eq(clients.id, clientId));
+    } catch {
+      // Swallow — row is gone, nothing to update.
+    }
   }
 }
 
@@ -377,7 +464,11 @@ export async function runDeprovision(
       provisioningStatus: 'unprovisioned',
     }).where(eq(clients.id, clientId));
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = formatK8sError(err);
+    const runningStep = stepsLog.find(s => s.status === 'running');
+    if (runningStep) {
+      stepsLog = updateStepStatus(stepsLog, runningStep.name, 'failed', message);
+    }
     await db.update(provisioningTasks).set({
       status: 'failed',
       errorMessage: message,

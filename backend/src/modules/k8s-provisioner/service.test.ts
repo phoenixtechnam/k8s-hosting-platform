@@ -188,4 +188,46 @@ describe('K8s Provisioner Service', () => {
       expect(step?.error).toBe('Storage class not found');
     });
   });
+
+  describe('formatK8sError', () => {
+    it('extracts the k8s Status message from an embedded response body', async () => {
+      const { formatK8sError } = await import('./service.js');
+      // Shape thrown by @kubernetes/client-node v1.4 on a 403 — the body is
+      // a JSON-stringified Status object, quotes are backslash-escaped.
+      const body = JSON.stringify({
+        kind: 'Status',
+        apiVersion: 'v1',
+        status: 'Failure',
+        message: 'resourcequotas is forbidden: User "system:serviceaccount:platform:platform-api" cannot create resource "resourcequotas" in the namespace "client-x"',
+        reason: 'Forbidden',
+        code: 403,
+      });
+      const raw = `HTTP-Code: 403\nMessage: Unknown API Status Code!\nBody: ${JSON.stringify(body)}\nHeaders: {"audit-id":"abc"}`;
+      const out = formatK8sError(new Error(raw));
+      expect(out).toContain('resourcequotas is forbidden');
+      expect(out).toContain('HTTP 403');
+      expect(out).not.toContain('audit-id');
+      expect(out).not.toContain('Headers:');
+    });
+
+    it('falls back to first line when the error has no parsable body', async () => {
+      const { formatK8sError } = await import('./service.js');
+      const err = new Error('Connection refused\nstack trace...');
+      expect(formatK8sError(err)).toBe('Connection refused');
+    });
+
+    it('truncates very long single-line messages', async () => {
+      const { formatK8sError } = await import('./service.js');
+      const err = new Error('x'.repeat(1000));
+      const out = formatK8sError(err);
+      expect(out.length).toBeLessThanOrEqual(501);
+      expect(out.endsWith('…')).toBe(true);
+    });
+
+    it('handles non-Error values', async () => {
+      const { formatK8sError } = await import('./service.js');
+      expect(formatK8sError('boom')).toBe('boom');
+      expect(formatK8sError(42)).toBe('42');
+    });
+  });
 });
