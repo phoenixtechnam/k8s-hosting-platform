@@ -449,7 +449,8 @@ export async function generateWebmailToken(
   //
   //   1. mailbox → email_domain → domain → if webmail_enabled, use
   //      `https://webmail.<domain.domainName>`
-  //   2. webmail-settings `default_webmail_url` (admin-configured)
+  //   2. webmail-settings `default_webmail_url` (admin-configured via the
+  //      Email Management page → Mail Server Settings → Webmail URL)
   //   3. WEBMAIL_URL env var (legacy / container-env override)
   //   4. Hardcoded fallback `https://webmail.example.com`
   //

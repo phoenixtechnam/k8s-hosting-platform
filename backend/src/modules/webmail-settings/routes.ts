@@ -8,6 +8,7 @@ import { ensureMailServerCertificate } from '../certificates/service.js';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { reconcileStalwartHostname } from './stalwart-reconciler.js';
 
 export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void> {
   // Phase 3.A.1: k8s client for cert provisioning. Created once at
@@ -70,6 +71,33 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err, hostname: parsed.data.mailServerHostname },
           'webmail-settings: mail cert ensure failed (non-blocking)',
+        );
+      }
+
+      // Propagate the hostname into the running Stalwart pod by patching
+      // the stalwart-secrets Secret's STALWART_HOSTNAME key and rollout-
+      // restarting the StatefulSet. Stalwart reads this env at startup
+      // (config.toml: hostname = "%{env:STALWART_HOSTNAME}%"), so without
+      // this step the SMTP 220 greeting keeps announcing the old name.
+      // Fire-and-forget with await on error log — the PATCH response is
+      // the DB write; the pod roll happens in the background and shows up
+      // via future SMTP probes / pod status.
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      try {
+        const restarted = await reconcileStalwartHostname(
+          parsed.data.mailServerHostname,
+          { kubeconfigPath },
+        );
+        if (restarted) {
+          app.log.info(
+            { hostname: parsed.data.mailServerHostname },
+            'webmail-settings: STALWART_HOSTNAME updated, stalwart-mail StatefulSet restart triggered',
+          );
+        }
+      } catch (err) {
+        app.log.warn(
+          { err, hostname: parsed.data.mailServerHostname },
+          'webmail-settings: stalwart hostname reconcile failed (non-blocking)',
         );
       }
     }

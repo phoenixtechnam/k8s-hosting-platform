@@ -42,8 +42,22 @@ const encryptionKey = (): string => {
 const fileManagerImage = (): string =>
   process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
 
-const mailHost = (): string =>
-  process.env.STALWART_HOSTNAME ?? 'stalwart-mail.mail.svc.cluster.local';
+// Resolve the Stalwart SMTP host. Priority: DB-configured
+// webmail-settings.mailServerHostname (set via the Email Management page)
+// → env STALWART_HOSTNAME → in-cluster service DNS. Read at call time so a
+// hostname change through the admin panel is picked up without a restart
+// (the mail-submit flow only opens SMTP sockets on user action, so each
+// call gets a fresh resolution).
+async function mailHost(app: FastifyInstance): Promise<string> {
+  try {
+    const { getMailServerHostname } = await import('../webmail-settings/service.js');
+    const fromDb = await getMailServerHostname(app.db);
+    if (fromDb) return fromDb;
+  } catch {
+    // Fall through to env + service DNS
+  }
+  return process.env.STALWART_HOSTNAME ?? 'stalwart-mail.mail.svc.cluster.local';
+}
 
 const mailPort = (): number =>
   parseInt(process.env.STALWART_SUBMISSION_PORT ?? '587', 10);
@@ -114,7 +128,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
           {
             username: result.username,
             password: result.password,
-            mailHost: mailHost(),
+            mailHost: await mailHost(app),
             mailPort: mailPort(),
           },
         );
@@ -186,7 +200,7 @@ export async function mailSubmitRoutes(app: FastifyInstance): Promise<void> {
       {
         username: active.username,
         password: plain,
-        mailHost: mailHost(),
+        mailHost: await mailHost(app),
         mailPort: mailPort(),
       },
     );
