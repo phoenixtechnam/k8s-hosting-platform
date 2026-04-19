@@ -137,10 +137,16 @@ export async function resolveVersionAwareDeploymentConfig(
     : null;
   const components = resolveComponents(entry, versionComponents);
 
-  // Volumes — version overrides entry-level completely
-  const entryVolumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ container_path: string }>;
+  // Volumes — version overrides entry-level completely.
+  //
+  // `local_path` carries the catalog author's intended subdirectory name on
+  // the shared PVC (e.g. `applications/wordpress/content` vs
+  // `applications/wordpress/database`). The deployer uses its basename as
+  // the per-volume subPath suffix so multi-volume apps (WordPress =
+  // wp-content + mysql data) don't collide on the same PVC directory.
+  const entryVolumes = (parseJsonField<unknown[]>(entry.volumes) ?? []) as Array<{ container_path: string; local_path?: string }>;
   const versionVolumes = versionRecord
-    ? parseJsonField<Array<{ container_path: string }>>(versionRecord.volumes)
+    ? parseJsonField<Array<{ container_path: string; local_path?: string }>>(versionRecord.volumes)
     : null;
   const volumes = (versionVolumes && versionVolumes.length > 0) ? versionVolumes : entryVolumes;
 

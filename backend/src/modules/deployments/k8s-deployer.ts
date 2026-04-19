@@ -1,10 +1,19 @@
 /**
  * Multi-component K8s deployer.
  *
- * Creates/manages Deployments, CronJobs, and Services
- * for catalog entries in client namespaces.
- * All component types (including those marked 'statefulset' in catalog manifests)
- * are deployed as K8s Deployments using the shared client PVC with subPath.
+ * Creates/manages Deployments, CronJobs, and Services for catalog entries
+ * in client namespaces. For single-writer-per-tenant workloads (one
+ * WordPress + one MariaDB per blog, etc.), a Deployment with strategy:
+ * Recreate and the client's shared PVC mounted via subPath delivers
+ * everything a StatefulSet would, with less complexity:
+ *   - single replica → no ordered rollout / stable-pod-name need
+ *   - shared PVC → one PVC per client, not N per app
+ *   - Recreate → stop old pod before new, safe for databases
+ *
+ * `type: statefulset` in legacy catalog manifests is accepted for
+ * backward compat and emits a Deployment with a deprecation warning.
+ * Normalized catalog (k8s-application-catalog @ f20965f) uses only
+ * `type: deployment | cronjob | job`.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -26,7 +35,7 @@ export interface DeployCatalogEntryInput {
   readonly storagePath: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ container_path: string }>;
+  readonly volumes: Array<{ container_path: string; local_path?: string }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -152,7 +161,17 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-      case 'statefulset':  // Uses Deployment + shared PVC (type is semantic hint only)
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes, passwordResetContainer, env);
+        break;
+
+      case 'statefulset':
+        // Legacy manifest value — always emitted as a Deployment. Older
+        // catalog_entries rows in the DB may still carry this type until
+        // the next sync; warn and route through the Deployment path so the
+        // install still succeeds.
+        console.warn(
+          `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
+        );
         await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, volumes, passwordResetContainer, env);
         break;
 
@@ -181,21 +200,38 @@ async function deployK8sDeployment(
   container: Record<string, unknown>,
   replicaCount: number,
   storagePath: string,
-  volumes: Array<{ container_path: string }> = [],
+  volumes: Array<{ container_path: string; local_path?: string }> = [],
   passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
   envVars?: Array<{ name: string; value: string }>,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
 
-  // Mount shared client PVC with subPath derived from storagePath
-  const volumeMounts = volumes.map(v => ({
-    name: 'client-storage',
-    mountPath: v.container_path,
-    subPath: storagePath,
-  }));
+  // Each volume gets its own subdirectory under storagePath so multi-volume
+  // apps (e.g. WordPress = wp-content + mysql data) don't collide into a
+  // single PVC directory. Priority:
+  //   1. basename(local_path)  — catalog author's intended name
+  //   2. basename(container_path) — reasonable fallback for older manifests
+  //   3. `vol${index}` — last-resort unique suffix if both collide
+  const seenSubPaths = new Set<string>();
+  const volumeMounts = volumes.map((v, idx) => {
+    const localBase = v.local_path ? v.local_path.replace(/\/+$/, '').split('/').pop() : undefined;
+    const containerBase = v.container_path.replace(/\/+$/, '').split('/').pop();
+    let key = (localBase && localBase !== '') ? localBase : (containerBase && containerBase !== '' ? containerBase : `vol${idx}`);
+    if (seenSubPaths.has(key)) key = `${key}-${idx}`;
+    seenSubPaths.add(key);
+    const subPath = storagePath ? `${storagePath}/${key}` : key;
+    return {
+      name: 'client-storage',
+      mountPath: v.container_path,
+      subPath,
+      _subPath: subPath, // kept for the init-dirs mkdir list below
+    };
+  });
+
+  const cleanVolumeMounts = volumeMounts.map(({ name, mountPath, subPath }) => ({ name, mountPath, subPath }));
 
   const containerWithMounts = volumes.length > 0
-    ? { ...container, volumeMounts }
+    ? { ...container, volumeMounts: cleanVolumeMounts }
     : container;
 
   // Build init containers list
@@ -207,12 +243,22 @@ async function deployK8sDeployment(
     initContainersList.push({ ...passwordResetContainer, ...(envVars?.length ? { env: envVars } : {}) });
   }
 
-  // 2. Init-dirs container: ensures the storagePath directory exists on the shared PVC
-  if (storagePath) {
+  // 2. Init-dirs container: ensures every per-volume subPath exists on the
+  //    shared PVC. Without this, Kubernetes creates the subPath for us but
+  //    with root-owned 755 perms — app containers running as non-root can't
+  //    write. `chmod 777` is coarse but matches the shared-PVC model where
+  //    per-client isolation is enforced at the namespace/PVC boundary, not
+  //    at the directory-permissions level.
+  const allSubPaths = volumeMounts.map(v => v._subPath);
+  if (storagePath || allSubPaths.length > 0) {
+    const mkdirTargets = allSubPaths.length > 0 ? allSubPaths : [storagePath];
+    const mkdirCmd = mkdirTargets
+      .map(p => `mkdir -p /data/${p} && chmod 777 /data/${p}`)
+      .join(' && ');
     initContainersList.push({
       name: 'init-dirs',
       image: 'busybox:1.36',
-      command: ['sh', '-c', `mkdir -p /data/${storagePath} && chmod 777 /data/${storagePath}`],
+      command: ['sh', '-c', mkdirCmd],
       volumeMounts: [{ name: 'client-storage', mountPath: '/data' }],
       resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '50m', memory: '32Mi' } },
     });
