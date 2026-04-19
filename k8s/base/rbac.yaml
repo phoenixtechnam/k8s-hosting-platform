@@ -34,17 +34,40 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "list", "create", "delete"]
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas"]
     verbs: ["*"]
+  # Subresource: pod logs (used by deployments/routes.ts and waf-log-scraper)
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  # Subresource: pods/exec — not called directly, but RBAC privilege-escalation
+  # prevention requires platform-api to hold any permission it grants via a Role.
+  # The file-manager provisioner creates a Role with pods/exec for the
+  # sftp-gateway ServiceAccount; without this, creating that Role returns 403.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["*"]
+  # Subresource: deployment scale (used by k8s-deployer for replicas patch)
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["*"]
+  # SFTP gateway exec Role/RoleBinding provisioning (file-manager/k8s-lifecycle.ts)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # Pod metrics via metrics-server (resource-metrics.ts, deployments/routes.ts)
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   # Node awareness: get/list for health checks and Phase 1 node pinning
   - apiGroups: [""]
     resources: ["nodes"]
