@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
 import { rbacRoles, regions, hostingPlans, users, catalogRepositories, oidcProviders, systemSettings } from './schema.js';
 import { encrypt } from '../modules/oidc/crypto.js';
+import { dexHost, resolveBaseDomain } from '../config/domains.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -127,7 +128,14 @@ console.log('  Seeded catalog repositories');
 // OIDC Providers (local Dex for development)
 if (process.env.NODE_ENV !== 'production') {
   const encKey = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
-  const dexIssuer = process.env.DEX_ISSUER_URL ?? 'http://dind.local:2015/dex';
+  // Prefer DEX_ISSUER_URL env if explicitly set (useful for staging with
+  // a specific Dex URL), otherwise derive from PLATFORM_BASE_DOMAIN →
+  // dex.<base>:<ingress-https-port>/dex. Dev default: 2011.
+  const devHttpsPort = process.env.DEV_INGRESS_HTTPS_PORT ?? '2011';
+  const dexIssuer =
+    process.env.DEX_ISSUER_URL ??
+    `https://${dexHost(process.env)}:${devHttpsPort}/dex`;
+  console.log(`  Dex issuer: ${dexIssuer} (base=${resolveBaseDomain(process.env)})`);
 
   await db.insert(oidcProviders).values([
     {

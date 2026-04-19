@@ -24,7 +24,7 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 
 # Mail server endpoints (Phase 1, dev overlay via docker-compose NodePort mapping)
-MAIL_HOST="${MAIL_HOST:-${DOCKER_HOST_NAME:-dind.local}}"
+MAIL_HOST="${MAIL_HOST:-mail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}}"
 MAIL_PORT_SMTP="${MAIL_PORT_SMTP:-${PORT_MAIL_SMTP:-2025}}"
 MAIL_PORT_SUBMISSION="${MAIL_PORT_SUBMISSION:-${PORT_MAIL_SUBMISSION:-2587}}"
 MAIL_PORT_IMAP="${MAIL_PORT_IMAP:-${PORT_MAIL_IMAP:-2143}}"
@@ -382,7 +382,7 @@ fi
 #
 MAIL_E2E="${MAIL_E2E:-0}"
 MAIL_E2E_SQL="${MAIL_E2E_SQL:-0}"
-MAIL_E2E_DOMAIN="${MAIL_E2E_DOMAIN:-mail.dind.local}"
+MAIL_E2E_DOMAIN="${MAIL_E2E_DOMAIN:-mail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}}"
 MAIL_E2E_USER="${MAIL_E2E_USER:-alice@${MAIL_E2E_DOMAIN}}"
 MAIL_E2E_PASS="${MAIL_E2E_PASS:-alicepassword}"
 MAIL_ADMIN_AUTH="${MAIL_ADMIN_AUTH:-admin:stalwart-dev-admin}"
@@ -632,7 +632,7 @@ fi
 # Requires:  Stalwart + Roundcube running (see local.sh mail-up + webmail-up).
 
 WEBMAIL_E2E="${WEBMAIL_E2E:-0}"
-WEBMAIL_HOST="${WEBMAIL_HOST:-http://dind.local:2017}"
+WEBMAIL_HOST="${WEBMAIL_HOST:-https://webmail.${PLATFORM_BASE_DOMAIN:-k8s-platform.test}:2011}"
 
 if [[ "$WEBMAIL_E2E" == "1" && -n "${TOKEN:-}" ]]; then
   log "── Webmail SSO E2E (Phase 2b/2c) ──"

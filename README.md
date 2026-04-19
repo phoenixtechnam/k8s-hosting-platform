@@ -185,11 +185,23 @@ For code development, unit tests, and quick E2E testing. Runs entirely in Docker
 ./scripts/local.sh reset
 ```
 
-**Endpoints:**
-- Admin Panel: http://dind.local:2010
-- Client Panel: http://dind.local:2011
-- Backend API: http://dind.local:2012
-- Login: admin@k8s-platform.test / admin
+**Endpoints** (all hostnames = subdomains of `PLATFORM_BASE_DOMAIN`, default `k8s-platform.test`):
+
+| Service     | Dev (HTTP)                                    | Dev (HTTPS)                                    | Prod                                |
+|-------------|-----------------------------------------------|------------------------------------------------|-------------------------------------|
+| Admin panel | `http://admin.k8s-platform.test:2010`         | `https://admin.k8s-platform.test:2011`         | `https://admin.<domain>`            |
+| Client panel| `http://client.k8s-platform.test:2010`        | `https://client.k8s-platform.test:2011`        | `https://client.<domain>`           |
+| Dex OIDC    | —                                             | `https://dex.k8s-platform.test:2011/dex`       | `https://dex.<domain>/dex`          |
+| Webmail     | —                                             | `https://webmail.k8s-platform.test:2011`       | `https://webmail.<domain>`          |
+| Mail-admin  | —                                             | `https://mail-admin.k8s-platform.test:2011`    | `https://mail-admin.<domain>`       |
+| SMTP/IMAP   | `mail.k8s-platform.test:2020–2026` (various)  | `mail.k8s-platform.test:2023` (IMAPS)          | `mail.<domain>:25/465/587/143/993`  |
+| Backend API | not exposed — served through admin panel at `/api/*` |                                          | not exposed                         |
+
+The backend API is never exposed directly; admin + client panels reverse-proxy `/api/*` internally to `platform-api.platform.svc.cluster.local:3000`.
+
+Login: `admin@k8s-platform.test / admin`.
+
+**DNS setup:** Expected to be wildcard `*.<PLATFORM_BASE_DOMAIN>` → cluster host IP. Configure via your internal DNS server (dnsmasq / Pi-hole / router) — no `/etc/hosts` entries required.
 
 **Configuration:**
 - Copy `.env.local.example` to `.env.local` and adjust values

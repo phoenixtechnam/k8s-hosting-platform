@@ -214,7 +214,7 @@ End-to-end (local dev):
 ```bash
 # 1. Rotate a credential
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://dind.local:2012/api/v1/clients/$CLIENT_ID/mail/submit-credential/rotate
+  http://admin.k8s-platform.test:2010/api/v1/clients/$CLIENT_ID/mail/submit-credential/rotate
 
 # 2. Verify the auth file was written
 #    (admin can peek via kubectl exec inside the file-manager pod)
@@ -223,6 +223,6 @@ kubectl exec -n client-$CLIENT_ID deploy/file-manager -- \
 
 # 3. Verify the file does NOT show up in the customer file manager UI
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://dind.local:2012/api/v1/clients/$CLIENT_ID/file-manager/ls?path=/"
+  "http://admin.k8s-platform.test:2010/api/v1/clients/$CLIENT_ID/file-manager/ls?path=/"
 # The response should NOT contain .platform in its entries.
 ```

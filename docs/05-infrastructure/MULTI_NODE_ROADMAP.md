@@ -25,7 +25,7 @@ The platform currently runs on a single k3s server in a Docker-in-Docker (DinD) 
 | Admin/Client panels | Docker Compose containers | k3s Deployments + Ingress |
 | Dex / OAuth2 Proxy | Docker Compose containers | k3s Deployments |
 | TLS | Self-signed (local-ca-issuer) | Let's Encrypt (prod ClusterIssuer) |
-| DNS | `*.dind.local` (hosts file) | Real domains via PowerDNS |
+| DNS | `*.<PLATFORM_BASE_DOMAIN>` (internal DNS server, default `k8s-platform.test`) | Real domains via PowerDNS |
 | Container images | Local `docker build` | GHCR pull (or local build + import) |
 
 ### What's Already Portable (runs in k3s in both modes)

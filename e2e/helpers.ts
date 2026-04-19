@@ -2,7 +2,9 @@ import { Page, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
-const API_BASE = process.env.API_URL ?? 'http://dind.local:2012';
+// Backend API isn't publicly exposed — calls go through the admin-panel
+// nginx sidecar which reverse-proxies /api/* to platform-api internally.
+const API_BASE = process.env.API_URL ?? 'http://admin.k8s-platform.test:2010';
 
 export async function loginAsAdmin(page: Page) {
   await page.goto('/login');

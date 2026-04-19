@@ -59,7 +59,23 @@ if [[ -f "$ENV_LOCAL" ]]; then
 fi
 
 # Defaults — all host ports in 2010-2030 range
-DOCKER_HOST_NAME="${DOCKER_HOST_NAME:-dind.local}"
+#
+# PLATFORM_BASE_DOMAIN is the apex for all user-facing URLs (admin, client,
+# dex, webmail, mail, mail-admin subdomains derive from it). The operator's
+# internal DNS must resolve *.<base> to the cluster LB — no /etc/hosts
+# entries required. Dev default: k8s-platform.test.
+PLATFORM_BASE_DOMAIN="${PLATFORM_BASE_DOMAIN:-k8s-platform.test}"
+#
+# DIND_INTERNAL_HOST is the hostname this workspace container uses to reach
+# the DinD daemon / k3s API (e.g., for `docker exec` into the DinD
+# container and for the k3s TLS SAN). It is NEVER part of a user-facing
+# URL — all services use subdomains of PLATFORM_BASE_DOMAIN. The legacy
+# name DOCKER_HOST_NAME is still honored for backwards compat but renamed
+# for clarity.
+DIND_INTERNAL_HOST="${DIND_INTERNAL_HOST:-${DOCKER_HOST_NAME:-dind.local}}"
+# Keep DOCKER_HOST_NAME as an alias so any sub-scripts / helpers that still
+# read it continue to work.
+DOCKER_HOST_NAME="${DIND_INTERNAL_HOST}"
 PORT_INGRESS_HTTP="${PORT_INGRESS_HTTP:-2010}"
 PORT_INGRESS_HTTPS="${PORT_INGRESS_HTTPS:-2011}"
 # Backend API is not published — reach it via /api/* through the admin or
@@ -329,15 +345,19 @@ _run_migrations_and_seed() {
   # admin-configured values (uses COALESCE in ON CONFLICT DO UPDATE), so
   # running this repeatedly never clobbers a value the admin has changed.
   # kubectl exec has no --env flag (that's for `kubectl run`), so we wrap
-  # in sh -c and export each value inline.
-  k3s_exec kubectl exec -n platform deploy/platform-api -- sh -c '
-    export ADMIN_PANEL_URL="http://admin.k8s-platform.test:2010"
-    export CLIENT_PANEL_URL="http://client.k8s-platform.test:2010"
-    export SUPPORT_EMAIL="admin@k8s-platform.test"
-    export INGRESS_BASE_DOMAIN="k8s-platform.test"
-    export PLATFORM_NAME="Hosting Platform (local dev)"
+  # in sh -c and export each value inline. All user-facing URLs derive
+  # from PLATFORM_BASE_DOMAIN + the ingress port.
+  local base="${PLATFORM_BASE_DOMAIN}"
+  local http_port="${PORT_INGRESS_HTTP}"
+  k3s_exec kubectl exec -n platform deploy/platform-api -- sh -c "
+    export PLATFORM_BASE_DOMAIN='${base}'
+    export ADMIN_PANEL_URL='http://admin.${base}:${http_port}'
+    export CLIENT_PANEL_URL='http://client.${base}:${http_port}'
+    export SUPPORT_EMAIL='admin@${base}'
+    export INGRESS_BASE_DOMAIN='${base}'
+    export PLATFORM_NAME='Hosting Platform (local dev)'
     node dist/db/seed.js
-  ' 2>&1 | tail -10 | sed 's/^/  /' || true
+  " 2>&1 | tail -10 | sed 's/^/  /' || true
 }
 
 _bootstrap_stalwart_reader() {
@@ -357,7 +377,7 @@ _generate_stalwart_secret() {
   # via `docker exec`.
   KUBECTL="docker exec -i ${K3S_CONTAINER} kubectl" \
     "${SCRIPT_DIR}/generate-stalwart-secret.sh" \
-      --hostname='mail.dind.local' \
+      --hostname="mail.${PLATFORM_BASE_DOMAIN}" \
       --db-password='stalwart-dev-reader-pw' \
       --db-host='platform-postgres.mail.svc.cluster.local' \
       --db-name='hosting_platform' \
@@ -572,8 +592,9 @@ cmd_logs() {
 }
 
 cmd_status() {
+  local base="${PLATFORM_BASE_DOMAIN}"
   echo "════════════════════════════════════════════════"
-  echo "  Local Stack — ${DOCKER_HOST_NAME}"
+  echo "  Local Stack — apex ${base}"
   echo "════════════════════════════════════════════════"
   echo ""
   echo "  Platform pods:"
@@ -587,21 +608,21 @@ cmd_status() {
     echo "  Mode: fast-dev (apps on host)"
     echo ""
     echo "  Infra endpoints:"
-    echo "    PostgreSQL:     ${DOCKER_HOST_NAME}:${PORT_DB}"
-    echo "    Redis:          ${DOCKER_HOST_NAME}:${PORT_REDIS}"
-    echo "    Dex OIDC:       ${DOCKER_HOST_NAME}:${PORT_DEX}"
+    echo "    PostgreSQL:     postgres.${base}:${PORT_DB}"
+    echo "    Redis:          redis.${base}:${PORT_REDIS}"
+    echo "    Dex OIDC:       https://dex.${base}:${PORT_INGRESS_HTTPS}/dex"
   else
     echo "  Mode: integration (all pods in k3s)"
     echo ""
     echo "  Endpoints:"
-    echo "    Admin Panel:    http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
-    echo "    Client Panel:   http://client.k8s-platform.test:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
-    echo "    PostgreSQL:     ${DOCKER_HOST_NAME}:${PORT_DB}"
-    echo "    Redis:          ${DOCKER_HOST_NAME}:${PORT_REDIS}"
-    echo "    Dex OIDC:       ${DOCKER_HOST_NAME}:${PORT_DEX}"
+    echo "    Admin Panel:    http://admin.${base}:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
+    echo "    Client Panel:   http://client.${base}:${PORT_INGRESS_HTTP}  (https on :${PORT_INGRESS_HTTPS})"
+    echo "    PostgreSQL:     postgres.${base}:${PORT_DB}"
+    echo "    Redis:          redis.${base}:${PORT_REDIS}"
+    echo "    Dex OIDC:       https://dex.${base}:${PORT_INGRESS_HTTPS}/dex"
   fi
 
-  echo "    k3s API:        https://${DOCKER_HOST_NAME}:${PORT_K3S_API}"
+  echo "    k3s API:        https://${DIND_INTERNAL_HOST}:${PORT_K3S_API}  (internal, cert SAN = ${DIND_INTERNAL_HOST})"
   echo ""
 
   # Show mail/webmail/sftp if deployed
@@ -610,11 +631,11 @@ cmd_status() {
     mail_pods=$(k3s_exec kubectl get pods -n mail --no-headers 2>/dev/null | wc -l)
     if (( mail_pods > 0 )); then
       echo "  Mail server:"
-      echo "    SMTP:           ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
-      echo "    Submission:     ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
-      echo "    IMAP:           ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
-      echo "    IMAPS:          ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
-      echo "    Webmail:        http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}"
+      echo "    SMTP:           mail.${base}:${PORT_MAIL_SMTP}"
+      echo "    Submission:     mail.${base}:${PORT_MAIL_SUBMISSION}"
+      echo "    IMAP:           mail.${base}:${PORT_MAIL_IMAP}"
+      echo "    IMAPS:          mail.${base}:${PORT_MAIL_IMAPS}"
+      echo "    Webmail:        https://webmail.${base}:${PORT_INGRESS_HTTPS}"
       echo ""
     fi
   fi
@@ -629,7 +650,7 @@ cmd_k3s_shell() {
 
 cmd_k3s_status() {
   echo "════════════════════════════════════════════════"
-  echo "  k3s Cluster — ${DOCKER_HOST_NAME}:${PORT_K3S_API}"
+  echo "  k3s Cluster — ${DIND_INTERNAL_HOST}:${PORT_K3S_API}"
   echo "════════════════════════════════════════════════"
   echo ""
   compose ps k3s-server --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  k3s not running"
@@ -702,11 +723,12 @@ cmd_mail_status() {
   echo "  Pods:"
   k3s_exec kubectl get pods -n mail -o wide 2>/dev/null | sed 's/^/    /'
   echo ""
+  local mail_host="mail.${PLATFORM_BASE_DOMAIN}"
   echo "  Endpoints:"
-  echo "    SMTP:       ${DOCKER_HOST_NAME}:${PORT_MAIL_SMTP}"
-  echo "    Submission: ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}"
-  echo "    IMAP:       ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAP}"
-  echo "    IMAPS:      ${DOCKER_HOST_NAME}:${PORT_MAIL_IMAPS}"
+  echo "    SMTP:       ${mail_host}:${PORT_MAIL_SMTP}"
+  echo "    Submission: ${mail_host}:${PORT_MAIL_SUBMISSION}"
+  echo "    IMAP:       ${mail_host}:${PORT_MAIL_IMAP}"
+  echo "    IMAPS:      ${mail_host}:${PORT_MAIL_IMAPS}"
   echo "════════════════════════════════════════════════"
 }
 
@@ -715,15 +737,16 @@ cmd_mail_logs() {
 }
 
 cmd_mail_test() {
-  echo "Running mail test against ${DOCKER_HOST_NAME}:${PORT_MAIL_SUBMISSION}..."
+  local mail_host="mail.${PLATFORM_BASE_DOMAIN}"
+  echo "Running mail test against ${mail_host}:${PORT_MAIL_SUBMISSION}..."
   echo ""
   echo "TCP probes:"
   for port_var in PORT_MAIL_SMTP PORT_MAIL_SUBMISSION PORT_MAIL_IMAP PORT_MAIL_IMAPS; do
     local port="${!port_var}"
-    if (echo > "/dev/tcp/${DOCKER_HOST_NAME}/${port}") >/dev/null 2>&1; then
-      echo "  ✓ ${DOCKER_HOST_NAME}:${port} reachable"
+    if (echo > "/dev/tcp/${mail_host}/${port}") >/dev/null 2>&1; then
+      echo "  ✓ ${mail_host}:${port} reachable"
     else
-      echo "  ✗ ${DOCKER_HOST_NAME}:${port} NOT reachable"
+      echo "  ✗ ${mail_host}:${port} NOT reachable"
     fi
   done
 }
@@ -759,7 +782,7 @@ cmd_webmail_status() {
   echo "  Pod:"
   k3s_exec kubectl get pods -n mail -l app=roundcube -o wide 2>/dev/null | sed 's/^/    /'
   echo ""
-  echo "  Endpoint: http://${DOCKER_HOST_NAME}:${PORT_WEBMAIL}/"
+  echo "  Endpoint: https://webmail.${PLATFORM_BASE_DOMAIN}:${PORT_INGRESS_HTTPS}/"
   echo "════════════════════════════════════════════════"
 }
 
@@ -857,7 +880,7 @@ cmd_sftp_status() {
   echo "  Pod:"
   k3s_exec kubectl get pods -n platform-system -l app=sftp-gateway -o wide 2>/dev/null | sed 's/^/    /'
   echo ""
-  echo "  Endpoint: ${DOCKER_HOST_NAME}:${PORT_SFTP}"
+  echo "  Endpoint: sftp.${PLATFORM_BASE_DOMAIN}:${PORT_SFTP}"
   echo "════════════════════════════════════════════════"
 }
 

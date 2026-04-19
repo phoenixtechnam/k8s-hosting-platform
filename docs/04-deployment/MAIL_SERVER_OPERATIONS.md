@@ -116,7 +116,7 @@ The local overlay uses:
 - Secrets auto-generated at first `mail-up` by
   `scripts/generate-stalwart-secret.sh` (random password + bcrypt hash
   written directly to the k8s Secret; nothing committed to the repo)
-- Hostname `mail.dind.local`
+- Hostname `mail.${PLATFORM_BASE_DOMAIN}` (dev default: `mail.k8s-platform.test`)
 
 ```bash
 # Deploy (first run prints admin + master passwords once — save them, or

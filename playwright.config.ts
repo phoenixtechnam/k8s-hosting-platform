@@ -19,7 +19,7 @@ export default defineConfig({
       testMatch: 'auth.setup.ts',
       use: {
         browserName: 'chromium',
-        baseURL: process.env.BASE_URL ?? 'http://dind.local:2010',
+        baseURL: process.env.BASE_URL ?? 'http://admin.k8s-platform.test:2010',
       },
     },
     {
@@ -27,7 +27,7 @@ export default defineConfig({
       dependencies: ['admin-setup'],
       use: {
         browserName: 'chromium',
-        baseURL: process.env.BASE_URL ?? 'http://dind.local:2010',
+        baseURL: process.env.BASE_URL ?? 'http://admin.k8s-platform.test:2010',
         storageState: 'e2e/.auth/admin.json',
       },
       testIgnore: ['**/client-panel-*', '**/auth.setup.ts'],
@@ -37,7 +37,7 @@ export default defineConfig({
       dependencies: ['admin-setup'],
       use: {
         browserName: 'chromium',
-        baseURL: process.env.CLIENT_URL ?? 'http://dind.local:2011',
+        baseURL: process.env.CLIENT_URL ?? 'http://client.k8s-platform.test:2010',
       },
       testMatch: '**/client-panel-*',
     },
