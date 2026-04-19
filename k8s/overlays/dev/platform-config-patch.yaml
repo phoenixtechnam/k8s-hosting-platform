@@ -16,6 +16,9 @@ data:
   client-url: "http://client.k8s-platform.test:2010"
   support-email: "admin@k8s-platform.test"
   platform-name: "Hosting Platform (local dev)"
+  # TLS Secret referenced from Ingress.spec.tls[0].secretName. Dev uses the
+  # self-signed cert issued by local-ca-issuer (see the Certificate resource).
+  platform-tls-secret-name: "platform-dev-tls"
   # Stalwart web-admin subdomain. Lives on :2011 (HTTPS w/ self-signed CA)
   # same as admin.* and client.*. Requires /etc/hosts entry mapping
   # mail-admin.k8s-platform.test to 127.0.0.1 — `./scripts/local.sh mail-up`

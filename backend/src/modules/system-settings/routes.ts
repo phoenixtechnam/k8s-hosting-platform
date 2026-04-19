@@ -6,6 +6,19 @@ import * as service from './service.js';
 import { reconcileIngressHosts } from './ingress-reconciler.js';
 import { z } from 'zod';
 
+/**
+ * Resolve the TLS Secret name referenced by Ingress.spec.tls[0].secretName.
+ * ConfigMap (prod: bootstrap.sh, dev: platform-config-patch.yaml) is the
+ * canonical source. Defaults to `platform-tls` — the prod convention — so
+ * a misconfigured deploy fails noisily (no matching Secret) rather than
+ * silently binding to a dev-specific name.
+ */
+function resolveTlsSecretName(config: unknown): string {
+  const cfg = config as Record<string, unknown>;
+  const fromEnv = cfg.PLATFORM_TLS_SECRET_NAME as string | undefined;
+  return fromEnv && fromEnv.trim() !== '' ? fromEnv.trim() : 'platform-tls';
+}
+
 const updateSchema = z.object({
   platformName: z.string().min(1).max(255).optional(),
   adminPanelUrl: z.string().url().max(500).optional().nullable(),
@@ -75,8 +88,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
     // on next startup if this call hits a transient k8s error.
     if (parsed.data.adminPanelUrl !== undefined || parsed.data.clientPanelUrl !== undefined) {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const tlsSecretName = (app.config as Record<string, unknown>).PLATFORM_TLS_SECRET_NAME as string | undefined
-        ?? 'platform-dev-tls';
+      const tlsSecretName = resolveTlsSecretName(app.config);
       const clusterIssuerName = (app.config as Record<string, unknown>).CLUSTER_ISSUER_NAME as string | undefined;
       try {
         const result = await reconcileIngressHosts(

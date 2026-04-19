@@ -17,6 +17,11 @@ const configSchema = z.object({
   INGRESS_BASE_DOMAIN: z.string().optional(),
   INGRESS_DEFAULT_IPV4: z.string().optional(),
   CLUSTER_ISSUER_NAME: z.string().optional(),
+  // Secret that holds the TLS cert for the platform Ingress. The ingress
+  // reconciler stamps this into spec.tls[0].secretName on every PATCH of
+  // admin/client panel URLs. Set via platform-config ConfigMap (dev:
+  // platform-dev-tls, prod: platform-tls).
+  PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
   FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/file-manager:latest'),
   DISABLE_RATE_LIMIT: z.string().optional(),

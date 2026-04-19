@@ -98,6 +98,17 @@ spec:
                   name: platform-config
                   key: platform-name
                   optional: true
+            # Name of the Secret that holds the TLS cert for the platform
+            # Ingress. Dev uses a self-signed cert in `platform-dev-tls`;
+            # prod uses cert-manager-issued `platform-tls`. The ingress
+            # reconciler stamps this into spec.tls[0].secretName when
+            # rebuilding Ingress rules from admin/client panel URLs.
+            - name: PLATFORM_TLS_SECRET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: platform-tls-secret-name
+                  optional: true
             - name: INGRESS_DEFAULT_IPV4
               valueFrom:
                 configMapKeyRef:

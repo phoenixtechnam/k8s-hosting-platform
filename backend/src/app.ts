@@ -323,7 +323,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const settings = await getSettings(app.db);
         const cfg = app.config as Record<string, unknown>;
         const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
-        const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined) ?? 'platform-dev-tls';
+        const tlsSecretName = (cfg.PLATFORM_TLS_SECRET_NAME as string | undefined)?.trim() || 'platform-tls';
         const clusterIssuerName = cfg.CLUSTER_ISSUER_NAME as string | undefined;
         const result = await reconcileIngressHosts(
           {

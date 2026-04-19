@@ -824,6 +824,7 @@ create_platform_configmap() {
     --from-literal=support-email="$support_email" \
     --from-literal=support-url="${SUPPORT_URL:-}" \
     --from-literal=platform-name="$platform_name_value" \
+    --from-literal=platform-tls-secret-name="${PLATFORM_TLS_SECRET_NAME:-platform-tls}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
