@@ -3,8 +3,23 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
-import { reconcileIngressHosts } from './ingress-reconciler.js';
+import { reconcileIngressHosts, extractHost } from './ingress-reconciler.js';
+import {
+  probeUrlHealth,
+  createDefaultUrlHealthDeps,
+  type UrlHealthReport,
+} from './url-health.js';
 import { z } from 'zod';
+
+// 60s health cache: DNS lookups + k8s Certificate reads are both cheap but
+// not free, and the UI polls every 30s. Keyed by `${host}::${secretName}`
+// so hostname changes invalidate automatically.
+interface HealthCacheEntry {
+  readonly expiresAt: number;
+  readonly report: UrlHealthReport;
+}
+const HEALTH_CACHE = new Map<string, HealthCacheEntry>();
+const HEALTH_CACHE_TTL_MS = 60_000;
 
 /**
  * Resolve the TLS Secret name referenced by Ingress.spec.tls[0].secretName.
@@ -114,6 +129,53 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
       }
     }
 
+    // PATCH invalidates the health cache for these hosts so the next UI
+    // poll probes fresh values instead of the 60s-old ones.
+    if (parsed.data.adminPanelUrl !== undefined || parsed.data.clientPanelUrl !== undefined) {
+      HEALTH_CACHE.clear();
+    }
+
     return success(updated);
+  });
+
+  // GET /api/v1/admin/system-settings/url-health
+  //
+  // Probe DNS resolvability + TLS certificate status for both panel URLs.
+  // Cached per host+secret for 60s so the UI can poll (default 30s) cheaply.
+  // Never returns 500 for probe failures — status enums convey the failure
+  // shape so the badge can render consistently.
+  app.get('/admin/system-settings/url-health', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['System Settings'],
+      summary: 'DNS + TLS health check for admin/client panel URLs',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const settings = await service.getSettings(app.db);
+    const cfg = app.config as Record<string, unknown>;
+    const tlsSecretName = resolveTlsSecretName(app.config);
+    const certNamespace = (cfg.PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
+    const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+
+    const adminHost = extractHost(settings.adminPanelUrl);
+    const clientHost = extractHost(settings.clientPanelUrl);
+    const deps = createDefaultUrlHealthDeps({ kubeconfigPath });
+
+    const probe = async (host: string | null): Promise<UrlHealthReport> => {
+      const cacheKey = `${host ?? ''}::${tlsSecretName}`;
+      const now = Date.now();
+      const cached = HEALTH_CACHE.get(cacheKey);
+      if (cached && cached.expiresAt > now) return cached.report;
+      const report = await probeUrlHealth(
+        { host, certSecretName: tlsSecretName, certNamespace },
+        deps,
+      );
+      HEALTH_CACHE.set(cacheKey, { expiresAt: now + HEALTH_CACHE_TTL_MS, report });
+      return report;
+    };
+
+    const [admin, client] = await Promise.all([probe(adminHost), probe(clientHost)]);
+    return success({ admin, client });
   });
 }
