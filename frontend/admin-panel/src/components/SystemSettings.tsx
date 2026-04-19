@@ -105,7 +105,7 @@ export default function SystemSettingsForm() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Admin Panel URL
+                Admin Panel Display URL
               </label>
               <input
                 type="url"
@@ -115,10 +115,13 @@ export default function SystemSettingsForm() {
                 placeholder="https://admin.example.com"
                 data-testid="admin-panel-url-input"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Display-only. Shown in outbound emails and the admin panel footer. Does <strong>not</strong> reconfigure ingress routing &mdash; actual hostnames are set in the kustomize overlay.
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Client Panel URL
+                Client Panel Display URL
               </label>
               <input
                 type="url"
@@ -128,6 +131,9 @@ export default function SystemSettingsForm() {
                 placeholder="https://my.example.com"
                 data-testid="client-panel-url-input"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Display-only. Used in client-facing emails and the client panel footer.
+              </p>
             </div>
           </div>
 
