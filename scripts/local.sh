@@ -173,6 +173,26 @@ _image_in_k3s() {
     | grep -qx "docker.io/${tag}"
 }
 
+# Import a docker image into k3s containerd with stderr surfaced and one
+# retry. containerd can transiently refuse imports during warmup (seen
+# repeatedly after `reset` when the k3s node restarts), so a blind silent
+# pipeline loses visibility when the race bites.
+_import_into_k3s() {
+  local tag="$1"
+  local attempt
+  for attempt in 1 2; do
+    if docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - 2>&1 | sed 's/^/    /'; then
+      return 0
+    fi
+    if (( attempt < 2 )); then
+      echo "    (import failed, retrying in 2s...)"
+      sleep 2
+    fi
+  done
+  echo "    ERROR: import of $tag into k3s failed after 2 attempts" >&2
+  return 1
+}
+
 _build_and_import() {
   local name="$1" context="$2" dockerfile="$3"
   local tag="hosting-platform/${name}:local"
@@ -193,7 +213,9 @@ _build_and_import() {
       return 0
     fi
     echo "  ↻ ${name}: unchanged but missing from k3s — re-importing"
-    docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+    if ! _import_into_k3s "$tag"; then
+      return 1
+    fi
     # Treat as changed so cmd_rebuild rolls out pods that may be stuck in ErrImagePull
     echo "HP_IMAGE_CHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
     return 0
@@ -204,43 +226,29 @@ _build_and_import() {
     --label "hp.input-hash=${want}" \
     -t "$tag" -f "${PROJECT_DIR}/${dockerfile}" "${PROJECT_DIR}/${context}" -q >/dev/null
   echo "  Importing ${name} into k3s..."
-  docker save "$tag" | docker exec -i "$K3S_CONTAINER" ctr images import - >/dev/null 2>&1
+  if ! _import_into_k3s "$tag"; then
+    return 1
+  fi
   echo "HP_IMAGE_CHANGED_${name}=1" >> "${PROJECT_DIR}/.local.build-state"
 }
 
 _build_all_images() {
-  echo "Building and importing images into k3s (parallel, content-hash skip)..."
+  echo "Building and importing images into k3s (content-hash skip)..."
   # Reset build-state file so cmd_rebuild knows exactly which images changed.
   : > "${PROJECT_DIR}/.local.build-state"
-  # Parallel builds — safe on direct filesystems (XFS/BTRFS), previously
-  # serialized only for shfs/FUSE mounts which are no longer used.
-  local pids=() logs=()
+  # Serial, not parallel. Concurrent `ctr images import` calls into the
+  # same containerd socket race during k3s warmup — we lost three consecutive
+  # `./scripts/local.sh reset` + `up` runs to transient import errors. A
+  # ~3s speedup on cold start isn't worth the flakiness.
   local names=("backend" "admin-panel" "client-panel")
   local dockerfiles=("backend/Dockerfile" "frontend/admin-panel/Dockerfile" "frontend/client-panel/Dockerfile")
   local i
   for i in "${!names[@]}"; do
-    local log
-    log=$(mktemp)
-    logs+=("$log")
-    ( _build_and_import "${names[$i]}" "." "${dockerfiles[$i]}" ) >"$log" 2>&1 &
-    pids+=($!)
-  done
-
-  local failed=0
-  for i in "${!pids[@]}"; do
-    if ! wait "${pids[$i]}"; then
-      failed=$((failed + 1))
-      echo "  ✗ ${names[$i]} build failed — log below:"
-      sed 's/^/    /' "${logs[$i]}"
-    else
-      cat "${logs[$i]}"
+    if ! _build_and_import "${names[$i]}" "." "${dockerfiles[$i]}"; then
+      echo "ERROR: ${names[$i]} build or import failed — see output above"
+      return 1
     fi
-    rm -f "${logs[$i]}"
   done
-  if (( failed > 0 )); then
-    echo "ERROR: $failed image build(s) failed"
-    return 1
-  fi
 
   # Sidecar image — content-hashed like the others. Base manifests reference
   # it by GHCR name, so on a real rebuild we also re-tag + re-import under
@@ -393,6 +401,13 @@ cmd_up() {
   fi
   sed 's/^/  /' "$build_log"
   rm -f "$build_log"
+
+  # The platform-api Deployment mounts `platform-stalwart-creds` as a volume
+  # unconditionally (see backend-patch.yaml). Without that Secret the pod
+  # sits in ContainerCreating forever. The helper is idempotent — no-op
+  # when the Secret already exists — so cheap to call every up.
+  _phase "ensure stalwart creds"
+  _generate_stalwart_secret
 
   _phase "kustomize apply"
   _apply_dev_overlay
