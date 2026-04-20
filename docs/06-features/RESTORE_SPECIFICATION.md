@@ -1,17 +1,21 @@
 # Granular Backup Restore Specification
 
+> **Authoritative bundle format:** [`BACKUP_COMPONENT_MODEL.md`](BACKUP_COMPONENT_MODEL.md).
+> **Architectural decisions:** [`ADR-028`](../07-reference/ADR-028-backup-architecture.md).
+> Both docs take precedence over this spec if anything conflicts.
+
 ## Overview
 
-This document defines the **granular backup restore** feature for both Admin and Client panels. Users can restore individual objects (websites, databases, mail accounts) and specific files/folders from any backup version.
+This document defines the **granular backup restore** feature for both Admin and Client panels. Operators and customers can restore a whole client, individual files/folders from the files component, or individual mailboxes from the mailboxes component — from any retained backup version.
 
 ## Design Principles
 
-1. **User Choice:** Users select exactly what to restore, not entire backups
-2. **Non-Destructive by Default:** Restored items don't overwrite current versions without confirmation
-3. **All Backup Versions Available:** Users see complete history of all backup snapshots (hourly, daily, weekly, etc.)
-4. **Async Processing:** Restores run in background with real-time progress tracking
-5. **Audit Trail:** All restore operations are logged for compliance and troubleshooting
-6. **Access Control:** Admins can restore any client's data; clients can only restore their own
+1. **Component-scoped restore:** Restore operates on one or more bundle components (`files`, `mailboxes`, `config`, `secrets`), or a subset of entries inside them.
+2. **Replace semantics by default:** Selected files / mailboxes overwrite existing ones. A pre-restore snapshot is always taken automatically so "whoops" rolls back cleanly.
+3. **Backup version history:** Users see every retained bundle for the client (client-initiated, admin-initiated, and relevant system-initiated entries per ACL).
+4. **Async processing:** Restores run in background with real-time progress tracking (WebSocket / polling), sharing the `OperationProgressModal` component.
+5. **Audit trail:** All restore operations are logged to `audit_logs` with initiator, scope, and outcome.
+6. **Access control:** Admins can restore any client's data; clients can only restore their own. `system`-initiated backups are admin-only. `cluster` backups are operator-only (not in these APIs).
 
 ---
 
@@ -19,23 +23,29 @@ This document defines the **granular backup restore** feature for both Admin and
 
 ### 1.1 Restorable Object Types
 
-| Object Type | Scope | Backup Method | Restore Behavior |
+| Object Type | Component | Scope values | Restore behavior |
 |---|---|---|---|
-| **Website** | Individual domain/site installation (WordPress, Nextcloud, etc.) | File-level snapshot + app metadata | Restore files + db + config |
-| **Database** | MariaDB/PostgreSQL database | mysqldump / pg_dump per client DB | Restore DDL + data or data-only |
-| **Mail Account** | Individual email user (user@domain.com) | Docker-Mailserver mail dir + user DB | Restore mailbox + settings + quota |
-| **Email Mailbox Content** | Emails within a specific account | Maildump or imap-backup | Restore message files (IMAP format) |
-| **Files/Folders** | Individual files or directory trees | rsync --archive plain filesystem copies | Restore to original or alternate path |
+| **Whole client** | All (`files` + `mailboxes` + `config` + `secrets`) | `full` | Re-create / replace the whole tenant. Existing client → same node. Deleted client → admin picks a target node from the registered-nodes list. |
+| **Files / folders** | `files` | `full` (whole PVC) or `selected` (specific paths from the tree index) | Extract chosen paths from `components/files/archive.tar.gz` into the existing PVC. Replace-on-conflict unless `onConflict=skip`. |
+| **Mailboxes** | `mailboxes` | `full` for each selected address | Per mailbox: existing contents are **replaced** via Stalwart `account import`. Multi-select supported — N mailboxes, each replaced independently. |
 
-### 1.2 Objects NOT Currently Restorable (By Design)
+### 1.2 Object types deliberately not supported
 
-These are platform-level and not intended for per-client restoration:
+Consolidated here from earlier drafts — see [ADR-028](../07-reference/ADR-028-backup-architecture.md) for rationale.
 
-- Kubernetes secrets (Sealed Secrets in Git)
+| Earlier scope | Replaced by | Why dropped |
+|---|---|---|
+| **Per-database restore** (`database_only` / `data_only`) | Whole-files restore or selective file restore | Each client's DB runs in their own pod with datadir on the tenant PVC. Capture is file-level (the `files` component). Restoring the DB = restoring its datadir files + restarting the DB pod. |
+| **Per-message mail restore** (`messages_only`) | Whole-mailbox restore | Stalwart's API operates at account level. Per-message restore needs an IMAP-diff tool that doesn't exist and isn't planned. |
+| **Date-range mail restore** | Whole-mailbox restore + pre-restore snapshot for rollback | Same reason as per-message. Operators who need date-range recovery roll back via the pre-restore snapshot. |
+
+### 1.3 Platform-level scopes (out of scope for these APIs)
+
+- Kubernetes secrets shared across the platform (sealed secrets in Git / ESO)
 - Harbor registry images
-- Platform SSL certificates
-- Admin configuration
-- System DNS zones (full restoration only via DR)
+- Platform-wide TLS certificates (`*.<apex>` wildcards)
+- System DNS zones shared across tenants
+- Full-platform disaster recovery — owned by operator tooling (Velero). See [BACKUP_STRATEGY.md Tier 4](../02-operations/BACKUP_STRATEGY.md).
 
 ---
 
@@ -53,8 +63,8 @@ Each restorable object has a **complete history of all snapshots**:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `object_type` | string | Yes | `website` / `database` / `mail_account` / `files` |
-| `object_id` | string | Yes | Workload ID, database ID, mailbox address, or workload ID for files |
+| `object_type` | string | Yes | `whole_client` / `website` / `mail_account` / `files` |
+| `object_id` | string | Yes | Client UUID (for `whole_client`), workload ID (for `website` / `files`), or full mailbox address (for `mail_account`) |
 | `from` | ISO 8601 date | No | Filter snapshots on or after this date |
 | `to` | ISO 8601 date | No | Filter snapshots on or before this date |
 | `limit` | integer | No | Max results to return (default 30, max 90) |
@@ -81,8 +91,9 @@ Each restorable object has a **complete history of all snapshots**:
       "retention_expires_at": "2026-04-07T00:00:00Z",
       "includes": {
         "files": true,
-        "databases": ["db-wordpress"],
-        "metadata": true
+        "mailboxes": ["admin@acme.com", "sales@acme.com"],
+        "config": true,
+        "secrets": true
       }
     },
     {
@@ -100,8 +111,9 @@ Each restorable object has a **complete history of all snapshots**:
       "retention_expires_at": "2026-04-06T00:00:00Z",
       "includes": {
         "files": true,
-        "databases": ["db-wordpress"],
-        "metadata": true
+        "mailboxes": ["admin@acme.com", "sales@acme.com"],
+        "config": true,
+        "secrets": true
       }
     }
   ],
@@ -255,8 +267,7 @@ Each message is a JSON object:
   "completed_at": "2026-03-08T09:16:25Z",
   "duration_seconds": 84,
   "files_restored": 14820,
-  "databases_restored": ["db-wordpress"],
-  "db_tables_restored": 42,
+  "bytes_restored": 4831838208,
   "pre_restore_snapshot_id": "snap-pre-rst-a1b2c3d4",
   "actor": { "type": "user", "id": "usr-admin-001", "name": "Platform Admin" },
   "audit_log_id": "audit-99271"
@@ -287,193 +298,140 @@ Each message is a JSON object:
 
 ---
 
-## Part 4: Database Restore
+## Part 4: Whole-Client Restore
 
-### 4.1 Database Restore Flow (UI)
+Restoring a whole client applies every component in the bundle: `files` (PVC contents), `mailboxes` (per-mailbox imports), `config` (platform-DB rows), and `secrets` (TLS certs). This is the correct scope for "I need my deleted client back" and for "my cluster ate itself, roll this tenant back to yesterday."
 
-**Client Panel → Databases → [select database] → Restore from backup**
+### 4.1 Flow (Admin Panel)
 
-1. **Select database** — User views their database list, clicks "Restore from backup" on the target database.
-2. **Choose backup version** — `BackupVersionSelector` shows available database dump snapshots for that database (date, size, dump type).
-3. **Choose restore scope** — Radio buttons:
-   - `Full restore` — restore DDL (schema) + all data
-   - `Data only` — import data into existing schema (useful if schema has been upgraded)
-4. **Choose restore target** — Radio buttons:
-   - `Overwrite current database` — drops and recreates the database from the dump (requires `CONFIRM`)
-   - `Restore to a new database` — provisions a new database alongside the existing one (non-destructive; subject to plan database count limits)
-5. **Confirm & start** — Summary modal: database name, backup date, dump size, scope, target. User clicks "Start Restore".
-6. **Progress screen** — Real-time WebSocket progress (see §4.2 steps).
-7. **Completion** — Success: green banner, database detail link. Failure: error reason and rollback confirmation.
+1. **Pick backup** — Admin opens Backups view, filters by client (or finds deleted client via the `backup_jobs.client_id` history), clicks a backup row.
+2. **Choose restore mode:**
+   - `Existing client, same node` (default when the client row still exists). No node prompt.
+   - `Recreate deleted client` (shown only when the client row is absent). Admin picks the target node from the registered-nodes dropdown; `meta.json.nodePlacement.preferredNode` preselects the original node if it's still in the list.
+3. **Confirm** — Summary modal shows: files size, mailbox count, config row count, secrets key-version. Admin types `CONFIRM` to start (only required for the "recreate deleted client" path).
+4. **Progress** — Shared `OperationProgressModal` polls `GET /api/v1/restores/{restore_id}` every 1.5 s until terminal state.
+5. **Completion** — On success, admin is redirected to the client detail page. On failure, the pre-restore snapshot is retained and a "Roll back to pre-restore" action is offered.
 
-> **Data-only mode use case:** When an application has run a schema migration since the backup was taken, a full restore would revert the schema — use `data_only` to import just the row data into the current schema.
+### 4.2 API
 
----
+**Endpoint:** `POST /api/v1/admin/restores/start`
 
-### 4.2 Database Restore API
-
-**Endpoint:** `POST /api/v1/restores/start`
-
-**Payload:**
-
+**Payload (existing client):**
 ```json
 {
-  "object_type": "database",
-  "object_id": "db-wordpress",
-  "backup_id": "bkp-20260308-acme-db",
+  "object_type": "whole_client",
+  "object_id": "4ec7436d-6159-4bf0-9282-d7e4cc19410b",
+  "backup_id": "bkp-8f59ec16-a7c3-...",
   "scope": "full",
-  "target": {
-    "mode": "overwrite",
-    "confirm": "CONFIRM"
-  },
+  "skip_secrets": false,
   "notify_on_complete": true
 }
 ```
 
+**Payload (recreate deleted client):**
+```json
+{
+  "object_type": "whole_client",
+  "backup_id": "bkp-8f59ec16-a7c3-...",
+  "scope": "full",
+  "recreate": {
+    "target_node": "k8s-local",
+    "confirm": "CONFIRM"
+  },
+  "skip_secrets": false
+}
+```
+
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `object_type` | string | Yes | `database` |
-| `object_id` | string | Yes | Database ID (from `GET /api/v1/databases`) |
-| `backup_id` | string | Yes | From `GET /api/v1/backups/versions` |
-| `scope` | string | Yes | `full` (schema + data) / `data_only` |
-| `target.mode` | string | Yes | `overwrite` / `new_database` |
-| `target.confirm` | string | If overwrite | Must equal `"CONFIRM"` |
-| `target.new_db_name` | string | If new_database | Name for the new database to create |
+|---|---|---|---|
+| `object_type` | string | Yes | `whole_client` |
+| `object_id` | string | Only for existing clients | Client UUID |
+| `backup_id` | string | Yes | From `GET /api/v1/admin/backups/versions` |
+| `scope` | string | Yes | `full` — only scope for this object type |
+| `recreate.target_node` | string | For deleted clients | Kubernetes node name from `GET /api/v1/admin/nodes` |
+| `recreate.confirm` | string | For deleted clients | Must equal `"CONFIRM"` |
+| `skip_secrets` | boolean | No | When true, TLS Secrets are not restored; cert-manager re-issues (30–60 s delay on first request). Default false. |
 
-**Response:** `202 Accepted` — same structure as §3.2, with `object_type: "database"`.
+**Response:** `202 Accepted` — same envelope as §3.2.
 
-**Database-specific restore steps (WebSocket):**
+**Whole-client restore steps (WebSocket):**
 
 | Step | `step` value | Description |
-|------|-------------|-------------|
-| 1 | `validating_backup` | Verify dump file integrity (SHA-256 checksum) |
-| 2 | `mounting_offsite` | Mount SSHFS offsite server |
-| 3 | `staging_dump` | Copy `.sql.gz` dump file to temporary local path |
-| 4 | `dropping_database` | Drop existing database (overwrite mode only — inside transaction) |
-| 5 | `creating_database` | CREATE DATABASE with original collation |
-| 6 | `importing_dump` | `gunzip | mysql` / `gunzip | psql` — streams dump into engine |
-| 7 | `verifying_tables` | Count tables, verify row counts match dump metadata |
+|---|---|---|
+| 1 | `validating_bundle` | Check `meta.json` schema + component SHA-256s |
+| 2 | `taking_pre_restore_snapshot` | Capture current state (existing-client mode only) |
+| 3 | `recreating_client` | INSERT client row + users (deleted-client mode) |
+| 4 | `provisioning_namespace` | Create namespace on `target_node`, apply ResourceQuota + NetworkPolicies |
+| 5 | `restoring_config` | Apply `components/config/db-rows.json.gz` into platform DB |
+| 6 | `restoring_files` | Extract `components/files/archive.tar.gz` into freshly-created PVC |
+| 7 | `restoring_secrets` | Decrypt + apply `components/secrets/tls.json.gz.enc` (unless `skip_secrets`) |
+| 8 | `restoring_mailboxes` | For each mailbox in the bundle, call Stalwart `account import` (replace) |
+| 9 | `reconciling` | Trigger ingress reconciler + cert-manager; wait for workloads to go Ready |
+
+### 4.3 Rollback
+
+Every whole-client restore takes a pre-restore snapshot in step 2 (existing-client mode). On failure at any step, the platform rolls back automatically. The pre-restore snapshot is retained for 7 days so an admin can also manually roll back after a successful-but-wrong restore.
 
 ---
 
-### 4.3 Database Restore Completion
-
-**Endpoint:** `GET /api/v1/restores/{restore_id}`
-
-**Response (Success):**
-
-```json
-{
-  "restore_id": "rst-db-e5f6a7",
-  "status": "completed",
-  "object_type": "database",
-  "object_id": "db-wordpress",
-  "backup_id": "bkp-20260308-acme-db",
-  "scope": "full",
-  "target_mode": "overwrite",
-  "started_at": "2026-03-08T10:00:00Z",
-  "completed_at": "2026-03-08T10:01:42Z",
-  "duration_seconds": 102,
-  "tables_restored": 42,
-  "rows_restored": 183750,
-  "dump_size_bytes": 2147483648,
-  "pre_restore_snapshot_id": "snap-pre-rst-db-e5f6a7",
-  "actor": { "type": "user", "id": "usr-client-acme", "name": "Acme Admin" },
-  "audit_log_id": "audit-99280"
-}
-```
-
-**Response (Failed):**
-
-```json
-{
-  "restore_id": "rst-db-e5f6a7",
-  "status": "failed",
-  "object_type": "database",
-  "object_id": "db-wordpress",
-  "backup_id": "bkp-20260308-acme-db",
-  "failed_at_step": "importing_dump",
-  "error_code": "DB_IMPORT_FAILED",
-  "error_message": "ERROR 1215 (HY000): Cannot add foreign key constraint",
-  "rolled_back": true,
-  "rollback_snapshot_id": "snap-pre-rst-db-e5f6a7",
-  "started_at": "2026-03-08T10:00:00Z",
-  "failed_at": "2026-03-08T10:01:05Z",
-  "audit_log_id": "audit-99281"
-}
-```
-
----
-
-## Part 5: Mail Account Restore
+## Part 5: Mail Account Restore (per mailbox, whole)
 
 ### 5.1 Mail Account Restore Flow (UI)
 
 **Client Panel → Email → [select mailbox] → Restore from backup**
+**Admin Panel → Clients → [select client] → Backups → [select backup] → Mailboxes → pick N mailboxes → Restore**
 
-1. **Select mailbox** — User views their email accounts, clicks "Restore from backup" on the target mailbox (`user@domain.com`).
-2. **Choose backup version** — `BackupVersionSelector` shows mail directory snapshots by date (includes message count and mailbox size).
-3. **Choose restore scope** — Radio buttons:
-   - `Full mailbox` — restore complete maildir (all folders, messages, settings, quota)
-   - `Messages only` — restore message files, leave settings/quota untouched
-   - `Date range` — restore only messages sent/received between two dates (supports targeted recovery of accidentally deleted emails)
-4. **Choose restore target** — Radio buttons:
-   - `Merge into current mailbox` — adds restored messages without deleting existing ones (non-destructive, **default**)
-   - `Overwrite current mailbox` — drops and rebuilds from backup (requires `CONFIRM`)
-5. **Confirm & start** — Summary modal. User confirms and restore begins.
-6. **Progress screen** — WebSocket progress for mail restore steps.
-7. **Completion** — Success: summary (message count restored, duration). Failure: error and rollback state.
+1. **Select mailbox(es)** — Either from the Email page (single mailbox) or from a backup's mailbox list (multi-select).
+2. **Choose backup version** — `BackupVersionSelector` shows available bundles, filtered to those that contain a `mailboxes` component for the selected address(es). Each entry shows: captured-at, message count, mailbox size.
+3. **Confirm replace** — Only one scope is supported: **full mailbox, replace semantics**. The UI shows a prominent red warning:
+   > "Restoring will REPLACE the current contents of `<address>`. All messages currently in this mailbox will be deleted. A pre-restore snapshot of the mailbox is taken automatically and retained for 7 days — you can roll back from there if needed."
+   User types `CONFIRM` (case-sensitive) to enable the Restore button.
+4. **Progress screen** — WebSocket progress per mailbox (step `restoring_mailbox <address>`).
+5. **Completion** — Summary: addresses restored, message count per mailbox, rollback snapshot id. Failure: error, automatic rollback confirmation, manual-rollback button.
 
-> **Merge mode is the default** because it is the safest for mail — it adds missing messages back without risk of destroying emails the user has sent or received since the backup date.
+**Per-message, per-folder, and date-range restore are explicitly not supported** — see §1.2 and [ADR-028](../07-reference/ADR-028-backup-architecture.md). Operators needing targeted recovery use the pre-restore snapshot retained from step 3.
 
 ---
 
 ### 5.2 Mail Account Restore API
 
-**Endpoint:** `POST /api/v1/restores/start`
+**Endpoint:** `POST /api/v1/restores/start` (client panel) or `POST /api/v1/admin/restores/start` (admin panel)
 
 **Payload:**
 
 ```json
 {
   "object_type": "mail_account",
-  "object_id": "admin@acme.com",
+  "object_ids": ["admin@acme.com", "sales@acme.com"],
   "backup_id": "bkp-20260308-acme-mail",
-  "scope": "messages_only",
-  "target": {
-    "mode": "merge"
-  },
-  "date_range": {
-    "from": "2026-02-01T00:00:00Z",
-    "to": "2026-03-01T23:59:59Z"
-  },
+  "scope": "full",
+  "confirm": "CONFIRM",
   "notify_on_complete": true
 }
 ```
 
 | Field | Type | Required | Notes |
-|-------|------|----------|-------|
+|---|---|---|---|
 | `object_type` | string | Yes | `mail_account` |
-| `object_id` | string | Yes | Full email address (`user@domain.com`) |
+| `object_ids` | string[] | Yes | One or more full email addresses. Each must exist in the backup's `components/mailboxes/` index. |
 | `backup_id` | string | Yes | From `GET /api/v1/backups/versions` |
-| `scope` | string | Yes | `full` / `messages_only` / `date_range` |
-| `target.mode` | string | Yes | `merge` / `overwrite` |
-| `target.confirm` | string | If overwrite | Must equal `"CONFIRM"` |
-| `date_range.from` | ISO 8601 | If date_range | Start of message date range |
-| `date_range.to` | ISO 8601 | If date_range | End of message date range |
+| `scope` | string | Yes | `full` — only supported value |
+| `confirm` | string | Yes | Must equal `"CONFIRM"` (replace semantics are always destructive) |
+| `notify_on_complete` | boolean | No | Default false |
 
-**Response:** `202 Accepted` — same structure as §3.2, with `object_type: "mail_account"`.
+**Response:** `202 Accepted` — same structure as §3.2, with `object_type: "mail_account"` and an array of per-mailbox sub-restore ids so the progress UI can track each mailbox independently.
 
-**Mail-specific restore steps (WebSocket):**
+**Mail-specific restore steps (WebSocket, per mailbox):**
 
 | Step | `step` value | Description |
-|------|-------------|-------------|
-| 1 | `validating_backup` | Verify mail directory snapshot integrity |
-| 2 | `mounting_offsite` | Mount SSHFS offsite server |
-| 3 | `staging_maildir` | Copy maildir snapshot to temporary local path |
-| 4 | `filtering_messages` | Apply date range filter (date_range scope only) |
-| 5 | `restoring_maildir` | Copy message files into Docker-Mailserver maildir (`/var/mail/{domain}/{user}/`) |
-| 6 | `updating_quota` | Recalculate and update mailbox quota usage |
-| 7 | `verifying_mailbox` | Confirm message count matches restore expectation |
+|---|---|---|
+| 1 | `validating_artifact` | Verify `<address>.mbox.tar.gz` SHA-256 from `meta.json` |
+| 2 | `pre_restore_snapshot` | Export current mailbox contents to a pre-restore snapshot (retained 7 days) |
+| 3 | `staging_artifact` | Download the per-mailbox artifact from the storage target to a temp Job volume |
+| 4 | `wiping_current` | `stalwart-cli account delete-messages <address>` — replace semantics |
+| 5 | `importing` | `stalwart-cli account import <address> --from <staging>` |
+| 6 | `reconciling_quota` | Recompute mailbox quota usage and update `mailboxes.quota_used_mb` |
+| 7 | `done` | Success event emitted per mailbox; the outer job completes once all mailboxes reach `done` |
 
 ---
 
@@ -870,15 +828,20 @@ If a restore fails **after modifications**:
 
 ```json
 {
-  "object_type": "website | database | mail_account | files",
+  "object_type": "whole_client | website | mail_account | files",
   "object_id": "<id>",
+  "object_ids": ["<id1>", "<id2>"],
   "backup_id": "<backup_id>",
   "scope": "<scope>",
-  "target": { "mode": "overwrite | new_location | merge | ...", "confirm": "CONFIRM" },
+  "target": { "mode": "overwrite | new_location | ...", "confirm": "CONFIRM" },
+  "recreate": { "target_node": "<node>", "confirm": "CONFIRM" },
+  "skip_secrets": false,
   "notify_on_complete": true,
   "reason": "<admin-only audit note>"
 }
 ```
+
+`object_id` is used for single-target object types (`website`, `files`, `whole_client`). `object_ids` is used when the object type is multi-select (`mail_account`). `recreate` is required only for `whole_client` restores of deleted clients.
 
 **All success responses include:**
 
@@ -944,7 +907,7 @@ Every restore operation logs the following fields to `audit_logs` (using `action
 | `changes.before` | Snapshot ID of pre-restore state (`pre_restore_snapshot_id`) |
 | `changes.after` | `restore_id` of the operation |
 | `metadata.backup_id` | Backup version used |
-| `metadata.scope` | `full` / `files_only` / `database_only` / `date_range` etc. |
+| `metadata.scope` | `full` / `files_only` / `selected` |
 | `metadata.target_mode` | `overwrite` / `new_location` / `merge` |
 | `metadata.reason` | Admin-supplied reason (if provided) |
 | `metadata.duration_seconds` | Wall-clock duration (on RESTORE_COMPLETE) |
@@ -981,10 +944,10 @@ The `restore_jobs` and related tables are **not yet present in `DATABASE_SCHEMA.
 CREATE TABLE restore_jobs (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   client_id VARCHAR(36) NOT NULL,
-  object_type ENUM('website', 'database', 'mail_account', 'files') NOT NULL,
+  object_type ENUM('whole_client', 'website', 'mail_account', 'files') NOT NULL,
   object_id VARCHAR(255) NOT NULL,
   backup_id VARCHAR(36) NOT NULL,
-  scope ENUM('full', 'files_only', 'database_only', 'data_only', 'messages_only', 'date_range', 'selected') NOT NULL,
+  scope ENUM('full', 'files_only', 'selected') NOT NULL,
   target_mode ENUM('overwrite', 'new_location', 'new_database', 'merge', 'alternate_path') NOT NULL,
   status ENUM('queued', 'in_progress', 'completed', 'failed', 'cancelled') DEFAULT 'queued',
   pre_restore_snapshot_id VARCHAR(36) COMMENT 'Snapshot taken before overwrite restores',
@@ -1039,11 +1002,14 @@ CREATE TABLE restore_jobs (
 
 ### Integration Points
 
-- [ ] Velero + rsync --archive backend for file restoration
-- [ ] MariaDB/PostgreSQL restore scripts
-- [ ] Docker-Mailserver mail restore
-- [ ] WebSocket message queue (Redis Pub/Sub or similar)
-- [ ] Audit log sink (PostgreSQL + Loki)
+- [ ] `BackupStore` abstraction (hostpath / S3 / SSH) reading from the component-oriented bundle
+- [ ] PVC restore Job — `tar -xzf archive.tar.gz` (full) or `tar -xzf archive.tar.gz -- <paths>` (selected) into a freshly-created tenant PVC
+- [ ] Stalwart `account import` Job — per-mailbox replace-semantics importer
+- [ ] Platform DB row importer (FK-safe INSERT order: clients → users → domains → ...)
+- [ ] TLS Secret applier (decrypt + `kubectl apply` before ingress reconciler re-attaches)
+- [ ] Node selector for deleted-client restore — reads `GET /api/v1/admin/nodes`
+- [ ] WebSocket / polling progress (shared `OperationProgressModal` component)
+- [ ] Audit log sink (already wired via `audit_logs`)
 
 ---
 

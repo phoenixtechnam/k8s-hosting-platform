@@ -60,21 +60,28 @@ PostgreSQL 16 will be available as an alternative database type in Phase 2, usin
 
 ## Data Backup Strategy
 
-### Cluster-Managed Backups (Platform Responsibility)
+> **Authoritative backup docs:**
+> - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — bundle format
+> - [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md) — tiered initiators, destinations
+> - [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md) — architectural decisions
+>
+> The table below is a quick reference. Where it conflicts with the docs above, those take precedence.
 
-Automated daily backups of all client data, included in all plans.
+### System-Initiated Backups (Tier 1 — Platform responsibility)
+
+Automated daily captures of all client data, included in all plans, not counted against customer quota.
 
 | Parameter | Value |
-| --- | --- |
-| Backup frequency (DB) | Daily automated (mysqldump per client's dedicated DB instance) |
-| Backup frequency (files) | Daily incremental |
-| Backup frequency (K8s state) | Daily (Velero snapshots) |
-| Retention period | Configurable per plan (global default, per-client override) |
-| Backup tool (DB) | CronJob: mysqldump per client namespace → offsite server (SSHFS mount) |
-| Backup tool (files) | rsync --archive → offsite server (SSHFS mount) |
-| Backup encryption | **Optional** — AES-256-CBC if encryption password configured |
-| Backup archive format | Configurable: `tar`, `tar.gz`, or `zip`. Default: `tar.gz` |
-| Backup storage | Offsite backup server (SSHFS mount via SSH) |
+|---|---|
+| Capture frequency (files component) | Daily (PVC tar — includes DB datadirs, no separate mysqldump) |
+| Capture frequency (mailboxes component) | Daily (per-mailbox Stalwart CLI export) |
+| Capture frequency (config + secrets components) | Daily (inline in backend) |
+| Cluster DR (Tier 4) | Velero (future) — separate from per-tenant pipeline |
+| Retention period | Configurable per plan (global default + per-client override) |
+| Capture tool (files) | Short-lived Kubernetes Job — `tar cf - . \| gzip > archive.tar.gz` + `tree.jsonl.gz` sidecar |
+| Capture tool (mailboxes) | Job running `stalwart-cli account export` per mailbox |
+| Storage backend | One of `hostpath`, `s3`, `ssh` (all mandatory, operator-configured) |
+| Encryption | `secrets` component AES-256-GCM with `OIDC_ENCRYPTION_KEY` (`k1:` KID prefix). Other components rely on backend transport (S3 SSE, SSH) + filesystem permissions (hostpath `0700`). |
 
 ### Customer-Created Independent Backups
 

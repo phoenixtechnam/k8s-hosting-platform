@@ -1,37 +1,69 @@
 # Backup Infrastructure Implementation
 
-**Status:** Phase 1 Implementation  
-**Last Updated:** March 3, 2026  
+**Status:** Specification · 2026-04-20
 **Owner:** Infrastructure Team
+
+> **Authoritative bundle format:** [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) (takes precedence).
+> **Policy / tiers:** [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md).
+> **ADR:** [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md).
 
 ## Overview
 
-Technical implementation details for encrypted offsite backup system with per-customer folder structure, database dumps, and settings export.
+Capture pipelines for the component-oriented backup model — four components (`files`, `mailboxes`, `config`, `secrets`) written to one of three storage backends (`hostpath`, `s3`, `ssh`).
 
-### Prerequisites
+Each component has its own capture mechanism, executed either inline in `backend` or as a short-lived Kubernetes Job for anything that needs to reach tenant namespaces.
 
-**FUSE device plugin** must be installed on all cluster nodes before deploying backup CronJobs. The backup containers use SSHFS (FUSE-based) to mount the offsite backup server without running as a privileged container.
+| Component | Mechanism | Runs as |
+|---|---|---|
+| `files` | `tar cf - . \| gzip -1 > archive.tar.gz` + tree-index emitter | k8s Job in tenant namespace, mounts tenant PVC read-only |
+| `mailboxes` | `stalwart-cli account export` per mailbox address | k8s Job against Stalwart admin API |
+| `config` | SELECT across ~29 `client_id`-scoped tables → gzipped JSON | Inline in `backend`, no k8s involvement |
+| `secrets` | List tenant-namespace `type=kubernetes.io/tls` Secrets → AES-256-GCM encrypt | Inline in `backend`, Job if cross-namespace reads required |
 
-```bash
-# Install the FUSE device plugin DaemonSet (one-time, per cluster)
-kubectl apply -f https://raw.githubusercontent.com/kubeflow/kubeflow/master/components/k8s-fuse-device-plugin/fuse-device-plugin.yaml
-
-# Verify the plugin pod is Running on all nodes
-kubectl -n kube-system get pods -l name=fuse-device-plugin -o wide
-# Expected: one pod per worker node, STATUS: Running
-
-# Verify the FUSE device is schedulable
-kubectl get nodes -o json | jq '.items[].status.allocatable["github.com/fuse"]'
-# Expected: "1" per node
-```
-
-The FUSE device plugin exposes `/dev/fuse` as a Kubernetes device resource (`github.com/fuse`). Backup CronJobs request this resource instead of running `privileged: true`. This maintains the platform security hardening policy (no privileged containers in production).
-
-**Offsite backup server:** The backup server is accessed via plain SSH — it does not need to be on the NetBird mesh. A dedicated SSH keypair is generated for the backup service account and stored as a Sealed Secret. Hetzner StorageBox and any standard SSH-accessible storage server are supported. See the _Offsite Backup Transport_ section for configuration.
+Storage targets are served via a common `BackupStore` abstraction (see BACKUP_COMPONENT_MODEL.md § Storage targets). Each Job uses a one-shot upload step (either mounted PVC for hostpath, AWS SDK for s3, or `ssh`/`sftp` for ssh) — no persistent mounts, no FUSE device plugin, no SSHFS.
 
 ---
 
-## System Architecture
+## Current System Architecture (2026-04-20)
+
+### Capture flow
+
+```
+platform-api
+  ├─ config exporter (inline)        — emits components/config
+  ├─ secrets exporter (inline + API) — emits components/secrets
+  └─ orchestrator — launches capture Jobs
+        ├─► Job: PVC capture (tenant ns)
+        │     tar cf - . | gzip > components/files/archive.tar.gz
+        │     find . -printf ... | gzip > components/files/tree.jsonl.gz
+        │
+        └─► Job: mailbox export (platform ns, one per mailbox)
+              stalwart-cli account export → components/mailboxes/<addr>.mbox.tar.gz
+
+Storage:  BackupStore (hostpath | s3 | ssh)
+          writes <backup-id>/components/... under a configured target
+
+Target directory layout (identical across backends):
+  <backup-id>/
+    ├── meta.json
+    ├── components/files/archive.tar.gz + tree.jsonl.gz + archive.tar.gz.sha256
+    ├── components/mailboxes/<addr>.mbox.tar.gz (+ .sha256)
+    ├── components/config/db-rows.json.gz
+    └── components/secrets/tls.json.gz.enc
+```
+
+**No SSHFS mount, no FUSE plugin, no encrypted-in-place tar step.** The SSH backend uses `ssh`/`sftp` batch commands from the capture Job container. The `secrets` component is the only always-encrypted artifact; other components rely on the backend's transport (S3 SSE, SSH) and directory-perm defaults (hostpath `0700`) for at-rest confidentiality.
+
+See [BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) for the canonical bundle spec and [ADR-028](../07-reference/ADR-028-backup-architecture.md) for the architectural rationale.
+
+---
+
+## Legacy System Architecture (deprecated)
+
+The diagrams and manifests below describe the earlier SSHFS-mount +
+per-database-CronJob pipeline. They are preserved only for historical
+context while implementation catches up. Treat the "Current" section
+above (and [BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md)) as authoritative.
 
 ### Component Diagram
 

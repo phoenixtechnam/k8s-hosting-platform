@@ -695,78 +695,66 @@ Browse and deploy complex multi-container applications from the application cata
 
 Clients can restore from **platform-managed global cluster backups** or create and manage **their own independent backups** with custom schedules.
 
-### Global Cluster Backups (Platform-Managed)
+> **Authoritative specs:**
+> - [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md) — initiator tiers, quota, retention
+> - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — bundle format
+> - [../06-features/RESTORE_SPECIFICATION.md](../06-features/RESTORE_SPECIFICATION.md) — restore UI + API
+> - [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md) — architectural decisions
 
-Automated daily backups included in all plans, free to customers.
+### System-Initiated Backups (Tier 1 — visible to clients)
 
-| Feature | Description |
-| --- | --- |
-| **Backup list** | All cluster-managed backups (daily/weekly), size, timestamp, type (full/incremental/differential) |
-| **Backup details** | What's included, storage location, retention policy (admin-configured) |
-| **Restore from backup** | **Granular restore**: Select individual objects (websites, databases, mail accounts) and specific files/folders from any cluster backup version |
-| **Backup schedule** (View-only) | Display current cluster backup schedule and frequency; customers can request admin to adjust retention/frequency per plan tier |
-
-**Cluster Backup Characteristics:**
-- Managed by platform admin (schedule, retention, type all configured globally)
-- Free to all customers (included with all plan tiers)
-- Stored on offsite backup server (SSHFS mount via NetBird mesh)
-- **NOT counted against customer disk quota**
-- Admin-controlled retention (e.g., 30 days default)
-
-### Customer-Created Independent Backups
-
-Optional additional backups created and managed by customers for compliance or custom retention.
+Daily automated captures of the client's own data. Free, not counted against plan quota. Client-visible for restore purposes.
 
 | Feature | Description |
-| --- | --- |
-| **Create manual backup** | Trigger immediate backup of selected objects: specific domains, databases, email accounts, or entire account |
-| **Backup schedule** | Create custom backup schedules independent of cluster defaults; configure frequency (hourly/daily/weekly/monthly), type (full/incremental/differential), retention |
-| **Manage schedules** | View all customer-created schedules, edit, pause, resume, delete |
-| **Backup list** | List all customer backups (manual triggers + scheduled), size, timestamp, type, source |
-| **Download backup** | Direct download of gzipped backup |
-| **Restore from backup** | **Granular restore**: Select individual objects and files/folders from customer-created backups |
-| **Delete backup** | Manual deletion of backup (frees up quota) |
+|---|---|
+| **Backup list** | All system-initiated bundles for this client — size, timestamp, contents summary (files size, mailbox count, config row count) |
+| **Restore from backup** | Granular restore — whole client (in-place), per-mailbox (whole, replace semantics), per-file/folder (select from tree browser) |
+| **Retention display** | Admin-configured retention for system backups; clients cannot modify |
 
-**Customer Backup Characteristics:**
-- Created and managed by customers
-- **Stored in customer's disk quota** (included in overall storage limit)
-- Customers pay for additional storage if backup exceeds quota
-- Customers control retention (can set 7/14/30/90/365+ days)
-- Customers can trigger manual backups anytime
-- Cost-transparent: storage usage shown in backup details
+### Client-Initiated Backups (Tier 3)
+
+Self-service backups. Counted against plan quota (`max_backups` and `max_backup_size_gb`). GDPR Art. 20 data-portability export lives here.
+
+| Feature | Description |
+|---|---|
+| **Create backup** | Trigger an immediate backup (full, files-only, or data-export modes — see [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md) Tier 3) |
+| **Schedule backups** | Daily / weekly / monthly scheduled captures, per-schedule retention bounded by plan max |
+| **Manage schedules** | View, edit, pause/resume, delete schedules |
+| **Backup list** | Per-bundle row showing size, initiator (`client`), components included, retention expiry |
+| **Download backup** | Raw bundle (tar.gz) or passphrase-encrypted archive. `secrets` component omitted from client downloads. |
+| **Delete backup** | Manual deletion to free quota |
+| **Data export (GDPR)** | One-click export of all client data as a single bundle; satisfies Art. 20 portability requirement |
 
 ### Storage Accounting
 
 | Component | Quota Impact |
-| --- | --- |
-| **Cluster backups** | NOT counted in quota (platform operational cost) |
-| **Customer backups** | **FULLY counted** in quota |
+|---|---|
+| **System-initiated backups (Tier 1)** | NOT counted (platform operational cost) |
+| **Admin-initiated backups (Tier 2)** | NOT counted (admin / operations budget) |
+| **Client-initiated backups (Tier 3)** | **FULLY counted** in plan quota |
 
-**Quota Display:**
-- "You are using 45 GB of 100 GB (includes 15 GB in customer backups)"
-- Warning threshold: Alert when customer backups exceed 50% of remaining quota
-- Quota enforcement: Cannot create new backups if quota exceeded; must delete old backups or upgrade plan
+**Quota display:**
+- "You are using 45 GB of 100 GB (includes 15 GB in your own backups)"
+- Warning threshold when own-backups exceed 50% of remaining quota
+- Creating a new client-initiated backup fails with `QUOTA_EXCEEDED` when the plan limit is hit — either delete old backups or upgrade
 
 ### Granular Restore Features
 
-All backup versions are browsable and restorable at a fine-grained level.
+All visible backup versions are browsable and restorable at three granularity levels:
 
-| Restore Type | Objects | UI Features |
-| --- | --- | --- |
-| **Website** | Individual domain/installation | Select backup version → preview files/DB → choose restore target (overwrite/new domain) → confirm |
-| **Database** | Single MariaDB/PostgreSQL database | Choose backup version → select tables or full DB → scope (full/data-only) → target (overwrite/new DB) |
-| **Mail Account** | Individual email account | Choose backup version → select scope (full/content-only/date-range) → merge or overwrite → target account |
-| **Files & Folders** | Specific files or directory trees | Browse file tree OR search → select files/folders → exclude patterns → target path (original/alternate) → conflict resolution |
+| Restore Type | Objects | UI Behaviour |
+|---|---|---|
+| **Whole client** | All components at once | Replaces current state in-place. For clients this means their own namespace is reconstructed; any files/mailboxes changed after the backup are overwritten. A pre-restore snapshot is taken automatically and retained 7 days for manual rollback. |
+| **Mailbox** | One or more mailboxes (multi-select) | **Replace** semantics — the selected mailbox(es) are wiped and re-imported from the bundle. UI shows an explicit red warning. Per-message / per-folder / date-range restore is not supported; see [ADR-028](../07-reference/ADR-028-backup-architecture.md). |
+| **Files & Folders** | Individual files or directory trees | Browse the `tree.jsonl.gz` index OR search for a name; pick paths; select conflict resolution (overwrite / skip existing / rename with `.restored` suffix). Files are extracted from `components/files/archive.tar.gz` into the live PVC. |
 
 **Key Restore Capabilities:**
 
-- **All Backup Versions Visible:** Users see complete history (hourly/daily snapshots)
-- **Non-Destructive by Default:** Restored items renamed or placed in alternate location unless user explicitly confirms overwrite
-- **Preview Before Restore:** View file list, database tables, email metadata before executing
-- **Async Restores:** Background jobs with real-time progress tracking (WebSocket)
-- **Admin + Client Access:** Both can initiate restores with appropriate RBAC controls
-- **Automatic Rollback:** Failed restores roll back automatically; no partial restorations
-- **Audit Trail:** Every restore logged (who, what, when, result)
+- **All Backup Versions Visible:** Clients see the complete retention window for their own bundles plus any admin-shared Tier 1 system bundles
+- **Replace-by-default with automatic pre-restore snapshot:** Failed restores roll back automatically; operators can also manually roll back within 7 days via the pre-restore snapshot
+- **Preview Before Restore:** File tree browser, mailbox list, component sizes shown in a confirmation modal
+- **Async Restores:** Background jobs with real-time progress tracking via the shared `OperationProgressModal` (WebSocket / polling)
+- **Audit Trail:** Every restore logged to `audit_logs` with initiator, scope, and outcome
 
 ## Account Settings
 

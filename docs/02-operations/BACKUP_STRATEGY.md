@@ -1,58 +1,64 @@
-# Backup Strategy: Encrypted Offsite Backups with Customer Export
+# Backup Strategy: Component-Oriented Backups with Tiered Initiators
 
-**Status:** Phase 1 Implementation
-**Last Updated:** March 3, 2026
+**Status:** Specification · 2026-04-20
 **Owner:** Infrastructure & Operations Team
 
-> **Related backup documentation:**
-> - [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md) — Technical implementation details (scripts, SSHFS, encryption)
-> - [BACKUP_EXPORT_MIGRATION_GUIDE.md](BACKUP_EXPORT_MIGRATION_GUIDE.md) — Customer backup export & migration procedures
-> - [../06-features/RESTORE_SPECIFICATION.md](../06-features/RESTORE_SPECIFICATION.md) — Granular restore UI & API specification
+> **Authoritative docs:**
+> - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — canonical bundle format (takes precedence)
+> - [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md) — architectural decisions
+> - [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md) — capture pipelines
+> - [BACKUP_EXPORT_MIGRATION_GUIDE.md](BACKUP_EXPORT_MIGRATION_GUIDE.md) — off-platform migration
+> - [../06-features/RESTORE_SPECIFICATION.md](../06-features/RESTORE_SPECIFICATION.md) — restore API + UI
 
 ## Overview
 
-The platform implements a **three-tier backup strategy** designed for data security, compliance, and easy customer migration:
+A backup is a **component-oriented directory** (files, mailboxes, config, secrets — see [BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md)) written to one of three first-class storage backends (`hostpath`, `s3`, `ssh`).
 
-1. **Cluster-Managed Automated Backups** (daily, platform-responsible, written directly to offsite server via SSHFS mount)
-2. **Customer-Created On-Demand Backups** (customer-controlled, counted against quota, on offsite server)
-3. **Encrypted Offsite Backups** (daily SSHFS mount → direct write to external server, customer-exportable)
+Four initiators share that single bundle format:
 
-**Key Feature:** Offsite backups are organized by customer with encrypted, password-protected archives containing:
-- All workload files (with directory structure preserved)
-- Database dumps (if databases exist in workload)
-- System settings and configuration
-- User-defined preferences and metadata
+1. **System (cluster-managed, automated)** — daily + pre-destructive-op captures of active clients, for disaster recovery and rollback
+2. **Admin (operator-initiated)** — ad-hoc captures before planned changes, bulk pre-upgrade runs, migration support
+3. **Client (customer-initiated)** — self-service from the client panel, counts against plan quota, supports GDPR Art. 20 data-portability export
+4. **Cluster DR (Velero)** — separate pipeline for the entire platform (platform DB, Stalwart PVC, cert-manager, Flux, Harbor); not discussed in this doc beyond [Tier 4](#tier-4-cluster-disaster-recovery-velero) below
 
-This enables **easy manual migration** to external hosting systems with a single encrypted archive per customer.
+Everything in tiers 1–3 uses the same bundle format, the same restore orchestrator, and the same on-disk layout on whichever storage target is configured. The difference is **access control** (ACL driven by `meta.json.initiator`), **quota** (counts against the plan only for tier 3), and **retention windows**.
+
+Bundles are organized by client, containing:
+- Every file on the tenant PVC (including application database datadirs — see note below)
+- Every mailbox owned by the client (one Stalwart export per address)
+- Every platform-DB row scoped to the client (domains, deployments, ingress routes, mailbox metadata, DKIM keys, SFTP users, etc.)
+- Encrypted TLS Secrets from the tenant namespace
+
+**Per-database logical dumps are NOT produced** — each client runs their own MariaDB/PostgreSQL pod with its datadir on the tenant PVC, so the files component already captures the database as data files. Restoration re-extracts those files and restarts the DB pod. See [ADR-028](../07-reference/ADR-028-backup-architecture.md) decision 3.
 
 ---
 
-## Tier 1: Cluster-Managed Automated Backups
+## Tier 1: System-Initiated (Cluster-Managed) Backups
 
-**Fully automated daily backups of all customer data, included in all plans, free to customers.**
+**Fully automated captures of all active customer data, included in all plans, free to customers.**
 
-### Backup Schedule & Content
+### Backup schedule & content
 
-| Component | Frequency | What's Backed Up |
+| Component | Frequency | What's captured |
 | --- | --- | --- |
-| **Database dumps** | Daily (2 AM UTC) | All MariaDB/PostgreSQL client databases as SQL dumps |
-| **File backups** | Daily (3 AM UTC) | All PVs (workload files, application data) |
-| **Kubernetes state** | Daily (1 AM UTC) | Velero snapshots of entire cluster state |
-| **DNS zones** | Daily (4 AM UTC) | PowerDNS zone exports |
-| **Email data** | Daily (5 AM UTC) | Mail server mailboxes and configuration |
-| **System settings** | Daily (6 AM UTC) | Platform configuration, RBAC, billing data |
+| `files`    | Daily (03:00 UTC) | Full tenant PVC contents (includes WordPress files, DB datadirs, uploads, file-manager home) |
+| `mailboxes`| Daily (04:00 UTC) | Per-mailbox exports via `stalwart-cli account export` — one `.mbox.tar.gz` per address |
+| `config`   | Daily (03:00 UTC) | All platform-DB rows with `client_id` FK (~29 tables) |
+| `secrets`  | Daily (03:00 UTC) | TLS Secrets in tenant namespace, encrypted at bundle time with `OIDC_ENCRYPTION_KEY` |
 
-### Backup Tools & Storage
+Every daily run produces **one bundle per active client**, directory-structured on the configured backup target. Retention + expiry are enforced by the storage-lifecycle scheduler.
 
-| Component | Tool | Storage | Encryption |
-| --- | --- | --- | --- |
-| **Kubernetes state** | Velero | Offsite server (SSHFS mount) | AES-256 at rest |
-| **Database dumps** | CronJob: mysqldump / pg_dump | Offsite server (SSHFS mount) | AES-256 at rest |
-| **Files** | rsync --archive (plain filesystem) | Offsite server (SSHFS mount) | AES-256 at rest |
-| **Config snapshots** | Custom exporters | Offsite server (SSHFS mount) | AES-256 at rest |
-| **Email data** | Docker-Mailserver volume backup | Offsite server (SSHFS mount) | AES-256 at rest |
+### Backup tools & storage
 
-> **Note:** Docker-Mailserver volumes (`/var/mail/`, `/var/mail-state/`, DKIM keys) must be explicitly included in the backup script. DKIM keys are critical for email deliverability and take 24-48 hours to repropagate if lost.
+| Role | Tool |
+| --- | --- |
+| **PVC capture** | Short-lived Kubernetes Job (`snapshotTenantPVC` — see BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md) |
+| **Mailbox capture** | Job running `stalwart-cli account export` against Stalwart admin API |
+| **Platform-DB export** | `client-lifecycle/backup-db.ts` SELECT → gzipped JSON |
+| **TLS capture** | List Secrets in tenant namespace → AES-256-GCM encrypt → write sidecar |
+| **Storage backends** | `hostpath` (default local), `s3` (S3 / S3-compatible), `ssh` (remote via SSH + `tar`/`sftp`) — all three are first-class |
+
+Stalwart DKIM keys live on the Stalwart PVC AND as rows in `email_dkim_keys`. The `config` component captures the DB rows; the cluster-DR Velero pipeline (Tier 4) captures the Stalwart PVC. A per-tenant `files` backup alone does NOT preserve DKIM — restore relies on the `config` component to re-import the key into Stalwart.
 
 ### Retention Periods (Cluster Backups)
 
@@ -77,36 +83,71 @@ Configurable per plan with per-client overrides:
 
 ---
 
-## Tier 2: Customer-Created On-Demand Backups
+## Tier 2: Admin-Initiated Backups
 
-**Optional backups created and managed by customers for custom retention, migration, or compliance.**
+**Operator-driven captures for pre-change safety, migration support, and bulk pre-upgrade runs.**
 
-### Backup Types Supported
+### Characteristics
 
-| Type | Use Case | Duration |
-| --- | --- | --- |
-| **Full backup** | Complete snapshot of all files + databases | One-time or scheduled |
-| **Incremental backup** | Changes since last backup | Scheduled only |
-| **Database-only backup** | Just database dumps without files | On-demand or scheduled |
-| **Files-only backup** | Just workload files without databases | On-demand or scheduled |
+| Dimension | Value |
+|---|---|
+| Actor | `super_admin` / `admin` |
+| Scope | Any single client, or bulk-select N clients |
+| Storage | Platform snapshot store (hostpath / S3 / SSH) |
+| Quota | Platform-wide budget — does NOT count against client plan quota |
+| Retention | Platform-global default (90 days) + per-bundle override |
+| Visibility | Admin only — `client` initiator hides this bundle from the client panel |
+| Triggers | Manual from admin panel; automatic pre-archive (`system` sub-type); planned: pre-deployment-upgrade, pre-plan-migration |
+
+### Bundle composition
+
+Same four components as Tier 1 (files, mailboxes, config, secrets). Admin can omit a component at backup time (e.g. skip `mailboxes` for a large mail client to save space) but every component omitted reduces restore fidelity — see RESTORE_SPECIFICATION.md.
+
+---
+
+## Tier 3: Client-Initiated Backups
+
+**Self-service captures from the client panel — bound by plan quota, support GDPR Art. 20 data portability.**
+
+### Characteristics
+
+| Dimension | Value |
+|---|---|
+| Actor | Client user (panel: client-panel) |
+| Scope | The client's own data only |
+| Storage | Platform snapshot store, plus optional client-supplied S3 or SSH destination (config in client panel Settings → Backups) |
+| Quota | **Counts against plan** — `max_backups` (number) and `max_backup_size_gb` (bytes) on hosting plan |
+| Retention | Plan-driven default (30 days) + per-bundle override up to the plan's max |
+| Visibility | Client-visible (in their panel); admin also sees the metadata |
+| Triggers | Manual from client panel (immediate) or scheduled (daily/weekly) |
+
+### Supported backup modes
+
+| Mode | Components included | Use case |
+|---|---|---|
+| **Full** | files + mailboxes + config + secrets | Default. Full restorable bundle. |
+| **Files-only** | files | Cheap, frequent snapshot of the PVC contents. No mail/config capture. |
+| **Data export** (GDPR) | files + mailboxes + config (secrets omitted) | Downloadable archive for customer portability. Offered via Settings → Data Export. |
+
+Incremental / differential backup modes are **not** currently supported. See [ADR-028 "Deferred"](../07-reference/ADR-028-backup-architecture.md) — requires block-level capture (Longhorn or CSI snapshots), which will land with the multi-node transition.
 
 ### Creation Methods
 
 **Manual (on-demand):**
 ```
-UI: Backup → Create Now
-├─ Select workload
-├─ Choose backup type (full/db-only/files-only)
-├─ Optional: Custom backup name
-└─ Trigger immediately
+Client Panel: Backups → Create Now
+├─ Choose mode (full / files-only / data export)
+├─ Optional: custom label
+├─ Optional: destination (platform default / client-configured S3 / SSH)
+└─ Start
 ```
 
 **Scheduled:**
 ```
-UI: Backup → Schedule
-├─ Select workload(s)
-├─ Frequency: hourly / daily / weekly / monthly
-├─ Retention: custom days
+Client Panel: Backups → Schedule
+├─ Frequency: daily / weekly / monthly
+├─ Mode: full / files-only
+├─ Retention: days, bounded by plan maximum
 └─ Enable/disable
 ```
 
@@ -154,17 +195,59 @@ Per-Backup Listing:
 
 ---
 
-## Tier 3: Encrypted Offsite Backups (Recommended)
+## Backup Destinations (Storage Backends)
 
-**Daily encrypted backups written directly to external backup server via SSHFS mount for disaster recovery and customer export. The server is mounted on demand during the backup window and unmounted when done, consuming zero local disk space.**
+All three initiators (system, admin, client) write to the same bundle format on any of three first-class storage backends. Destinations are configured per-initiator or per-client in `platform_settings`. See [BACKUP_COMPONENT_MODEL.md § Storage targets](../06-features/BACKUP_COMPONENT_MODEL.md#storage-targets) for the `BackupStore` interface.
 
-### Purpose
+| Backend | Use case | Path shape |
+|---|---|---|
+| `hostpath` | Single-node dev / single-cluster prod | `${HOSTPATH_ROOT}/<backup-id>/` |
+| `s3` | S3-compatible (AWS, MinIO, Wasabi, Backblaze) | `s3://<bucket>/<prefix>/<backup-id>/` |
+| `ssh` | Remote server via SSH (replaces the legacy SSHFS-mount approach) | `ssh://<user>@<host>:<path>/<backup-id>/` |
 
-✅ **Disaster Recovery** - Recover from site-wide failure  
-✅ **Compliance** - Keep copy off-premises (regulatory requirement)  
-✅ **Easy Migration** - Customers can export data to external hosting  
-✅ **Encryption** - All data encrypted with customer-configurable password  
-✅ **Organization** - One folder per customer with consistent structure  
+**SSH backend (new).** Uses direct `ssh` + `tar` piping or `sftp` batch mode. No filesystem mount is required — the platform's old SSHFS-based approach is removed. The SSH private key is stored encrypted in `platform_settings` under `storage.backup.ssh_private_key` (AES-256-GCM with `OIDC_ENCRYPTION_KEY`). Upload and download work via short-lived platform Jobs, not a persistent mount.
+
+Each initiator + destination combination is configured separately:
+
+| Initiator | Default destination | Override |
+|---|---|---|
+| System (Tier 1) | Platform-configured S3 or SSH | `storage.backup.system_default_target` |
+| Admin (Tier 2) | Same as system default | Per-run override at API call |
+| Client (Tier 3) | Platform-configured hostpath (with quota) | Client can configure their own S3/SSH in client panel Settings → Backups |
+
+### Encryption
+
+The `secrets` component is encrypted at bundle time with `OIDC_ENCRYPTION_KEY` (AES-256-GCM, `k1:` KID prefix for future rotation). Other components rely on transport (S3 SSE, SSH) and filesystem permissions (hostpath 0700) for at-rest confidentiality.
+
+For **customer-downloadable bundles** (GDPR Art. 20 export), the entire bundle is additionally encrypted with a one-time passphrase that the client provides at export request time. Lost passphrases mean lost bundles — the platform stores no copy.
+
+---
+
+## Tier 4: Cluster Disaster Recovery (Velero)
+
+**Not per-client. Operator-facing full-platform DR for rebuilding a cluster from zero.**
+
+Tier 4 runs a fundamentally different pipeline and is **not** accessible through the admin or client panel. It captures:
+
+- Platform PostgreSQL via `pg_dump` (Velero pre-backup hook)
+- Stalwart's `data` PVC in the `mail` namespace (Velero restic volume backup)
+- Roundcube, Dex, Harbor, cert-manager, Flux state — all k8s resources cluster-wide
+- Cluster-level secrets (`OIDC_ENCRYPTION_KEY` in Vault / External Secrets, `JWT_SECRET`, etc.)
+
+Per-client bundles (Tiers 1-3) are sufficient for single-client recovery. Tier 4 is reserved for "the cluster itself is gone" scenarios. See [ADR-028 decision 9](../07-reference/ADR-028-backup-architecture.md).
+
+> **Status:** Tier 4 is future work — Velero integration is not in-tree. For now the operator-facing DR pattern is:
+> 1. Snapshot platform-postgres + Stalwart PVC out-of-band
+> 2. Per-client bundles cover everything else
+> 3. Rebuild the cluster, restore platform-postgres, restore Stalwart, then selectively re-apply tenant bundles
+
+---
+
+## Legacy offsite-backup architecture (deprecated)
+
+The sections below describe a previous architecture that shipped before the
+component-oriented model locked in 2026-04-20. They are kept for historical
+context while implementation catches up. Treat **[BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md)** and this file's Tier 1–4 sections as authoritative.
 
 ### Architecture
 

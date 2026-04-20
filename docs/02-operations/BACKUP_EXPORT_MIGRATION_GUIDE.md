@@ -1,53 +1,72 @@
 # Backup Export & Migration Guide
 
-**Status:** Phase 1 Implementation  
-**Last Updated:** March 3, 2026  
+**Status:** Specification · 2026-04-20
 **Owner:** Operations & Support Team
+
+> **Bundle format:** [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) (authoritative)
+> **Policy:** [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md)
+> **ADR:** [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md)
 
 ## Overview
 
-This guide provides complete instructions for customers to export their backups and migrate workloads to external hosting systems. All exports are encrypted with AES-256-CBC and include all necessary data and configuration.
+Customers can export a client-initiated backup bundle for off-platform migration or GDPR Art. 20 data-portability. Exports are the **same component-oriented bundle** used internally by the platform, downloaded from the client panel.
+
+The `secrets` component (encrypted TLS Secrets) is never included in client downloads — operators restoring a bundle on a different cluster should expect cert-manager to re-issue certificates on first request (30–60 s delay).
 
 ---
 
-## Quick Start: Export in 3 Steps
+## Quick start: Export in 3 Steps
 
-### Step 1: Download Encrypted Backup
+### Step 1: Download Backup
 
-1. Log into admin panel
-2. Navigate: **Backups → Offsite Backups**
-3. Click **Download** on desired backup date
-4. Save `backups-[customer-name]-[date].tar.gz.enc` file
-5. Note the encryption password (sent to registered email or display in UI)
+1. Log into **client panel**
+2. Navigate: **Backups → [select bundle] → Download**
+3. Choose one of:
+   - **Raw bundle** — tar.gz of the component directory, no extra encryption
+   - **Passphrase-encrypted archive** — you supply a 16+ char passphrase; platform stores no copy
+4. Save the file
 
-### Step 2: Decrypt Archive
+> Admin downloads via **Admin Panel → Clients → [select] → Backups → Download** additionally include the encrypted `secrets` component.
+
+### Step 2: Decrypt (if passphrase-encrypted)
 
 ```bash
-# Use the password from your email/UI
-openssl enc -aes-256-cbc -d \
-  -in backups-acme-corp-2026-03-03.tar.gz.enc \
-  -pass pass:"YOUR_PASSWORD" | \
-  tar -xz
+# Replace with your passphrase. Platform stores no copy — lost passphrase = lost archive.
+openssl enc -aes-256-gcm -d \
+  -in bundle-4ec7436d-2026-04-20.tar.gz.enc \
+  -pass pass:"YOUR_PASSPHRASE" | tar -xz
+```
 
-# Creates directory structure:
-# ├── metadata.json
-# ├── workload-name-1/
-# │   ├── files/     (all workload files)
-# │   └── databases/ (SQL dumps)
-# └── workload-name-2/
-#     ├── files/
-#     └── databases/
+Raw bundles skip this step — just `tar -xzf bundle-4ec7436d-2026-04-20.tar.gz`.
+
+Either way you end up with:
+
+```
+<backup-id>/
+├── meta.json                 ← canonical manifest
+├── components/files/         ← tenant PVC contents (incl. DB datadirs)
+├── components/mailboxes/     ← per-mailbox Stalwart exports
+├── components/config/        ← client-scoped platform-DB rows
+└── components/secrets/       ← only present in admin downloads
 ```
 
 ### Step 3: Migrate to New Host
 
-**See detailed migration procedures below for your target hosting platform.**
+For migration to another instance of this platform, upload the bundle via **Admin Panel → Restore from backup**.
+
+For migration to a different hosting platform: extract `components/files/archive.tar.gz` for the tenant PVC contents, re-import each `components/mailboxes/<addr>.mbox.tar.gz` into the target mail system, and recreate the account shape from `components/config/db-rows.json.gz`. See the per-target sections below.
 
 ---
 
-## What's Included in Each Backup
+## What's included in each backup
 
-### Directory Structure
+**Database content is inside `components/files/archive.tar.gz`** as the datadir of the client's DB pod (MariaDB `/var/lib/mysql`, PostgreSQL `/var/lib/postgresql/data`). No separate `.sql.gz` dumps are produced. To import into a different database server, extract the datadir from the tarball and either (a) start a matching DB pod against it, or (b) run the source DB against it in a container and `mysqldump` / `pg_dump` from there.
+
+### Legacy structure example (deprecated — for reference only)
+
+The directory example below shows the pre-2026-04-20 "one folder per workload, databases as separate SQL dumps" layout. Bundles produced from 2026-04-20 forward use the component-oriented layout described above.
+
+
 
 ```
 customer-acme-corp/

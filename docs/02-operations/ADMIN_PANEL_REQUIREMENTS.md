@@ -812,7 +812,7 @@ Adding or removing a variable triggers a pod restart after confirmation.
 | `PATCH` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/config` | Update runtime configuration values (app-specific Helm values: title, theme, SMTP settings, feature flags, etc.) — triggers rolling restart |
 | `PATCH` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/resources` | Adjust CPU/memory allocations (`cpu_request`, `cpu_limit`, `mem_request`, `mem_limit`; plan limits enforced) |
 | `POST` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/backup` | Trigger an immediate manual backup of the app instance and its database — returns `backup_id` |
-| `POST` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/restore` | Restore instance from a backup (`backup_id`, `scope`: `full`\|`db_only`\|`files_only`) — returns restore job ID; see `RESTORE_SPECIFICATION.md` |
+| `POST` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/restore` | Restore instance from a backup (`backup_id`, `scope`: `full`\|`files_only`\|`selected`) — returns restore job ID; see [`RESTORE_SPECIFICATION.md`](../06-features/RESTORE_SPECIFICATION.md). Per-database restore (`db_only` / `data_only`) is not supported — DB data restores with the files component. See [ADR-028 decision 3](../07-reference/ADR-028-backup-architecture.md). |
 | `GET` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/logs` | Stream or paginate application logs (query: `since`, `until`, `lines`, `stream`: `stdout`\|`stderr`) |
 | `GET` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}/health` | Current health status: pod readiness, liveness probe result, CPU/memory trend (last 1h), error rate |
 | `DELETE` | `/api/v1/admin/customers/{id}/app-instances/{instance_id}` | Delete application instance (`backup_first`: boolean, `reason` required) — uninstalls Helm release, removes PVCs, purges DNS records |
@@ -1586,40 +1586,51 @@ Link to Longhorn native UI for advanced management.
 
 ### SD.2 Backup Management
 
-**Requirement:** Admin view of all backup activity across all customers from the Storage section perspective — complementing the detailed BR.1/BR.2 backup management views. SD.2 provides the **storage-layer summary**: overall backup health, per-client storage usage, quota enforcement, and quick-access links to the full BR.1/BR.2 backup management tools.
+**Requirement:** Admin view of all backup activity across all customers. Provides the storage-layer summary: overall backup health, per-client storage usage, quota enforcement, and quick links into the detailed per-tier views (BR.1 for admin/system tiers, BR.2 for client-initiated tier).
 
-> **Scope note:** Full backup job management, restore operations, offsite server configuration, and rsync/Velero job detail are specified in **BR.1** and **BR.2** (Backup & Disaster Recovery section). SD.2 does not duplicate that content — it provides the storage operations lens: how much quota is consumed, which clients are over threshold, and whether the daily backup pipeline completed successfully.
+> **Authoritative specs:**
+> - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — bundle format
+> - [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md) — initiator tiers
+> - [../06-features/RESTORE_SPECIFICATION.md](../06-features/RESTORE_SPECIFICATION.md) — restore API
+> - [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md) — decisions
 
 **Features:**
 
 | Feature | Specification | Phase |
 |---------|---------------|-------|
-| **Backup pipeline status** | Daily backup pipeline health for all components — last run result per client type | 1 |
-| **Per-client backup storage** | Backup GB used vs. plan quota; breakdown by tier (automated vs. customer-created) | 1 |
-| **Quota violations** | Clients over 80% or 100% of backup storage quota — action required list | 1 |
-| **Bulk quota update** | Increase backup storage quota for multiple clients at once | 1 |
-| **Failed backup list** | All clients with a failed backup in the last 24h — quick link to BR.1 job detail | 1 |
+| **Capture pipeline status** | Per-component (files / mailboxes / config / secrets) daily run health — last run result and next-scheduled time | 1 |
+| **Per-client backup storage** | Backup GB used vs. plan quota; breakdown by initiator (system / admin / client) | 1 |
+| **Quota violations** | Clients over 80% or 100% of client-initiated backup quota — action required list | 1 |
+| **Bulk quota update** | Increase `max_backups` or `max_backup_size_gb` for multiple clients at once | 1 |
+| **Failed capture list** | All clients with a failed capture Job in the last 24h — quick link to the Job log | 1 |
 | **Backup storage trend** | Platform-wide backup storage growth — 7-day and 30-day | 1 |
-| **Links to BR.1 / BR.2** | Deep links into Velero backup management and file backup management | 1 |
+| **Destination health** | Per-destination (hostpath / S3 / SSH) reachability, latest successful write timestamp | 1 |
+| **Links to BR.1 / BR.2** | Deep links into the admin- and client-initiated backup management detail views | 1 |
 
 ---
 
-#### Backup Pipeline Status
+#### Capture Pipeline Status
 
 **Admin Panel → Storage → Backups → Pipeline**
 
-One row per component, same as BR.1 Overview but scoped to the storage operations view:
+One row per component, reflecting the four-component architecture in [BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md):
 
 | Component | Last successful | Status | Clients affected on failure |
-|-----------|----------------|--------|---------------------------|
-| MariaDB dumps | `2026-03-08 02:11 UTC` | `● OK` | All clients with MySQL databases |
-| PostgreSQL dumps | `2026-03-08 02:14 UTC` | `● OK` | All clients with PostgreSQL databases |
-| rsync file backups | `2026-03-08 03:04 UTC` | `● OK` | All clients |
-| Velero cluster snapshot | `2026-03-08 01:03 UTC` | `● OK` | Platform-wide |
-| Offsite SSHFS | `2026-03-08 02:00 UTC` | `● Clean` | All |
-| Retention cleanup | `2026-03-08 07:45 UTC` | `● OK` | Expired backup archives purged |
+|---|---|---|---|
+| Files (PVC capture Jobs) | `2026-04-20 03:04 UTC` | `● OK` | All clients |
+| Mailboxes (Stalwart per-mailbox exports) | `2026-04-20 04:11 UTC` | `● OK` | All clients with mailboxes |
+| Config (client-scoped DB rows) | `2026-04-20 03:00 UTC` | `● OK` | All clients |
+| Secrets (encrypted TLS export) | `2026-04-20 03:00 UTC` | `● OK` | All clients with TLS certs |
+| Retention cleanup | `2026-04-20 07:45 UTC` | `● OK` | Expired bundles purged |
 
-A `Critical` banner is shown if any component has not completed successfully in the last 25 hours.
+Destinations row (operator-visible):
+
+| Destination | Type | Last write | Status |
+|---|---|---|---|
+| Primary backup store | `s3` / `ssh` / `hostpath` | `2026-04-20 04:11 UTC` | `● OK` |
+| Secondary (if configured) | ... | ... | ... |
+
+A `Critical` banner is shown if any component has not completed successfully in the last 25 hours, or a destination has been unreachable for 4+ hours.
 
 ---
 
@@ -4210,37 +4221,51 @@ Filter by status, date range. CSV export. Sendmail rate limit override (emergenc
 
 ## Backup & Disaster Recovery
 
-The platform uses a **three-tier backup model**:
+The platform uses a **four-tier backup model** based on initiator:
 
-| Tier | Type | Quota impact | Storage |
-|------|------|--------------|---------|
-| 1 | Cluster-managed automated backups (Velero + rsync + mysqldump/pg_dump) | None — platform cost | Offsite server (SSHFS) |
-| 2 | Customer-created on-demand backups | Yes — counts against plan quota | Offsite server (`customer-backups/`) |
-| 3 | Encrypted offsite archives (AES-256-CBC) | None | Offsite server (SSHFS) |
+| Tier | Initiator | Scope | Storage | Quota |
+|---|---|---|---|---|
+| 1 | `system` (platform cron + pre-destructive-op) | Single client | Platform backup store (hostpath / S3 / SSH) | None — platform cost |
+| 2 | `admin` (operator-initiated) | Single client or bulk | Platform backup store | None — operator cost |
+| 3 | `client` (self-service) | Own client only | Platform store + optional client-configured S3/SSH | **Yes — counts against plan** (`max_backups`, `max_backup_size_gb`) |
+| 4 | `cluster` (Velero — future) | Entire platform | External S3 | Separate DR budget |
 
-The offsite server is mounted on-demand via **SSHFS** during the backup window and immediately unmounted — consuming no persistent local cluster disk. All operations are async; the API returns `202 Accepted` with a job ID.
+All four tiers produce the **same component-oriented bundle** (`files`, `mailboxes`, `config`, `secrets`). ACL, quota, retention, and visibility are driven by `meta.json.initiator`.
 
-See also: `BACKUP_STRATEGY.md`, `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md`, `BACKUP_EXPORT_MIGRATION_GUIDE.md`.
+> **Authoritative specs:**
+> - [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) — canonical bundle format
+> - [BACKUP_STRATEGY.md](BACKUP_STRATEGY.md) — tier details, destinations, retention
+> - [BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md](BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md) — capture pipelines
+> - [../06-features/RESTORE_SPECIFICATION.md](../06-features/RESTORE_SPECIFICATION.md) — restore API + UI
+> - [../07-reference/ADR-028-backup-architecture.md](../07-reference/ADR-028-backup-architecture.md) — decision record
+
+All operations are async; admin and client APIs return `202 Accepted` with an operation ID suitable for `OperationProgressModal`.
+
+### Deleted-client restore (admin-only)
+
+When an admin restores a bundle whose `clients.id` no longer exists in the platform DB, the restore flow shows a **target-node selector dropdown** populated from `GET /api/v1/admin/nodes`. The bundle's `meta.json.nodePlacement.preferredNode` preselects the original node if that node is still registered; otherwise the admin picks any registered node. Existing-client restores use the client's currently-assigned node and skip this prompt. See [RESTORE_SPECIFICATION.md §4](../06-features/RESTORE_SPECIFICATION.md#part-4-whole-client-restore).
 
 ---
 
-### BR.1 Velero Backup Management
+### BR.1 Backup Management (System + Admin Tiers)
 
-**Requirement:** View and manage Kubernetes cluster-state backups (Velero), database dumps (mysqldump / pg_dump), and the offsite SSHFS backup infrastructure. Velero captures cluster-state snapshots; BR.2 covers workload file backups via rsync.
+**Requirement:** View and manage Tier 1 (system) and Tier 2 (admin-initiated) backups — component capture health, per-client bundle listing, manual triggers, and restore initiation. Tier 3 (client-initiated) is covered in BR.2. Tier 4 (Velero cluster DR) is operator-facing tooling external to this panel.
 
 **Features:**
 
 | Feature | Specification | Phase |
 |---------|---------------|-------|
-| **Backup overview** | Global backup health card: last successful run per component, next scheduled run, offsite storage used/free | 1 |
-| **Backup job list** | All backup jobs across all customers — date, type, status, size, checksum, retention expiry | 1 |
-| **Per-customer backup list** | All automated and manual backups for a specific customer — filterable by type and status | 1 |
-| **Manual trigger** | Trigger an immediate full, database-only, or files-only backup for a customer | 1 |
-| **Restore** | Initiate restore from a selected backup — scope: full / database only / files only | 1 |
-| **Backup deletion** | Delete a specific backup archive from offsite storage (with confirmation) | 1 |
+| **Backup overview** | Global health card: last successful capture per component (files / mailboxes / config / secrets), next scheduled run, destination backend storage used/free | 1 |
+| **Backup bundle list** | All bundles across all customers — date, initiator, size, component summary, retention expiry | 1 |
+| **Per-customer backup list** | All bundles for a specific customer — filterable by initiator and status | 1 |
+| **Manual trigger** | Start an immediate full, files-only, or data-export backup for a customer (admin-initiator) | 1 |
+| **Restore — whole client** | Launch a whole-client restore — existing client (same node) or recreate deleted client (node picker) | 1 |
+| **Restore — mailboxes** | Pick N mailboxes from a bundle, replace with `stalwart-cli account import` | 1 |
+| **Restore — files/folders** | Browse `tree.jsonl.gz` index, pick files/folders, restore into existing PVC | 1 |
+| **Bundle deletion** | Delete a specific bundle from the backup destination (with confirmation) | 1 |
 | **Retention policy** | View and edit per-customer retention days (within plan limits) | 1 |
-| **Offsite server configuration** | Configure hostname, port, SSH credentials, remote base path, archive format, encryption | 1 |
-| **Encryption settings** | Enable/disable AES-256-CBC encryption; manage per-customer encryption passwords | 1 |
+| **Destination configuration** | Configure and test hostpath / S3 / SSH backup destinations | 1 |
+| **Encryption settings** | `OIDC_ENCRYPTION_KEY` status + KID rotation UI (future: Vault integration via ExternalSecrets) | 2 |
 | **Storage usage** | Per-customer backup storage breakdown; total offsite usage vs capacity; growth trend | 1 |
 | **Backup verification** | Trigger SHA-256 checksum verification for a specific backup; weekly scheduled verify job status | 1 |
 | **Alert status** | Surface `BackupJobFailed`, `OffsiteBackupFailed`, `OffsiteMountFailed` alerts | 1 |

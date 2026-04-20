@@ -2340,6 +2340,34 @@ WordPress is a managed application, not a generic runtime. It belongs in the App
 
 ---
 
+## ADR-027: OAuth2-Proxy Scope — Platform Panels Only
+
+See [ADR-027-OAUTH2-PROXY-SCOPE.md](ADR-027-OAUTH2-PROXY-SCOPE.md).
+
+---
+
+## ADR-028: Backup Architecture — Component Model, Tiered Initiators, Multi-Target Storage
+
+See [ADR-028-backup-architecture.md](ADR-028-backup-architecture.md).
+
+Summary: A backup is a component-oriented directory (`files`, `mailboxes`,
+`config`, `secrets`) on one of three mandatory storage backends
+(`hostpath`, `s3`, `ssh`). Four initiators (`client`, `admin`, `system`,
+`cluster`) share the same bundle format; ACL is driven by a
+`meta.json.initiator` field. Per-database logical dumps are dropped (DB
+datadir lives on the tenant PVC). Mailbox restore granularity is whole
+mailbox with replace semantics. Per-file restore is supported via a
+`tree.jsonl.gz` index sidecar. Cluster-wide DR is deferred to Velero.
+
+### Related Docs
+
+- `docs/06-features/BACKUP_COMPONENT_MODEL.md` — canonical bundle spec
+- `docs/02-operations/BACKUP_STRATEGY.md` — three-tier strategy
+- `docs/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
+- `docs/06-features/RESTORE_SPECIFICATION.md` — restore API + granularity
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/
