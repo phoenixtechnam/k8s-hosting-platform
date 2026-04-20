@@ -49,6 +49,16 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]
+  # Subresource: services/proxy — used by the File Manager proxy path
+  # (backend hits the apiserver at /api/v1/namespaces/<ns>/services/
+  # <svc>:<port>/proxy/<fm-endpoint> to reach the tenant's file-manager
+  # sidecar). K8s treats subresources as distinct resources for RBAC, so
+  # the wildcard on top-level `services` above does NOT grant this. As
+  # with pods/exec, the apiserver uses GET for read operations and
+  # POST/create for write operations, so both verbs are required.
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    verbs: ["get", "create"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["*"]
