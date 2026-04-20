@@ -21,6 +21,7 @@ import SftpUsers from '@/pages/SftpUsers';
 import ResourceUsage from '@/pages/ResourceUsage';
 import Notifications from '@/pages/Notifications';
 import Placeholder from '@/pages/Placeholder';
+import LifecycleGate from '@/components/LifecycleGate';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
@@ -51,19 +52,19 @@ export default function App() {
             <Route path="domains" element={<Domains />} />
             <Route path="domains/:domainId" element={<DomainDetail />} />
             <Route path="domains/:domainId/routes/:routeId" element={<RouteDetail />} />
-            <Route path="applications" element={<Applications />} />
-            <Route path="cron-jobs" element={<CronJobs />} />
-            <Route path="files" element={<Files />} />
+            <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
+            <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
+            <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
             <Route path="email" element={<Email />} />
-            <Route path="backups" element={<Backups />} />
+            <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
             <Route path="users" element={<SubUsers />} />
             <Route path="settings" element={<Settings />} />
             <Route path="ssh-keys" element={<SshKeys />} />
-            <Route path="sftp" element={<SftpUsers />} />
+            <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
             <Route path="resource-usage" element={<ResourceUsage />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="user-settings" element={<UserSettings />} />
-            <Route path="database-manager" element={<DatabaseManager />} />
+            <Route path="database-manager" element={<LifecycleGate><DatabaseManager /></LifecycleGate>} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>

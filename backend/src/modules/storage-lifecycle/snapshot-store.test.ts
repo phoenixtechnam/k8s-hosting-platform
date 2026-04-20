@@ -58,6 +58,45 @@ describe('LocalHostPathStore', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('readSidecar returns trimmed content of .sha256 sidecar', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapstore-'));
+    try {
+      await mkdir(join(root, 'c1'), { recursive: true });
+      await writeFile(join(root, 'c1', 's.tar.gz'), 'data');
+      await writeFile(join(root, 'c1', 's.tar.gz.sha256'), '3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7  /snapshots/c1/s.tar.gz\n');
+      const s = new LocalHostPathStore(root);
+      const raw = await s.readSidecar('c1/s.tar.gz', '.sha256');
+      expect(raw).toBe('3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7  /snapshots/c1/s.tar.gz');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('readSidecar returns null for missing sidecar', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapstore-'));
+    try {
+      const s = new LocalHostPathStore(root);
+      expect(await s.readSidecar('nope/x.tar.gz', '.sha256')).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('delete removes the .sha256 sidecar too', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapstore-'));
+    try {
+      await mkdir(join(root, 'c1'), { recursive: true });
+      await writeFile(join(root, 'c1', 's.tar.gz'), 'data');
+      await writeFile(join(root, 'c1', 's.tar.gz.sha256'), 'hash');
+      const s = new LocalHostPathStore(root);
+      expect(await s.delete('c1/s.tar.gz')).toBe(true);
+      expect(await s.stat('c1/s.tar.gz')).toBeNull();
+      expect(await s.readSidecar('c1/s.tar.gz', '.sha256')).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('getSnapshotStore factory', () => {

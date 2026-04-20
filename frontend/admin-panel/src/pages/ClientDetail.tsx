@@ -33,6 +33,7 @@ import {
   useArchiveClient as useStorageArchive,
   useRestoreClient as useStorageRestore,
   useStorageOperations,
+  useClearFailedState,
 } from '@/hooks/use-storage-lifecycle';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
@@ -1584,6 +1585,7 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
   const resume = useStorageResume();
   const archive = useStorageArchive();
   const restore = useStorageRestore();
+  const clearFailed = useClearFailedState();
 
   const ops = opsQuery.data?.data ?? [];
   const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
@@ -1663,8 +1665,26 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
 
       {!activeOp && recentOp && recentOp.state === 'failed' && (
         <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm">
-          <div className="font-medium text-red-800 dark:text-red-200">Last {recentOp.opType} failed</div>
-          {recentOp.lastError && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{recentOp.lastError}</p>}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-medium text-red-800 dark:text-red-200">Last {recentOp.opType} failed</div>
+              {recentOp.lastError && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{recentOp.lastError}</p>}
+            </div>
+            {lifecycleState === 'failed' && (
+              <button
+                onClick={() => {
+                  if (confirm("Reset this client's storage state back to 'idle'? The failed operation's log is kept for debugging.")) {
+                    clearFailed.mutate(clientId);
+                  }
+                }}
+                disabled={clearFailed.isPending}
+                className="shrink-0 rounded-md border border-red-300 dark:border-red-700 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+                data-testid="lifecycle-clear-failed-button"
+              >
+                {clearFailed.isPending ? 'Clearing…' : 'Reset to idle'}
+              </button>
+            )}
+          </div>
         </div>
       )}
 

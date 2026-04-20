@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import { useAuth } from '@/hooks/use-auth';
 import { useClientContext } from '@/hooks/use-client-context';
+import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
 import { useDeployments, useResourceUsage } from '@/hooks/use-deployments';
@@ -33,6 +34,7 @@ function formatPercent(used: string, limit: string): number {
 export default function Dashboard() {
   const { user } = useAuth();
   const { clientId } = useClientContext();
+  const { data: lifecycle } = useMyLifecycle();
   const displayName = user?.fullName ?? user?.email ?? 'there';
 
   const { data: domainsData } = useDomains(clientId ?? undefined);
@@ -113,6 +115,25 @@ export default function Dashboard() {
           Here is an overview of your hosting account.
         </p>
       </div>
+
+      {lifecycle && (lifecycle.clientStatus !== 'active' || (lifecycle.storageLifecycleState && lifecycle.storageLifecycleState !== 'idle')) && (
+        <div
+          className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm"
+          data-testid="lifecycle-card"
+        >
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">Account state</h2>
+          <dl className="grid grid-cols-2 gap-2 text-sm">
+            <dt className="text-gray-500 dark:text-gray-400">Status</dt>
+            <dd className="font-medium text-gray-900 dark:text-gray-100 capitalize">{lifecycle.clientStatus ?? 'unknown'}</dd>
+            {lifecycle.storageLifecycleState && lifecycle.storageLifecycleState !== 'idle' && (
+              <>
+                <dt className="text-gray-500 dark:text-gray-400">Storage operation</dt>
+                <dd className="font-medium text-blue-700 dark:text-blue-300 capitalize">{lifecycle.storageLifecycleState}</dd>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5" data-testid="quick-stats">
         {stats.map(({ label, value, icon: Icon, color }) => (

@@ -157,7 +157,12 @@ export default function Clients() {
                         </div>
                       </td>
                       <td className="px-5 py-3.5">
-                        <StatusBadge status={client.status} />
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StatusBadge status={client.status} />
+                          {client.storageLifecycleState && client.storageLifecycleState !== 'idle' && (
+                            <StatusBadge status={client.storageLifecycleState} />
+                          )}
+                        </div>
                       </td>
                       <MetricsCell
                         metrics={metricsMap[client.id]}

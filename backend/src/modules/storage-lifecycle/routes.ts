@@ -4,7 +4,12 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { getSnapshotStore } from './snapshot-store.js';
+import { resolveSnapshotStore } from './snapshot-store.js';
+import {
+  getRedactedStorageLifecycleSettings,
+  saveStorageLifecycleSettings,
+  storageLifecycleSettingsSchema,
+} from './settings.js';
 import * as service from './service.js';
 
 const resizeSchema = z.object({
@@ -25,10 +30,10 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   // All ops are admin-only.
   const adminGate = [authenticate, requireRole('super_admin', 'admin')];
 
-  function ctx() {
+  async function ctx() {
     const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kcfg);
-    const store = getSnapshotStore(app.config as Record<string, unknown>);
+    const store = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
     const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
     return { db: app.db, k8s, store, platformNamespace };
   }
@@ -46,7 +51,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const { clientId } = request.params as { clientId: string };
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
-    const result = await service.resizeDryRun(ctx(), clientId, parsed.data.newGi);
+    const result = await service.resizeDryRun(await ctx(),clientId, parsed.data.newGi);
     return success(result);
   });
 
@@ -62,7 +67,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    const { operationId } = await service.resizeClient(ctx(), clientId, {
+    const { operationId } = await service.resizeClient(await ctx(), clientId, {
       newGi: parsed.data.newGi,
       triggeredByUserId: userId,
     });
@@ -83,7 +88,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = snapshotSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    const snap = await service.snapshotClient(ctx(), clientId, {
+    const snap = await service.snapshotClient(await ctx(), clientId, {
       label: parsed.data.label,
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
@@ -104,7 +109,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     schema: { tags: ['Storage Lifecycle'], summary: 'Delete a snapshot (removes archive + DB row)', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { snapshotId } = request.params as { snapshotId: string };
-    await service.deleteSnapshot(ctx(), snapshotId);
+    await service.deleteSnapshot(await ctx(), snapshotId);
     return success({ deleted: snapshotId });
   });
 
@@ -116,7 +121,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.suspendClient(ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.suspendClient(await ctx(), clientId, { triggeredByUserId: userId }));
   });
 
   app.post('/admin/clients/:clientId/storage/resume', {
@@ -125,7 +130,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.resumeClient(ctx(), clientId, { triggeredByUserId: userId }));
+    return success(await service.resumeClient(await ctx(), clientId, { triggeredByUserId: userId }));
   });
 
   // ─── Archive / Restore ──────────────────────────────────────────────
@@ -138,7 +143,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = archiveSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.archiveClient(ctx(), clientId, {
+    return success(await service.archiveClient(await ctx(), clientId, {
       retentionDays: parsed.data.retentionDays,
       triggeredByUserId: userId,
     }));
@@ -152,7 +157,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = restoreSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.restoreArchivedClient(ctx(), clientId, {
+    return success(await service.restoreArchivedClient(await ctx(), clientId, {
       newGi: parsed.data.newGi,
       triggeredByUserId: userId,
     }));
@@ -182,6 +187,90 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     onRequest: adminGate,
     schema: { tags: ['Storage Lifecycle'], summary: 'Platform-wide provisioned vs used storage report', security: [{ bearerAuth: [] }] },
   }, async () => {
-    return success(await service.storageAuditReport(ctx()));
+    return success(await service.storageAuditReport(await ctx()));
+  });
+
+  // ─── Operator recovery ──────────────────────────────────────────────
+  //
+  // When an op fails partway through (e.g. PVC delete times out), the
+  // client is stuck in state='failed' and any subsequent ops return 409.
+  // This endpoint is the safety valve — admin resets the state back to
+  // 'idle' so the next op can proceed. The failed operation's DB row is
+  // NOT removed so the original error is still auditable.
+
+  app.post('/admin/clients/:clientId/storage/clear-failed', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: "Force-clear a client's stuck 'failed' storage state back to idle",
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    return success(await service.clearFailedStorageState(app.db, clientId));
+  });
+
+  // ─── Settings ───────────────────────────────────────────────────────
+  //
+  // Admin-only CRUD over the DB-backed snapshot-store config. Secrets
+  // (`s3SecretAccessKey`, `azureConnectionString`) are never returned
+  // — GET returns `*Set: true/false` flags so the UI can show an
+  // indicator without leaking plaintext; PATCH omits a field to leave
+  // it unchanged, or passes `null` to clear it.
+
+  app.get('/admin/settings/storage-lifecycle', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Get storage-lifecycle platform settings (secrets redacted)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    return success(await getRedactedStorageLifecycleSettings(app.db));
+  });
+
+  app.patch('/admin/settings/storage-lifecycle', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Update storage-lifecycle platform settings',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const parsed = storageLifecycleSettingsSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400, {
+        field: parsed.error.errors[0].path.join('.'),
+      });
+    }
+    await saveStorageLifecycleSettings(app.db, parsed.data);
+
+    // Audit-log the change. Secrets are referenced by key name only,
+    // never by value, so the log is safe to retain long-term.
+    try {
+      const { auditLogs } = await import('../../db/schema.js');
+      const actorId = (request.user as { sub?: string; id?: string } | undefined)?.sub
+        ?? (request.user as { id?: string } | undefined)?.id
+        ?? null;
+      const changedKeys = Object.keys(parsed.data);
+      await app.db.insert(auditLogs).values({
+        id: crypto.randomUUID(),
+        clientId: null,
+        actionType: 'storage_lifecycle_settings.update',
+        resourceType: 'platform_settings',
+        resourceId: null,
+        actorId: actorId ?? 'unknown',
+        actorType: 'user',
+        httpMethod: 'PATCH',
+        httpPath: '/admin/settings/storage-lifecycle',
+        httpStatus: 200,
+        changes: { keys: changedKeys },
+        ipAddress: request.ip ?? null,
+      });
+    } catch (err) {
+      request.log.warn({ err }, 'audit log write failed for storage-lifecycle settings update');
+    }
+
+    return success(await getRedactedStorageLifecycleSettings(app.db));
   });
 }

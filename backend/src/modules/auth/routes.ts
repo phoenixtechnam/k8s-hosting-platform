@@ -158,6 +158,25 @@ export async function authRoutes(app: FastifyInstance) {
       throw invalidToken();
     }
 
+    // For client-panel users, include the owning client's lifecycle
+    // state so the UI can render a banner / block destructive pages
+    // when the client is suspended or being operated on. Admin users
+    // have no clientId and skip this lookup entirely.
+    let clientStatus: string | null = null;
+    let storageLifecycleState: string | null = null;
+    if (user.clientId) {
+      const { clients } = await import('../../db/schema.js');
+      const [c] = await app.db
+        .select({ status: clients.status, state: clients.storageLifecycleState })
+        .from(clients)
+        .where(eq(clients.id, user.clientId))
+        .limit(1);
+      if (c) {
+        clientStatus = c.status;
+        storageLifecycleState = c.state;
+      }
+    }
+
     return {
       data: {
         id: user.id,
@@ -167,6 +186,8 @@ export async function authRoutes(app: FastifyInstance) {
         panel: user.panel ?? 'admin',
         clientId: user.clientId ?? null,
         timezone: user.timezone ?? null,
+        clientStatus,
+        storageLifecycleState,
       },
     };
   });

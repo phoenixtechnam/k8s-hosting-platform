@@ -40,8 +40,28 @@ export function dataResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 
 // ─── Common Fields ───────────────────────────────────────────────────────────
 
-export const statusEnum = z.enum(['active', 'suspended', 'pending', 'cancelled']);
+// Client lifecycle status. `archived` means the client was off-boarded:
+// PVC destroyed, snapshot retained for the configured grace period, but
+// the account still exists so it can be restored. See storage-lifecycle/.
+export const statusEnum = z.enum(['active', 'suspended', 'pending', 'cancelled', 'archived']);
 export type Status = z.infer<typeof statusEnum>;
+
+// Storage lifecycle state machine — orthogonal to client.status.
+// Lives on `clients.storage_lifecycle_state`. Callers should treat any
+// value other than `idle` as "an orchestrator is currently operating
+// on this client's PVC; UI should disable destructive actions."
+export const storageLifecycleStateEnum = z.enum([
+  'idle',
+  'snapshotting',
+  'quiescing',
+  'resizing',
+  'replacing',
+  'restoring',
+  'unquiescing',
+  'archiving',
+  'failed',
+]);
+export type StorageLifecycleState = z.infer<typeof storageLifecycleStateEnum>;
 
 export const uuidField = z.string().uuid();
 

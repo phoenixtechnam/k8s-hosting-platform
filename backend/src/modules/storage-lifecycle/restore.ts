@@ -106,7 +106,17 @@ export async function restoreTenantPVC(
     const status = job.status ?? {};
     const completed = (status.conditions ?? []).find((c) => c.type === 'Complete' && c.status === 'True');
     const failed = (status.conditions ?? []).find((c) => c.type === 'Failed' && c.status === 'True');
-    if (completed || (status.succeeded ?? 0) > 0) return;
+    if (completed || (status.succeeded ?? 0) > 0) {
+      // Delete the Job + its pod so nothing holds the PVC's RWO lock
+      // by the time the orchestrator starts workloads back up.
+      // Same reasoning as snapshotTenantPVC.
+      try {
+        await (k8s.batch as unknown as {
+          deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+        }).deleteNamespacedJob({ name: jobName, namespace: opts.namespace, propagationPolicy: 'Background' });
+      } catch { /* best-effort */ }
+      return;
+    }
     if (failed || (status.failed ?? 0) > 0) throw new Error(`restoreTenantPVC: Job ${jobName} failed`);
     if (Date.now() - start > timeoutMs) throw new Error(`restoreTenantPVC: Job ${jobName} timed out after ${timeoutMs}ms`);
     await new Promise((r) => setTimeout(r, 3000));

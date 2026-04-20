@@ -164,6 +164,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
                   planId: { type: 'string' },
                   regionId: { type: 'string' },
                   status: { type: 'string' },
+                  storageLifecycleState: { type: 'string' },
                   createdBy: { type: ['string', 'null'] },
                   subscriptionExpiresAt: { type: ['string', 'null'] },
                   createdAt: { type: 'string' },

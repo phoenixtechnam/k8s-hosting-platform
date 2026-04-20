@@ -1,6 +1,6 @@
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { getSnapshotStore } from './snapshot-store.js';
+import { resolveSnapshotStore } from './snapshot-store.js';
 import { expireSnapshots, storageAuditReport } from './service.js';
 
 /**
@@ -29,8 +29,16 @@ export function startStorageLifecycleScheduler(
 ): { stop: () => void } {
   console.log('[storage-lifecycle-scheduler] Starting (snapshot expiry + audit reports)');
 
-  const store = getSnapshotStore(config as Record<string, string | undefined>);
-  const ctx = { db, k8s, store, platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform' };
+  // Re-resolve the store each tick so an operator rotating S3 keys /
+  // swapping backends in the admin UI picks up on the next cycle
+  // without a backend restart. `loadStorageLifecycleSettings` already
+  // caches at the DB layer (60s TTL) so this is cheap.
+  const buildCtx = async () => ({
+    db,
+    k8s,
+    store: await resolveSnapshotStore(db, config as Record<string, string | undefined>),
+    platformNamespace: (config.PLATFORM_NAMESPACE as string | undefined) ?? 'platform',
+  });
 
   let expiryTimer: NodeJS.Timeout | null = null;
   let auditTimer: NodeJS.Timeout | null = null;
@@ -39,7 +47,7 @@ export function startStorageLifecycleScheduler(
   const runExpiry = async () => {
     if (stopped) return;
     try {
-      const reaped = await expireSnapshots(ctx);
+      const reaped = await expireSnapshots(await buildCtx());
       if (reaped > 0) console.log(`[storage-lifecycle-scheduler] Reaped ${reaped} expired snapshot(s)`);
     } catch (err) {
       console.error('[storage-lifecycle-scheduler] expireSnapshots failed:', (err as Error).message);
@@ -50,7 +58,7 @@ export function startStorageLifecycleScheduler(
   const runAudit = async () => {
     if (stopped) return;
     try {
-      const report = await storageAuditReport(ctx);
+      const report = await storageAuditReport(await buildCtx());
       const totalWasteGi = report.reduce((sum, r) => {
         const provisioned = r.provisionedGi * 1024 * 1024 * 1024;
         return sum + Math.max(0, (provisioned - r.usedBytes) / (1024 ** 3));

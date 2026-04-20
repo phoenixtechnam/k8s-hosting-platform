@@ -130,6 +130,19 @@ export async function snapshotTenantPVC(
     await new Promise((r) => setTimeout(r, 3000));
   }
 
+  // Delete the Job (and its pod) explicitly. Even though the Job's
+  // ttlSecondsAfterFinished would GC it in 10 min, a subsequent
+  // resize/archive step wants to delete the source PVC immediately
+  // and the pvc-protection finalizer blocks PVC delete while any pod
+  // (even Completed) holds a mount. Propagation=Background so we
+  // don't wait for the pod to be terminated — the PVC delete's
+  // waitForPvcGone poll absorbs the short delay.
+  try {
+    await (k8s.batch as unknown as {
+      deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+    }).deleteNamespacedJob({ name: jobName, namespace: opts.namespace, propagationPolicy: 'Background' });
+  } catch { /* best-effort — if it already GC'd, that's fine */ }
+
   // Stat the resulting archive. Two pods share the hostPath mount but
   // the consumer side's dentry cache can lag behind the writer for a
   // few seconds after the Job completes — retry briefly before giving
@@ -145,9 +158,23 @@ export async function snapshotTenantPVC(
     throw new Error(`snapshotTenantPVC: archive missing after Job completed: ${archivePath}`);
   }
 
+  // Pick up the sha256 the Job wrote to a `.sha256` sidecar. Best-effort:
+  // on older hostpath stores the sidecar may be missing, in which case
+  // we persist null (still a valid snapshot, just not content-addressable).
+  let sha256: string | null = null;
+  try {
+    const raw = await opts.store.readSidecar(archivePath, '.sha256');
+    if (raw) {
+      // `sha256sum` emits "<hex>  <filename>\n"; extract just the hex.
+      sha256 = raw.split(/\s+/)[0] || null;
+    }
+  } catch (err) {
+    console.warn(`[snapshot] sidecar read failed for ${archivePath}: ${(err as Error).message}`);
+  }
+
   return {
     archivePath,
     sizeBytes: statResult.sizeBytes,
-    sha256: null,
+    sha256,
   };
 }

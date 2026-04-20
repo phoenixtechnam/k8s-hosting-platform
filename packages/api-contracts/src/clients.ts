@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { statusEnum, uuidField, paginatedResponseSchema } from './shared.js';
+import { statusEnum, storageLifecycleStateEnum, uuidField, paginatedResponseSchema } from './shared.js';
 import { provisioningStatusEnum } from './provisioning.js';
 
 // ─── Input Schemas (what the frontend sends) ────────────────────────────────
@@ -50,6 +50,9 @@ export const clientResponseSchema = z.object({
   planId: uuidField,
   regionId: uuidField,
   status: statusEnum,
+  // Orthogonal storage-lifecycle state. `idle` is the common case; any
+  // other value means an orchestrator is currently operating on the PVC.
+  storageLifecycleState: storageLifecycleStateEnum.optional(),
   provisioningStatus: provisioningStatusEnum,
   cpuLimitOverride: z.string().nullable(),
   memoryLimitOverride: z.string().nullable(),

@@ -31,11 +31,18 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
   const deployments: Array<{ name: string; replicas: number }> = [];
   const cronJobs: Array<{ name: string; wasSuspended: boolean }> = [];
 
+  // Scale every Deployment in the tenant namespace — tenant namespaces
+  // are single-client dedicated, and every Deployment there
+  // (`platform.io/managed` workloads, `platform.io/system` sidecars
+  // like file-manager, etc.) can hold the tenant PVC's RWO lock. An
+  // earlier revision narrowed this to `platform.io/managed=true` only,
+  // which left file-manager holding the PVC and made `resize` fail
+  // with "PVC still exists after 60000ms" when the subsequent delete
+  // waited on a finalizer that couldn't release.
   const depList = await (k8s.apps as unknown as {
     listNamespacedDeployment: (args: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string }; spec?: { replicas?: number } }> }>;
   }).listNamespacedDeployment({
     namespace,
-    labelSelector: 'platform.io/managed=true',
   });
   for (const d of depList.items ?? []) {
     const name = d.metadata?.name;
@@ -65,7 +72,6 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     listNamespacedCronJob: (args: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string }; spec?: { suspend?: boolean } }> }>;
   }).listNamespacedCronJob({
     namespace,
-    labelSelector: 'platform.io/managed=true',
   });
   for (const cj of cjList.items ?? []) {
     const name = cj.metadata?.name;
@@ -132,11 +138,18 @@ export async function waitForQuiesced(
 ): Promise<number> {
   const start = Date.now();
   const listPods = async (): Promise<number> => {
-    const pods = await k8s.core.listNamespacedPod({
-      namespace,
-      labelSelector: 'platform.io/managed=true',
-    });
-    return ((pods as { items?: unknown[] }).items ?? []).length;
+    // Tenant namespaces are single-client dedicated — every non-Job
+    // pod here could hold the PVC's RWO lock. The earlier label
+    // filter (`platform.io/managed=true`) excluded system sidecars
+    // like file-manager, which made waitForQuiesced return 0 even
+    // with file-manager still running, triggering a PVC-delete while
+    // the mount was still bound. Include ALL non-succeeded,
+    // non-completed pods.
+    const pods = await k8s.core.listNamespacedPod({ namespace });
+    const items = (pods as { items?: Array<{ status?: { phase?: string } }> }).items ?? [];
+    // Completed Jobs are a no-op for PVC lock — exclude them so we
+    // don't hang forever on finished snapshot/restore Jobs.
+    return items.filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed').length;
   };
 
   // eslint-disable-next-line no-constant-condition

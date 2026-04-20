@@ -53,6 +53,14 @@ export interface SnapshotStore {
    * was removed.
    */
   delete(archivePath: string): Promise<boolean>;
+
+  /**
+   * Read a sibling metadata file next to an archive. Used to pick up
+   * the sha256 the snapshot Job wrote via `sha256sum > $ARCHIVE.sha256`,
+   * so we can surface it on the storage_snapshots row. Returns null
+   * when the sidecar is absent (older archives) or unreadable.
+   */
+  readSidecar(archivePath: string, suffix: string): Promise<string | null>;
 }
 
 // ─── LocalHostPathStore (dev / single-node) ─────────────────────────────
@@ -127,11 +135,96 @@ export class LocalHostPathStore implements SnapshotStore {
     const { join } = await import('node:path');
     try {
       await unlink(join(this.localRoot, archivePath));
+      // Best-effort delete of the sha256 sidecar so the store stays
+      // tidy. We don't surface the sidecar miss as an error.
+      try { await unlink(join(this.localRoot, `${archivePath}.sha256`)); } catch { /* ignore */ }
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw err;
     }
+  }
+
+  async readSidecar(archivePath: string, suffix: string): Promise<string | null> {
+    const { readFile, readdir } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const fullPath = join(this.localRoot, `${archivePath}${suffix}`);
+    // Refresh the dentry cache before reading — same rationale as
+    // stat() above.
+    try { await readdir(dirname(fullPath)); } catch { /* ignore */ }
+    try {
+      const buf = await readFile(fullPath, 'utf8');
+      return buf.trim() || null;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  }
+}
+
+// ─── S3Store (stub) ─────────────────────────────────────────────────────
+
+/**
+ * S3-compatible object store backend. Not yet wired — the settings UI
+ * accepts the config but any attempt to use the store surfaces a clear
+ * NOT_IMPLEMENTED error so operators aren't misled into thinking their
+ * snapshots are being written remotely.
+ */
+export class S3Store implements SnapshotStore {
+  constructor(private readonly _config: {
+    readonly bucket: string;
+    readonly region: string;
+    readonly endpoint?: string;
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+  }) {}
+
+  reservePath(clientId: string, snapshotId: string): string {
+    return `${clientId}/${snapshotId}.tar.gz`;
+  }
+
+  mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
+    throw new Error('S3Store: not yet implemented — configure hostpath backend or wait for the S3 MVP');
+  }
+
+  async stat(_archivePath: string): Promise<{ sizeBytes: number } | null> {
+    throw new Error('S3Store: not yet implemented');
+  }
+
+  async delete(_archivePath: string): Promise<boolean> {
+    throw new Error('S3Store: not yet implemented');
+  }
+
+  async readSidecar(_archivePath: string, _suffix: string): Promise<string | null> {
+    return null;
+  }
+}
+
+/** Azure Blob store stub — same pattern as S3Store. */
+export class AzureBlobStore implements SnapshotStore {
+  constructor(private readonly _config: {
+    readonly container: string;
+    readonly connectionString: string;
+  }) {}
+
+  reservePath(clientId: string, snapshotId: string): string {
+    return `${clientId}/${snapshotId}.tar.gz`;
+  }
+
+  mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
+    throw new Error('AzureBlobStore: not yet implemented — configure hostpath backend');
+  }
+
+  async stat(_archivePath: string): Promise<{ sizeBytes: number } | null> {
+    throw new Error('AzureBlobStore: not yet implemented');
+  }
+
+  async delete(_archivePath: string): Promise<boolean> {
+    throw new Error('AzureBlobStore: not yet implemented');
+  }
+
+  async readSidecar(_archivePath: string, _suffix: string): Promise<string | null> {
+    return null;
   }
 }
 
@@ -141,6 +234,13 @@ export class LocalHostPathStore implements SnapshotStore {
  * Pick the concrete store based on platform config. Today only the
  * LocalHostPathStore is wired; the factory exists so prod S3/Azure
  * backends can drop in without touching call sites.
+ *
+ * Preferred callsite:
+ *   - `resolveSnapshotStore(db, config)` — loads DB-backed settings first
+ *     and falls back to env vars for greenfield deploys.
+ *
+ * `getSnapshotStore(config)` stays available for tests and for the
+ * housekeeping scheduler that runs before DB connectivity is guaranteed.
  */
 export function getSnapshotStore(config: {
   readonly STORAGE_SNAPSHOT_BACKEND?: string;
@@ -157,4 +257,51 @@ export function getSnapshotStore(config: {
     return new LocalHostPathStore(hostRoot, localRoot);
   }
   throw new Error(`Unknown snapshot backend: ${backend}`);
+}
+
+/**
+ * DB-backed store factory. Reads `storage.snapshot.*` settings from
+ * `platform_settings` (with 60s cache) and picks the concrete store.
+ * Missing DB config falls back to env-var defaults — so freshly bootstrapped
+ * deploys still get a working hostpath store without any admin UI action.
+ */
+export async function resolveSnapshotStore(
+  db: import('../../db/index.js').Database,
+  envConfig: {
+    readonly STORAGE_SNAPSHOT_BACKEND?: string;
+    readonly STORAGE_SNAPSHOT_HOST_ROOT?: string;
+    readonly STORAGE_SNAPSHOT_LOCAL_ROOT?: string;
+  },
+): Promise<SnapshotStore> {
+  const { loadStorageLifecycleSettings } = await import('./settings.js');
+  const s = await loadStorageLifecycleSettings(db);
+
+  if (s.backend === 'hostpath') {
+    return new LocalHostPathStore(
+      s.hostpathRoot,
+      envConfig.STORAGE_SNAPSHOT_LOCAL_ROOT ?? '/snapshots',
+    );
+  }
+  if (s.backend === 's3') {
+    if (!s.s3Bucket || !s.s3Region || !s.s3AccessKeyId || !s.s3SecretAccessKey) {
+      throw new Error('S3 backend selected but bucket/region/credentials are not configured');
+    }
+    return new S3Store({
+      bucket: s.s3Bucket,
+      region: s.s3Region,
+      endpoint: s.s3Endpoint ?? undefined,
+      accessKeyId: s.s3AccessKeyId,
+      secretAccessKey: s.s3SecretAccessKey,
+    });
+  }
+  if (s.backend === 'azure') {
+    if (!s.azureContainer || !s.azureConnectionString) {
+      throw new Error('Azure backend selected but container/connectionString are not configured');
+    }
+    return new AzureBlobStore({
+      container: s.azureContainer,
+      connectionString: s.azureConnectionString,
+    });
+  }
+  throw new Error(`Unknown snapshot backend: ${s.backend}`);
 }

@@ -193,9 +193,13 @@ export interface ResizeDryRun {
  * via `du -sb` inside the FM sidecar (already running in every tenant
  * namespace) and reports whether the new size has enough headroom.
  *
- * Safety rule: used <= newGi * 0.9 (10 % buffer) to guard against data
- * growth between dry-run and the actual resize.
+ * Safety rule: `used * 1.1 <= newGi * 1 GiB` — the new PVC must be at
+ * least 10 % larger than existing data, so the tenant isn't booted back
+ * onto an already-nearly-full volume, and so filesystem metadata
+ * overhead doesn't eat the slack.
  */
+export const RESIZE_SAFETY_FACTOR = 1.1;
+
 export async function resizeDryRun(
   ctx: ServiceCtx,
   clientId: string,
@@ -207,11 +211,12 @@ export async function resizeDryRun(
   // Use the existing file-manager sidecar to measure used space. It's
   // running in every client namespace, so this is a 1-exec roundtrip.
   const usedBytes = await measurePvcUsed(ctx, client.kubernetesNamespace);
-  const cushion = Math.floor(newGi * 1024 * 1024 * 1024 * 0.9);
-  const willFit = usedBytes <= cushion;
+  const newBytes = newGi * 1024 * 1024 * 1024;
+  const requiredBytes = Math.ceil(usedBytes * RESIZE_SAFETY_FACTOR);
+  const willFit = requiredBytes <= newBytes;
   const rejectReason = willFit
     ? null
-    : `Used ${(usedBytes / (1024 ** 3)).toFixed(2)} GiB exceeds 90% of requested ${newGi} GiB`;
+    : `Used ${(usedBytes / (1024 ** 3)).toFixed(2)} GiB × ${RESIZE_SAFETY_FACTOR} safety buffer = ${(requiredBytes / (1024 ** 3)).toFixed(2)} GiB exceeds requested ${newGi} GiB`;
   // Rough estimate: 100 MiB/sec for tar+gzip on local-path, doubled for both snapshot + restore
   const mbPerSec = 100;
   const estimatedSeconds = Math.max(30, Math.ceil((usedBytes / (mbPerSec * 1024 * 1024)) * 2 + 15));
@@ -358,8 +363,13 @@ async function runResize(
     }).where(eq(storageSnapshots.id, snapId));
 
     await progress('replacing', 40, `Recreating PVC at ${newGi}GiB`);
-    // Delete old PVC
-    await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
+    // if a previous failed op's rollback dropped it).
+    try {
+      await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
     // Poll until gone
     await waitForPvcGone(ctx.k8s, namespace, pvcName);
     // Recreate
@@ -409,6 +419,18 @@ async function currentClientId(db: Database, opId: string): Promise<string | nul
   return op?.clientId ?? null;
 }
 
+function is404(err: unknown): boolean {
+  // @kubernetes/client-node v1+ surfaces HTTP status in multiple shapes
+  // depending on the call site — HttpError.code, statusCode, or the
+  // parsed Status body's .code. Normalize here so callers don't care.
+  const e = err as { code?: number | string; statusCode?: number; body?: { code?: number } };
+  if (e.statusCode === 404) return true;
+  if (e.code === 404) return true;
+  if (e.body?.code === 404) return true;
+  const msg = (err instanceof Error ? err.message : String(err)) || '';
+  return msg.includes('HTTP-Code: 404') || msg.includes('"code":404');
+}
+
 async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: string, timeoutMs = 60_000): Promise<void> {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
@@ -416,12 +438,47 @@ async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: strin
     try {
       await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
     } catch (err) {
-      if ((err as { statusCode?: number }).statusCode === 404) return;
+      if (is404(err)) return;
       throw err;
     }
     if (Date.now() - start > timeoutMs) throw new Error(`PVC ${pvcName} still exists after ${timeoutMs}ms`);
     await new Promise((r) => setTimeout(r, 2000));
   }
+}
+
+// ─── Operator recovery ─────────────────────────────────────────────────
+
+/**
+ * Force a client's storage state back to `idle` after a failed op has
+ * left it stuck in `failed`. Admin-only; returns the previous state so
+ * the audit log can record what was cleared.
+ *
+ * This is a safety valve, NOT a retry — the failed operation's DB row
+ * is kept (with its error) so operators can diagnose what went wrong
+ * before attempting the op again.
+ */
+export async function clearFailedStorageState(
+  db: Database,
+  clientId: string,
+): Promise<{ previousState: string }> {
+  const [c] = await db
+    .select({ state: clients.storageLifecycleState })
+    .from(clients)
+    .where(eq(clients.id, clientId));
+  if (!c) throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
+  if (c.state !== 'failed') {
+    throw new ApiError(
+      'NOT_IN_FAILED_STATE',
+      `Client is in state '${c.state}', not 'failed' — only failed ops can be force-cleared`,
+      409,
+      { currentState: c.state },
+    );
+  }
+  await db
+    .update(clients)
+    .set({ storageLifecycleState: 'idle', activeStorageOpId: null })
+    .where(eq(clients.id, clientId));
+  return { previousState: c.state };
 }
 
 // ─── Suspend / Resume ──────────────────────────────────────────────────
@@ -591,7 +648,11 @@ async function runArchive(
     await progress('replacing', 70, 'Removing live workloads and PVC');
     // Delete PVC last so deployments releasing claims don't race.
     await deleteAllDeploymentsCronJobsServices(ctx.k8s, namespace);
-    await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    try {
+      await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
 
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Archive complete', completedAt: new Date(),

@@ -155,3 +155,18 @@ export function useRestoreClient() {
     onSuccess: () => qc.invalidateQueries(),
   });
 }
+
+/**
+ * Force-clear a client's stuck 'failed' storage-lifecycle state. Only
+ * callable when the client is actually in 'failed' (the backend
+ * enforces this — UI should only show this control when the state
+ * has the red X badge).
+ */
+export function useClearFailedState() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (clientId: string) =>
+      apiFetch(`/api/v1/admin/clients/${clientId}/storage/clear-failed`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}

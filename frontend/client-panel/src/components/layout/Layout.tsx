@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import Footer from './Footer';
+import LifecycleBanner from '@/components/LifecycleBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
 
@@ -20,6 +21,7 @@ export default function Layout() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={openSidebar} />
+        <LifecycleBanner />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           <Outlet />

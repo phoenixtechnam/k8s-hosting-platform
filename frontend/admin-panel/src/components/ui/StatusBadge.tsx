@@ -1,7 +1,11 @@
 import clsx from 'clsx';
 
 type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' | 'error' | 'failed' | 'healthy' | 'warning' | 'running' | 'stopped'
-  | 'deploying' | 'upgrading' | 'deleting' | 'completed' | 'rolled_back' | 'rolling_back' | 'backing_up' | 'pre_check' | 'health_check';
+  | 'deploying' | 'upgrading' | 'deleting' | 'completed' | 'rolled_back' | 'rolling_back' | 'backing_up' | 'pre_check' | 'health_check'
+  // Client lifecycle (extends clients.status)
+  | 'archived'
+  // Storage lifecycle transient states — rendered as their own pill on the clients list.
+  | 'idle' | 'snapshotting' | 'quiescing' | 'resizing' | 'replacing' | 'restoring' | 'unquiescing' | 'archiving';
 
 const statusStyles: Record<BadgeStatus, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -24,6 +28,17 @@ const statusStyles: Record<BadgeStatus, string> = {
   backing_up: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   pre_check: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   health_check: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  // Archived clients read like "parked" — neutral slate.
+  archived: 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
+  // Storage lifecycle transient states.
+  idle: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  snapshotting: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  quiescing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  resizing: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300',
+  replacing: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300',
+  restoring: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  unquiescing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  archiving: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
 };
 
 interface StatusBadgeProps {

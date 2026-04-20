@@ -41,6 +41,24 @@ describe('StatusBadge', () => {
     render(<StatusBadge status="active" label="Online" />);
     expect(screen.getByTestId('status-badge')).toHaveTextContent('Online');
   });
+
+  it('renders archived status with neutral styling', () => {
+    render(<StatusBadge status="archived" />);
+    const badge = screen.getByTestId('status-badge');
+    expect(badge).toHaveTextContent('Archived');
+    // archived uses slate/neutral palette, distinct from active/suspended
+    expect(badge.className).toMatch(/bg-(slate|zinc|gray)-200|bg-slate-100/);
+  });
+
+  it('renders storage-lifecycle states (snapshotting, resizing, archiving, restoring)', () => {
+    for (const s of ['snapshotting', 'resizing', 'archiving', 'restoring'] as const) {
+      const { unmount } = render(<StatusBadge status={s} />);
+      const badge = screen.getByTestId('status-badge');
+      // transient states use blue/amber (in-progress family)
+      expect(badge.className).toMatch(/bg-(blue|amber|indigo|sky)-/);
+      unmount();
+    }
+  });
 });
 
 describe('ResourceBar', () => {

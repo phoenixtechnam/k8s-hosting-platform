@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { HardDrive, Archive, Loader2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { HardDrive, Archive, Loader2, Settings as SettingsIcon } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
 import ResourceBar from '@/components/ui/ResourceBar';
@@ -14,17 +14,23 @@ import {
   type StorageSnapshot,
   type AuditRow,
 } from '@/hooks/use-storage-lifecycle';
+import {
+  useStorageLifecycleSettings,
+  useUpdateStorageLifecycleSettings,
+  type StorageLifecycleSettingsUpdate,
+} from '@/hooks/use-storage-settings';
 import type { BackupResponse } from '@k8s-hosting/api-contracts';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
-type Tab = 'overview' | 'backups' | 'snapshots' | 'audit';
+type Tab = 'overview' | 'backups' | 'snapshots' | 'audit' | 'settings';
 
 const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'backups', label: 'Backups' },
   { id: 'snapshots', label: 'Snapshots' },
   { id: 'audit', label: 'Audit' },
+  { id: 'settings', label: 'Settings' },
 ] as const;
 
 function formatBytes(bytes: number): string {
@@ -108,6 +114,7 @@ export default function Storage() {
         />
       )}
       {activeTab === 'audit' && <AuditTab />}
+      {activeTab === 'settings' && <SettingsTab />}
     </div>
   );
 }
@@ -390,6 +397,223 @@ function BackupsTable({ backups }: BackupsTableProps) {
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings tab ─────────────────────────────────────────────────────
+
+function SettingsTab() {
+  const { data, isLoading, error } = useStorageLifecycleSettings();
+  const update = useUpdateStorageLifecycleSettings();
+
+  const settings = data?.data;
+
+  // Form state is seeded from the server response and tracks which
+  // fields were actually touched — we only send dirty fields on save
+  // so untouched secrets aren't overwritten.
+  const [form, setForm] = useState<StorageLifecycleSettingsUpdate>({});
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Reset dirty state when server data loads/changes.
+    if (settings) setForm({});
+  }, [settings?.backend, settings?.hostpathRoot]);
+
+  const patch = <K extends keyof StorageLifecycleSettingsUpdate>(k: K, v: StorageLifecycleSettingsUpdate[K]) => {
+    setForm((prev) => ({ ...prev, [k]: v }));
+    setSavedMessage(null);
+  };
+
+  const onSave = async () => {
+    if (Object.keys(form).length === 0) return;
+    try {
+      await update.mutateAsync(form);
+      setSavedMessage('Settings saved.');
+      setTimeout(() => setSavedMessage(null), 3000);
+    } catch {
+      // react-query also records this on `update.error`, which the
+      // banner below renders — we swallow here only to keep the
+      // promise-rejection from propagating unhandled.
+    }
+  };
+
+  if (isLoading) return <div className="flex py-10 justify-center"><Loader2 size={24} className="animate-spin text-gray-400" /></div>;
+  if (error) return <p className="text-sm text-red-500">{(error as Error).message}</p>;
+  if (!settings) return null;
+
+  const backend = form.backend ?? settings.backend;
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <SettingsIcon size={16} className="text-gray-500" />
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Snapshot Store</h2>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+          Where client PVC snapshots are persisted. Changing the backend affects <strong>new</strong> snapshots only — existing archives stay where they were written.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Backend</label>
+            <select
+              value={backend}
+              onChange={(e) => patch('backend', e.target.value as 'hostpath' | 's3' | 'azure')}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm"
+              data-testid="snapshot-backend-select"
+            >
+              <option value="hostpath">hostpath (dev / single-node)</option>
+              <option value="s3">S3 (coming soon — stub)</option>
+              <option value="azure">Azure Blob (coming soon — stub)</option>
+            </select>
+            {backend !== 'hostpath' && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                {backend === 's3' ? 'S3' : 'Azure'} backend accepts config but is not yet implemented — take-snapshot will fail until the MVP ships.
+              </p>
+            )}
+          </div>
+
+          {backend === 'hostpath' && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">Hostpath root</label>
+              <input
+                type="text"
+                value={form.hostpathRoot ?? settings.hostpathRoot}
+                onChange={(e) => patch('hostpathRoot', e.target.value)}
+                className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-mono"
+                placeholder="/var/lib/platform/snapshots"
+              />
+              <p className="mt-1 text-xs text-gray-500">Path on the node that backs the snapshot hostPath volume.</p>
+            </div>
+          )}
+        </div>
+
+        {backend === 's3' && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SettingInput label="Bucket" value={form.s3Bucket ?? settings.s3Bucket ?? ''} onChange={(v) => patch('s3Bucket', v || null)} />
+            <SettingInput label="Region" value={form.s3Region ?? settings.s3Region ?? ''} onChange={(v) => patch('s3Region', v || null)} placeholder="us-east-1" />
+            <SettingInput label="Endpoint (optional, for S3-compatible)" value={form.s3Endpoint ?? settings.s3Endpoint ?? ''} onChange={(v) => patch('s3Endpoint', v || null)} placeholder="https://minio.example.com" />
+            <SettingInput label="Access Key ID" value={form.s3AccessKeyId ?? settings.s3AccessKeyId ?? ''} onChange={(v) => patch('s3AccessKeyId', v || null)} />
+            <SecretInput
+              label="Secret Access Key"
+              isSet={settings.s3SecretAccessKeySet}
+              onChange={(v) => patch('s3SecretAccessKey', v)}
+              onClear={() => patch('s3SecretAccessKey', null)}
+            />
+          </div>
+        )}
+
+        {backend === 'azure' && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SettingInput label="Container" value={form.azureContainer ?? settings.azureContainer ?? ''} onChange={(v) => patch('azureContainer', v || null)} />
+            <SecretInput
+              label="Connection String"
+              isSet={settings.azureConnectionStringSet}
+              onChange={(v) => patch('azureConnectionString', v)}
+              onClear={() => patch('azureConnectionString', null)}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Retention Policy (days)</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <NumberInput label="Manual snapshot" value={form.retentionManualDays ?? settings.retentionManualDays} onChange={(v) => patch('retentionManualDays', v)} />
+          <NumberInput label="Pre-resize auto-snapshot" value={form.retentionPreResizeDays ?? settings.retentionPreResizeDays} onChange={(v) => patch('retentionPreResizeDays', v)} />
+          <NumberInput label="Pre-archive snapshot" value={form.retentionPreArchiveDays ?? settings.retentionPreArchiveDays} onChange={(v) => patch('retentionPreArchiveDays', v)} />
+        </div>
+        <p className="mt-3 text-xs text-gray-500">Snapshots past their retention are reaped every 6h by the housekeeping scheduler.</p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onSave}
+          disabled={update.isPending || Object.keys(form).length === 0}
+          className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+          data-testid="storage-settings-save"
+        >
+          {update.isPending ? 'Saving…' : 'Save changes'}
+        </button>
+        {update.error && <p className="text-sm text-red-500">{(update.error as Error).message}</p>}
+        {savedMessage && <p className="text-sm text-green-600 dark:text-green-400">{savedMessage}</p>}
+      </div>
+    </div>
+  );
+}
+
+function SettingInput({ label, value, onChange, placeholder }: {
+  readonly label: string;
+  readonly value: string;
+  readonly onChange: (v: string) => void;
+  readonly placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">{label}</label>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm"
+      />
+    </div>
+  );
+}
+
+function NumberInput({ label, value, onChange }: {
+  readonly label: string;
+  readonly value: number;
+  readonly onChange: (v: number) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">{label}</label>
+      <input
+        type="number"
+        min={1}
+        max={3650}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm"
+      />
+    </div>
+  );
+}
+
+function SecretInput({ label, isSet, onChange, onClear }: {
+  readonly label: string;
+  readonly isSet: boolean;
+  readonly onChange: (v: string) => void;
+  readonly onClear: () => void;
+}) {
+  const [value, setValue] = useState('');
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+        {label} {isSet && <span className="ml-1 text-green-600 dark:text-green-400">(set)</span>}
+      </label>
+      <div className="flex gap-2">
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => { setValue(e.target.value); onChange(e.target.value); }}
+          placeholder={isSet ? '•••••••• (leave blank to keep)' : 'Enter secret'}
+          className="flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-mono"
+        />
+        {isSet && (
+          <button
+            type="button"
+            onClick={() => { setValue(''); onClear(); }}
+            className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-3 py-2 text-xs text-red-700 dark:text-red-300 hover:bg-red-100"
+          >
+            Clear
+          </button>
+        )}
       </div>
     </div>
   );
