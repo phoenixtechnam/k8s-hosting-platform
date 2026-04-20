@@ -306,16 +306,24 @@ export async function reconcileIngress(
     for (const r of rulesWithDomain) {
       try {
         const cert = await ensureRouteCertificate(db, k8s, r.domainId, r.hostname);
-        if (cert.skipped || !cert.secretName) continue;
+        if (cert.skipped) {
+          console.warn(`[ingress-reconcile] ${r.hostname}: cert skipped (${cert.reason ?? 'unknown'}) — no TLS will be attached`);
+          continue;
+        }
+        if (!cert.secretName) {
+          console.warn(`[ingress-reconcile] ${r.hostname}: cert ready but no secretName returned — no TLS will be attached`);
+          continue;
+        }
         if (!secretMap.has(cert.secretName)) {
           secretMap.set(cert.secretName, new Set());
         }
         secretMap.get(cert.secretName)!.add(r.hostname);
-      } catch {
+      } catch (err) {
         // Cert provisioning failure is non-blocking — the Ingress still
-        // exists without TLS for this hostname and the operator can
-        // investigate the logged error. cert-manager will retry
-        // independently if the Certificate CR was created.
+        // exists without TLS for this hostname. Log so we can spot routes
+        // that silently lose their HTTPS.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[ingress-reconcile] ${r.hostname}: ensureRouteCertificate threw: ${msg}`);
       }
     }
     for (const [secretName, hosts] of secretMap) {

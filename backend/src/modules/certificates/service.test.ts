@@ -190,6 +190,55 @@ describe('ensureDomainCertificate', () => {
     expect(k8s._replaceCustom).toHaveBeenCalledOnce();
   });
 
+  it('replace flow carries the existing resourceVersion so k8s does not 422', async () => {
+    // Without metadata.resourceVersion on the body, kubernetes rejects the
+    // PUT with 422 ("is invalid: metadata.resourceVersion: ... must be
+    // specified for an update"). We GET the existing object first, copy
+    // its resourceVersion into the body, then replace.
+    selectResults = [[domain], [client]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockResolvedValue({
+      metadata: { name: 'cert', resourceVersion: '12345' },
+      spec: { dnsNames: ['old.example.com'] },
+    });
+
+    await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+
+    expect(k8s._getCustom).toHaveBeenCalledOnce();
+    expect(k8s._replaceCustom).toHaveBeenCalledOnce();
+    const call = (k8s._replaceCustom as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      body: { metadata?: { resourceVersion?: string } };
+    };
+    expect(call.body.metadata?.resourceVersion).toBe('12345');
+  });
+
+  it('falls back to create if the existing Certificate disappears between 409 and GET', async () => {
+    // Race: cert-manager (or an admin) deletes the CR after our create
+    // returned 409 but before our GET — don't throw, just accept it's gone
+    // and let the original create be retried.
+    selectResults = [[domain], [client]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    let createCalls = 0;
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      createCalls += 1;
+      if (createCalls === 1) return Promise.reject(Object.assign(new Error('Conflict'), { statusCode: 409 }));
+      return Promise.resolve({});
+    });
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Not found'), { statusCode: 404 }),
+    );
+
+    const result = await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+    expect(result.skipped).toBe(false);
+    expect(createCalls).toBe(2);
+    expect(k8s._replaceCustom).not.toHaveBeenCalled();
+  });
+
   it('throws on non-409 k8s errors', async () => {
     selectResults = [[domain], [client]];
     const db = createMockDb();

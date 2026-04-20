@@ -137,6 +137,77 @@ function isK8s409(err: unknown): boolean {
   return k8sStatusCode(err) === 409;
 }
 
+/**
+ * Apply a cert-manager Certificate CR idempotently (create-or-replace).
+ *
+ * Kubernetes requires `metadata.resourceVersion` on every PUT for optimistic
+ * concurrency — omitting it returns HTTP 422 and the reconciler silently
+ * falls back to "no TLS" for the route. So on 409 we GET the existing
+ * object, copy its resourceVersion into the new body, then replace. If the
+ * object was deleted in the narrow window between the 409 and the GET, we
+ * retry the create instead of erroring.
+ *
+ * Returns when the apply succeeded. Throws any other underlying k8s error
+ * so callers can wrap it into their own ApiError with context.
+ */
+async function applyCertificateCR(
+  k8s: K8sClients,
+  namespace: string,
+  certName: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await k8s.custom.createNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace,
+      plural: 'certificates',
+      body,
+    });
+    return;
+  } catch (err) {
+    if (!isK8s409(err)) throw err;
+  }
+
+  // 409 — object exists. Read it so we can PUT with the right resourceVersion.
+  let existing: { metadata?: { resourceVersion?: string } } | null = null;
+  try {
+    existing = await k8s.custom.getNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace,
+      plural: 'certificates',
+      name: certName,
+    }) as { metadata?: { resourceVersion?: string } };
+  } catch (getErr) {
+    if (!isK8s404(getErr)) throw getErr;
+    // Vanished between our create and get — retry the create. If this one
+    // also 409s, cert-manager is racing us and we let the caller retry.
+    await k8s.custom.createNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace,
+      plural: 'certificates',
+      body,
+    });
+    return;
+  }
+
+  const rv = existing.metadata?.resourceVersion;
+  const bodyWithRv = rv
+    ? { ...body, metadata: { ...(body.metadata as object | undefined ?? {}), resourceVersion: rv } }
+    : body;
+
+  await k8s.custom.replaceNamespacedCustomObject({
+    group: 'cert-manager.io',
+    version: 'v1',
+    namespace,
+    plural: 'certificates',
+    name: certName,
+    body: bodyWithRv,
+  });
+}
+
 // ─── Certificate CR builder ───────────────────────────────────────────────
 
 function buildCertificateResource(params: {
@@ -273,49 +344,18 @@ export async function ensureDomainCertificate(
   });
 
   try {
-    await k8s.custom.createNamespacedCustomObject({
-      group: 'cert-manager.io',
-      version: 'v1',
-      namespace,
-      plural: 'certificates',
-      body,
-    });
+    await applyCertificateCR(k8s, namespace, certName, body);
   } catch (err) {
-    if (isK8s409(err)) {
-      // Already exists — replace to reflect any spec changes
-      try {
-        await k8s.custom.replaceNamespacedCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          namespace,
-          plural: 'certificates',
-          name: certName,
-          body,
-        });
-      } catch (replaceErr) {
-        logger.error(
-          { replaceErr, domain: domain.domainName, certName },
-          'ensureDomainCertificate: replace failed',
-        );
-        throw new ApiError(
-          'CERT_PROVISIONING_FAILED',
-          `Failed to replace Certificate for '${domain.domainName}': ${(replaceErr as Error).message}`,
-          502,
-          { domain: domain.domainName },
-        );
-      }
-    } else {
-      logger.error(
-        { err, domain: domain.domainName, certName },
-        'ensureDomainCertificate: create failed',
-      );
-      throw new ApiError(
-        'CERT_PROVISIONING_FAILED',
-        `Failed to create Certificate for '${domain.domainName}': ${(err as Error).message}`,
-        502,
-        { domain: domain.domainName },
-      );
-    }
+    logger.error(
+      { err, domain: domain.domainName, certName },
+      'ensureDomainCertificate: apply failed',
+    );
+    throw new ApiError(
+      'CERT_PROVISIONING_FAILED',
+      `Failed to replace Certificate for '${domain.domainName}': ${(err as Error).message}`,
+      502,
+      { domain: domain.domainName },
+    );
   }
 
   logger.info(
@@ -565,48 +605,18 @@ export async function ensureMailServerCertificate(
   });
 
   try {
-    await k8s.custom.createNamespacedCustomObject({
-      group: 'cert-manager.io',
-      version: 'v1',
-      namespace: MAIL_NAMESPACE,
-      plural: 'certificates',
-      body,
-    });
+    await applyCertificateCR(k8s, MAIL_NAMESPACE, STALWART_CERT_NAME, body);
   } catch (err) {
-    if (isK8s409(err)) {
-      try {
-        await k8s.custom.replaceNamespacedCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          namespace: MAIL_NAMESPACE,
-          plural: 'certificates',
-          name: STALWART_CERT_NAME,
-          body,
-        });
-      } catch (replaceErr) {
-        logger.error(
-          { replaceErr, hostname: cleanHostname },
-          'ensureMailServerCertificate: replace failed',
-        );
-        throw new ApiError(
-          'CERT_PROVISIONING_FAILED',
-          `Failed to replace mail server Certificate for '${cleanHostname}': ${(replaceErr as Error).message}`,
-          502,
-          { hostname: cleanHostname },
-        );
-      }
-    } else {
-      logger.error(
-        { err, hostname: cleanHostname },
-        'ensureMailServerCertificate: create failed',
-      );
-      throw new ApiError(
-        'CERT_PROVISIONING_FAILED',
-        `Failed to create mail server Certificate for '${cleanHostname}': ${(err as Error).message}`,
-        502,
-        { hostname: cleanHostname },
-      );
-    }
+    logger.error(
+      { err, hostname: cleanHostname },
+      'ensureMailServerCertificate: apply failed',
+    );
+    throw new ApiError(
+      'CERT_PROVISIONING_FAILED',
+      `Failed to apply mail server Certificate for '${cleanHostname}': ${(err as Error).message}`,
+      502,
+      { hostname: cleanHostname },
+    );
   }
 
   logger.info(
@@ -741,48 +751,18 @@ export async function ensureRouteCertificate(
   });
 
   try {
-    await k8s.custom.createNamespacedCustomObject({
-      group: 'cert-manager.io',
-      version: 'v1',
-      namespace,
-      plural: 'certificates',
-      body,
-    });
+    await applyCertificateCR(k8s, namespace, certName, body);
   } catch (err) {
-    if (isK8s409(err)) {
-      try {
-        await k8s.custom.replaceNamespacedCustomObject({
-          group: 'cert-manager.io',
-          version: 'v1',
-          namespace,
-          plural: 'certificates',
-          name: certName,
-          body,
-        });
-      } catch (replaceErr) {
-        logger.error(
-          { replaceErr, hostname, certName },
-          'ensureRouteCertificate: replace failed',
-        );
-        throw new ApiError(
-          'CERT_PROVISIONING_FAILED',
-          `Failed to replace Certificate for '${hostname}': ${(replaceErr as Error).message}`,
-          502,
-          { hostname },
-        );
-      }
-    } else {
-      logger.error(
-        { err, hostname, certName },
-        'ensureRouteCertificate: create failed',
-      );
-      throw new ApiError(
-        'CERT_PROVISIONING_FAILED',
-        `Failed to create Certificate for '${hostname}': ${(err as Error).message}`,
-        502,
-        { hostname },
-      );
-    }
+    logger.error(
+      { err, hostname, certName },
+      'ensureRouteCertificate: apply failed',
+    );
+    throw new ApiError(
+      'CERT_PROVISIONING_FAILED',
+      `Failed to apply Certificate for '${hostname}': ${(err as Error).message}`,
+      502,
+      { hostname },
+    );
   }
 
   logger.info(
