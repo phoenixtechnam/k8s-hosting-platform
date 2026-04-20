@@ -127,6 +127,53 @@ function resolveDefaultVersion(versions: readonly SupportedVersion[]): string | 
   return defaultEntry?.version ?? versions[versions.length - 1].version;
 }
 
+/**
+ * Validate the ingress-port invariants for a catalog manifest at sync time.
+ *
+ * Rules (matches the platform's Ingress reconciler expectations):
+ *   - `type: database` and `type: service` MUST NOT declare any ingress port.
+ *     DBs and internal caches only serve pod-to-pod traffic; exposing them
+ *     via the tenant's Ingress would be a security mistake.
+ *   - App/runtime/static entries may declare exactly ONE component with
+ *     `ingress: true` ports. Multi-component exposure (e.g. Nextcloud +
+ *     Collabora each wanting their own hostname) is not modelled yet.
+ *   - That component may declare at most ONE ingress port.
+ *
+ * Returns null when the manifest is valid; otherwise a short error string.
+ */
+export function validateIngressRules(manifest: {
+  readonly type?: string;
+  readonly components?: readonly Record<string, unknown>[];
+}): string | null {
+  const type = manifest.type ?? 'application';
+  const comps = (manifest.components ?? []) as ReadonlyArray<{
+    name?: string;
+    ports?: ReadonlyArray<{ port?: number; ingress?: boolean }>;
+  }>;
+
+  const ingressComps: Array<{ name: string; ingressPortCount: number }> = [];
+  for (const c of comps) {
+    const ports = c.ports ?? [];
+    const ingressPorts = ports.filter(p => p.ingress === true);
+    if (ingressPorts.length > 0) {
+      ingressComps.push({ name: c.name ?? '?', ingressPortCount: ingressPorts.length });
+    }
+  }
+
+  if ((type === 'database' || type === 'service') && ingressComps.length > 0) {
+    return `type '${type}' must not declare ingress ports, but component(s) ${ingressComps.map(c => `"${c.name}"`).join(', ')} do`;
+  }
+  if (ingressComps.length > 1) {
+    return `expected at most one component with ingress: true, got ${ingressComps.length} (${ingressComps.map(c => `"${c.name}"`).join(', ')})`;
+  }
+  for (const c of ingressComps) {
+    if (c.ingressPortCount > 1) {
+      return `component "${c.name}" declares ${c.ingressPortCount} ingress ports, expected 1`;
+    }
+  }
+  return null;
+}
+
 function resolveVersionStatus(eolDate: string | undefined): 'available' | 'deprecated' | 'eol' {
   if (!eolDate) return 'available';
   const eol = new Date(eolDate);
@@ -468,6 +515,15 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       }
       if (envTplError) {
         manifestErrors.push(`${code}: ${envTplError}`);
+        continue;
+      }
+
+      // Enforce the ingress invariant (exactly-one ingress component per app,
+      // zero for database/service tiers). See validateIngressRules for the
+      // full contract; the reconciler assumes this invariant holds.
+      const ingressErr = validateIngressRules(manifest);
+      if (ingressErr) {
+        manifestErrors.push(`${code}: ${ingressErr}`);
         continue;
       }
 

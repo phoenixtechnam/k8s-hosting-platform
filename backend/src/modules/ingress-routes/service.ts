@@ -6,9 +6,10 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, domains, platformSettings, dnsRecords } from '../../db/schema.js';
+import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders } from '../dns-records/service.js';
+import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import type { Database } from '../../db/index.js';
 
 // ─── Platform Ingress Settings ──────────────────────────────────────────────
@@ -148,6 +149,33 @@ export async function createRoute(
       `Hostname '${hostname}' must be '${domain.domainName}' or a subdomain of it (e.g., www.${domain.domainName})`,
       400,
     );
+  }
+
+  // Guard: if routing to a deployment, the deployment's catalog entry must
+  // be ingressable. DB/service tiers (mariadb, redis, etc.) and apps with
+  // no ingress port would produce a broken Ingress rule that never
+  // resolves — catch it at creation time with a clear error.
+  if (deploymentId) {
+    const [dep] = await db.select().from(deployments).where(eq(deployments.id, deploymentId));
+    if (!dep) {
+      throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${deploymentId}' not found`, 404);
+    }
+    const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, dep.catalogEntryId));
+    if (entry) {
+      try {
+        resolveIngressBackend(entry, dep.name);
+      } catch (err) {
+        if (err instanceof NotIngressableError) {
+          throw new ApiError(
+            'CANNOT_EXPOSE_DEPLOYMENT',
+            err.message,
+            400,
+            { deploymentId, catalogType: entry.type },
+          );
+        }
+        throw err;
+      }
+    }
   }
 
   // Check for duplicate hostname+path combination
