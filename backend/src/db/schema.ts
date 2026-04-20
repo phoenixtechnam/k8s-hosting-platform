@@ -18,7 +18,32 @@ export const panelEnum = pgEnum('panel', ['admin', 'client']);
 export const userStatusEnum = pgEnum('user_status', ['active', 'disabled', 'pending']);
 export const regionStatusEnum = pgEnum('region_status', ['active', 'maintenance', 'offline']);
 export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
-export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'cancelled', 'pending']);
+// Client lifecycle states:
+//   active     — running normally
+//   pending    — provisioned but not yet migrated / payment pending
+//   suspended  — admin paused: workloads scaled to 0, quota near-zero,
+//                PVC preserved, billing paused. Reversible via resume.
+//   archived   — churned / paid off-boarding: PVC destroyed, snapshot
+//                retained per snapshot_retention_days. Reversible via
+//                restore (new PVC from snapshot).
+//   cancelled  — hard terminated, snapshot also released. Not reversible.
+export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'archived', 'cancelled', 'pending']);
+// Active storage-lifecycle operation (null when idle). Separate from
+// client.status so the UI can show both "active & resizing" without
+// losing the underlying state. Mirrors storage_operations.state for the
+// operation currently owning this client.
+export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
+  'idle', 'snapshotting', 'quiescing', 'replacing', 'restoring', 'unquiescing', 'failed',
+]);
+export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
+  'snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore',
+]);
+export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
+  'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled',
+]);
+export const storageSnapshotStatusEnum = pgEnum('storage_snapshot_status', [
+  'creating', 'ready', 'expired', 'failed',
+]);
 export const provisioningStatusEnum = pgEnum('provisioning_status', ['unprovisioned', 'provisioning', 'provisioned', 'failed']);
 export const domainStatusEnum = pgEnum('domain_status', ['active', 'pending', 'suspended', 'deleted']);
 export const dnsModeEnum = pgEnum('dns_mode', ['primary', 'cname', 'secondary']);
@@ -184,6 +209,11 @@ export const clients = pgTable('clients', {
   emailSendRateLimit: integer('email_send_rate_limit'),
   timezone: varchar('timezone', { length: 50 }),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
+  // Active storage-lifecycle op (null when the client isn't being
+  // resized/suspended/archived/restored). The storage_operations row
+  // carrying full state is referenced by activeStorageOpId.
+  storageLifecycleState: storageLifecycleStateEnum('storage_lifecycle_state').notNull().default('idle'),
+  activeStorageOpId: varchar('active_storage_op_id', { length: 36 }),
   createdBy: varchar('created_by', { length: 36 }),
   subscriptionExpiresAt: timestamp('subscription_expires_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -1253,3 +1283,77 @@ export const aiTokenUsage = pgTable('ai_token_usage', {
   instruction: text('instruction'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+// ─── Storage Lifecycle ──────────────────────────────────────────────────────
+
+/**
+ * A snapshot is a point-in-time compressed tarball of a tenant's PVC,
+ * stored by the configured SnapshotStore (hostPath in dev, S3 in prod).
+ *
+ * Kinds:
+ *   - manual:      admin-triggered ad-hoc snapshot (kept until admin deletes)
+ *   - pre-resize:  taken automatically before a resize; 7-day retention so
+ *                  operators can roll back if something bad emerges post-fact
+ *   - pre-suspend: defensive snapshot before a suspend (short retention)
+ *   - pre-archive: the snapshot created when a tenant is archived — retained
+ *                  for the plan's archive_retention_days so restore is possible
+ *   - scheduled:   periodic full backups (future work)
+ */
+export const storageSnapshots = pgTable('storage_snapshots', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  kind: storageSnapshotKindEnum('kind').notNull(),
+  status: storageSnapshotStatusEnum('status').notNull().default('creating'),
+  // Opaque identifier in the SnapshotStore (dev: hostPath, prod: s3 key)
+  archivePath: varchar('archive_path', { length: 500 }).notNull(),
+  // Size of the archive on disk (compressed). 0 while status='creating'.
+  sizeBytes: numeric('size_bytes', { precision: 20, scale: 0 }).notNull().default('0'),
+  // sha256 of the tarball contents. Filled in once the snapshot completes.
+  sha256: varchar('sha256', { length: 64 }),
+  // When the snapshot is eligible for cleanup. null = retain forever
+  // (admin-level decision; scheduled housekeeping won't touch).
+  expiresAt: timestamp('expires_at'),
+  // Free-form label the admin can set (e.g. "pre-stripe-migration 2026-Q2")
+  label: text('label'),
+  // Last error — null on success, populated if status='failed'.
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('storage_snapshots_client_idx').on(table.clientId),
+  index('storage_snapshots_status_idx').on(table.status),
+  index('storage_snapshots_expires_idx').on(table.expiresAt),
+]);
+
+/**
+ * An in-flight or completed lifecycle operation. The state machine is:
+ *   pending → (op-specific states) → done | failed
+ * All concurrent callers must check `clients.activeStorageOpId IS NULL`
+ * before starting a new op (enforced by the orchestrator, not the DB).
+ */
+export const storageOperations = pgTable('storage_operations', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull().references(() => clients.id, { onDelete: 'cascade' }),
+  opType: storageOperationTypeEnum('op_type').notNull(),
+  state: storageLifecycleStateEnum('state').notNull().default('idle'),
+  // Progress percentage (0-100) for long-running ops — UI shows in a progress bar.
+  progressPct: integer('progress_pct').notNull().default(0),
+  // Current human-readable status line ("Compressing 1.2 GiB…", etc.)
+  progressMessage: text('progress_message'),
+  // Op-specific parameters (new_gi for resize, retention_days for archive, etc.)
+  params: jsonb('params').$type<Record<string, unknown> | null>(),
+  // Snapshot created as part of this op (pre-resize/pre-archive). null if none.
+  snapshotId: varchar('snapshot_id', { length: 36 }).references(() => storageSnapshots.id, { onDelete: 'set null' }),
+  // Rollback state: when true, a failure in the "replacing" step triggered
+  // auto-restore. Distinguishes "we cleaned up" from "we left tenant broken".
+  rolledBack: integer('rolled_back').notNull().default(0),
+  lastError: text('last_error'),
+  // Who triggered this. null for scheduler-driven ops.
+  triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  completedAt: timestamp('completed_at'),
+}, (table) => [
+  index('storage_operations_client_idx').on(table.clientId),
+  index('storage_operations_state_idx').on(table.state),
+  index('storage_operations_created_idx').on(table.createdAt),
+]);

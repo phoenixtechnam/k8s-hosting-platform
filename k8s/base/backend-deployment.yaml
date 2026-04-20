@@ -172,6 +172,19 @@ spec:
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            # Snapshot store — the same hostPath the storage-lifecycle
+            # snapshot Jobs mount in tenant namespaces. platform-api
+            # uses it to stat + delete finished tarballs (Jobs write
+            # the files; the service reads their size back via stat
+            # and later reaps expired ones).
+            - name: platform-snapshots
+              mountPath: /snapshots
+      volumes:
+        - name: platform-snapshots
+          hostPath:
+            path: /var/lib/platform/snapshots
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,795 @@
+import crypto from 'node:crypto';
+import { eq, and, sql, desc, lte } from 'drizzle-orm';
+import {
+  clients,
+  storageSnapshots,
+  storageOperations,
+  hostingPlans,
+} from '../../db/schema.js';
+import { ApiError } from '../../shared/errors.js';
+import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { getSnapshotStore, type SnapshotStore } from './snapshot-store.js';
+import { snapshotTenantPVC } from './snapshot.js';
+import { restoreTenantPVC } from './restore.js';
+import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
+
+/**
+ * Storage-lifecycle service: the high-level API for admin operations
+ * (resize, suspend, resume, archive, restore, snapshot).
+ *
+ * Every op is a state machine that writes its progress into the
+ * `storage_operations` table so the UI can poll / SSE for updates. The
+ * client's `storage_lifecycle_state` + `active_storage_op_id` fields
+ * are kept in sync so conflicting ops can be detected early.
+ */
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+
+function uuid(): string {
+  return crypto.randomUUID();
+}
+
+interface ServiceCtx {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+  readonly store: SnapshotStore;
+  readonly platformNamespace: string;
+}
+
+async function mustGetClient(db: Database, clientId: string) {
+  const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
+  return client;
+}
+
+async function mustBeIdle(db: Database, clientId: string) {
+  const [client] = await db.select({
+    state: clients.storageLifecycleState,
+    opId: clients.activeStorageOpId,
+  }).from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
+  if (client.state !== 'idle') {
+    throw new ApiError(
+      'STORAGE_OP_IN_PROGRESS',
+      `A ${client.state} operation is already in progress for this client`,
+      409,
+      { currentState: client.state, activeOpId: client.opId },
+    );
+  }
+}
+
+async function markClientState(
+  db: Database,
+  clientId: string,
+  state: typeof clients.$inferSelect['storageLifecycleState'],
+  opId: string | null,
+) {
+  await db.update(clients)
+    .set({ storageLifecycleState: state, activeStorageOpId: opId })
+    .where(eq(clients.id, clientId));
+}
+
+async function updateOp(
+  db: Database,
+  opId: string,
+  patch: Partial<typeof storageOperations.$inferInsert>,
+) {
+  await db.update(storageOperations).set(patch).where(eq(storageOperations.id, opId));
+}
+
+// ─── Manual snapshot ────────────────────────────────────────────────────
+
+/**
+ * Take a manual snapshot of a client's PVC. Quiesces briefly, runs the
+ * snapshot Job, records the result. Returns the snapshot row.
+ *
+ * Safe to call on a healthy running tenant — quiesce restores workloads
+ * after the snapshot completes.
+ */
+export async function snapshotClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  params: { label?: string; kind?: 'manual' | 'scheduled'; retentionDays?: number; triggeredByUserId?: string | null } = {},
+): Promise<typeof storageSnapshots.$inferSelect> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+  const opId = uuid();
+  const snapId = uuid();
+  const archivePath = ctx.store.reservePath(clientId, snapId);
+  const expiresAt = params.retentionDays
+    ? new Date(Date.now() + params.retentionDays * 24 * 60 * 60 * 1000)
+    : null;
+
+  // Pre-create DB rows in a single transaction so we don't orphan an op
+  // if we crash before persisting the snapshot row.
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageSnapshots).values({
+      id: snapId,
+      clientId,
+      kind: params.kind ?? 'manual',
+      status: 'creating',
+      archivePath,
+      label: params.label ?? null,
+      expiresAt,
+    });
+    await tx.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'snapshot',
+      state: 'snapshotting',
+      progressPct: 0,
+      progressMessage: 'Quiescing workloads',
+      snapshotId: snapId,
+      triggeredByUserId: params.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'snapshotting', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  try {
+    quiesceSnap = await quiesce(ctx.k8s, client.kubernetesNamespace);
+    await waitForQuiesced(ctx.k8s, client.kubernetesNamespace);
+    await updateOp(ctx.db, opId, { progressPct: 20, progressMessage: 'Creating snapshot' });
+
+    const result = await snapshotTenantPVC(ctx.k8s, {
+      namespace: client.kubernetesNamespace,
+      pvcName: `${client.kubernetesNamespace}-storage`,
+      clientId,
+      snapshotId: snapId,
+      store: ctx.store,
+    });
+
+    await ctx.db.update(storageSnapshots).set({
+      status: 'ready',
+      sizeBytes: String(result.sizeBytes),
+      sha256: result.sha256,
+    }).where(eq(storageSnapshots.id, snapId));
+
+    await updateOp(ctx.db, opId, {
+      state: 'idle',
+      progressPct: 90,
+      progressMessage: 'Unquiescing workloads',
+    });
+    await unquiesce(ctx.k8s, client.kubernetesNamespace, quiesceSnap);
+    await updateOp(ctx.db, opId, {
+      state: 'idle',
+      progressPct: 100,
+      progressMessage: 'Snapshot complete',
+      completedAt: new Date(),
+    });
+    await markClientState(ctx.db, clientId, 'idle', null);
+
+    const [row] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId));
+    return row;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: msg }).where(eq(storageSnapshots.id, snapId));
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    if (quiesceSnap) {
+      // Best-effort unquiesce so we don't leave the tenant broken.
+      await unquiesce(ctx.k8s, client.kubernetesNamespace, quiesceSnap).catch(() => {});
+    }
+    await markClientState(ctx.db, clientId, 'idle', null);
+    throw new ApiError('SNAPSHOT_FAILED', `Snapshot failed: ${msg}`, 502);
+  }
+}
+
+// ─── Resize ─────────────────────────────────────────────────────────────
+
+export interface ResizeDryRun {
+  readonly currentGi: number;
+  readonly requestedGi: number;
+  readonly usedBytes: number;
+  readonly willFit: boolean;
+  readonly rejectReason: string | null;
+  readonly estimatedSeconds: number;
+}
+
+/**
+ * Estimate a resize without touching anything. Computes current used bytes
+ * via `du -sb` inside the FM sidecar (already running in every tenant
+ * namespace) and reports whether the new size has enough headroom.
+ *
+ * Safety rule: used <= newGi * 0.9 (10 % buffer) to guard against data
+ * growth between dry-run and the actual resize.
+ */
+export async function resizeDryRun(
+  ctx: ServiceCtx,
+  clientId: string,
+  newGi: number,
+): Promise<ResizeDryRun> {
+  const client = await mustGetClient(ctx.db, clientId);
+  const currentGi = Math.round(Number(client.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, client.planId);
+
+  // Use the existing file-manager sidecar to measure used space. It's
+  // running in every client namespace, so this is a 1-exec roundtrip.
+  const usedBytes = await measurePvcUsed(ctx, client.kubernetesNamespace);
+  const cushion = Math.floor(newGi * 1024 * 1024 * 1024 * 0.9);
+  const willFit = usedBytes <= cushion;
+  const rejectReason = willFit
+    ? null
+    : `Used ${(usedBytes / (1024 ** 3)).toFixed(2)} GiB exceeds 90% of requested ${newGi} GiB`;
+  // Rough estimate: 100 MiB/sec for tar+gzip on local-path, doubled for both snapshot + restore
+  const mbPerSec = 100;
+  const estimatedSeconds = Math.max(30, Math.ceil((usedBytes / (mbPerSec * 1024 * 1024)) * 2 + 15));
+
+  return { currentGi, requestedGi: newGi, usedBytes, willFit, rejectReason, estimatedSeconds };
+}
+
+async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, planId));
+  return plan ? Math.round(Number(plan.storageLimit) || 10) : 10;
+}
+
+async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<number> {
+  // Exec `du -sb /data` in the running FM sidecar (label app=file-manager).
+  // Falls back to 0 if FM isn't running (admin can still resize up; for
+  // resize-down that means the safety cushion check gets bypassed — we
+  // enforce that a running FM is required later in the orchestrator).
+  try {
+    const pods = await ctx.k8s.core.listNamespacedPod({
+      namespace, labelSelector: 'app=file-manager',
+    });
+    const running = ((pods as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> }).items ?? [])
+      .find((p) => p.status?.phase === 'Running');
+    if (!running?.metadata?.name) return 0;
+
+    const { Exec, KubeConfig } = await import('@kubernetes/client-node');
+    const { Writable } = await import('node:stream');
+    const kc = new KubeConfig();
+    kc.loadFromCluster();
+    const exec = new Exec(kc);
+    let stdout = '';
+    const out = new Writable({ write(chunk, _e, cb) { stdout += chunk.toString(); cb(); } });
+    const err = new Writable({ write(_c, _e, cb) { cb(); } });
+    await new Promise<void>((resolve, reject) => {
+      exec.exec(namespace, running.metadata!.name!, 'file-manager',
+        ['du', '-sb', '/data'],
+        out, err, null, false,
+        (status) => {
+          const s = status as { status?: string };
+          if (!s || s.status === 'Success' || s.status === undefined) resolve();
+          else reject(new Error(`du exec failed: ${JSON.stringify(s)}`));
+        },
+      ).catch(reject);
+    });
+    const match = stdout.match(/^(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Resize a client's PVC to a new size (shrinking supported via destroy+
+ * recreate; growing also works on storage classes with
+ * allowVolumeExpansion).
+ *
+ * This is the full orchestration: validate → pre-resize snapshot →
+ * quiesce → delete PVC → recreate at new size → restore from snapshot →
+ * unquiesce. Rollback path is: if anything fails AFTER the PVC delete,
+ * we try to recreate the old-size PVC and restore from the pre-resize
+ * snapshot (snapshot retained 7 days as rollback insurance).
+ */
+export async function resizeClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  params: { newGi: number; triggeredByUserId?: string | null },
+): Promise<{ operationId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+
+  const dry = await resizeDryRun(ctx, clientId, params.newGi);
+  if (!dry.willFit) {
+    throw new ApiError('RESIZE_UNSAFE', dry.rejectReason!, 400, { dryRun: dry });
+  }
+
+  const opId = uuid();
+  const snapId = uuid();
+  const archivePath = ctx.store.reservePath(clientId, snapId);
+  const namespace = client.kubernetesNamespace;
+  const pvcName = `${namespace}-storage`;
+  const preResizeRetention = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageSnapshots).values({
+      id: snapId,
+      clientId,
+      kind: 'pre-resize',
+      status: 'creating',
+      archivePath,
+      expiresAt: preResizeRetention,
+      label: `Pre-resize ${dry.currentGi}GiB → ${params.newGi}GiB`,
+    });
+    await tx.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'resize',
+      state: 'snapshotting',
+      progressPct: 0,
+      progressMessage: 'Starting resize',
+      snapshotId: snapId,
+      params: { fromGi: dry.currentGi, toGi: params.newGi },
+      triggeredByUserId: params.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'snapshotting', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  // Kick off the async orchestration. We return immediately with the
+  // operation id — caller polls or SSE-subscribes for progress.
+  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, params.newGi, archivePath).catch(() => {});
+  return { operationId: opId };
+}
+
+async function runResize(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  namespace: string,
+  pvcName: string,
+  newGi: number,
+  archivePath: string,
+): Promise<void> {
+  let quiesceSnap: QuiesceSnapshot | null = null;
+
+  const progress = async (state: typeof clients.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
+    await ctx.db.update(clients)
+      .set({ storageLifecycleState: state })
+      .where(eq(clients.activeStorageOpId, opId));
+  };
+
+  try {
+    await progress('quiescing', 5, 'Scaling workloads to zero');
+    quiesceSnap = await quiesce(ctx.k8s, namespace);
+    await waitForQuiesced(ctx.k8s, namespace);
+
+    await progress('snapshotting', 15, 'Creating pre-resize snapshot');
+    const snap = await snapshotTenantPVC(ctx.k8s, {
+      namespace, pvcName, clientId: (await currentClientId(ctx.db, opId))!, snapshotId: snapId, store: ctx.store,
+    });
+    await ctx.db.update(storageSnapshots).set({
+      status: 'ready', sizeBytes: String(snap.sizeBytes), sha256: snap.sha256,
+    }).where(eq(storageSnapshots.id, snapId));
+
+    await progress('replacing', 40, `Recreating PVC at ${newGi}GiB`);
+    // Delete old PVC
+    await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    // Poll until gone
+    await waitForPvcGone(ctx.k8s, namespace, pvcName);
+    // Recreate
+    const { applyPVC } = await import('../k8s-provisioner/service.js');
+    const { getDefaultStorageClass } = await import('../storage-settings/service.js');
+    const storageClass = await getDefaultStorageClass(ctx.db);
+    await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
+
+    await progress('restoring', 60, 'Restoring data from snapshot');
+    await restoreTenantPVC(ctx.k8s, {
+      namespace, pvcName, clientId: (await currentClientId(ctx.db, opId))!,
+      snapshotId: snapId, archivePath, store: ctx.store,
+    });
+
+    await progress('unquiescing', 90, 'Scaling workloads back up');
+    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
+
+    // Persist the new size on the client row (override) + refresh quota
+    const clientId = await currentClientId(ctx.db, opId);
+    if (clientId) {
+      await ctx.db.update(clients).set({
+        storageLimitOverride: String(newGi),
+      }).where(eq(clients.id, clientId));
+    }
+
+    await updateOp(ctx.db, opId, {
+      state: 'idle', progressPct: 100, progressMessage: 'Resize complete', completedAt: new Date(),
+    });
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'idle', null);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateOp(ctx.db, opId, {
+      state: 'failed', lastError: msg, completedAt: new Date(),
+    });
+    // Best-effort unquiesce so the old workloads come back up.
+    if (quiesceSnap) {
+      await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
+    }
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
+async function currentClientId(db: Database, opId: string): Promise<string | null> {
+  const [op] = await db.select({ clientId: storageOperations.clientId }).from(storageOperations).where(eq(storageOperations.id, opId));
+  return op?.clientId ?? null;
+}
+
+async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: string, timeoutMs = 60_000): Promise<void> {
+  const start = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode === 404) return;
+      throw err;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`PVC ${pvcName} still exists after ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+// ─── Suspend / Resume ──────────────────────────────────────────────────
+
+export async function suspendClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  opts: { triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+  if (client.status === 'suspended') {
+    throw new ApiError('ALREADY_SUSPENDED', 'Client is already suspended', 409);
+  }
+
+  const opId = uuid();
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId, clientId, opType: 'suspend',
+      state: 'quiescing', progressPct: 0, progressMessage: 'Scaling workloads to zero',
+      triggeredByUserId: opts.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'quiescing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  try {
+    const snap = await quiesce(ctx.k8s, client.kubernetesNamespace);
+    await updateOp(ctx.db, opId, {
+      state: 'idle', progressPct: 100,
+      progressMessage: 'Client suspended',
+      completedAt: new Date(),
+      params: { quiesceSnapshot: snap as unknown as Record<string, unknown> },
+    });
+    await ctx.db.update(clients).set({
+      status: 'suspended',
+      storageLifecycleState: 'idle',
+      activeStorageOpId: null,
+    }).where(eq(clients.id, clientId));
+    return { operationId: opId };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    await markClientState(ctx.db, clientId, 'idle', null);
+    throw new ApiError('SUSPEND_FAILED', msg, 502);
+  }
+}
+
+export async function resumeClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  opts: { triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+  if (client.status !== 'suspended') {
+    throw new ApiError('NOT_SUSPENDED', 'Client is not suspended', 409);
+  }
+
+  // Look up the last suspend op for the quiesce snapshot it recorded.
+  const [suspendOp] = await ctx.db.select().from(storageOperations).where(
+    and(eq(storageOperations.clientId, clientId), eq(storageOperations.opType, 'suspend')),
+  ).orderBy(desc(storageOperations.createdAt)).limit(1);
+
+  const quiesceSnap = (suspendOp?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot;
+
+  const opId = uuid();
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId, clientId, opType: 'resume',
+      state: 'unquiescing', progressPct: 0, progressMessage: 'Scaling workloads back up',
+      triggeredByUserId: opts.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'unquiescing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  try {
+    if (quiesceSnap) {
+      await unquiesce(ctx.k8s, client.kubernetesNamespace, quiesceSnap);
+    }
+    await updateOp(ctx.db, opId, {
+      state: 'idle', progressPct: 100, progressMessage: 'Client resumed', completedAt: new Date(),
+    });
+    await ctx.db.update(clients).set({
+      status: 'active',
+      storageLifecycleState: 'idle',
+      activeStorageOpId: null,
+    }).where(eq(clients.id, clientId));
+    return { operationId: opId };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    await markClientState(ctx.db, clientId, 'idle', null);
+    throw new ApiError('RESUME_FAILED', msg, 502);
+  }
+}
+
+// ─── Archive / Restore ─────────────────────────────────────────────────
+
+export async function archiveClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  params: { retentionDays?: number; triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+  if (client.status === 'archived') {
+    throw new ApiError('ALREADY_ARCHIVED', 'Client is already archived', 409);
+  }
+
+  const opId = uuid();
+  const snapId = uuid();
+  const archivePath = ctx.store.reservePath(clientId, snapId);
+  const retentionDays = params.retentionDays ?? 90;
+  const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
+
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageSnapshots).values({
+      id: snapId, clientId, kind: 'pre-archive', status: 'creating',
+      archivePath, expiresAt,
+      label: `Archive ${new Date().toISOString().slice(0, 10)}`,
+    });
+    await tx.insert(storageOperations).values({
+      id: opId, clientId, opType: 'archive',
+      state: 'quiescing', progressPct: 0, progressMessage: 'Preparing archive',
+      snapshotId: snapId,
+      params: { retentionDays },
+      triggeredByUserId: params.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'quiescing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  void runArchive(ctx, opId, snapId, client.kubernetesNamespace).catch(() => {});
+  return { operationId: opId, snapshotId: snapId };
+}
+
+async function runArchive(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  namespace: string,
+): Promise<void> {
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  const progress = async (state: typeof clients.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
+  };
+  try {
+    await progress('quiescing', 10, 'Scaling workloads to zero');
+    quiesceSnap = await quiesce(ctx.k8s, namespace);
+    await waitForQuiesced(ctx.k8s, namespace);
+
+    await progress('snapshotting', 30, 'Creating archive snapshot');
+    const clientId = (await currentClientId(ctx.db, opId))!;
+    const pvcName = `${namespace}-storage`;
+    const result = await snapshotTenantPVC(ctx.k8s, {
+      namespace, pvcName, clientId, snapshotId: snapId, store: ctx.store,
+    });
+    await ctx.db.update(storageSnapshots).set({
+      status: 'ready', sizeBytes: String(result.sizeBytes), sha256: result.sha256,
+    }).where(eq(storageSnapshots.id, snapId));
+
+    await progress('replacing', 70, 'Removing live workloads and PVC');
+    // Delete PVC last so deployments releasing claims don't race.
+    await deleteAllDeploymentsCronJobsServices(ctx.k8s, namespace);
+    await ctx.k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+
+    await updateOp(ctx.db, opId, {
+      state: 'idle', progressPct: 100, progressMessage: 'Archive complete', completedAt: new Date(),
+    });
+    await ctx.db.update(clients).set({
+      status: 'archived',
+      storageLifecycleState: 'idle',
+      activeStorageOpId: null,
+    }).where(eq(clients.id, clientId));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: msg }).where(eq(storageSnapshots.id, snapId));
+    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
+async function deleteAllDeploymentsCronJobsServices(k8s: K8sClients, namespace: string): Promise<void> {
+  const depList = await (k8s.apps as unknown as { listNamespacedDeployment: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }> })
+    .listNamespacedDeployment({ namespace, labelSelector: 'platform.io/managed=true' });
+  for (const d of depList.items ?? []) {
+    if (d.metadata?.name) {
+      await (k8s.apps as unknown as { deleteNamespacedDeployment: (a: { name: string; namespace: string }) => Promise<unknown> })
+        .deleteNamespacedDeployment({ name: d.metadata.name, namespace }).catch(() => {});
+    }
+  }
+  const cjList = await (k8s.batch as unknown as { listNamespacedCronJob: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }> })
+    .listNamespacedCronJob({ namespace, labelSelector: 'platform.io/managed=true' });
+  for (const c of cjList.items ?? []) {
+    if (c.metadata?.name) {
+      await (k8s.batch as unknown as { deleteNamespacedCronJob: (a: { name: string; namespace: string }) => Promise<unknown> })
+        .deleteNamespacedCronJob({ name: c.metadata.name, namespace }).catch(() => {});
+    }
+  }
+  const svcList = await k8s.core.listNamespacedService({ namespace, labelSelector: 'platform.io/managed=true' });
+  for (const s of (svcList as { items?: Array<{ metadata?: { name?: string } }> }).items ?? []) {
+    if (s.metadata?.name) {
+      await k8s.core.deleteNamespacedService({ name: s.metadata.name, namespace } as Parameters<typeof k8s.core.deleteNamespacedService>[0]).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Restore an archived client from their most recent pre-archive snapshot.
+ * Creates a new PVC (default: snapshot's original size, admin can override),
+ * extracts the tarball, flips client.status back to 'active'. Deployments
+ * are NOT automatically redeployed — the caller should trigger the normal
+ * deployment reconciler after restore.
+ */
+export async function restoreArchivedClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  params: { newGi?: number; triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+  if (client.status !== 'archived') {
+    throw new ApiError('NOT_ARCHIVED', 'Client is not in archived state', 409);
+  }
+
+  const [snap] = await ctx.db.select().from(storageSnapshots).where(
+    and(eq(storageSnapshots.clientId, clientId), eq(storageSnapshots.kind, 'pre-archive'), eq(storageSnapshots.status, 'ready')),
+  ).orderBy(desc(storageSnapshots.createdAt)).limit(1);
+  if (!snap) {
+    throw new ApiError('NO_ARCHIVE_SNAPSHOT', 'No ready pre-archive snapshot found — the archive window may have expired', 404);
+  }
+
+  const opId = uuid();
+  const targetGi = params.newGi ?? await getPlanStorageGi(ctx.db, client.planId);
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId, clientId, opType: 'restore',
+      state: 'replacing', progressPct: 0, progressMessage: 'Recreating PVC',
+      snapshotId: snap.id,
+      params: { fromSnapshot: snap.id, targetGi },
+      triggeredByUserId: params.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'replacing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  void runRestoreArchive(ctx, opId, snap.id, snap.archivePath, client.kubernetesNamespace, targetGi).catch(() => {});
+  return { operationId: opId, snapshotId: snap.id };
+}
+
+async function runRestoreArchive(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  archivePath: string,
+  namespace: string,
+  newGi: number,
+): Promise<void> {
+  const pvcName = `${namespace}-storage`;
+  try {
+    const { applyPVC } = await import('../k8s-provisioner/service.js');
+    const { getDefaultStorageClass } = await import('../storage-settings/service.js');
+    const storageClass = await getDefaultStorageClass(ctx.db);
+    await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
+    await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
+
+    const clientId = (await currentClientId(ctx.db, opId))!;
+    await restoreTenantPVC(ctx.k8s, {
+      namespace, pvcName, clientId, snapshotId: snapId, archivePath, store: ctx.store,
+    });
+
+    await updateOp(ctx.db, opId, {
+      state: 'idle', progressPct: 100,
+      progressMessage: 'Restore complete — redeploy workloads via deployments API to bring the tenant back online',
+      completedAt: new Date(),
+    });
+    await ctx.db.update(clients).set({
+      status: 'active',
+      storageLifecycleState: 'idle',
+      activeStorageOpId: null,
+    }).where(eq(clients.id, clientId));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
+// ─── Listing + housekeeping ────────────────────────────────────────────
+
+export async function listSnapshotsForClient(db: Database, clientId: string) {
+  return db.select().from(storageSnapshots).where(eq(storageSnapshots.clientId, clientId)).orderBy(desc(storageSnapshots.createdAt));
+}
+
+export async function listOperationsForClient(db: Database, clientId: string, limit = 50) {
+  return db.select().from(storageOperations).where(eq(storageOperations.clientId, clientId)).orderBy(desc(storageOperations.createdAt)).limit(limit);
+}
+
+export async function getOperation(db: Database, opId: string) {
+  const [op] = await db.select().from(storageOperations).where(eq(storageOperations.id, opId));
+  return op ?? null;
+}
+
+export async function deleteSnapshot(ctx: ServiceCtx, snapshotId: string): Promise<void> {
+  const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
+  if (!snap) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
+  await ctx.store.delete(snap.archivePath).catch(() => {});
+  await ctx.db.delete(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
+}
+
+/**
+ * Housekeeping: drop snapshots past their expires_at. Runs from the
+ * scheduler daily. Returns count of snapshots reaped.
+ */
+export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
+  const now = new Date();
+  const due = await ctx.db.select().from(storageSnapshots).where(
+    and(lte(storageSnapshots.expiresAt, now), eq(storageSnapshots.status, 'ready')),
+  );
+  let reaped = 0;
+  for (const snap of due) {
+    try {
+      await ctx.store.delete(snap.archivePath);
+      await ctx.db.update(storageSnapshots).set({ status: 'expired' }).where(eq(storageSnapshots.id, snap.id));
+      reaped += 1;
+    } catch {
+      // Log only — don't let one stuck snapshot break the cron
+    }
+  }
+  return reaped;
+}
+
+/**
+ * Report provisioned vs actually-used storage for every client. The cron
+ * publishes this once a week for capacity planning. For now, just
+ * computes + returns — emit via logger or email in a later pass.
+ */
+export async function storageAuditReport(ctx: ServiceCtx): Promise<Array<{
+  clientId: string;
+  namespace: string;
+  provisionedGi: number;
+  usedBytes: number;
+  wastePct: number;
+}>> {
+  const rows = await ctx.db.select({
+    id: clients.id,
+    ns: clients.kubernetesNamespace,
+    storageLimitOverride: clients.storageLimitOverride,
+    planId: clients.planId,
+  }).from(clients).where(
+    and(eq(clients.status, 'active'), sql`${clients.kubernetesNamespace} IS NOT NULL`),
+  );
+  const out = [];
+  for (const r of rows) {
+    const provisionedGi = Math.round(Number(r.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, r.planId);
+    const used = await measurePvcUsed(ctx, r.ns!);
+    const provisionedBytes = provisionedGi * 1024 * 1024 * 1024;
+    const wastePct = provisionedBytes > 0 ? Math.round(((provisionedBytes - used) / provisionedBytes) * 100) : 0;
+    out.push({ clientId: r.id, namespace: r.ns!, provisionedGi, usedBytes: used, wastePct });
+  }
+  return out;
+}

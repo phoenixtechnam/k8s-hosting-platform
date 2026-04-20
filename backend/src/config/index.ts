@@ -30,6 +30,14 @@ const configSchema = z.object({
   PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
   FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/file-manager:latest'),
+  // Storage-lifecycle snapshot store. Dev default = hostPath; prod
+  // operators would swap to s3 + credentials via the STORAGE_SNAPSHOT_*
+  // prefix. STORAGE_SNAPSHOT_HOST_ROOT is the path ON THE NODE the
+  // hostPath mounts; STORAGE_SNAPSHOT_LOCAL_ROOT is where the same dir
+  // appears inside the platform-api container for stat/delete.
+  STORAGE_SNAPSHOT_BACKEND: z.string().default('hostpath'),
+  STORAGE_SNAPSHOT_HOST_ROOT: z.string().default('/var/lib/platform/snapshots'),
+  STORAGE_SNAPSHOT_LOCAL_ROOT: z.string().default('/snapshots'),
   DISABLE_RATE_LIMIT: z.string().optional(),
   // Domain attribute for the platform_session cookie. Empty → host-only
   // (admin.<apex> only). Set to `.<apex>` to share the session across

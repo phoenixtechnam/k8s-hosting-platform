@@ -24,6 +24,16 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
 import { useClientMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
+import {
+  useCreateSnapshot,
+  useResizeDryRun,
+  useResizeClient,
+  useSuspendClient as useStorageSuspend,
+  useResumeClient as useStorageResume,
+  useArchiveClient as useStorageArchive,
+  useRestoreClient as useStorageRestore,
+  useStorageOperations,
+} from '@/hooks/use-storage-lifecycle';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
 
@@ -338,6 +348,8 @@ export default function ClientDetail() {
       <SubscriptionCard clientId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
 
       <ResourceLimitsCard client={client} clientId={id!} />
+
+      <StorageLifecycleCard clientId={id!} client={client} />
 
       {/* Resource tabs */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -1558,6 +1570,157 @@ function DecommissionConfirmDialog({
             Decommission
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function StorageLifecycleCard({ clientId, client }: { readonly clientId: string; readonly client: { status?: string; storageLifecycleState?: string; storageLimitOverride?: string | null } }) {
+  const opsQuery = useStorageOperations(clientId);
+  const dryRun = useResizeDryRun();
+  const resize = useResizeClient();
+  const snapshot = useCreateSnapshot();
+  const suspend = useStorageSuspend();
+  const resume = useStorageResume();
+  const archive = useStorageArchive();
+  const restore = useStorageRestore();
+
+  const ops = opsQuery.data?.data ?? [];
+  const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
+  const recentOp = ops[0];
+  const lifecycleState = client.storageLifecycleState ?? 'idle';
+  const isBusy = lifecycleState !== 'idle' || !!activeOp
+    || resize.isPending || snapshot.isPending || suspend.isPending
+    || resume.isPending || archive.isPending || restore.isPending;
+
+  const onResize = async () => {
+    const raw = prompt('New PVC size in GiB:', '10');
+    if (!raw) return;
+    const newGi = parseInt(raw, 10);
+    if (!Number.isFinite(newGi) || newGi < 1) { alert('Enter a positive integer'); return; }
+    try {
+      const dry = await dryRun.mutateAsync({ clientId, newGi });
+      const d = dry.data;
+      const ok = confirm(
+        `Resize from ${d.currentGi} GiB → ${newGi} GiB?\n\n` +
+        `Currently using ${(d.usedBytes / (1024 ** 3)).toFixed(2)} GiB.\n` +
+        `Estimated ~${d.estimatedSeconds}s with brief workload downtime.\n\n` +
+        `${d.willFit ? 'Proceed?' : `✗ Cannot shrink — ${d.rejectReason}`}`,
+      );
+      if (ok && d.willFit) resize.mutate({ clientId, newGi });
+    } catch (err) {
+      alert(`Dry-run failed: ${(err as Error).message}`);
+    }
+  };
+
+  const onSuspend = () => { if (confirm('Suspend this client? All workloads will scale to 0.')) suspend.mutate(clientId); };
+  const onResume = () => { if (confirm('Resume this client?')) resume.mutate(clientId); };
+  const onArchive = () => {
+    const raw = prompt('Archive retention (days):', '90');
+    if (!raw) return;
+    const retentionDays = parseInt(raw, 10);
+    if (confirm(`Archive client — take final snapshot (retained ${retentionDays}d) and delete live workloads?`)) {
+      archive.mutate({ clientId, retentionDays });
+    }
+  };
+  const onRestore = () => {
+    if (confirm('Restore this archived client from most recent pre-archive snapshot?')) restore.mutate({ clientId });
+  };
+  const onSnapshot = () => {
+    const label = prompt('Snapshot label (optional):', `Manual ${new Date().toISOString().slice(0, 16)}`);
+    if (label !== null) snapshot.mutate({ clientId, label });
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Lifecycle</h2>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Snapshot, resize, suspend, or archive this client. Snapshots live in the platform's snapshot store (hostPath in dev, S3 in prod).
+          </p>
+        </div>
+        <div className="text-right text-xs">
+          <div className="text-gray-500 dark:text-gray-400">Lifecycle state</div>
+          <div className={`mt-0.5 rounded px-2 py-0.5 font-mono ${lifecycleState === 'idle' ? 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200'}`}>
+            {lifecycleState}
+          </div>
+        </div>
+      </div>
+
+      {activeOp && (
+        <div className="mb-3 rounded-md bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
+          <div className="flex items-center justify-between text-amber-900 dark:text-amber-100">
+            <span className="font-medium">{activeOp.opType}: {activeOp.state}</span>
+            <span className="text-xs">{activeOp.progressPct}%</span>
+          </div>
+          {activeOp.progressMessage && <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">{activeOp.progressMessage}</p>}
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900/40">
+            <div className="h-full bg-amber-600 transition-all" style={{ width: `${activeOp.progressPct}%` }} />
+          </div>
+        </div>
+      )}
+
+      {!activeOp && recentOp && recentOp.state === 'failed' && (
+        <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm">
+          <div className="font-medium text-red-800 dark:text-red-200">Last {recentOp.opType} failed</div>
+          {recentOp.lastError && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{recentOp.lastError}</p>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={onSnapshot}
+          disabled={isBusy}
+          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          data-testid="lifecycle-snapshot-button"
+        >
+          Take snapshot
+        </button>
+        <button
+          onClick={onResize}
+          disabled={isBusy || client.status === 'archived' || client.status === 'suspended'}
+          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          data-testid="lifecycle-resize-button"
+        >
+          Resize storage…
+        </button>
+        {client.status !== 'suspended' && client.status !== 'archived' && (
+          <button
+            onClick={onSuspend}
+            disabled={isBusy}
+            className="rounded-md border border-orange-200 dark:border-orange-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-orange-700 dark:text-orange-300 hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50"
+          >
+            Suspend
+          </button>
+        )}
+        {client.status === 'suspended' && (
+          <button
+            onClick={onResume}
+            disabled={isBusy}
+            className="rounded-md border border-green-200 dark:border-green-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-green-700 dark:text-green-300 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+          >
+            Resume
+          </button>
+        )}
+        {client.status !== 'archived' && (
+          <button
+            onClick={onArchive}
+            disabled={isBusy}
+            className="rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+          >
+            Archive
+          </button>
+        )}
+        {client.status === 'archived' && (
+          <button
+            onClick={onRestore}
+            disabled={isBusy}
+            className="rounded-md border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50"
+          >
+            Restore
+          </button>
+        )}
       </div>
     </div>
   );

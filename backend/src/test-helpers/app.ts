@@ -17,6 +17,9 @@ export async function buildTestApp(): Promise<FastifyInstance> {
       DEFAULT_STORAGE_CLASS: 'local-path',
       PLATFORM_NAMESPACE: 'platform',
       FILE_MANAGER_IMAGE: 'file-manager:test',
+      STORAGE_SNAPSHOT_BACKEND: 'hostpath',
+      STORAGE_SNAPSHOT_HOST_ROOT: '/tmp/test-snapshots',
+      STORAGE_SNAPSHOT_LOCAL_ROOT: '/tmp/test-snapshots',
     },
     db,
   });

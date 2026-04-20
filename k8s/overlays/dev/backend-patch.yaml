@@ -20,12 +20,24 @@ spec:
         - name: stalwart-creds
           secret:
             secretName: platform-stalwart-creds
+        # Storage-lifecycle snapshot store. Tenant snapshot Jobs write
+        # tarballs here via the same hostPath mount in each tenant
+        # namespace; platform-api reads (stat/delete) them through this
+        # mount. Kustomize strategic merge replaces the `volumes` list
+        # wholesale when the overlay declares one, so the base's entry
+        # has to be re-declared here.
+        - name: platform-snapshots
+          hostPath:
+            path: /var/lib/platform/snapshots
+            type: DirectoryOrCreate
       containers:
         - name: api
           volumeMounts:
             - name: stalwart-creds
               mountPath: /etc/stalwart-creds
               readOnly: true
+            - name: platform-snapshots
+              mountPath: /snapshots
           # Dev-only probes: poll fast so pods reach Ready as soon as the
           # app responds, instead of waiting for the prod-conservative
           # initialDelaySeconds: 5 + periodSeconds: 10 windows.

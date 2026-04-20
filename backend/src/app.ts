@@ -57,6 +57,7 @@ import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
+import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
@@ -83,6 +84,7 @@ import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
+import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
@@ -260,6 +262,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(sftpUserRoutes, { prefix: '/api/v1' });
   await app.register(sftpInternalRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
+  await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
@@ -370,6 +373,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // chain — plain clearInterval is not enough because the
       // chain re-arms itself.
       app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
+
+      // Storage lifecycle: snapshot expiry + weekly audit report.
+      // Needs a K8sClients handle for the audit path (`du -sb` exec
+      // into each tenant's file-manager sidecar).
+      try {
+        const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const storageK8s = createK8s(kubeconfigPath);
+        const storageLifecycleHandle = startStorageLifecycleScheduler(app.db, storageK8s, app.config as Record<string, unknown>);
+        app.addHook('onClose', () => storageLifecycleHandle.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'storage-lifecycle scheduler: startup skipped');
+      }
 
       // Phase 3 T1.1: DKIM rotation scheduler. Auto-rotates primary-mode
       // email domains, retires old keys after the grace period, and
