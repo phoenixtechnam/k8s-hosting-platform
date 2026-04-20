@@ -23,7 +23,16 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+    # File Manager is designed to allow any upload size — the only real
+    # cap is the tenant's PVC quota, enforced at the filesystem layer
+    # (ENOSPC propagates out as a proper disk-full error). "0" disables
+    # the ingress-nginx body-size check entirely. Pair with request-
+    # buffering off so multi-GB uploads stream through instead of
+    # buffering to the controller pod's /tmp.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
 spec:
   ingressClassName: nginx
   # K8s rejects an Ingress with no rules AND no defaultBackend. This serves

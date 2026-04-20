@@ -24,13 +24,32 @@ metadata:
     cert-manager.io/cluster-issuer: local-ca-issuer
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    # WAF is on at the controller level. Disable OWASP CRS rule 911100
-    # ("Method is not allowed by policy") for the platform ingress — the
-    # default CRS allowlist is GET/HEAD/POST/OPTIONS, which blocks the
-    # admin panel's DELETE/PATCH/PUT routes (client delete, resource
-    # updates, etc.). Every other CRS check (SQLi, XSS, RFI, scanner
-    # detection) still evaluates. IDs 1100000-1199999 are reserved for
-    # local overrides.
-    nginx.ingress.kubernetes.io/modsecurity-snippet: |
-      SecRule REQUEST_URI "@beginsWith /" \
-          "id:1100010,phase:1,pass,nolog,ctl:ruleRemoveById=911100"
+    # WAF is on at the controller level. Disable CRS rules that conflict
+    # with the platform's own design:
+    #   - 911100 "Method is not allowed" — default CRS allowlist is
+    #     GET/HEAD/POST/OPTIONS which blocks the admin panel's
+    #     DELETE/PATCH/PUT routes (client delete, resource updates, …).
+    #   - 920420 "Request content type is not allowed" — default CRS list
+    #     doesn't include application/octet-stream, which the File
+    #     Manager's streaming upload-raw endpoint requires. The raw
+    #     streaming path is the sanctioned way to upload >64 MB files.
+    # Every other CRS check (SQLi, XSS, RFI, scanner detection) still
+    # evaluates. IDs 1100000-1199999 are reserved for local overrides.
+    # ModSecurity is intentionally OFF on the platform ingress.
+    #
+    # The admin/client panels + /api/v1 are JWT-gated and already
+    # enforce strict input validation (zod schemas on every endpoint).
+    # Running the CRS on top:
+    #   1) adds latency with no real security delta on authed APIs, and
+    #   2) forces the controller to buffer every request body in memory
+    #      (`SecRequestBodyAccess On` is effectively mandatory alongside
+    #      the CRS rules), which OOM-kills the controller on multi-GB
+    #      uploads to /files/upload-raw. `ctl:requestBodyAccess=Off` via
+    #      a phase-1 SecRule does NOT actually prevent the buffering
+    #      (tested 2026-04-20 — pod still OOMKilled at 2 GB).
+    #
+    # Tenant workload ingresses (WordPress, etc.) keep ModSecurity on
+    # because they serve untrusted public traffic. See the ingress
+    # reconciler's default annotations for that path.
+    nginx.ingress.kubernetes.io/enable-modsecurity: "false"
+    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "false"

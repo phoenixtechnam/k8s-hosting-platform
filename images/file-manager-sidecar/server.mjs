@@ -182,7 +182,18 @@ function getPath(url) {
 
 // ─── Multipart parser (minimal, single file) ────────────────────────────────
 
-const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '0', 10) || 512 * 1024 * 1024; // 512 MB default
+// Multipart upload cap. The /upload (multipart) handler buffers the whole
+// body in memory before parsing — so it needs a safety cap or huge files
+// would OOM the sidecar pod. Frontends should use the streaming
+// /upload-raw endpoint, which has no cap (the real limit is the tenant's
+// PVC quota, enforced at the filesystem layer via ENOSPC).
+//   MAX_UPLOAD_SIZE=0 → no cap on multipart (dangerous; OOM risk)
+//   unset or non-numeric → default 2 GiB (lets curl-based admin imports
+//       run without OOMing the pod)
+const MAX_UPLOAD_SIZE = (() => {
+  const v = parseInt(process.env.MAX_UPLOAD_SIZE ?? '', 10);
+  return Number.isFinite(v) && v >= 0 ? v : 2 * 1024 * 1024 * 1024;
+})();
 
 async function parseMultipart(req) {
   const contentType = req.headers['content-type'] || '';
@@ -194,7 +205,7 @@ async function parseMultipart(req) {
   let totalLength = 0;
   for await (const chunk of req) {
     totalLength += chunk.length;
-    if (totalLength > MAX_UPLOAD_SIZE) {
+    if (MAX_UPLOAD_SIZE > 0 && totalLength > MAX_UPLOAD_SIZE) {
       req.destroy();
       throw Object.assign(new Error(`Upload exceeds ${MAX_UPLOAD_SIZE} byte limit`), { code: 'BODY_TOO_LARGE' });
     }

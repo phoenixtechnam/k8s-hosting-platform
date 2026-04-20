@@ -106,6 +106,15 @@ services:
             --type=merge \
             -p '{"data":{"allow-snippet-annotations":"true","annotations-risk-level":"Critical","enable-modsecurity":"true","enable-owasp-modsecurity-crs":"true","modsecurity-snippet":"SecRuleEngine On\nSecAuditEngine RelevantOnly\nSecAuditLogRelevantStatus \"^(?:5|4(?!04))\"\nSecAuditLog /dev/stderr\nSecAuditLogType Serial\nSecAuditLogParts ABFHZ\n"}}' 2>/dev/null \
             || echo "Failed to patch ingress-nginx-controller ConfigMap"
+          # Bump the controller's memory limit. The default deploy.yaml sets
+          # only a 90Mi request with no limit — multi-GB uploads buffering in
+          # /tmp + TLS work push the controller over the implicit cgroup cap
+          # and the pod gets OOMKilled mid-upload. 1 Gi leaves headroom for
+          # tenant workloads doing concurrent WP media uploads.
+          kubectl patch deploy ingress-nginx-controller -n ingress-nginx \
+            --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/resources/limits","value":{"memory":"1Gi","cpu":"500m"}}]' 2>/dev/null \
+            || echo "Failed to patch ingress-nginx-controller resources"
         ) &
         NGINX_PID=$$!
         (

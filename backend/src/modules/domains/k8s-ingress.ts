@@ -25,6 +25,34 @@ import { syncAllRouteAnnotations } from '../ingress-routes/annotation-sync.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
+// ─── Annotations ────────────────────────────────────────────────────────────
+
+/**
+ * Per-tenant Ingress defaults. Routes the ingress-nginx controller with
+ * sane-for-a-hosting-platform values:
+ *
+ * - `proxy-body-size: 0` — no upload cap. The tenant PVC quota (enforced
+ *   at the filesystem layer via ENOSPC) is the real limit; without this,
+ *   ingress-nginx's 1 MiB default would reject any WP media upload,
+ *   Nextcloud file sync, or DB export bigger than a tweet.
+ * - `proxy-request-buffering: off` — stream through instead of buffering
+ *   multi-GB bodies to the ingress controller pod's disk.
+ * - `proxy-{read,send}-timeout: 600` — a slow 5 GB upload on a 10 Mbit
+ *   link needs more than 60 s per connection.
+ *
+ * Per-route annotations from the annotation sync (rate limits, basic
+ * auth, WAF, etc.) override these defaults — the spread order at the
+ * call site is `defaults → route-specific`.
+ */
+export function tenantIngressDefaultAnnotations(): Record<string, string> {
+  return {
+    'nginx.ingress.kubernetes.io/proxy-body-size': '0',
+    'nginx.ingress.kubernetes.io/proxy-request-buffering': 'off',
+    'nginx.ingress.kubernetes.io/proxy-read-timeout': '600',
+    'nginx.ingress.kubernetes.io/proxy-send-timeout': '600',
+  };
+}
+
 // ─── Ingress backend resolution ─────────────────────────────────────────────
 
 /**
@@ -347,6 +375,7 @@ export async function reconcileIngress(
       name: ingressName,
       namespace,
       annotations: {
+        ...tenantIngressDefaultAnnotations(),
         ...routeAnnotations,
       },
     },
