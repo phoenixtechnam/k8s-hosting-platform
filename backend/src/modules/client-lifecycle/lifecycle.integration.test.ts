@@ -47,6 +47,11 @@ describe.skipIf(!RUN || !dbAvailable)('client lifecycle integration', () => {
   const TEST_PREFIX = 'lifecycle-it-';
   const uid = `${TEST_PREFIX}${Date.now().toString(36)}`;
 
+  // Collect every ad-hoc client created mid-test so afterAll can
+  // clean them up even when harness-level errors bypass inline
+  // finally blocks. Each entry is { id, namespace? }.
+  const auxCleanup: Array<{ id: string; namespace: string | null }> = [];
+
   beforeAll(async () => {
     k8s = createK8sClients(process.env.KUBECONFIG_PATH);
 
@@ -98,9 +103,17 @@ describe.skipIf(!RUN || !dbAvailable)('client lifecycle integration', () => {
   afterAll(async () => {
     // Best-effort cleanup — the applyDeleted test SHOULD have removed
     // everything, but if it failed we still need to avoid leaving
-    // state behind.
+    // state behind. auxCleanup covers any ad-hoc clients that tests
+    // created but didn't reach their inline cleanup (e.g. concurrency
+    // test leaks if the expect throws before the delete).
     try { await k8s.core.deleteNamespace({ name: namespace }); } catch { /* gone */ }
     await db.delete(clients).where(eq(clients.id, clientId)).catch(() => {});
+    for (const aux of auxCleanup) {
+      if (aux.namespace) {
+        try { await k8s.core.deleteNamespace({ name: aux.namespace }); } catch { /* gone */ }
+      }
+      await db.delete(clients).where(eq(clients.id, aux.id)).catch(() => {});
+    }
     // Clean up seeded rows too.
     await db.execute(sql`DELETE FROM hosting_plans WHERE name LIKE ${TEST_PREFIX + '%'}`).catch(() => {});
     await db.execute(sql`DELETE FROM regions WHERE name LIKE ${TEST_PREFIX + '%'}`).catch(() => {});
@@ -202,13 +215,18 @@ describe.skipIf(!RUN || !dbAvailable)('client lifecycle integration', () => {
   // ─── 409 concurrency rejection ─────────────────────────────────────
 
   it('storage_operations enforces state-machine concurrency', async () => {
-    // Recreate a fresh client to test concurrent-op rejection.
+    // Recreate a fresh client to test concurrent-op rejection. Register
+    // it with auxCleanup FIRST so a harness-level failure between
+    // insert and inline-delete still releases the row in afterAll.
     const tempId = crypto.randomUUID();
+    const tempNs = `client-${uid}-concur`;
+    auxCleanup.push({ id: tempId, namespace: tempNs });
+
     await db.insert(clients).values({
       id: tempId,
       companyName: `${uid}-concur`,
       companyEmail: `${uid}-concur@example.test`,
-      kubernetesNamespace: `client-${uid}-concur`,
+      kubernetesNamespace: tempNs,
       planId: (await db.select({ id: hostingPlans.id }).from(hostingPlans).limit(1))[0].id,
       regionId: (await db.select({ id: regions.id }).from(regions).limit(1))[0].id,
       status: 'active',
@@ -220,13 +238,14 @@ describe.skipIf(!RUN || !dbAvailable)('client lifecycle integration', () => {
     const store = { reservePath: () => '', mountTarget: () => ({ volumeSpec: {}, mountPath: '', relativePath: '' }), stat: async () => null, delete: async () => false, readSidecar: async () => null };
     const ctx = { db, k8s, store, platformNamespace: 'platform' };
 
-    // Any destructive op against a non-idle client must throw 409.
-    await expect(
-      service.suspendClient(ctx, tempId),
-    ).rejects.toMatchObject({ code: 'STORAGE_OP_IN_PROGRESS' });
-
-    // Clean up.
-    await db.delete(clients).where(eq(clients.id, tempId));
+    try {
+      await expect(
+        service.suspendClient(ctx, tempId),
+      ).rejects.toMatchObject({ code: 'STORAGE_OP_IN_PROGRESS' });
+    } finally {
+      // Inline cleanup on the happy path; afterAll catches the rest.
+      await db.delete(clients).where(eq(clients.id, tempId)).catch(() => {});
+    }
   }, 30_000);
 
   // ─── Operations audit trail ────────────────────────────────────────

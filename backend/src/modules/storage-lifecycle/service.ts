@@ -353,7 +353,12 @@ export async function resizeClient(
 
   // Kick off the async orchestration. We return immediately with the
   // operation id — caller polls or SSE-subscribes for progress.
-  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, newMib, archivePath).catch(() => {});
+  // Kick off orchestration async. runResize has its own try/catch that
+  // writes failures to storage_operations — the outer .catch only fires
+  // on a *synchronous* throw before that runs (DB down, etc.). Log
+  // noisily so those don't get eaten silently.
+  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, newMib, archivePath)
+    .catch((err) => { console.error(`[storage-lifecycle] runResize pre-orchestrator throw for op ${opId}:`, err); });
   return { operationId: opId };
 }
 
@@ -687,7 +692,8 @@ export async function archiveClient(
       .where(eq(clients.id, clientId));
   });
 
-  void runArchive(ctx, opId, snapId, client.kubernetesNamespace).catch(() => {});
+  void runArchive(ctx, opId, snapId, client.kubernetesNamespace)
+    .catch((err) => { console.error(`[storage-lifecycle] runArchive pre-orchestrator throw for op ${opId}:`, err); });
   return { operationId: opId, snapshotId: snapId };
 }
 
@@ -813,7 +819,8 @@ export async function restoreArchivedClient(
       .where(eq(clients.id, clientId));
   });
 
-  void runRestoreArchive(ctx, opId, snap.id, snap.archivePath, client.kubernetesNamespace, targetGi).catch(() => {});
+  void runRestoreArchive(ctx, opId, snap.id, snap.archivePath, client.kubernetesNamespace, targetGi)
+    .catch((err) => { console.error(`[storage-lifecycle] runRestoreArchive pre-orchestrator throw for op ${opId}:`, err); });
   return { operationId: opId, snapshotId: snap.id };
 }
 

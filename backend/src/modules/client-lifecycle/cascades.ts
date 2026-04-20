@@ -50,11 +50,23 @@ export async function applyActive(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // DB cascades
-  await ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, clientId));
-  await ctx.db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, clientId));
-  await ctx.db.update(mailboxes).set({ status: 'active' }).where(eq(mailboxes.clientId, clientId));
-  await ctx.db.update(emailAliases).set({ enabled: 1 }).where(eq(emailAliases.clientId, clientId));
+  // DB cascades — the four tables are independent so fire in parallel.
+  // `allSettled` (not `all`) so one table failing (e.g. a FK constraint
+  // edge case) doesn't abort the rest — the reconciler picks up the
+  // remainder on the next cycle. Per-failure logging surfaces which
+  // cascade needs attention.
+  const results = await Promise.allSettled([
+    ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, clientId)),
+    ctx.db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, clientId)),
+    ctx.db.update(mailboxes).set({ status: 'active' }).where(eq(mailboxes.clientId, clientId)),
+    ctx.db.update(emailAliases).set({ enabled: 1 }).where(eq(emailAliases.clientId, clientId)),
+  ]);
+  const labels = ['domains', 'cronJobs', 'mailboxes', 'emailAliases'];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn(`[cascades.applyActive] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
+    }
+  });
 
   // K8s: first remove the suspend markers, then tell the ingress
   // reconciler to rebuild from `ingress_routes` — this handles both
@@ -97,12 +109,20 @@ export async function applySuspended(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // DB cascades
-  await ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId));
-  await ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId));
-  await ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId));
-  await ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.clientId, clientId));
-  await ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.clientId, clientId));
+  // See applyActive for the allSettled rationale.
+  const results = await Promise.allSettled([
+    ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId)),
+    ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId)),
+    ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId)),
+    ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.clientId, clientId)),
+    ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.clientId, clientId)),
+  ]);
+  const labels = ['domains', 'deployments', 'cronJobs', 'mailboxes', 'emailAliases'];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn(`[cascades.applySuspended] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
+    }
+  });
 
   // K8s: swap tenant ingresses to platform-suspended.
   try {
@@ -174,16 +194,17 @@ export async function applyDeleted(
   namespace: string,
 ): Promise<void> {
   // Drop the k8s namespace — brings pods, PVC, ingress, services,
-  // configmaps, secrets with it. Swallow 404 (already gone).
-  if (namespace) {
-    try {
-      await ctx.k8s.core.deleteNamespace({ name: namespace });
-    } catch (err) {
-      const status = (err as { statusCode?: number; code?: number }).statusCode
-        ?? (err as { statusCode?: number; code?: number }).code;
-      if (status !== 404) {
-        console.warn(`[cascades.applyDeleted] deleteNamespace ${namespace} failed: ${(err as Error).message}`);
-      }
+  // configmaps, secrets with it. `clients.kubernetes_namespace` is
+  // notNull in schema, so no truthy guard — an empty string would
+  // indicate a seed-bug upstream and should surface as an error.
+  try {
+    await ctx.k8s.core.deleteNamespace({ name: namespace });
+  } catch (err) {
+    const status = (err as { statusCode?: number; code?: number; body?: { code?: number } }).statusCode
+      ?? (err as { code?: number }).code
+      ?? (err as { body?: { code?: number } }).body?.code;
+    if (status !== 404) {
+      console.warn(`[cascades.applyDeleted] deleteNamespace ${namespace} failed: ${(err as Error).message}`);
     }
   }
 

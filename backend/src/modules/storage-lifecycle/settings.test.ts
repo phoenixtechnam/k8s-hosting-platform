@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { getTestDb, runMigrations } from '../../test-helpers/db.js';
+import { getTestDb, runMigrations, isDbAvailable } from '../../test-helpers/db.js';
 import {
   loadStorageLifecycleSettings,
   saveStorageLifecycleSettings,
@@ -9,8 +9,13 @@ import {
 } from './settings.js';
 
 const db = getTestDb();
+// Probe once at suite load so we can skip the whole file when there's
+// no test postgres available. Without this guard the beforeAll hook
+// below surfaces a connect-ECONNREFUSED as an "Error" in vitest output
+// even though the test bodies would individually be skipped.
+const dbAvailable = await isDbAvailable();
 
-describe('storage-lifecycle settings', () => {
+describe.skipIf(!dbAvailable)('storage-lifecycle settings', () => {
   beforeAll(async () => {
     await runMigrations();
   });

@@ -384,11 +384,16 @@ describe('deleteClient', () => {
     warnSpy.mockRestore();
   });
 
-  it('still skips k8s cleanup when kubernetesNamespace is empty', async () => {
+  it('attempts k8s namespace cleanup even for pending clients, swallowing 404', async () => {
+    // After the cascades refactor, `clients.kubernetesNamespace` is
+    // notNull with a default, so we no longer gate the k8s call on a
+    // truthy check. applyDeleted always calls deleteNamespace and
+    // handles 404 (never-provisioned) as a no-op so DB delete still
+    // proceeds.
     const client = {
       id: 'c1',
       status: 'pending',
-      kubernetesNamespace: null,
+      kubernetesNamespace: 'client-never-provisioned',
       provisioningStatus: 'pending',
     };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
@@ -400,13 +405,13 @@ describe('deleteClient', () => {
       select: selectFn, delete: deleteFn,
     } as unknown as Parameters<typeof deleteClient>[0];
 
-    const mockDeleteNamespace = vi.fn();
+    const mockDeleteNamespace = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
     const k8sClients = {
       core: { deleteNamespace: mockDeleteNamespace },
     } as unknown as Parameters<typeof deleteClient>[2];
 
     await deleteClient(db, 'c1', k8sClients);
-    expect(mockDeleteNamespace).not.toHaveBeenCalled();
+    expect(mockDeleteNamespace).toHaveBeenCalled();
     expect(deleteFn).toHaveBeenCalled();
   });
 
@@ -438,8 +443,9 @@ describe('deleteClient', () => {
 
     await deleteClient(db, 'c1', k8sClients);
     expect(mockDeleteNamespace).toHaveBeenCalled();
+    // Log prefix moved to the unified cascades module.
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[client-delete] Failed to delete k8s namespace client-acme-abc12345'),
+      expect.stringContaining('[cascades.applyDeleted] deleteNamespace client-acme-abc12345'),
     );
     // DB deletion should still proceed
     expect(deleteFn).toHaveBeenCalled();
