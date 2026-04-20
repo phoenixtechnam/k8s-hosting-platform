@@ -43,7 +43,11 @@ export function dataResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 // Client lifecycle status. `archived` means the client was off-boarded:
 // PVC destroyed, snapshot retained for the configured grace period, but
 // the account still exists so it can be restored. See storage-lifecycle/.
-export const statusEnum = z.enum(['active', 'suspended', 'pending', 'cancelled', 'archived']);
+//
+// The terminal operation is "delete" — a verb, not a persistent state —
+// which hard-removes the client row from the database. There is no
+// `deleted` value in the enum; a deleted client simply doesn't exist.
+export const statusEnum = z.enum(['active', 'suspended', 'pending', 'archived']);
 export type Status = z.infer<typeof statusEnum>;
 
 // Storage lifecycle state machine — orthogonal to client.status.

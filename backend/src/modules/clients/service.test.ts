@@ -236,8 +236,8 @@ describe('deleteClient', () => {
     expect(deleteFn).toHaveBeenCalled();
   });
 
-  it('should delete cancelled client', async () => {
-    const client = { id: 'c1', status: 'cancelled' };
+  it('should delete archived client', async () => {
+    const client = { id: 'c1', status: 'archived' };
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 

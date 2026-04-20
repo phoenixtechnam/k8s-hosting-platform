@@ -15,6 +15,7 @@ resources:
   - backend-deployment.yaml
   - admin-deployment.yaml
   - client-deployment.yaml
+  - platform-suspended.yaml
   - ingress.yaml
   - sftp-gateway.yaml
   - sftp-gateway-netpol.yaml

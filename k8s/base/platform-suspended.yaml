@@ -1,0 +1,145 @@
+# platform-suspended — tiny static Service served in place of a suspended
+# tenant's real backend. Tenant Ingress objects are patched on suspend to
+# route every path through this Service; resume reverts the patch.
+#
+# The Deployment runs an nginx:alpine with an inline ConfigMap serving
+# a "This site is temporarily suspended" page, plus a `/api` JSON
+# endpoint so programmatic clients get a structured 503-ish response
+# (HTTP 200 here, body shape explains it).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-suspended-content
+  namespace: platform
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>Site temporarily suspended</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0;
+               display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { max-width: 560px; padding: 2.5rem; background: #1e293b; border-radius: 12px;
+                border: 1px solid #334155; text-align: center; }
+        h1 { margin: 0 0 .5rem; font-size: 1.5rem; }
+        p { margin: .5rem 0; line-height: 1.55; color: #cbd5e1; }
+        .code { font-family: ui-monospace, SFMono-Regular, monospace; color: #60a5fa; font-size: .9rem; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Site temporarily suspended</h1>
+        <p>This hosting account is currently suspended. The site is not
+           reachable until the owner reactivates the subscription.</p>
+        <p class="code">status=suspended</p>
+      </div>
+    </body>
+    </html>
+  nginx.conf: |
+    server {
+      listen 80 default_server;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+      # JSON endpoint for programmatic clients (mobile apps, API callers).
+      location = /api/status {
+        default_type application/json;
+        return 200 '{"status":"suspended","message":"This hosting account is temporarily suspended"}';
+      }
+      # All other paths serve the static page.
+      location / {
+        try_files $uri /index.html;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-suspended
+  namespace: platform
+  labels:
+    app: platform-suspended
+    platform.io/system: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-suspended
+  template:
+    metadata:
+      labels:
+        app: platform-suspended
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests: { cpu: "10m", memory: "16Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 10
+      volumes:
+        - name: content
+          configMap:
+            name: platform-suspended-content
+            items:
+              - key: index.html
+                path: index.html
+        - name: conf
+          configMap:
+            name: platform-suspended-content
+            items:
+              - key: nginx.conf
+                path: default.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-suspended
+  namespace: platform
+  labels:
+    app: platform-suspended
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: platform-suspended
+---
+# Ingress for the centralized suspension page. Tenant Ingresses on
+# suspend get an `nginx.ingress.kubernetes.io/permanent-redirect`
+# annotation pointing here. Overlays override the hostname.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-suspended
+  namespace: platform
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: suspended.platform.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-suspended
+                port:
+                  number: 80

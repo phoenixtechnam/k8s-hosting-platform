@@ -142,6 +142,23 @@ async function getClientNamespace(
   return client?.kubernetesNamespace ?? null;
 }
 
+/**
+ * Returns the client's current lifecycle status so the auth routes can
+ * refuse login for non-`active` clients. Suspended/archived clients
+ * must NOT be able to SFTP in — their data may be mid-operation or
+ * the account may be in collections.
+ */
+async function getClientStatus(
+  db: Database,
+  clientId: string,
+): Promise<string | null> {
+  const [client] = await db
+    .select({ status: clients.status })
+    .from(clients)
+    .where(eq(clients.id, clientId));
+  return client?.status ?? null;
+}
+
 // ─── Internal Routes ───────────────────────────────────────────────────────
 
 export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
@@ -188,6 +205,15 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
 
     // Check IP whitelist
     if (!isIpAllowed(source_ip, user.ipWhitelist)) {
+      return success({ allowed: false });
+    }
+
+    // Gate on client lifecycle status — suspended / archived clients
+    // must not be able to SFTP in. The response is a generic "not
+    // allowed" with no explanation so the SFTP gateway doesn't surface
+    // "your account is suspended" to a brute-force probe.
+    const status = await getClientStatus(app.db, user.clientId);
+    if (status !== 'active') {
       return success({ allowed: false });
     }
 
@@ -238,6 +264,14 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     // Check IP whitelist
     if (!isIpAllowed(source_ip, user.ipWhitelist)) {
       return success({ allowed: false });
+    }
+
+    // Gate on client lifecycle status (see /auth for rationale).
+    {
+      const status = await getClientStatus(app.db, user.clientId);
+      if (status !== 'active') {
+        return success({ allowed: false });
+      }
     }
 
     // Look up SSH key by fingerprint scoped to this specific SFTP user

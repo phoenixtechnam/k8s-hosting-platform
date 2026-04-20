@@ -27,13 +27,13 @@ export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
 //                retained per snapshot_retention_days. Reversible via
 //                restore (new PVC from snapshot).
 //   cancelled  — hard terminated, snapshot also released. Not reversible.
-export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'archived', 'cancelled', 'pending']);
+export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'archived', 'pending']);
 // Active storage-lifecycle operation (null when idle). Separate from
 // client.status so the UI can show both "active & resizing" without
 // losing the underlying state. Mirrors storage_operations.state for the
 // operation currently owning this client.
 export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
-  'idle', 'snapshotting', 'quiescing', 'replacing', 'restoring', 'unquiescing', 'failed',
+  'idle', 'snapshotting', 'quiescing', 'resizing', 'replacing', 'restoring', 'unquiescing', 'archiving', 'failed',
 ]);
 export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   'snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore',
@@ -216,6 +216,11 @@ export const clients = pgTable('clients', {
   activeStorageOpId: varchar('active_storage_op_id', { length: 36 }),
   createdBy: varchar('created_by', { length: 36 }),
   subscriptionExpiresAt: timestamp('subscription_expires_at'),
+  // Stamped ONLY by the lifecycle cascades (applySuspended / applyArchived)
+  // — used by the auto-archive / auto-delete crons so unrelated admin
+  // edits to the client row don't reset the clock. See migration 0044.
+  suspendedAt: timestamp('suspended_at'),
+  archivedAt: timestamp('archived_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

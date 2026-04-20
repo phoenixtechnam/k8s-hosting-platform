@@ -140,9 +140,9 @@ describe.skipIf(!dbAvailable)('Client CRUD (integration)', () => {
     expect(res.statusCode).toBe(204);
   });
 
-  it('DELETE /api/v1/clients/:id — succeeds when cancelled', async () => {
+  it('DELETE /api/v1/clients/:id — succeeds when archived', async () => {
     const db = getTestDb();
-    const client = await seedClient(db, regionId, planId, { status: 'cancelled' });
+    const client = await seedClient(db, regionId, planId, { status: 'archived' });
 
     const res = await app.inject({
       method: 'DELETE',

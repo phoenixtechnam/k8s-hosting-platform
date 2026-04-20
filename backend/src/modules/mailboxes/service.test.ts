@@ -471,11 +471,11 @@ describe('generateWebmailToken', () => {
     });
   });
 
-  it('should reject webmail token for cancelled client', async () => {
+  it('should reject webmail token for archived client', async () => {
     const user = { clientId: 'c1' };
-    const cancelledClient = { status: 'cancelled' };
+    const archivedClient = { status: 'archived' };
 
-    selectResults = [[user], [cancelledClient]];
+    selectResults = [[user], [archivedClient]];
     const db = createMockDb();
 
     await expect(

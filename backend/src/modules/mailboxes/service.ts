@@ -366,7 +366,7 @@ export async function generateWebmailToken(
     throw new ApiError('USER_NOT_FOUND', 'User not found or has no client', 404);
   }
 
-  // Phase 3.C.3: suspended / cancelled clients cannot access webmail.
+  // Phase 3.C.3: suspended / archived clients cannot access webmail.
   // Data is retained but all access paths (IMAP / POP / SMTP-auth /
   // webmail SSO / inbound SMTP delivery) are blocked. `pending` is
   // allowed so newly created clients can set up their first mailbox

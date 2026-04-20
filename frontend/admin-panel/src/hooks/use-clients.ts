@@ -63,7 +63,7 @@ interface UpdateClientInput {
   readonly company_name?: string;
   readonly company_email?: string;
   readonly contact_email?: string;
-  readonly status?: 'active' | 'suspended' | 'pending' | 'cancelled';
+  readonly status?: 'active' | 'suspended' | 'pending' | 'archived';
   readonly subscription_expires_at?: string;
   readonly cpu_limit_override?: number | null;
   readonly memory_limit_override?: number | null;

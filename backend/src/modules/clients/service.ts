@@ -79,6 +79,12 @@ export async function getClientById(db: Database, id: string) {
   return client;
 }
 
+async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
+  const [plan] = await db.select({ storageLimit: hostingPlans.storageLimit })
+    .from(hostingPlans).where(eq(hostingPlans.id, planId));
+  return Number(plan?.storageLimit ?? 10);
+}
+
 export async function listClients(
   db: Database,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
@@ -136,7 +142,56 @@ export async function listClients(
 }
 
 export async function updateClient(db: Database, id: string, input: UpdateClientInput) {
-  await getClientById(db, id); // throws if not found
+  const existing = await getClientById(db, id); // throws if not found
+
+  // Storage safety: refuse to shrink `storage_limit_override` (or
+  // switch to a plan with smaller storage) through the plain update
+  // endpoint — a shrink requires `POST /storage/resize` which
+  // orchestrates quiesce → snapshot → PVC delete → recreate →
+  // restore. Silently writing a smaller quota row would leave the
+  // DB and the real PVC inconsistent.
+  //
+  // Comparison is done in MiB (not GiB) so decimal-GiB overrides
+  // (e.g. "2.44" for a 2500 MiB resize) don't silently round to the
+  // plan's integer-GiB value and let a shrink slip through.
+  const newOverride = input.storage_limit_override;
+  const newPlanId = input.plan_id;
+  if (newOverride !== undefined || (newPlanId !== undefined && newPlanId !== existing.planId)) {
+    const toMib = (gi: number) => Math.round(gi * 1024);
+    const currentMib = existing.storageLimitOverride != null
+      ? toMib(Number(existing.storageLimitOverride))
+      : toMib(await getPlanStorageGi(db, existing.planId));
+
+    let targetMib: number;
+    if (newOverride === null) {
+      // Override cleared — inherit from (possibly new) plan.
+      const effectivePlanId = newPlanId ?? existing.planId;
+      targetMib = toMib(await getPlanStorageGi(db, effectivePlanId));
+    } else if (newOverride !== undefined) {
+      targetMib = toMib(Number(newOverride));
+    } else {
+      // plan_id changed, override unchanged.
+      targetMib = existing.storageLimitOverride != null
+        ? toMib(Number(existing.storageLimitOverride))
+        : toMib(await getPlanStorageGi(db, newPlanId!));
+    }
+
+    if (targetMib < currentMib) {
+      const { ApiError } = await import('../../shared/errors.js');
+      throw new ApiError(
+        'STORAGE_RESIZE_REQUIRED',
+        `Shrinking storage from ${currentMib} MiB to ${targetMib} MiB requires a resize operation (POST /api/v1/admin/clients/${id}/storage/resize)`,
+        409,
+        {
+          currentMib,
+          targetMib,
+          currentGi: Math.round(currentMib / 102.4) / 10,
+          targetGi: Math.round(targetMib / 102.4) / 10,
+          remediation: 'Use the Resize Storage modal on the client detail page',
+        },
+      );
+    }
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.company_name !== undefined) updateValues.companyName = input.company_name;
@@ -179,11 +234,25 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     }
   }
 
-  // Cascade suspension to related resources
-  if (input.status === 'suspended') {
-    await db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, id));
-    await db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, id));
-    await db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, id));
+  // Cascade status change through the unified client-lifecycle module
+  // so suspend / reactivate go through the same path as the subscription
+  // expiry cron and storage-lifecycle ops. Includes ingress swap,
+  // mailbox disable, etc.
+  if (input.status === 'suspended' || input.status === 'active') {
+    try {
+      const { applySuspended, applyActive } = await import('../client-lifecycle/cascades.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const client = await getClientById(db, id);
+      const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+      const ctx = { db, k8s };
+      if (input.status === 'suspended') {
+        await applySuspended(ctx, id, client.kubernetesNamespace);
+      } else {
+        await applyActive(ctx, id, client.kubernetesNamespace);
+      }
+    } catch (err) {
+      console.warn('[clients] Lifecycle cascade failed:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Phase 3.B.3: reconcile Stalwart outbound config when:
@@ -208,24 +277,36 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {
   const client = await getClientById(db, id);
 
-  // Best-effort k8s namespace cleanup. The previous version only
-  // ran when `provisioningStatus === 'provisioned'`, but that was
-  // the exact cause of a massive orphan-namespace leak: a client
-  // deleted *during* provisioning (e.g. smoke tests creating and
-  // immediately dropping clients) left the half-provisioned k8s
-  // namespace behind forever — the DB row was gone, so nothing
-  // could clean it up. We now attempt the cleanup whenever we
-  // know the namespace name, regardless of status. The try/catch
-  // swallows 404s and other failures so DB deletion still runs.
-  if (k8sClients && client.kubernetesNamespace) {
+  // Unified hard-delete cascade via client-lifecycle/cascades.ts —
+  // namespace delete + DB row cascade in one function. Falls through
+  // to a DB-only delete when k8s isn't available (unit tests).
+  if (k8sClients) {
+    const { applyDeleted } = await import('../client-lifecycle/cascades.js');
+    await applyDeleted({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
+
+    // Also purge snapshot-store archives for this client so we don't
+    // leak data after a hard delete. Best-effort; snapshots for
+    // already-deleted clients are reaped by the housekeeping cron
+    // anyway.
     try {
-      await k8sClients.core.deleteNamespace({ name: client.kubernetesNamespace });
-    } catch (err: unknown) {
-      // Log but don't block — namespace may already be gone, or
-      // may not exist yet because provisioning never started.
-      console.warn(`[client-delete] Failed to delete k8s namespace ${client.kubernetesNamespace}: ${err instanceof Error ? err.message : String(err)}`);
+      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+      const { storageSnapshots } = await import('../../db/schema.js');
+      const snaps = await db
+        .select({ archivePath: storageSnapshots.archivePath })
+        .from(storageSnapshots)
+        .where(eq(storageSnapshots.clientId, id));
+      if (snaps.length > 0) {
+        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+        for (const s of snaps) {
+          await store.delete(s.archivePath).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn(`[client-delete] snapshot purge failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    return;
   }
 
+  // k8s not available (unit test path): delete DB row directly.
   await db.delete(clients).where(eq(clients.id, id));
 }

@@ -19,10 +19,14 @@ describe('updateSubscriptionSchema', () => {
 
   it('should accept valid status', () => {
     expect(updateSubscriptionSchema.safeParse({ status: 'active' }).success).toBe(true);
-    expect(updateSubscriptionSchema.safeParse({ status: 'cancelled' }).success).toBe(true);
+    expect(updateSubscriptionSchema.safeParse({ status: 'suspended' }).success).toBe(true);
+    expect(updateSubscriptionSchema.safeParse({ status: 'archived' }).success).toBe(true);
   });
 
   it('should reject invalid status', () => {
+    // `cancelled` and `deleted` were removed in migration 0043 — delete is
+    // a verb (hard remove), not a persistent state.
+    expect(updateSubscriptionSchema.safeParse({ status: 'cancelled' }).success).toBe(false);
     expect(updateSubscriptionSchema.safeParse({ status: 'deleted' }).success).toBe(false);
   });
 

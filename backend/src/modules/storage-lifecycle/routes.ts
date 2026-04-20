@@ -12,8 +12,15 @@ import {
 } from './settings.js';
 import * as service from './service.js';
 
+// Accept both the legacy `newGi` (integer GiB) and the new `newMib`
+// (integer MiB). `newMib` is preferred — admins increasingly want
+// fractional-GiB sizes (e.g. 2500 MiB) for right-sizing. `newGi`
+// stays for backward compat and is converted to MiB internally.
 const resizeSchema = z.object({
-  newGi: z.number().int().min(1).max(1000),
+  newGi: z.number().int().min(1).max(10000).optional(),
+  newMib: z.number().int().min(100).max(10000000).optional(),
+}).refine((d) => d.newGi !== undefined || d.newMib !== undefined, {
+  message: 'One of newGi or newMib is required',
 });
 const snapshotSchema = z.object({
   label: z.string().max(255).optional(),
@@ -51,7 +58,8 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const { clientId } = request.params as { clientId: string };
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
-    const result = await service.resizeDryRun(await ctx(),clientId, parsed.data.newGi);
+    const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
+    const result = await service.resizeDryRunMib(await ctx(), clientId, mib);
     return success(result);
   });
 
@@ -67,8 +75,9 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const parsed = resizeSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
     const { operationId } = await service.resizeClient(await ctx(), clientId, {
-      newGi: parsed.data.newGi,
+      newMib: mib,
       triggeredByUserId: userId,
     });
     return success({ operationId });

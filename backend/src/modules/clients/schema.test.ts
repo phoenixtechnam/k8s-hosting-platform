@@ -61,7 +61,8 @@ describe('updateClientSchema', () => {
   it('should validate status enum', () => {
     expect(updateClientSchema.safeParse({ status: 'active' }).success).toBe(true);
     expect(updateClientSchema.safeParse({ status: 'suspended' }).success).toBe(true);
-    expect(updateClientSchema.safeParse({ status: 'cancelled' }).success).toBe(true);
+    expect(updateClientSchema.safeParse({ status: 'archived' }).success).toBe(true);
+    expect(updateClientSchema.safeParse({ status: 'cancelled' }).success).toBe(false);
     expect(updateClientSchema.safeParse({ status: 'invalid' }).success).toBe(false);
   });
 });

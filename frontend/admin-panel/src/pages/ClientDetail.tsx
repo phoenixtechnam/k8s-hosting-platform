@@ -5,6 +5,8 @@ import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCh
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
+import ResizeStorageModal from '@/components/ResizeStorageModal';
+import OperationProgressModal from '@/components/OperationProgressModal';
 import ClientUsersTab from '@/components/ClientUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
@@ -242,7 +244,7 @@ export default function ClientDetail() {
             <Edit size={14} />
             <span className="hidden sm:inline">Edit</span>
           </button>
-          {client.status === 'suspended' || client.status === 'cancelled' ? (
+          {client.status === 'suspended' ? (
             <button
               onClick={handleReactivate}
               disabled={updateClient.isPending}
@@ -1595,42 +1597,65 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
     || resize.isPending || snapshot.isPending || suspend.isPending
     || resume.isPending || archive.isPending || restore.isPending;
 
-  const onResize = async () => {
-    const raw = prompt('New PVC size in GiB:', '10');
-    if (!raw) return;
-    const newGi = parseInt(raw, 10);
-    if (!Number.isFinite(newGi) || newGi < 1) { alert('Enter a positive integer'); return; }
-    try {
-      const dry = await dryRun.mutateAsync({ clientId, newGi });
-      const d = dry.data;
-      const ok = confirm(
-        `Resize from ${d.currentGi} GiB → ${newGi} GiB?\n\n` +
-        `Currently using ${(d.usedBytes / (1024 ** 3)).toFixed(2)} GiB.\n` +
-        `Estimated ~${d.estimatedSeconds}s with brief workload downtime.\n\n` +
-        `${d.willFit ? 'Proceed?' : `✗ Cannot shrink — ${d.rejectReason}`}`,
-      );
-      if (ok && d.willFit) resize.mutate({ clientId, newGi });
-    } catch (err) {
-      alert(`Dry-run failed: ${(err as Error).message}`);
-    }
+  const [resizeOpen, setResizeOpen] = useState(false);
+  const [trackedOpId, setTrackedOpId] = useState<string | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+
+  const trackOp = (operationId: string) => { setTrackedOpId(operationId); setOpError(null); };
+  const surfaceError = (err: unknown) => {
+    setOpError(err instanceof Error ? err.message : String(err));
   };
 
-  const onSuspend = () => { if (confirm('Suspend this client? All workloads will scale to 0.')) suspend.mutate(clientId); };
-  const onResume = () => { if (confirm('Resume this client?')) resume.mutate(clientId); };
-  const onArchive = () => {
-    const raw = prompt('Archive retention (days):', '90');
+  // Parse current storage in MiB from override (GiB decimal) or plan.
+  const currentMib = client.storageLimitOverride != null
+    ? Math.round(Number(client.storageLimitOverride) * 1024)
+    : 10 * 1024; // fallback until we have plan info
+
+  const onResize = () => { setOpError(null); setResizeOpen(true); };
+
+  const onSuspend = async () => {
+    if (!confirm('Suspend this client? All workloads will scale to 0 and the site will show a suspension page.')) return;
+    try {
+      const res = await suspend.mutateAsync(clientId);
+      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
+      if (opId) trackOp(opId);
+    } catch (err) { surfaceError(err); }
+  };
+  const onResume = async () => {
+    if (!confirm('Resume this client? Workloads will be restored to their pre-suspend replica counts.')) return;
+    try {
+      const res = await resume.mutateAsync(clientId);
+      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
+      if (opId) trackOp(opId);
+    } catch (err) { surfaceError(err); }
+  };
+  const onArchive = async () => {
+    const raw = prompt('Archive retention (days) — how long to keep the final snapshot:', '90');
     if (!raw) return;
     const retentionDays = parseInt(raw, 10);
-    if (confirm(`Archive client — take final snapshot (retained ${retentionDays}d) and delete live workloads?`)) {
-      archive.mutate({ clientId, retentionDays });
-    }
+    if (!confirm(`Archive client — take final snapshot (retained ${retentionDays}d), delete mailboxes, aliases, and all live workloads?`)) return;
+    try {
+      const res = await archive.mutateAsync({ clientId, retentionDays });
+      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
+      if (opId) trackOp(opId);
+    } catch (err) { surfaceError(err); }
   };
-  const onRestore = () => {
-    if (confirm('Restore this archived client from most recent pre-archive snapshot?')) restore.mutate({ clientId });
+  const onRestore = async () => {
+    if (!confirm('Restore this archived client from the pre-archive snapshot?')) return;
+    try {
+      const res = await restore.mutateAsync({ clientId });
+      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
+      if (opId) trackOp(opId);
+    } catch (err) { surfaceError(err); }
   };
-  const onSnapshot = () => {
+  const onSnapshot = async () => {
     const label = prompt('Snapshot label (optional):', `Manual ${new Date().toISOString().slice(0, 16)}`);
-    if (label !== null) snapshot.mutate({ clientId, label });
+    if (label === null) return;
+    try {
+      const res = await snapshot.mutateAsync({ clientId, label });
+      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
+      if (opId) trackOp(opId);
+    } catch (err) { surfaceError(err); }
   };
 
   return (
@@ -1742,6 +1767,39 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
           </button>
         )}
       </div>
+
+      {/* Inline error banner — shown when a lifecycle op rejects synchronously. */}
+      {opError && (
+        <div
+          role="alert"
+          className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-800 dark:text-red-200 flex items-start gap-2"
+          data-testid="lifecycle-error-banner"
+        >
+          <span className="flex-1 whitespace-pre-wrap">{opError}</span>
+          <button
+            onClick={() => setOpError(null)}
+            className="shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-300"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Resize modal — replaces the legacy prompt()+confirm() chain. */}
+      <ResizeStorageModal
+        clientId={clientId}
+        open={resizeOpen}
+        initialMib={currentMib}
+        onClose={() => setResizeOpen(false)}
+        onStarted={trackOp}
+      />
+
+      {/* Shared progress modal — mounts once per op started from this card. */}
+      <OperationProgressModal
+        operationId={trackedOpId}
+        onClose={() => setTrackedOpId(null)}
+      />
     </div>
   );
 }

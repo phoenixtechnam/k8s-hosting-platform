@@ -181,7 +181,9 @@ export async function snapshotClient(
 
 export interface ResizeDryRun {
   readonly currentGi: number;
+  readonly currentMib: number;
   readonly requestedGi: number;
+  readonly requestedMib: number;
   readonly usedBytes: number;
   readonly willFit: boolean;
   readonly rejectReason: string | null;
@@ -200,28 +202,47 @@ export interface ResizeDryRun {
  */
 export const RESIZE_SAFETY_FACTOR = 1.1;
 
+/**
+ * MiB-based resize dry-run. The legacy GiB entry point below wraps
+ * this for backward compatibility.
+ */
+export async function resizeDryRunMib(
+  ctx: ServiceCtx,
+  clientId: string,
+  newMib: number,
+): Promise<ResizeDryRun> {
+  const client = await mustGetClient(ctx.db, clientId);
+  const currentGi = Math.round(Number(client.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, client.planId);
+  const currentMib = currentGi * 1024;
+
+  const usedBytes = await measurePvcUsed(ctx, client.kubernetesNamespace);
+  const newBytes = newMib * 1024 * 1024;
+  const requiredBytes = Math.ceil(usedBytes * RESIZE_SAFETY_FACTOR);
+  const willFit = requiredBytes <= newBytes;
+  const rejectReason = willFit
+    ? null
+    : `Used ${(usedBytes / (1024 ** 2)).toFixed(0)} MiB × ${RESIZE_SAFETY_FACTOR} safety buffer = ${(requiredBytes / (1024 ** 2)).toFixed(0)} MiB exceeds requested ${newMib} MiB`;
+  const mbPerSec = 100;
+  const estimatedSeconds = Math.max(30, Math.ceil((usedBytes / (mbPerSec * 1024 * 1024)) * 2 + 15));
+
+  return {
+    currentGi,
+    currentMib,
+    requestedGi: Math.ceil(newMib / 1024),
+    requestedMib: newMib,
+    usedBytes,
+    willFit,
+    rejectReason,
+    estimatedSeconds,
+  };
+}
+
 export async function resizeDryRun(
   ctx: ServiceCtx,
   clientId: string,
   newGi: number,
 ): Promise<ResizeDryRun> {
-  const client = await mustGetClient(ctx.db, clientId);
-  const currentGi = Math.round(Number(client.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, client.planId);
-
-  // Use the existing file-manager sidecar to measure used space. It's
-  // running in every client namespace, so this is a 1-exec roundtrip.
-  const usedBytes = await measurePvcUsed(ctx, client.kubernetesNamespace);
-  const newBytes = newGi * 1024 * 1024 * 1024;
-  const requiredBytes = Math.ceil(usedBytes * RESIZE_SAFETY_FACTOR);
-  const willFit = requiredBytes <= newBytes;
-  const rejectReason = willFit
-    ? null
-    : `Used ${(usedBytes / (1024 ** 3)).toFixed(2)} GiB × ${RESIZE_SAFETY_FACTOR} safety buffer = ${(requiredBytes / (1024 ** 3)).toFixed(2)} GiB exceeds requested ${newGi} GiB`;
-  // Rough estimate: 100 MiB/sec for tar+gzip on local-path, doubled for both snapshot + restore
-  const mbPerSec = 100;
-  const estimatedSeconds = Math.max(30, Math.ceil((usedBytes / (mbPerSec * 1024 * 1024)) * 2 + 15));
-
-  return { currentGi, requestedGi: newGi, usedBytes, willFit, rejectReason, estimatedSeconds };
+  return resizeDryRunMib(ctx, clientId, newGi * 1024);
 }
 
 async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
@@ -282,12 +303,17 @@ async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<numbe
 export async function resizeClient(
   ctx: ServiceCtx,
   clientId: string,
-  params: { newGi: number; triggeredByUserId?: string | null },
+  params: { newMib?: number; newGi?: number; triggeredByUserId?: string | null },
 ): Promise<{ operationId: string }> {
   const client = await mustGetClient(ctx.db, clientId);
   await mustBeIdle(ctx.db, clientId);
 
-  const dry = await resizeDryRun(ctx, clientId, params.newGi);
+  if (params.newMib == null && params.newGi == null) {
+    throw new ApiError('VALIDATION_ERROR', 'One of newMib or newGi is required', 400);
+  }
+  const newMib = params.newMib ?? (params.newGi! * 1024);
+
+  const dry = await resizeDryRunMib(ctx, clientId, newMib);
   if (!dry.willFit) {
     throw new ApiError('RESIZE_UNSAFE', dry.rejectReason!, 400, { dryRun: dry });
   }
@@ -307,7 +333,7 @@ export async function resizeClient(
       status: 'creating',
       archivePath,
       expiresAt: preResizeRetention,
-      label: `Pre-resize ${dry.currentGi}GiB → ${params.newGi}GiB`,
+      label: `Pre-resize ${dry.currentMib}MiB → ${newMib}MiB`,
     });
     await tx.insert(storageOperations).values({
       id: opId,
@@ -317,7 +343,7 @@ export async function resizeClient(
       progressPct: 0,
       progressMessage: 'Starting resize',
       snapshotId: snapId,
-      params: { fromGi: dry.currentGi, toGi: params.newGi },
+      params: { fromMib: dry.currentMib, toMib: newMib },
       triggeredByUserId: params.triggeredByUserId ?? null,
     });
     await tx.update(clients)
@@ -327,7 +353,7 @@ export async function resizeClient(
 
   // Kick off the async orchestration. We return immediately with the
   // operation id — caller polls or SSE-subscribes for progress.
-  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, params.newGi, archivePath).catch(() => {});
+  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, newMib, archivePath).catch(() => {});
   return { operationId: opId };
 }
 
@@ -337,7 +363,7 @@ async function runResize(
   snapId: string,
   namespace: string,
   pvcName: string,
-  newGi: number,
+  newMib: number,
   archivePath: string,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
@@ -362,7 +388,10 @@ async function runResize(
       status: 'ready', sizeBytes: String(snap.sizeBytes), sha256: snap.sha256,
     }).where(eq(storageSnapshots.id, snapId));
 
-    await progress('replacing', 40, `Recreating PVC at ${newGi}GiB`);
+    const newSizeStr = newMib % 1024 === 0
+      ? `${newMib / 1024}Gi`
+      : `${newMib}Mi`;
+    await progress('replacing', 40, `Recreating PVC at ${newSizeStr}`);
     // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
     // if a previous failed op's rollback dropped it).
     try {
@@ -372,11 +401,11 @@ async function runResize(
     }
     // Poll until gone
     await waitForPvcGone(ctx.k8s, namespace, pvcName);
-    // Recreate
-    const { applyPVC } = await import('../k8s-provisioner/service.js');
+    // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
+    // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
     const { getDefaultStorageClass } = await import('../storage-settings/service.js');
     const storageClass = await getDefaultStorageClass(ctx.db);
-    await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
+    await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
 
     await progress('restoring', 60, 'Restoring data from snapshot');
     await restoreTenantPVC(ctx.k8s, {
@@ -390,8 +419,11 @@ async function runResize(
     // Persist the new size on the client row (override) + refresh quota
     const clientId = await currentClientId(ctx.db, opId);
     if (clientId) {
+      // storage_limit_override is numeric(8,2) GiB; keep one-decimal
+      // precision so 2500 MiB shows as 2.44 GiB. Round to 2 dp.
+      const giDecimal = Math.round((newMib / 1024) * 100) / 100;
       await ctx.db.update(clients).set({
-        storageLimitOverride: String(newGi),
+        storageLimitOverride: giDecimal.toFixed(2),
       }).where(eq(clients.id, clientId));
     }
 
@@ -429,6 +461,31 @@ function is404(err: unknown): boolean {
   if (e.body?.code === 404) return true;
   const msg = (err instanceof Error ? err.message : String(err)) || '';
   return msg.includes('HTTP-Code: 404') || msg.includes('"code":404');
+}
+
+/**
+ * Create the tenant PVC at a MiB-granular size. Uses k8s's "Mi" or
+ * "Gi" suffix depending on whether the requested size is a whole-GiB
+ * multiple. Swallow 409 (already exists).
+ */
+async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, storageClass: string): Promise<void> {
+  const sizeStr = sizeMib % 1024 === 0 ? `${sizeMib / 1024}Gi` : `${sizeMib}Mi`;
+  try {
+    await k8s.core.createNamespacedPersistentVolumeClaim({
+      namespace,
+      body: {
+        metadata: { name: `${namespace}-storage`, namespace },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          storageClassName: storageClass,
+          resources: { requests: { storage: sizeStr } },
+        },
+      },
+    });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number; code?: number }).statusCode ?? (err as { code?: number }).code;
+    if (status !== 409) throw err;
+  }
 }
 
 async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: string, timeoutMs = 60_000): Promise<void> {
@@ -508,14 +565,22 @@ export async function suspendClient(
 
   try {
     const snap = await quiesce(ctx.k8s, client.kubernetesNamespace);
+
+    // Cross-cutting cascades (ingress swap, mailbox disable, domains
+    // status, webcron off). Runs AFTER quiesce so pods are already
+    // gone by the time we pull the ingress rug.
+    const { applySuspended } = await import('../client-lifecycle/cascades.js');
+    await applySuspended({ db: ctx.db, k8s: ctx.k8s }, clientId, client.kubernetesNamespace);
+
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
       progressMessage: 'Client suspended',
       completedAt: new Date(),
       params: { quiesceSnapshot: snap as unknown as Record<string, unknown> },
     });
+    // applySuspended already set status='suspended'; just clear the
+    // storage-lifecycle state.
     await ctx.db.update(clients).set({
-      status: 'suspended',
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
     }).where(eq(clients.id, clientId));
@@ -562,11 +627,17 @@ export async function resumeClient(
     if (quiesceSnap) {
       await unquiesce(ctx.k8s, client.kubernetesNamespace, quiesceSnap);
     }
+
+    // Reverse the suspend cascades — restore ingress backends, re-enable
+    // mail, webcron, domains.
+    const { applyActive } = await import('../client-lifecycle/cascades.js');
+    await applyActive({ db: ctx.db, k8s: ctx.k8s }, clientId, client.kubernetesNamespace);
+
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Client resumed', completedAt: new Date(),
     });
+    // applyActive already set status='active'; clear storage state.
     await ctx.db.update(clients).set({
-      status: 'active',
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
     }).where(eq(clients.id, clientId));
@@ -654,11 +725,16 @@ async function runArchive(
       if (!is404(err)) throw err;
     }
 
+    // Cross-cutting archive cascades: delete mailboxes + aliases,
+    // mark domains suspended, stop deployments in DB, set status.
+    await progress('archiving', 90, 'Cleaning up mail + domains');
+    const { applyArchived } = await import('../client-lifecycle/cascades.js');
+    await applyArchived({ db: ctx.db, k8s: ctx.k8s }, clientId, namespace);
+
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Archive complete', completedAt: new Date(),
     });
     await ctx.db.update(clients).set({
-      status: 'archived',
       storageLifecycleState: 'idle',
       activeStorageOpId: null,
     }).where(eq(clients.id, clientId));

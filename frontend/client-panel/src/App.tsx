@@ -48,22 +48,32 @@ export default function App() {
               </ProtectedRoute>
             }
           >
+            {/* Always-allowed routes (admin/user-facing account info that stays
+                visible during suspension):
+                  Dashboard — overall state summary
+                  settings — subscription details
+                  notifications — account notifications
+                  user-settings — profile/password
+                  resource-usage — read-only metrics  */}
             <Route index element={<Dashboard />} />
-            <Route path="domains" element={<Domains />} />
-            <Route path="domains/:domainId" element={<DomainDetail />} />
-            <Route path="domains/:domainId/routes/:routeId" element={<RouteDetail />} />
-            <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
-            <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
-            <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
-            <Route path="email" element={<Email />} />
-            <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
-            <Route path="users" element={<SubUsers />} />
             <Route path="settings" element={<Settings />} />
-            <Route path="ssh-keys" element={<SshKeys />} />
-            <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
             <Route path="resource-usage" element={<ResourceUsage />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="user-settings" element={<UserSettings />} />
+
+            {/* Gated routes (blocked on suspend/archived, or during any
+                non-idle storage lifecycle op). */}
+            <Route path="domains" element={<LifecycleGate><Domains /></LifecycleGate>} />
+            <Route path="domains/:domainId" element={<LifecycleGate><DomainDetail /></LifecycleGate>} />
+            <Route path="domains/:domainId/routes/:routeId" element={<LifecycleGate><RouteDetail /></LifecycleGate>} />
+            <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
+            <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
+            <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
+            <Route path="email" element={<LifecycleGate><Email /></LifecycleGate>} />
+            <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
+            <Route path="users" element={<LifecycleGate><SubUsers /></LifecycleGate>} />
+            <Route path="ssh-keys" element={<LifecycleGate><SshKeys /></LifecycleGate>} />
+            <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
             <Route path="database-manager" element={<LifecycleGate><DatabaseManager /></LifecycleGate>} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

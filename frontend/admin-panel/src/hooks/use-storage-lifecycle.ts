@@ -90,11 +90,22 @@ export function useDeleteSnapshot() {
   });
 }
 
+export interface ResizeDryRun {
+  readonly currentGi: number;
+  readonly currentMib: number;
+  readonly requestedGi: number;
+  readonly requestedMib: number;
+  readonly usedBytes: number;
+  readonly willFit: boolean;
+  readonly rejectReason: string | null;
+  readonly estimatedSeconds: number;
+}
+
 export function useResizeDryRun() {
-  return useMutation<{ data: { currentGi: number; requestedGi: number; usedBytes: number; willFit: boolean; rejectReason: string | null; estimatedSeconds: number } }, Error, { clientId: string; newGi: number }>({
-    mutationFn: async ({ clientId, newGi }) => apiFetch(`/api/v1/admin/clients/${clientId}/storage/resize/dry-run`, {
+  return useMutation<{ data: ResizeDryRun }, Error, { clientId: string; newMib: number }>({
+    mutationFn: async ({ clientId, newMib }) => apiFetch(`/api/v1/admin/clients/${clientId}/storage/resize/dry-run`, {
       method: 'POST',
-      body: JSON.stringify({ newGi }),
+      body: JSON.stringify({ newMib }),
     }),
   });
 }
@@ -102,10 +113,10 @@ export function useResizeDryRun() {
 export function useResizeClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ clientId, newGi }: { clientId: string; newGi: number }) =>
-      apiFetch(`/api/v1/admin/clients/${clientId}/storage/resize`, {
+    mutationFn: async ({ clientId, newMib }: { clientId: string; newMib: number }) =>
+      apiFetch<{ data: { operationId: string } }>(`/api/v1/admin/clients/${clientId}/storage/resize`, {
         method: 'POST',
-        body: JSON.stringify({ newGi }),
+        body: JSON.stringify({ newMib }),
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['storage-operations', vars.clientId] });

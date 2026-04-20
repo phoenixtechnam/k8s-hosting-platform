@@ -4,6 +4,7 @@ import { Plus, Search, Loader2, Ban, PlayCircle, Trash2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
+import BulkResultModal, { type BulkResult } from '@/components/BulkResultModal';
 import CreateClientModal from '@/components/CreateClientModal';
 import { useClients } from '@/hooks/use-clients';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
@@ -55,14 +56,19 @@ export default function Clients() {
     w[key] = setTimeout(() => setDebouncedSearch(value), 300);
   };
 
+  const [bulkResult, setBulkResult] = useState<{ action: 'suspend' | 'reactivate' | 'delete'; result: BulkResult } | null>(null);
+
   const handleBulkAction = async () => {
     if (!confirmAction) return;
     const ids = [...selection.selectedIds];
     try {
-      if (confirmAction === 'suspend') await bulkSuspend.mutateAsync(ids);
-      else if (confirmAction === 'reactivate') await bulkReactivate.mutateAsync(ids);
-      else if (confirmAction === 'delete') await bulkDelete.mutateAsync(ids);
+      let res;
+      if (confirmAction === 'suspend') res = await bulkSuspend.mutateAsync(ids);
+      else if (confirmAction === 'reactivate') res = await bulkReactivate.mutateAsync(ids);
+      else res = await bulkDelete.mutateAsync(ids);
       selection.deselectAll();
+      // Surface aggregate result so per-client failures are visible.
+      setBulkResult({ action: confirmAction, result: res.data });
     } finally {
       setConfirmAction(null);
     }
@@ -275,6 +281,12 @@ export default function Clients() {
       )}
 
       <CreateClientModal open={showCreate} onClose={() => setShowCreate(false)} />
+
+      <BulkResultModal
+        result={bulkResult?.result ?? null}
+        action={bulkResult?.action ?? 'suspend'}
+        onClose={() => setBulkResult(null)}
+      />
     </div>
   );
 }
