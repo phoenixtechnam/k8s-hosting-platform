@@ -41,6 +41,13 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   app.addContentTypeParser('application/octet-stream', (_req, _payload, done) => {
     done(null, undefined);
   });
+  // Accept multipart so the /upload handler can return a clean 410 Gone
+  // instead of Fastify's generic "Unsupported Media Type" 415 (which the
+  // error pipeline masks as a 500). We never actually parse the body —
+  // the deprecated handler short-circuits before needing it.
+  app.addContentTypeParser(/^multipart\//, (_req, _payload, done) => {
+    done(null, undefined);
+  });
 
   const getK8s = () => {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
@@ -472,33 +479,23 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(success(JSON.parse(result.body)));
   });
 
-  // POST /api/v1/clients/:clientId/files/upload — upload file (multipart, legacy)
+  // POST /api/v1/clients/:clientId/files/upload — deprecated multipart path.
+  // Responds 410 Gone with a pointer to /upload-raw. The multipart handler
+  // used to buffer the whole request body in memory inside the sidecar pod
+  // (limits.memory=128Mi), which meant any upload over ~80 MiB OOM-killed
+  // the sidecar. The streaming /upload-raw replacement has no in-RAM buffer
+  // and is what the UI has used from the start. This stub stays so any
+  // external tool still hitting the old URL gets a clear error instead of
+  // a 404 guessing game.
   app.post('/clients/:clientId/files/upload', {
-    schema: { tags: ['Files'], summary: 'Upload file', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
-    const { clientId } = request.params as { clientId: string };
-    const query = request.query as Record<string, string>;
-    const targetPath = query.path || '/';
-    const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
-    const { k8sClients, kubeconfigPath } = getK8s();
-
-    const contentType = request.headers['content-type'] || '';
-    const body = await request.body;
-
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/upload', {
-      method: 'POST',
-      body: typeof body === 'string' ? body : JSON.stringify(body),
-      contentType,
-      query: { path: targetPath },
+    schema: { tags: ['Files'], summary: 'Upload file (deprecated — use /upload-raw)', security: [{ bearerAuth: [] }] },
+  }, async (_request, reply) => {
+    reply.status(410).send({
+      error: {
+        code: 'DEPRECATED_ENDPOINT',
+        message: 'Multipart /files/upload was removed. Stream the body to /files/upload-raw instead (Content-Type: application/octet-stream, path=<dest> query).',
+      },
     });
-
-    if (result.status !== 201) {
-      const err = JSON.parse(result.body);
-      throw new ApiError('FILE_ERROR', err.error || 'Failed to upload', result.status);
-    }
-
-    return success(JSON.parse(result.body));
   });
 
   // POST /api/v1/clients/:clientId/files/fetch-url — download file from URL

@@ -18,6 +18,10 @@ resources:
   - postgres-initdb-configmap.yaml
   - allow-intra-platform-netpol.yaml
   - allow-mail-to-postgres-netpol.yaml
+  # Dedicated Ingress for the File Manager upload-raw endpoint (WAF off
+  # on this one path so multi-GB uploads don't OOM the controller). See
+  # ingress-upload.yaml header for the design rationale.
+  - ingress-upload.yaml
   # Dev-only sub-stacks (core only — mail/webmail are opt-in via local.sh)
   - dex/
   - cert-manager/

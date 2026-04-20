@@ -1,0 +1,71 @@
+# Dedicated Ingress for the File Manager's streaming upload endpoint.
+#
+# Lives as a SEPARATE Ingress object from platform-ingress so that the
+# ModSecurity + OWASP CRS that protect every other /api/v1 route can
+# stay on. ingress-nginx merges multiple Ingress objects per host —
+# annotations are applied per-Ingress (== per location block), and a
+# more specific path wins over the catchall `defaultBackend` on
+# platform-ingress.
+#
+# Why carve this one path out of WAF coverage:
+#   - SecRequestBodyAccess (implicit with `enable-modsecurity: true`)
+#     buffers the full request body in controller memory for CRS
+#     inspection. A phase-1 `ctl:requestBodyAccess=Off` SecRule does
+#     NOT prevent that buffering (verified 2026-04-20 — controller
+#     OOMKilled at 2 GiB even with 6 Gi memory limits).
+#   - `/upload-raw` is JWT-authed on platform-api before it ever hits
+#     the sidecar, and the body is an opaque binary blob — CRS pattern
+#     matching on it would be noise anyway.
+#
+# Hosts are pinned to the dev admin/client hostnames; for production
+# the reconciler would need to emit this Ingress per the configured
+# admin/client panel URLs alongside the main platform-ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress-upload
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: file-manager-upload
+  annotations:
+    cert-manager.io/cluster-issuer: local-ca-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    # Path below uses a regex that matches every client UUID.
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # The whole point of this Ingress — no CRS/body inspection for
+    # multi-GB uploads.
+    nginx.ingress.kubernetes.io/enable-modsecurity: "false"
+    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "false"
+    # Upload-specific: stream through instead of buffering; no size cap.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [admin.k8s-platform.test, client.k8s-platform.test]
+      secretName: platform-dev-tls
+  rules:
+    - host: admin.k8s-platform.test
+      http:
+        paths:
+          - path: /api/v1/clients/[^/]+/files/upload-raw
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: admin-panel
+                port:
+                  number: 80
+    - host: client.k8s-platform.test
+      http:
+        paths:
+          - path: /api/v1/clients/[^/]+/files/upload-raw
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: client-panel
+                port:
+                  number: 80

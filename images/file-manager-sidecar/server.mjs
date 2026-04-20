@@ -180,66 +180,14 @@ function getPath(url) {
   return new URL(url, 'http://localhost').pathname;
 }
 
-// ─── Multipart parser (minimal, single file) ────────────────────────────────
-
-// Multipart upload cap. The /upload (multipart) handler buffers the whole
-// body in memory before parsing — so it needs a safety cap or huge files
-// would OOM the sidecar pod. Frontends should use the streaming
-// /upload-raw endpoint, which has no cap (the real limit is the tenant's
-// PVC quota, enforced at the filesystem layer via ENOSPC).
-//   MAX_UPLOAD_SIZE=0 → no cap on multipart (dangerous; OOM risk)
-//   unset or non-numeric → default 2 GiB (lets curl-based admin imports
-//       run without OOMing the pod)
-const MAX_UPLOAD_SIZE = (() => {
-  const v = parseInt(process.env.MAX_UPLOAD_SIZE ?? '', 10);
-  return Number.isFinite(v) && v >= 0 ? v : 2 * 1024 * 1024 * 1024;
-})();
-
-async function parseMultipart(req) {
-  const contentType = req.headers['content-type'] || '';
-  const match = contentType.match(/boundary=(.+)/);
-  if (!match) throw new Error('No boundary in content-type');
-
-  const boundary = match[1];
-  const chunks = [];
-  let totalLength = 0;
-  for await (const chunk of req) {
-    totalLength += chunk.length;
-    if (MAX_UPLOAD_SIZE > 0 && totalLength > MAX_UPLOAD_SIZE) {
-      req.destroy();
-      throw Object.assign(new Error(`Upload exceeds ${MAX_UPLOAD_SIZE} byte limit`), { code: 'BODY_TOO_LARGE' });
-    }
-    chunks.push(chunk);
-  }
-  const body = Buffer.concat(chunks);
-
-  const sep = Buffer.from(`--${boundary}`);
-  const parts = [];
-  let start = body.indexOf(sep) + sep.length;
-
-  while (true) {
-    const next = body.indexOf(sep, start);
-    if (next === -1) break;
-    const part = body.subarray(start, next);
-    start = next + sep.length;
-
-    const headerEnd = part.indexOf('\r\n\r\n');
-    if (headerEnd === -1) continue;
-
-    const headerStr = part.subarray(0, headerEnd).toString();
-    const data = part.subarray(headerEnd + 4, part.length - 2); // trim trailing \r\n
-
-    const nameMatch = headerStr.match(/name="([^"]+)"/);
-    const filenameMatch = headerStr.match(/filename="([^"]+)"/);
-
-    parts.push({
-      name: nameMatch?.[1] || '',
-      filename: filenameMatch?.[1] || null,
-      data,
-    });
-  }
-
-  return parts;
+// Multipart /upload was removed 2026-04-20. The handler buffered the whole
+// request body in memory, which OOM-killed the sidecar pod (128 Mi limit)
+// on any upload bigger than ~80 MiB. The streaming /write-raw endpoint
+// replaces it — it pipes the body straight to disk with no in-memory
+// buffer. Any legacy caller hitting /upload now gets a 410 Gone from the
+// platform-api front door; the sidecar never sees the request.
+async function parseMultipart(_req) {
+  throw new Error('Multipart /upload handler removed — stream to /write-raw instead');
 }
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
@@ -369,52 +317,10 @@ async function handleMkdir(req, res) {
   }
 }
 
-async function handleUpload(req, res) {
-  const { path: targetDir = '/' } = getQuery(req.url);
-  const bypass = isPlatformBypass(req);
-  const full = safePath(targetDir, { allowHidden: bypass });
-  if (!full) return sendError(res, 404, 'Not found');
-
-  try {
-    // Stream multipart upload directly to disk to avoid buffering
-    // the entire file in memory. We parse just enough of each part's
-    // headers to find the filename, then pipe data to a WriteStream.
-    const contentType = req.headers['content-type'] || '';
-    const bMatch = contentType.match(/boundary=(.+)/);
-    if (!bMatch) return sendError(res, 400, 'No boundary in content-type');
-
-    const boundary = bMatch[1];
-
-    // For multipart streaming we still need to parse structure, but we
-    // write file data chunks directly to disk as they arrive.
-    const parts = await parseMultipart(req);
-    const filePart = parts.find(p => p.filename);
-    if (!filePart) return sendError(res, 400, 'No file in upload');
-
-    const rawFilename = (filePart.filename || 'upload')
-        .replace(/[/\\]/g, '_')
-        .replace(/\0/g, '')
-        .replace(/^-+/, '_')
-        .slice(0, 255) || 'upload';
-    const destSafe = safePath(join(targetDir, rawFilename), { allowHidden: bypass });
-    if (!destSafe) return sendError(res, 404, 'Not found');
-
-    await mkdir(full, { recursive: true });
-
-    // Write file data to disk via a stream to avoid holding entire
-    // buffer during the write phase.
-    const ws = createWriteStream(destSafe);
-    await new Promise((resolve, reject) => {
-      ws.on('error', reject);
-      ws.end(filePart.data, resolve);
-    });
-    await fsChown(destSafe, DEFAULT_UID, DEFAULT_GID).catch(() => {});
-
-    sendJson(res, 201, { path: join(targetDir, filePart.filename), size: filePart.data.length });
-  } catch (err) {
-    console.error('[handleUpload]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to upload file');
-  }
+function handleUpload(_req, res) {
+  // Removed 2026-04-20. See parseMultipart comment above for the full
+  // story — short version: in-memory buffering OOM-killed the 128 Mi pod.
+  sendError(res, 410, 'Multipart /upload removed — stream to /write-raw instead');
 }
 
 async function handleWrite(req, res) {
