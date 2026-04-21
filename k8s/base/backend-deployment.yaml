@@ -40,6 +40,22 @@ spec:
                 secretKeyRef:
                   name: platform-jwt-secret
                   key: secret
+            # Admin seed credentials — only consumed during db/seed.js on
+            # startup; harmless to leave set after seed completes. Secret
+            # is created by bootstrap.sh and marked optional so the Pod
+            # still comes up on environments that supply it differently.
+            - name: ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: platform-admin-seed
+                  key: ADMIN_EMAIL
+                  optional: true
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-admin-seed
+                  key: ADMIN_PASSWORD
+                  optional: true
             - name: REDIS_URL
               value: redis://redis.platform.svc.cluster.local:6379
             - name: OIDC_ENCRYPTION_KEY
