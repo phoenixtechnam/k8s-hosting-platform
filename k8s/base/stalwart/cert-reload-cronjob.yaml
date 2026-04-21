@@ -53,7 +53,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: cert-reload
-              image: bitnami/kubectl:1.31
+              image: bitnami/kubectl:1.33
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

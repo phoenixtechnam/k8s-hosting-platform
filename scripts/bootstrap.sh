@@ -44,13 +44,19 @@ PLATFORM_ENV="production"
 PLATFORM_DOMAIN=""
 K3S_SERVER_IP=""
 K3S_TOKEN=""
-K3S_VERSION="v1.31.4+k3s1"
-CALICO_VERSION="v3.28.0"
-# Longhorn version — keep pinned so staging/production bootstraps are
-# reproducible and we don't get surprise chart changes on a redeploy.
-# Bump this after testing against a newer release. Latest verified
-# stable: v1.11.1 (2026-03-13).
-LONGHORN_VERSION="v1.11.1"
+K3S_VERSION="v1.33.10+k3s1"
+CALICO_VERSION="v3.31.5"
+
+# ─── Pinned component versions ────────────────────────────────────────────────
+# Updated 2026-04-21. When bumping, verify:
+#   1. Longhorn compatibility matrix covers the chosen k3s/k8s version
+#   2. All Helm chart versions are published at their respective repos
+#   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
+# Latest-stable checks done against GitHub releases for each project.
+LONGHORN_VERSION="v1.11.1"               # 2026-03-13
+INGRESS_NGINX_CHART_VERSION="4.15.1"     # controller v1.15.1, 2026-03-19
+CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
+SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
 ACME_EMAIL=""
 ENABLE_MONITORING=false
 SKIP_FLUX=false
@@ -484,6 +490,7 @@ install_nginx_ingress() {
   helm_cmd upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
     --namespace ingress-nginx \
     --create-namespace \
+    --version "${INGRESS_NGINX_CHART_VERSION}" \
     --set controller.kind=DaemonSet \
     --set controller.hostPort.enabled=true \
     --set controller.service.type=ClusterIP \
@@ -514,6 +521,7 @@ install_cert_manager() {
   helm_cmd upgrade --install cert-manager jetstack/cert-manager \
     --namespace cert-manager \
     --create-namespace \
+    --version "${CERT_MANAGER_CHART_VERSION}" \
     --set crds.enabled=true \
     --set prometheus.enabled=true \
     --wait \
@@ -567,6 +575,7 @@ install_sealed_secrets() {
 
   helm_cmd upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
     --namespace kube-system \
+    --version "${SEALED_SECRETS_CHART_VERSION}" \
     --set fullnameOverride=sealed-secrets-controller \
     --wait \
     --timeout 300s

@@ -26,7 +26,7 @@ spec:
         fsGroup: 0
       containers:
         - name: stalwart
-          image: stalwartlabs/stalwart:v0.15.5
+          image: stalwartlabs/stalwart:v0.16.0
           imagePullPolicy: IfNotPresent
           # Override default entrypoint: copy the ConfigMap-backed config.toml
           # into the PVC at /opt/stalwart/etc/ (which Stalwart expects as a
