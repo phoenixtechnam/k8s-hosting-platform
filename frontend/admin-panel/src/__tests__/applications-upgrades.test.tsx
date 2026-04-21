@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Applications from '../pages/Applications';
 
@@ -39,39 +40,59 @@ const mockCatalog = {
   ],
 };
 
-const mockInstances = {
+// Matches AdminDeployment shape in use-application-upgrades.ts — this is what
+// /admin/deployments returns via useAdminDeployments. The InstalledTab reads
+// from this hook, not the deprecated /admin/application-instances endpoint.
+const mockDeployments = {
   data: [
     {
       id: 'inst-001',
-      clientId: 'client-001',
-      catalogEntryId: 'cat-001',
       name: 'my-wordpress',
-      domainName: 'example.com',
-      configuration: null,
-      helmReleaseName: 'wp-001',
-      installedVersion: '6.7',
-      targetVersion: null,
-      lastUpgradedAt: null,
+      clientId: 'client-001',
+      clientName: 'Acme Corp',
+      catalogEntryId: 'cat-001',
+      catalogEntryName: 'WordPress',
+      catalogEntryCode: 'wordpress',
+      catalogEntryType: 'app',
       status: 'running',
+      statusMessage: null,
+      lastError: null,
+      cpuRequest: '100m',
+      memoryRequest: '128Mi',
+      storagePath: null,
+      installedVersion: '6.7',
+      replicaCount: 1,
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',
     },
     {
       id: 'inst-002',
-      clientId: 'client-002',
-      catalogEntryId: 'cat-001',
       name: 'blog-wordpress',
-      domainName: 'blog.example.com',
-      configuration: null,
-      helmReleaseName: 'wp-002',
-      installedVersion: '6.8',
-      targetVersion: '6.9',
-      lastUpgradedAt: null,
+      clientId: 'client-002',
+      clientName: 'Beta Inc',
+      catalogEntryId: 'cat-001',
+      catalogEntryName: 'WordPress',
+      catalogEntryCode: 'wordpress',
+      catalogEntryType: 'app',
       status: 'upgrading',
+      statusMessage: null,
+      lastError: null,
+      cpuRequest: '100m',
+      memoryRequest: '128Mi',
+      storagePath: null,
+      installedVersion: '6.8',
+      replicaCount: 1,
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',
     },
   ],
+  pagination: {
+    page: 1,
+    page_size: 50,
+    total_count: 2,
+    total_pages: 1,
+    has_more: false,
+  },
 };
 
 const mockUpgrades = {
@@ -115,7 +136,7 @@ vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn().mockImplementation((url: string) => {
     if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
-    if (url.includes('/admin/application-instances') && !url.includes('upgrade')) return Promise.resolve(mockInstances);
+    if (url.includes('/admin/deployments')) return Promise.resolve(mockDeployments);
     if (url.includes('/admin/application-upgrades')) return Promise.resolve(mockUpgrades);
     return Promise.resolve({ data: [] });
   }),
@@ -131,8 +152,13 @@ function renderWithProviders(ui: React.ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
+  // InstalledTab calls useNavigate — without a Router the render throws
+  // silently and the body ends up empty. MemoryRouter keeps the router
+  // context present without needing actual routes.
   return render(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -172,27 +198,28 @@ describe('Applications page', () => {
     });
   });
 
-  it('should display instances table in installed tab', async () => {
+  it('should display deployments table in installed tab', async () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-installed').click();
     await waitFor(() => {
-      expect(screen.getByTestId('instances-table')).toBeDefined();
+      expect(screen.getByTestId('deployments-table')).toBeDefined();
     });
   });
 
-  it('should show upgrade button for running instances without target', async () => {
+  it('should show restart button for running deployments', async () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-installed').click();
     await waitFor(() => {
-      expect(screen.getByTestId('upgrade-btn-inst-001')).toBeDefined();
+      expect(screen.getByTestId('restart-btn-inst-001')).toBeDefined();
     });
   });
 
-  it('should show upgrading indicator for instances being upgraded', async () => {
+  it('should show upgrading status badge for deployments being upgraded', async () => {
     renderWithProviders(<Applications />);
     screen.getByTestId('tab-installed').click();
     await waitFor(() => {
-      expect(screen.getByText('Upgrading...')).toBeDefined();
+      const table = screen.getByTestId('deployments-table');
+      expect(within(table).getByText(/upgrading/i)).toBeDefined();
     });
   });
 
@@ -221,7 +248,7 @@ describe('Applications page', () => {
         });
       }
       if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
-      if (url.includes('/admin/application-instances')) return Promise.resolve(mockInstances);
+      if (url.includes('/admin/deployments')) return Promise.resolve(mockDeployments);
       return Promise.resolve({ data: [] });
     });
 

@@ -102,11 +102,10 @@ describe('Dashboard Page', () => {
     expect(zeros.length).toBe(4);
   });
 
-  it('renders getting started section', () => {
+  it('renders overview description under the welcome heading', () => {
     renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Getting Started')).toBeInTheDocument();
     expect(
-      screen.getByText(/Use the sidebar navigation to manage your domains/),
+      screen.getByText(/Here is an overview of your hosting account/),
     ).toBeInTheDocument();
   });
 

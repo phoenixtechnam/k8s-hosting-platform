@@ -99,9 +99,11 @@ describe('Dashboard', () => {
     expect(screen.getByText('Deployments')).toBeInTheDocument();
   });
 
-  it('renders getting started section', () => {
+  it('renders overview description under the welcome heading', () => {
     renderWithProviders(<Dashboard />);
-    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Here is an overview of your hosting account/),
+    ).toBeInTheDocument();
   });
 });
 

@@ -139,7 +139,8 @@ describe('Files Page', () => {
     it('renders toolbar buttons', () => {
       renderFiles();
       expect(screen.getByText('Upload')).toBeInTheDocument();
-      expect(screen.getByText('Git Clone')).toBeInTheDocument();
+      // Git Clone lives inside the Import dropdown; top-level only exposes the Import trigger.
+      expect(screen.getByText('Import')).toBeInTheDocument();
       expect(screen.getByText('New Folder')).toBeInTheDocument();
     });
   });
@@ -312,6 +313,9 @@ describe('Files Page', () => {
     it('opens dialog with URL and folder inputs', async () => {
       const user = userEvent.setup();
       renderFiles();
+      // Git Clone was moved into an Import dropdown alongside URL download
+      // and Clone Website. Open the dropdown before clicking through.
+      await user.click(screen.getByText('Import'));
       await user.click(screen.getByText('Git Clone'));
 
       expect(screen.getByText('Clone Git Repository')).toBeInTheDocument();
