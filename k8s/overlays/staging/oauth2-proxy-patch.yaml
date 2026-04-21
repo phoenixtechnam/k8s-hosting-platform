@@ -1,0 +1,35 @@
+# Staging uses LE-staging which is not a publicly-trusted CA.
+# oauth2-proxy's OIDC discovery rejects the Dex HTTPS endpoint as
+# "certificate signed by unknown authority" unless we skip verification.
+# Remove this patch once staging flips to LE-prod certs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: platform
+spec:
+  template:
+    spec:
+      containers:
+        - name: oauth2-proxy
+          args:
+            - --http-address=0.0.0.0:4180
+            - --upstream=static://200
+            - --email-domain=*
+            - --provider=oidc
+            - --oidc-issuer-url=$(OIDC_ISSUER_URL)
+            - --client-id=$(OAUTH2_PROXY_CLIENT_ID)
+            - --client-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
+            - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-name=_platform_oauth2
+            - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
+            - --skip-provider-button=true
+            - --reverse-proxy=true
+            - --set-xauthrequest=true
+            - --pass-access-token=true
+            - --skip-auth-route=^/api/
+            - --skip-auth-route=^/oauth2/
+            - --silence-ping-logging=true
+            - --ssl-insecure-skip-verify=true

@@ -19,6 +19,17 @@ spec:
         - name: dex
           image: ghcr.io/dexidp/dex:v2.45.1
           command: ["dex", "serve", "/etc/dex/config.yaml"]
+          env:
+            # Dex supports $ENV substitution in config.yaml. The
+            # oauth2-proxy client secret comes from the generated
+            # oauth2-proxy-config Secret (bootstrap creates it), and
+            # config.yaml references it as $OAUTH2_PROXY_CLIENT_SECRET.
+            # This avoids committing the secret into git.
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-config
+                  key: OAUTH2_PROXY_CLIENT_SECRET
           ports:
             - containerPort: 5556
               protocol: TCP
