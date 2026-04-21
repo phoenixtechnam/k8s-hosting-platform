@@ -100,12 +100,7 @@ spec:
                   name: platform-version
                   key: version
                   optional: true
-            - name: PLATFORM_ENV
-              valueFrom:
-                configMapKeyRef:
-                  name: platform-config
-                  key: environment
-                  optional: true
+            # PLATFORM_ENV is defined further down — don't redeclare.
             # System-settings defaults populated by seed.ts on a fresh install.
             # All optional — when unset the seed leaves the column NULL and
             # the admin can fill it in via the UI later. Values come from
