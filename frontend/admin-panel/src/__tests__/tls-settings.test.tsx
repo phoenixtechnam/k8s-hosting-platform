@@ -23,6 +23,12 @@ vi.mock('@/hooks/use-ingress-settings', () => ({
   useUpdateIngressSettings: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
+vi.mock('@/hooks/use-cluster-issuers', () => ({
+  // Default: no issuers returned — component falls back to text input,
+  // matching what tests did before the dropdown was added.
+  useClusterIssuers: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+}));
+
 function createWrapper() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { readonly children: React.ReactNode }) {

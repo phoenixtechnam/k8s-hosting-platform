@@ -5,10 +5,10 @@
 #   - user@k8s-platform.test  / user
 #
 # IMPORTANT: bootstrap.sh --env staging --domain <FQDN> regenerates
-# this file with correct hostnames. 89.167.3.56.sslip.io will
+# this file with correct hostnames. staging.phoenix-host.net will
 # fail loudly if not overridden.
 
-issuer: https://dex.89.167.3.56.sslip.io/dex
+issuer: https://dex.staging.phoenix-host.net/dex
 
 storage:
   type: sqlite3
@@ -26,17 +26,17 @@ staticClients:
     name: Hosting Platform Admin
     secret: staging-secret-admin
     redirectURIs:
-      - https://admin.89.167.3.56.sslip.io/api/v1/auth/oidc/callback
+      - https://admin.staging.phoenix-host.net/api/v1/auth/oidc/callback
   - id: hosting-platform-client
     name: Hosting Platform Client
     secret: staging-secret-client
     redirectURIs:
-      - https://admin.89.167.3.56.sslip.io/api/v1/auth/oidc/callback
+      - https://admin.staging.phoenix-host.net/api/v1/auth/oidc/callback
   - id: hosting-platform-oauth2-proxy
     name: OAuth2 Proxy
     secret: $OAUTH2_PROXY_CLIENT_SECRET
     redirectURIs:
-      - https://admin.89.167.3.56.sslip.io/oauth2/callback
+      - https://admin.staging.phoenix-host.net/oauth2/callback
 
 connectors: []
 

@@ -3,8 +3,17 @@ import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
 
-const GHCR_API = 'https://ghcr.io/v2/phoenixtechnam/hosting-platform/backend/tags/list';
-const CURRENT_VERSION = process.env.PLATFORM_VERSION ?? '0.1.0';
+// GitHub Releases API for the upstream repo — no auth required for
+// public repos and matches what release.yml publishes on `v*.*.*`
+// tags. We previously hit GHCR's tags/list which requires auth for
+// public images and always returned 401.
+const RELEASES_API = 'https://api.github.com/repos/phoenixtechnam/k8s-hosting-platform/releases/latest';
+// PLATFORM_VERSION is injected into the Deployment from the platform-
+// version ConfigMap. Before that landed the default was a stale '0.1.0'
+// which made the UI always show that regardless of reality; 'unknown'
+// is now an explicit sentinel so the UI can distinguish "no version
+// wired up" from "really running 0.1.0".
+const CURRENT_VERSION = process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown';
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 
 async function getSetting(db: Database, key: string): Promise<string | null> {
@@ -27,22 +36,21 @@ export async function getVersionInfo(db: Database) {
 
   if (lastCheck < fiveMinutesAgo) {
     try {
-      const response = await fetch(GHCR_API, {
+      const response = await fetch(RELEASES_API, {
         signal: AbortSignal.timeout(10_000),
+        headers: { 'Accept': 'application/vnd.github+json' },
       });
       if (response.ok) {
-        const data = await response.json() as { tags?: string[] };
-        const semverTags = (data.tags ?? [])
-          .filter((t: string) => /^\d+\.\d+\.\d+$/.test(t))
-          .sort((a: string, b: string) => {
-            const [aMaj, aMin, aPat] = a.split('.').map(Number);
-            const [bMaj, bMin, bPat] = b.split('.').map(Number);
-            return bMaj - aMaj || bMin - aMin || bPat - aPat;
-          });
-        latestVersion = semverTags[0] ?? null;
+        const data = await response.json() as { tag_name?: string };
+        // Release tags are like `v1.2.3` — strip the leading v to
+        // match the currentVersion format.
+        const tag = (data.tag_name ?? '').replace(/^v/, '');
+        if (/^\d+\.\d+\.\d+$/.test(tag)) {
+          latestVersion = tag;
+        }
       }
     } catch {
-      // GHCR unreachable — use cached value
+      // GitHub unreachable — use cached value
     }
     await setSetting(db, 'last_update_check', new Date().toISOString());
     if (latestVersion) {
@@ -50,7 +58,10 @@ export async function getVersionInfo(db: Database) {
     }
   }
 
-  const updateAvailable = latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
+  // "unknown" currentVersion means PLATFORM_VERSION isn't wired up —
+  // we can't compare semver, so never claim an update is available.
+  const canCompare = CURRENT_VERSION !== 'unknown';
+  const updateAvailable = canCompare && latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
   const pendingVersion = await getSetting(db, 'pending_update_version');

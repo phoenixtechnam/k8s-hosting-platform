@@ -1,6 +1,6 @@
 # Patch ingress hostnames for staging environment.
-# Current staging uses sslip.io magic DNS (maps admin.89.167.3.56.sslip.io
-# directly to 89.167.3.56). Swap these when you move to a real DNS apex.
+# Apex: staging.phoenix-host.net (A record → 89.167.3.56; wildcard
+# *.staging.phoenix-host.net CNAMEs to the apex).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -15,12 +15,12 @@ metadata:
 spec:
   tls:
     - hosts:
-        - admin.89.167.3.56.sslip.io
-        - client.89.167.3.56.sslip.io
-        - dex.89.167.3.56.sslip.io
+        - admin.staging.phoenix-host.net
+        - client.staging.phoenix-host.net
+        - dex.staging.phoenix-host.net
       secretName: platform-staging-tls
   rules:
-    - host: admin.89.167.3.56.sslip.io
+    - host: admin.staging.phoenix-host.net
       http:
         paths:
           - path: /
@@ -30,7 +30,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.89.167.3.56.sslip.io
+    - host: client.staging.phoenix-host.net
       http:
         paths:
           - path: /
@@ -40,7 +40,7 @@ spec:
                 name: client-panel
                 port:
                   number: 80
-    - host: dex.89.167.3.56.sslip.io
+    - host: dex.staging.phoenix-host.net
       http:
         paths:
           - path: /

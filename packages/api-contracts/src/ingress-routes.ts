@@ -180,10 +180,16 @@ export const ingressSettingsResponseSchema = z.object({
   ingressDefaultIpv6: z.string().nullable(),
 });
 
+// IPv4/IPv6 validated via Zod 4 built-ins — rejects typos at the API
+// boundary (client-side validation also runs but must not be trusted).
+// ingressDefaultIpv6 accepts null/empty-string to clear the field.
 export const updateIngressSettingsSchema = z.object({
   ingressBaseDomain: z.string().min(1).max(255).optional(),
-  ingressDefaultIpv4: z.string().min(1).max(45).optional(),
-  ingressDefaultIpv6: z.string().max(45).nullable().optional(),
+  ingressDefaultIpv4: z.ipv4().optional(),
+  ingressDefaultIpv6: z
+    .union([z.ipv6(), z.literal('')])
+    .nullable()
+    .optional(),
 });
 
 // ─── Types ──────────────────────────────────────────────────────────────────

@@ -89,6 +89,23 @@ spec:
                   name: platform-config
                   key: platform-base-domain
                   optional: true
+            # Platform version — consumed by /api/v1/admin/version-info
+            # so the Admin Panel shows the real running version. Sourced
+            # from the platform-version ConfigMap (written by CI at
+            # build time) with a falsy default so the service correctly
+            # reports "unknown" rather than a stale 0.1.0.
+            - name: PLATFORM_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-version
+                  key: version
+                  optional: true
+            - name: PLATFORM_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: environment
+                  optional: true
             # System-settings defaults populated by seed.ts on a fresh install.
             # All optional — when unset the seed leaves the column NULL and
             # the admin can fill it in via the UI later. Values come from

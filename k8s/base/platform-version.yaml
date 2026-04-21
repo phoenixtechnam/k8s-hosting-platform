@@ -1,0 +1,18 @@
+# Platform version ConfigMap. CI/build-deploy.yml writes the real
+# value here per-environment — this base file just ensures the
+# ConfigMap exists so the backend Deployment's optional ConfigMapKeyRef
+# doesn't log warnings about missing resources.
+#
+# When absent, the backend reports currentVersion="unknown" in the
+# Admin Panel rather than the misleading hardcoded "0.1.0" default.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-version
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+data:
+  # Overlaid by each environment. CI writes the git tag or short-sha
+  # here as part of the deploy pipeline.
+  version: "unknown"

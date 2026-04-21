@@ -2,8 +2,76 @@ import { useState, useEffect } from 'react';
 import { Shield, Loader2, AlertCircle, Save, CheckCircle, Network } from 'lucide-react';
 import { useTlsSettings, useUpdateTlsSettings } from '@/hooks/use-tls-settings';
 import { useIngressSettings, useUpdateIngressSettings } from '@/hooks/use-ingress-settings';
+import { useClusterIssuers } from '@/hooks/use-cluster-issuers';
+import { isValidIpv4, isValidIpv6 } from '@/lib/ip-validation';
 
 const inputClass = 'w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 px-3 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
+/**
+ * ClusterIssuer picker. Tries to fetch available issuers from cert-manager
+ * and renders them as a dropdown. If the fetch fails (cert-manager not
+ * reachable, RBAC denied, running on dev without a cluster), falls back
+ * to a free-text input so the page remains usable.
+ */
+function ClusterIssuerField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { data, isLoading } = useClusterIssuers();
+  const issuers = data?.data ?? [];
+  const hasList = issuers.length > 0;
+  // If backend returned the current value in the list, show dropdown.
+  // Otherwise include the current value as an ad-hoc option so editing
+  // a previously-saved non-standard issuer name still works.
+  const optionNames = hasList ? issuers.map((i) => i.name) : [];
+  const valueInList = optionNames.includes(value);
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+        ClusterIssuer Name
+      </label>
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-2">
+          <Loader2 size={14} className="animate-spin text-brand-500" />
+          <span className="text-sm text-gray-500">Loading issuers…</span>
+        </div>
+      ) : hasList ? (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={inputClass}
+          data-testid="issuer-name-input"
+        >
+          {!valueInList && value && <option value={value}>{value} (current — not found in cluster)</option>}
+          {issuers.map((i) => (
+            <option key={i.name} value={i.name}>
+              {i.name}{i.ready ? '' : ' (not ready)'}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={inputClass}
+          placeholder="letsencrypt-production"
+          data-testid="issuer-name-input"
+        />
+      )}
+      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        {hasList
+          ? 'The cert-manager ClusterIssuer to use for automatic TLS. Options come from the live cluster.'
+          : <>The cert-manager ClusterIssuer used for automatic TLS certificates. Common values: <code className="text-gray-700 dark:text-gray-300">letsencrypt-production</code>, <code className="text-gray-700 dark:text-gray-300">letsencrypt-staging</code>, <code className="text-gray-700 dark:text-gray-300">local-ca-issuer</code></>
+        }
+      </p>
+    </div>
+  );
+}
 
 export default function TlsSettings() {
   const { data: response, isLoading, isError, error } = useTlsSettings();
@@ -61,22 +129,7 @@ export default function TlsSettings() {
 
       {settings && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm space-y-6" data-testid="tls-settings-card">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              ClusterIssuer Name
-            </label>
-            <input
-              type="text"
-              value={issuerName}
-              onChange={(e) => setIssuerName(e.target.value)}
-              className={inputClass}
-              placeholder="letsencrypt-production"
-              data-testid="issuer-name-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              The cert-manager ClusterIssuer used for automatic TLS certificates. Common values: <code className="text-gray-700 dark:text-gray-300">letsencrypt-production</code>, <code className="text-gray-700 dark:text-gray-300">letsencrypt-staging</code>, <code className="text-gray-700 dark:text-gray-300">local-ca-issuer</code>
-            </p>
-          </div>
+          <ClusterIssuerField value={issuerName} onChange={setIssuerName} />
 
           <div className="flex items-center justify-between">
             <div>
@@ -159,7 +212,14 @@ function IngressSettingsCard() {
     }
   }, [settings]);
 
+  // Client-side IP validation — prevents a round-trip to the backend
+  // just to discover a typo in a dotted quad. Backend still Zod-validates.
+  const ipv4Error = ipv4 && !isValidIpv4(ipv4) ? 'Invalid IPv4 address' : '';
+  const ipv6Error = ipv6 && !isValidIpv6(ipv6) ? 'Invalid IPv6 address' : '';
+  const canSave = !ipv4Error && !ipv6Error && ipv4.length > 0;
+
   const handleSave = () => {
+    if (!canSave) return;
     setSaved(false);
     updateSettings.mutate(
       {
@@ -220,13 +280,18 @@ function IngressSettingsCard() {
             type="text"
             value={ipv4}
             onChange={(e) => setIpv4(e.target.value)}
-            className={inputClass}
+            className={`${inputClass} ${ipv4Error ? 'border-red-400 dark:border-red-500' : ''}`}
             placeholder="1.2.3.4"
             data-testid="ingress-ipv4-input"
+            aria-invalid={!!ipv4Error}
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Default A record IP for apex domains and CNAME resolution.
-          </p>
+          {ipv4Error ? (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="ingress-ipv4-error">{ipv4Error}</p>
+          ) : (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Default A record IP for apex domains and CNAME resolution.
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -236,13 +301,18 @@ function IngressSettingsCard() {
             type="text"
             value={ipv6}
             onChange={(e) => setIpv6(e.target.value)}
-            className={inputClass}
+            className={`${inputClass} ${ipv6Error ? 'border-red-400 dark:border-red-500' : ''}`}
             placeholder="2001:db8::1"
             data-testid="ingress-ipv6-input"
+            aria-invalid={!!ipv6Error}
           />
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            AAAA record IP for dual-stack. Leave empty for IPv4-only.
-          </p>
+          {ipv6Error ? (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="ingress-ipv6-error">{ipv6Error}</p>
+          ) : (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              AAAA record IP for dual-stack. Leave empty for IPv4-only.
+            </p>
+          )}
         </div>
       </div>
 
@@ -266,8 +336,8 @@ function IngressSettingsCard() {
         <button
           type="button"
           onClick={handleSave}
-          disabled={updateSettings.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          disabled={updateSettings.isPending || !canSave}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="save-ingress-settings"
         >
           {updateSettings.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

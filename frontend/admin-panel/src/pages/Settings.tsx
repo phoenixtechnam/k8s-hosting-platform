@@ -113,7 +113,7 @@ export default function Settings() {
         )}
       </div>
 
-      <Link to="/settings/system" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="system-settings-link">
+      <Link to="/settings/system" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="system-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"><SettingsIcon size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">System Settings</h2><p className="text-sm text-gray-500 dark:text-gray-400">Platform identity, networking, mail server, and rate limits</p></div>
@@ -121,7 +121,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/oidc" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="oidc-settings-link">
+      <Link to="/settings/oidc" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="oidc-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400"><Shield size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">OIDC / SSO Configuration</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure external identity provider for single sign-on</p></div>
@@ -129,7 +129,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/dns" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="dns-settings-link">
+      <Link to="/settings/dns" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="dns-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400"><Globe size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Servers</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage external DNS servers for domain provisioning</p></div>
@@ -137,7 +137,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/plans" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="plan-settings-link">
+      <Link to="/settings/plans" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="plan-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400"><CreditCard size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Hosting Plans</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage hosting plans and resource limits</p></div>
@@ -145,7 +145,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/email" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="email-settings-link">
+      <Link to="/settings/email" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="email-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"><Mail size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Email System</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage email domains, mailboxes, SMTP relays, and spam settings</p></div>
@@ -153,7 +153,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/ai" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="ai-settings-link">
+      <Link to="/settings/ai" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="ai-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"><Cpu size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">AI Settings</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure LLM providers, models, and AI editing capabilities</p></div>
@@ -161,7 +161,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/tls" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="tls-settings-link">
+      <Link to="/settings/tls" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="tls-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400"><Shield size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Ingress & TLS Settings</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure ingress routing, cert-manager, ClusterIssuer, and node IPs</p></div>
@@ -169,7 +169,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/backups" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="backup-settings-link">
+      <Link to="/settings/backups" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="backup-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400"><HardDrive size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Backup Configuration</h2><p className="text-sm text-gray-500 dark:text-gray-400">Configure SSH and S3 backup storage targets</p></div>
@@ -177,7 +177,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/users" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="admin-users-link">
+      <Link to="/settings/users" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="admin-users-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400"><Users size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Admin Users</h2><p className="text-sm text-gray-500 dark:text-gray-400">Manage admin, support, billing, and read-only users</p></div>
@@ -185,7 +185,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/monitoring/health" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="health-settings-link">
+      <Link to="/monitoring/health" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="health-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400"><Heart size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">System Health</h2><p className="text-sm text-gray-500 dark:text-gray-400">Database, DNS, and OIDC provider health checks</p></div>
@@ -193,7 +193,7 @@ export default function Settings() {
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
 
-      <Link to="/settings/export-import" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20/30 transition-colors" data-testid="export-import-link">
+      <Link to="/settings/export-import" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors" data-testid="export-import-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-50 dark:bg-teal-900/20 text-teal-600 dark:text-teal-400"><Download size={20} /></div>
           <div><h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Export / Import</h2><p className="text-sm text-gray-500 dark:text-gray-400">Export or import platform data as JSON</p></div>

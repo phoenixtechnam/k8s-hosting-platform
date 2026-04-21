@@ -2,8 +2,26 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { getTlsSettings, updateTlsSettings } from './service.js';
+import { listClusterIssuers } from './cluster-issuers.js';
 
 export async function tlsSettingsRoutes(app: FastifyInstance): Promise<void> {
+  // ─── GET /api/v1/admin/cluster-issuers ──────────────────────────────────
+  // Returns a list of cert-manager ClusterIssuer names so the UI can
+  // render a dropdown. Returns [] if cert-manager isn't reachable — UI
+  // falls back to free text.
+
+  app.get('/admin/cluster-issuers', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: {
+      tags: ['TLS Settings'],
+      summary: 'List cert-manager ClusterIssuers',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const issuers = await listClusterIssuers();
+    return success(issuers);
+  });
+
   // ─── GET /api/v1/admin/tls-settings ─────────────────────────────────────
 
   app.get('/admin/tls-settings', {

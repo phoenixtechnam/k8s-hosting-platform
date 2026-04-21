@@ -80,6 +80,11 @@ let originalFetch: typeof globalThis.fetch;
 beforeEach(async () => {
   settingsStore.clear();
   originalFetch = globalThis.fetch;
+  // service.ts reads PLATFORM_VERSION at module load, so set it before
+  // importing. '0.1.0' matches the pre-refactor fallback default so
+  // existing "should detect update available" expectations still hold.
+  process.env.PLATFORM_VERSION = '0.1.0';
+  process.env.PLATFORM_ENV = 'production';
   vi.resetModules();
   const mod = await import('./service.js');
   getVersionInfo = mod.getVersionInfo;
@@ -100,7 +105,7 @@ describe('platform-updates service', () => {
     it('should return correct structure with mocked fetch', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ tags: ['1.2.0', '1.1.0', '0.1.0'] }),
+        json: () => Promise.resolve({ tag_name: 'v1.2.0' }),
       });
 
       const db = createTrackedDb();
@@ -118,7 +123,7 @@ describe('platform-updates service', () => {
     it('should detect update available when latest > current', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ tags: ['2.0.0', '1.0.0'] }),
+        json: () => Promise.resolve({ tag_name: 'v2.0.0' }),
       });
 
       const db = createTrackedDb();
@@ -131,7 +136,7 @@ describe('platform-updates service', () => {
     it('should not mark update available when latest equals current', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ tags: ['0.1.0'] }),
+        json: () => Promise.resolve({ tag_name: 'v0.1.0' }),
       });
 
       const db = createTrackedDb();
@@ -260,7 +265,7 @@ describe('platform-updates service', () => {
     it('should return "Already up to date" when no update available', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ tags: ['0.1.0'] }),
+        json: () => Promise.resolve({ tag_name: 'v0.1.0' }),
       });
 
       const db = createTrackedDb();
@@ -272,7 +277,7 @@ describe('platform-updates service', () => {
     it('should set pending_update_version when update is available', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ tags: ['3.0.0', '2.0.0', '0.1.0'] }),
+        json: () => Promise.resolve({ tag_name: 'v3.0.0' }),
       });
 
       const db = createTrackedDb();
