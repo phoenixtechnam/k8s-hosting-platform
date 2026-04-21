@@ -203,8 +203,10 @@ install_packages() {
   export DEBIAN_FRONTEND=noninteractive
 
   apt-get update -qq
+  # Note: software-properties-common was dropped — it's not present in
+  # Debian 13 trixie repos and we don't use add-apt-repository anywhere.
   apt-get install -y -qq \
-    curl wget gnupg2 software-properties-common ca-certificates \
+    curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
     >/dev/null 2>&1
 
@@ -406,6 +408,14 @@ install_calico() {
   log "Waiting for Calico operator..."
   kubectl wait --for=condition=available --timeout=120s \
     deployment/tigera-operator -n tigera-operator 2>/dev/null || true
+
+  # The tigera-operator manifest declares its own CRDs (Installation,
+  # APIServer, etc.) but they register asynchronously after the operator
+  # Deployment reports Available. Wait for the ones we apply below.
+  log "Waiting for Calico CRDs to register..."
+  for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
+    kubectl wait --for=condition=established --timeout=120s crd/"$crd" 2>/dev/null || true
+  done
 
   cat <<'EOF' | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
