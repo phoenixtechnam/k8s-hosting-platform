@@ -411,10 +411,17 @@ install_calico() {
 
   # The tigera-operator manifest declares its own CRDs (Installation,
   # APIServer, etc.) but they register asynchronously after the operator
-  # Deployment reports Available. Wait for the ones we apply below.
+  # Deployment reports Available. Poll until the CRDs exist, then wait
+  # for them to be Established.
   log "Waiting for Calico CRDs to register..."
   for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
-    kubectl wait --for=condition=established --timeout=120s crd/"$crd" 2>/dev/null || true
+    for _ in $(seq 1 60); do
+      kubectl get crd "$crd" &>/dev/null && break
+      sleep 2
+    done
+    kubectl wait --for=condition=established --timeout=60s crd/"$crd" || {
+      warn "CRD $crd not established after 60s — will try anyway"
+    }
   done
 
   cat <<'EOF' | kubectl apply -f -
@@ -433,7 +440,7 @@ spec:
     - blockSize: 122
       cidr: fd42::/48
       encapsulation: None
-      natOutgoing: false
+      natOutgoing: Disabled
       nodeSelector: all()
 ---
 apiVersion: operator.tigera.io/v1
