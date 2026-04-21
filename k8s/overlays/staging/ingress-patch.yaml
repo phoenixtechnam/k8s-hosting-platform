@@ -7,7 +7,7 @@ metadata:
   name: platform-ingress
   namespace: platform
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-staging-http01
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
     # Global ssl-redirect is disabled (so cert-manager HTTP-01 solver
     # ingresses can serve /.well-known/acme-challenge on port 80) —
     # keep the redirect behaviour on the platform ingress itself.
