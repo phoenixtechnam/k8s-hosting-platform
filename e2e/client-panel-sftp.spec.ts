@@ -16,11 +16,12 @@ test.describe('Client Panel — SFTP Access', () => {
     await page.getByRole('link', { name: 'SFTP Access' }).click();
     await expect(page.getByTestId('sftp-heading')).toBeVisible({ timeout: 3000 });
 
-    // Connection details card should be visible
+    // Connection details card — labels changed from a single "Port" /
+    // "Protocols" row to per-protocol "SSH Port" + "FTPS Port".
     await expect(page.getByText('Connection Details')).toBeVisible({ timeout: 3000 });
     await expect(page.getByText('Host')).toBeVisible();
-    await expect(page.getByText('Port')).toBeVisible();
-    await expect(page.getByText('Protocols')).toBeVisible();
+    await expect(page.getByText('SSH Port')).toBeVisible();
+    await expect(page.getByText('FTPS Port')).toBeVisible();
   });
 
   test('shows empty state when no SFTP users exist', async ({ page }) => {
@@ -37,13 +38,14 @@ test.describe('Client Panel — SFTP Access', () => {
     await page.getByRole('link', { name: 'SFTP Access' }).click();
     await expect(page.getByTestId('sftp-heading')).toBeVisible({ timeout: 3000 });
 
-    // Open form
+    // Open form — new UX no longer takes a username input; user supplies a
+    // Description and the username is auto-generated server-side.
     await page.getByTestId('add-sftp-user-button').click();
-    await expect(page.getByTestId('sftp-username-input')).toBeVisible();
+    await expect(page.getByPlaceholder(/CI\/CD deployment/)).toBeVisible();
 
     // Close form
     await page.getByTestId('add-sftp-user-button').click();
-    await expect(page.getByTestId('sftp-username-input')).not.toBeVisible();
+    await expect(page.getByPlaceholder(/CI\/CD deployment/)).not.toBeVisible();
   });
 
   test('can create an SFTP user and see password', async ({ page }) => {
@@ -52,18 +54,15 @@ test.describe('Client Panel — SFTP Access', () => {
 
     // Open form
     await page.getByTestId('add-sftp-user-button').click();
-    await expect(page.getByTestId('sftp-username-input')).toBeVisible();
+    await expect(page.getByPlaceholder(/CI\/CD deployment/)).toBeVisible();
 
-    // Fill and submit
-    const uniqueName = `e2e-test-${Date.now()}`;
-    await page.getByTestId('sftp-username-input').fill(uniqueName);
+    // Fill description (username auto-generated)
+    const description = `e2e-test-${Date.now()}`;
+    await page.getByPlaceholder(/CI\/CD deployment/).fill(description);
     await page.getByRole('button', { name: 'Create User' }).click();
 
     // Should show the one-time password alert
     await expect(page.getByText("won't be shown again")).toBeVisible({ timeout: 5000 });
-
-    // User should appear in the table
-    await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 3000 });
   });
 
   test('can toggle SFTP user enabled/disabled', async ({ page }) => {
@@ -116,10 +115,10 @@ test.describe('Client Panel — SFTP Access', () => {
     await page.getByRole('link', { name: 'SFTP Access' }).click();
     await expect(page.getByTestId('sftp-heading')).toBeVisible({ timeout: 3000 });
 
-    // Create a user to delete
+    // Create a user to delete — username is auto-generated from description.
     await page.getByTestId('add-sftp-user-button').click();
     const deleteTarget = `e2e-delete-${Date.now()}`;
-    await page.getByTestId('sftp-username-input').fill(deleteTarget);
+    await page.getByPlaceholder(/CI\/CD deployment/).fill(deleteTarget);
     await page.getByRole('button', { name: 'Create User' }).click();
     await expect(page.getByText(deleteTarget)).toBeVisible({ timeout: 5000 });
 

@@ -27,10 +27,10 @@ test.describe('Client Panel Smoke Tests', () => {
     await expect(statsGrid.getByText('Backups')).toBeVisible();
   });
 
-  test('dashboard shows getting started section', async ({ page }) => {
+  test('dashboard shows overview description', async ({ page }) => {
     await loginAsAdminClient(page);
 
-    await expect(page.getByText('Getting Started')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText(/Here is an overview of your hosting account/)).toBeVisible({ timeout: 2000 });
   });
 
   test('can navigate to Domains page', async ({ page }) => {

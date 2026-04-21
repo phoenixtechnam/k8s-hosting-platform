@@ -7,49 +7,41 @@ test.describe('Admin CRUD Operations', () => {
     await page.getByRole('link', { name: 'Clients' }).click();
     await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 2000 });
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await page.getByRole('button', { name: 'Add Client' }).click();
-      await expect(page.getByTestId('create-client-modal')).toBeVisible();
-
-      await page.getByTestId('company-name-input').fill(name);
-      await page.getByTestId('company-email-input').fill(`${Date.now()}@e2e.local`);
-
-      await page.getByTestId('plan-select').waitFor({ state: 'visible' });
-      await page.waitForTimeout(1000);
-      await page.getByTestId('plan-select').selectOption({ index: 1 });
-      await page.getByTestId('region-select').waitFor({ state: 'visible' });
-      await page.waitForTimeout(200);
-      await page.getByTestId('region-select').selectOption({ index: 1 });
-
-      await page.getByTestId('submit-button').click();
-      await page.waitForTimeout(200);
-
-      const modalStillVisible = await page.getByTestId('create-client-modal').isVisible().catch(() => false);
-      if (!modalStillVisible) {
-        await expect(page.getByText(name)).toBeVisible({ timeout: 2000 });
-        return;
-      }
-
-      // If modal is still visible, there may be a server error — close and retry
-      await page.getByRole('button', { name: 'Cancel' }).click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 3000 });
-      await page.waitForTimeout(200);
-    }
-
-    // Final attempt — fail if this doesn't work
     await page.getByRole('button', { name: 'Add Client' }).click();
     await expect(page.getByTestId('create-client-modal')).toBeVisible();
+
     await page.getByTestId('company-name-input').fill(name);
     await page.getByTestId('company-email-input').fill(`${Date.now()}@e2e.local`);
+
     await page.getByTestId('plan-select').waitFor({ state: 'visible' });
     await page.waitForTimeout(1000);
     await page.getByTestId('plan-select').selectOption({ index: 1 });
     await page.getByTestId('region-select').waitFor({ state: 'visible' });
     await page.waitForTimeout(200);
     await page.getByTestId('region-select').selectOption({ index: 1 });
+
     await page.getByTestId('submit-button').click();
-    await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
-    await expect(page.getByText(name)).toBeVisible({ timeout: 2000 });
+
+    // Post-submit flow (client-lifecycle-hardening): the modal now pivots
+    // into credentials view (shows generated password) → provisioning view
+    // (watches async K8s step progress). Walk through both quickly so the
+    // test can get back to the list; if the backend returns early with no
+    // credentials it goes straight to provisioning.
+    const credentials = page.getByTestId('client-credentials');
+    if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await page.getByTestId('close-credentials').click();
+    }
+    // Dismiss any provisioning UI and return to the Clients list regardless
+    // of whether it was mid-provisioning, complete, or already auto-closed.
+    // The provisioning modal has three terminal buttons (Minimize/Done/Close)
+    // plus an 800ms auto-close-and-navigate on success. The simplest robust
+    // approach: just navigate back to /clients which unmounts any modal.
+    await page.goto('/clients');
+    await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+
+    // Verify client appears in list — use first() to handle partial matches
+    // where the same name prefix may match multiple test clients.
+    await expect(page.getByText(name).first()).toBeVisible({ timeout: 5000 });
   }
 
   test('create a new client', async ({ page }) => {
@@ -58,7 +50,7 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Verify client appears in list
-    await expect(page.getByText(uniqueName)).toBeVisible();
+    await expect(page.getByText(uniqueName).first()).toBeVisible();
   });
 
   test('edit a client via edit modal', async ({ page }) => {
@@ -67,7 +59,7 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Navigate to client detail
-    await page.getByText(uniqueName).click();
+    await page.getByText(uniqueName).first().click();
     const editButton = page.getByTestId('edit-button');
     const isDetail = await editButton.isVisible({ timeout: 2000 }).catch(() => false);
 
@@ -104,7 +96,7 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Navigate to client detail
-    await page.getByText(uniqueName).click();
+    await page.getByText(uniqueName).first().click();
     const suspendButton = page.getByTestId('suspend-button');
     const isDetail = await suspendButton.isVisible({ timeout: 2000 }).catch(() => false);
 
@@ -136,7 +128,7 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Navigate to client detail and suspend first
-    await page.getByText(uniqueName).click();
+    await page.getByText(uniqueName).first().click();
     const suspendButton = page.getByTestId('suspend-button');
     const isDetail = await suspendButton.isVisible({ timeout: 2000 }).catch(() => false);
 
@@ -178,7 +170,7 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Navigate to client detail
-    await page.getByText(uniqueName).click();
+    await page.getByText(uniqueName).first().click();
     const deleteButton = page.getByTestId('delete-button');
     const isDetail = await deleteButton.isVisible({ timeout: 2000 }).catch(() => false);
 
@@ -199,7 +191,7 @@ test.describe('Admin CRUD Operations', () => {
 
       // Verify client is gone from list
       await page.waitForTimeout(200);
-      await expect(page.getByText(uniqueName)).not.toBeVisible({ timeout: 2000 });
+      await expect(page.getByText(uniqueName).first()).not.toBeVisible({ timeout: 2000 });
     }
   });
 
@@ -209,10 +201,10 @@ test.describe('Admin CRUD Operations', () => {
     await createClient(page, uniqueName);
 
     // Verify it exists
-    await expect(page.getByText(uniqueName)).toBeVisible();
+    await expect(page.getByText(uniqueName).first()).toBeVisible();
 
     // Navigate to detail and delete
-    await page.getByText(uniqueName).click();
+    await page.getByText(uniqueName).first().click();
     const deleteButton = page.getByTestId('delete-button');
     const isDetail = await deleteButton.isVisible({ timeout: 2000 }).catch(() => false);
 
@@ -231,7 +223,7 @@ test.describe('Admin CRUD Operations', () => {
       await page.waitForTimeout(200);
 
       // Confirm gone
-      await expect(page.getByText(uniqueName)).not.toBeVisible({ timeout: 2000 });
+      await expect(page.getByText(uniqueName).first()).not.toBeVisible({ timeout: 2000 });
     }
   });
 

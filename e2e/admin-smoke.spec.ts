@@ -60,17 +60,20 @@ test.describe('Admin Panel Smoke Test', () => {
     // Submit
     await page.getByTestId('submit-button').click();
 
-    // Wait for either success (modal closes) or transient server error
-    await page.waitForTimeout(3000);
-    const modalStillOpen = await page.getByTestId('create-client-modal').isVisible().catch(() => false);
-
-    if (modalStillOpen) {
-      // Transient server error — close modal and verify page is functional
+    // Post-submit flow pivots into credentials → provisioning views.
+    const credentials = page.getByTestId('client-credentials');
+    if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await page.getByTestId('close-credentials').click();
+    }
+    if (await page.getByTestId('create-error').isVisible().catch(() => false)) {
       await page.getByRole('button', { name: 'Cancel' }).click();
-      await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
       await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
     } else {
-      await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 2000 });
+      // Navigate back to /clients to bypass any provisioning modal state
+      // (Minimize/Done/Close buttons plus 800ms auto-close-and-navigate).
+      await page.goto('/clients');
+      await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+      await expect(page.getByText(uniqueName).first()).toBeVisible({ timeout: 5000 });
     }
   });
 

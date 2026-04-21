@@ -12,14 +12,15 @@ test.describe('Client Panel Email Page', () => {
     await expect(page.getByTestId('email-heading')).toHaveText('Email');
   });
 
-  test('shows Email Not Enabled when no email domains configured', async ({ page }) => {
-    // On fresh DB with no email-enabled domains, should show not-enabled state
-    await expect(page.getByTestId('email-not-enabled')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Email Not Enabled')).toBeVisible();
+  test('shows enable-email card when no email domains configured', async ({ page }) => {
+    // New UX: when no email-enabled domains exist the page shows a self-serve
+    // enable-email card (old "Email Not Enabled / contact admin" message
+    // was removed; clients can turn email on themselves).
+    await expect(page.getByTestId('email-enable-card')).toBeVisible({ timeout: 2000 });
   });
 
-  test('shows contact admin message in not-enabled state', async ({ page }) => {
-    await expect(page.getByTestId('email-not-enabled')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText(/contact your administrator/i)).toBeVisible();
+  test('enable-email card describes what will happen', async ({ page }) => {
+    await expect(page.getByTestId('email-enable-card')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText(/Enable Email Hosting|Enable Email for another domain/)).toBeVisible();
   });
 });

@@ -4,12 +4,12 @@ import { injectAdminAuth } from './helpers';
 test.describe('Admin Storage Page', () => {
   test.beforeEach(async ({ page }) => { await injectAdminAuth(page); });
   test.beforeEach(async ({ page }) => {
-    await page.getByRole('link', { name: 'Storage & Backups' }).click();
-    await expect(page.getByRole('heading', { name: 'Storage & Backups', exact: true })).toBeVisible({ timeout: 2000 });
+    await page.getByRole('link', { name: 'Backups & Snapshots' }).click();
+    await expect(page.getByRole('heading', { name: 'Backups & Snapshots', exact: true })).toBeVisible({ timeout: 2000 });
   });
 
   test('storage page loads', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Storage & Backups', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Backups & Snapshots', exact: true })).toBeVisible();
   });
 
   test('shows stat cards', async ({ page }) => {

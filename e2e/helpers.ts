@@ -114,12 +114,23 @@ async function getClientAuth(): Promise<{ token: string; user: string }> {
     }
   }
 
-  // Impersonate the client to get a client-panel JWT
-  const impersonateRes = await fetch(`${API_BASE}/api/v1/admin/impersonate/${clientId}`, {
-    method: 'POST',
-    headers: { 'Authorization': headers['Authorization'] },
-  });
-  const impersonateData = await impersonateRes.json() as Record<string, unknown>;
+  // Impersonate the client to get a client-panel JWT. Client creation is
+  // async — the client_admin user is provisioned shortly after the client
+  // row, so impersonation can race and return NO_CLIENT_USER. Retry for
+  // up to 10s, which comfortably covers the worker's post-create hook.
+  let impersonateData: Record<string, unknown> = {};
+  for (let i = 0; i < 20; i++) {
+    const impersonateRes = await fetch(`${API_BASE}/api/v1/admin/impersonate/${clientId}`, {
+      method: 'POST',
+      headers: { 'Authorization': headers['Authorization'] },
+    });
+    impersonateData = await impersonateRes.json() as Record<string, unknown>;
+    if (impersonateData.data && (impersonateData.data as Record<string, unknown>).token) break;
+    // Only retry the specific "no client_admin yet" error — surface others
+    const err = impersonateData.error as { code?: string } | undefined;
+    if (err?.code !== 'NO_CLIENT_USER') break;
+    await new Promise(r => setTimeout(r, 500));
+  }
 
   if (!impersonateData.data || !(impersonateData.data as Record<string, unknown>).token) {
     throw new Error(`Failed to impersonate client ${clientId}: ${JSON.stringify(impersonateData)}`);

@@ -57,9 +57,9 @@ test.describe('Client Panel Full Workflow — End-to-End', () => {
     await expect(page.getByTestId('login-button').or(page.getByRole('button', { name: 'Sign In' }))).toBeVisible({ timeout: 2000 });
   });
 
-  test('dashboard Getting Started section is visible', async ({ page }) => {
+  test('dashboard overview description is visible', async ({ page }) => {
     await loginAsAdminClient(page);
-    await expect(page.getByText('Getting Started')).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText(/Here is an overview of your hosting account/)).toBeVisible({ timeout: 2000 });
   });
 
   test('sidebar shows all navigation items', async ({ page }) => {

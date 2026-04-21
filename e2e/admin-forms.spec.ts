@@ -28,19 +28,21 @@ test.describe('Admin Form Interactions', () => {
 
       await page.getByTestId('submit-button').click();
 
-      // Wait for either success (modal closes) or server error
-      await page.waitForTimeout(3000);
-
-      const modalStillOpen = await page.getByTestId('create-client-modal').isVisible().catch(() => false);
-
-      if (modalStillOpen) {
-        // Server error occurred — this is a transient API issue, not a test failure
-        // Close the modal and verify the page is still functional
+      // Post-submit flow pivots into credentials → provisioning views.
+      const credentials = page.getByTestId('client-credentials');
+      if (await credentials.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await page.getByTestId('close-credentials').click();
+      }
+      // Provisioning modal has three terminal states (Minimize/Done/Close)
+      // plus an 800ms auto-close-and-navigate on success. Navigate back to
+      // /clients to guarantee no modal is intercepting pointer events.
+      if (await page.getByTestId('create-error').isVisible().catch(() => false)) {
         await page.getByRole('button', { name: 'Cancel' }).click();
-        await expect(page.getByTestId('create-client-modal')).not.toBeVisible({ timeout: 2000 });
         await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible();
       } else {
-        await expect(page.getByText(uniqueName)).toBeVisible({ timeout: 2000 });
+        await page.goto('/clients');
+        await expect(page.getByRole('heading', { name: 'Clients' })).toBeVisible({ timeout: 3000 });
+        await expect(page.getByText(uniqueName).first()).toBeVisible({ timeout: 5000 });
       }
     });
 
@@ -214,8 +216,9 @@ test.describe('Admin Form Interactions', () => {
       await page.getByTestId('user-menu-button').click();
       await page.waitForTimeout(200);
 
-      // Check that user email is shown in the dropdown
-      await expect(page.getByText('admin@k8s-platform.test')).toBeVisible({ timeout: 2000 });
+      // Scope to the dropdown — there's also a mailto:admin footer link.
+      const dropdown = page.getByTestId('user-menu-dropdown');
+      await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@k8s-platform.test');
     });
   });
 });

@@ -43,7 +43,10 @@ test.describe('Admin Settings Page', () => {
     const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByLabel('User menu'));
     await expect(userMenuBtn).toBeVisible();
     await userMenuBtn.click();
-    await expect(page.getByText('admin@k8s-platform.test')).toBeVisible({ timeout: 2000 });
-    await expect(page.getByText('Sign Out')).toBeVisible({ timeout: 2000 });
+    // Scope to the dropdown — there's also a mailto:admin footer link that
+    // would cause strict-mode ambiguity if we queried by bare text.
+    const dropdown = page.getByTestId('user-menu-dropdown');
+    await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@k8s-platform.test');
+    await expect(dropdown.getByTestId('user-menu-sign-out')).toBeVisible();
   });
 });

@@ -1,15 +1,33 @@
 import { test, expect } from '@playwright/test';
+import fs from 'fs';
 import path from 'path';
 import { injectAdminAuth } from './helpers';
 
-const CLIENT_ID = 'd15b6d68-4fdb-4ed1-84cc-f8035596f289';
-const CLIENT_DETAIL_URL = `/clients/${CLIENT_ID}`;
 const ARTIFACTS_DIR = path.join(__dirname, '..', 'test-artifacts');
+
+// Resolve an existing client ID dynamically — the prior hardcoded UUID
+// doesn't exist in every environment. Prefer the e2e-test client that
+// helpers.ts creates (it's guaranteed to have a client_admin user), fall
+// back to the first client in the list.
+async function resolveClientId(): Promise<string> {
+  const API_BASE = process.env.API_URL ?? 'http://admin.k8s-platform.test:2010';
+  const authPath = path.join(__dirname, '.auth/admin-auth.json');
+  const adminAuth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
+  const res = await fetch(`${API_BASE}/api/v1/clients?limit=100`, {
+    headers: { 'Authorization': `Bearer ${adminAuth.token}` },
+  });
+  const body = await res.json() as { data: { id: string; companyEmail: string }[] };
+  const e2eClient = body.data?.find((c) => c.companyEmail === 'e2e-test@k8s-platform.test');
+  const clientId = e2eClient?.id ?? body.data?.[0]?.id;
+  if (!clientId) throw new Error('No clients exist — cannot resolve a client id for this test');
+  return clientId;
+}
 
 test.describe('Admin Panel — Client Users Tab (Phase 5)', () => {
   test.beforeEach(async ({ page }) => {
     await injectAdminAuth(page);
-    await page.goto(CLIENT_DETAIL_URL);
+    const clientId = await resolveClientId();
+    await page.goto(`/clients/${clientId}`);
     // Wait for the page to settle — the client detail page has multiple tabs
     await expect(page.getByTestId('resource-tabs')).toBeVisible({ timeout: 5000 });
   });
