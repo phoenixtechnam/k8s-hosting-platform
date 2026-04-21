@@ -28,11 +28,16 @@ vi.mock('../hooks/use-domains', () => ({
   useCreateDomain: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, error: null }),
 }));
 
-vi.mock('../hooks/use-ssh-keys', () => ({
-  useSshKeys: () => ({ data: { data: [] }, isLoading: false }),
-  useCreateSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, error: null }),
-  useDeleteSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-}));
+vi.mock('../hooks/use-ssh-keys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-ssh-keys')>();
+  return {
+    ...actual,
+    useSshKeys: () => ({ data: { data: [] }, isLoading: false }),
+    useCreateSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, error: null }),
+    useDeleteSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useUpdateSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  };
+});
 
 vi.mock('../hooks/use-cron-jobs', () => ({
   useCronJobs: () => ({ data: { data: [] }, isLoading: false, isError: false, error: null }),
@@ -42,14 +47,18 @@ vi.mock('../hooks/use-cron-jobs', () => ({
   useDeleteCronJob: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }));
 
-vi.mock('../hooks/use-deployments', () => ({
-  useDeployments: () => ({ data: { data: [] }, isLoading: false, error: null }),
-  useUpdateDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useDeleteDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useRestoreDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  usePermanentDeleteDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useDeploymentLiveMetrics: () => ({ data: null, isLoading: false }),
-}));
+vi.mock('../hooks/use-deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-deployments')>();
+  return {
+    ...actual,
+    useDeployments: () => ({ data: { data: [] }, isLoading: false, error: null }),
+    useUpdateDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useDeleteDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useRestoreDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    usePermanentDeleteDeployment: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+    useDeploymentLiveMetrics: () => ({ data: null, isLoading: false }),
+  };
+});
 
 function wrap(children: React.ReactNode) {
   const qc = new QueryClient({

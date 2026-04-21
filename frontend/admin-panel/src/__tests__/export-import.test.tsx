@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ExportImport from '../pages/ExportImport';
 
 vi.mock('@/lib/api-client', () => ({
+  API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(

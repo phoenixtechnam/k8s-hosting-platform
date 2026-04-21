@@ -8,8 +8,8 @@ import Files from '../pages/Files';
 // ─── Mock hooks ──────────────────────────────────────────────────────────────
 
 const mockNavigate = vi.fn();
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
+vi.mock('react-router-dom', async (importActual) => {
+  const actual = await importActual<typeof import('react-router-dom')>();
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
@@ -43,31 +43,36 @@ const mockFileContent = vi.fn(() => ({
   error: null,
 }));
 
-vi.mock('../hooks/use-file-manager', () => ({
-  useFileManagerStatus: () => mockFmStatus(),
-  useStartFileManager: () => ({ mutate: mockMutate, isPending: false }),
-  useDirectoryListing: () => mockDirListing(),
-  useFileContent: () => mockFileContent(),
-  useCreateDirectory: () => ({ mutate: mockMutate, isPending: false }),
-  useWriteFile: () => ({ mutate: mockMutate, isPending: false }),
-  useRenameFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
-  useDeleteFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
-  useDownloadFile: () => vi.fn(),
-  useUploadFiles: () => ({
-    uploads: [],
-    uploadFiles: vi.fn(),
-    clearUploads: vi.fn(),
-    visible: false,
-    setVisible: vi.fn(),
-  }),
-  useCopyFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
-  useArchiveFiles: () => ({ mutate: mockMutate, isPending: false }),
-  useExtractArchive: () => ({ mutate: mockMutate, isPending: false }),
-  useGitClone: () => ({ mutate: mockMutate, isPending: false }),
-  useAuthenticatedBlobUrl: () => ({ data: 'blob:http://localhost/test-blob', isLoading: false, error: null }),
-  useDiskUsage: () => ({ data: { data: { usedBytes: 1048576, totalBytes: 10737418240, availableBytes: 10736369664, usedFormatted: '1.0 MB', totalFormatted: '10.0 GB', availableFormatted: '10.0 GB' } }, isLoading: false }),
-  useFolderSize: () => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { path: '/', sizeBytes: 1024, sizeFormatted: '1.0 KB' } }), isPending: false }),
-}));
+vi.mock('../hooks/use-file-manager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-file-manager')>();
+  return {
+    ...actual,
+    useFileManagerStatus: () => mockFmStatus(),
+    useStartFileManager: () => ({ mutate: mockMutate, isPending: false }),
+    useDirectoryListing: () => mockDirListing(),
+    useFileContent: () => mockFileContent(),
+    useCreateDirectory: () => ({ mutate: mockMutate, isPending: false }),
+    useWriteFile: () => ({ mutate: mockMutate, isPending: false }),
+    useRenameFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
+    useDeleteFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
+    useDownloadFile: () => vi.fn(),
+    useUploadFiles: () => ({
+      uploads: [],
+      uploadFiles: vi.fn(),
+      clearUploads: vi.fn(),
+      visible: false,
+      setVisible: vi.fn(),
+    }),
+    useCopyFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
+    useArchiveFiles: () => ({ mutate: mockMutate, isPending: false }),
+    useExtractArchive: () => ({ mutate: mockMutate, isPending: false }),
+    useGitClone: () => ({ mutate: mockMutate, isPending: false }),
+    useAuthenticatedBlobUrl: () => ({ data: 'blob:http://localhost/test-blob', isLoading: false, error: null }),
+    useDiskUsage: () => ({ data: { data: { usedBytes: 1048576, totalBytes: 10737418240, availableBytes: 10736369664, usedFormatted: '1.0 MB', totalFormatted: '10.0 GB', availableFormatted: '10.0 GB' } }, isLoading: false }),
+    useFolderSize: () => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { path: '/', sizeBytes: 1024, sizeFormatted: '1.0 KB' } }), isPending: false }),
+    useChmod: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
+  };
+});
 
 // Mock Monaco editor
 vi.mock('@monaco-editor/react', () => ({

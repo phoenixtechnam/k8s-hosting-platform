@@ -112,6 +112,7 @@ const mockUpgrades = {
 };
 
 vi.mock('@/lib/api-client', () => ({
+  API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn().mockImplementation((url: string) => {
     if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
     if (url.includes('/admin/application-instances') && !url.includes('upgrade')) return Promise.resolve(mockInstances);

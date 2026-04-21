@@ -87,6 +87,7 @@ const CAPACITY_NOT_FITS = {
 };
 
 vi.mock('@/lib/api-client', () => ({
+  API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(

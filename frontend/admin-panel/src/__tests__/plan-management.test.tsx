@@ -6,6 +6,7 @@ import PlanManagement from '../pages/PlanManagement';
 import { apiFetch } from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
+  API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(

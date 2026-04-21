@@ -64,11 +64,16 @@ const listHook = vi.fn<() => MockListHook>(() => ({
   isLoading: false,
 }));
 
-vi.mock('../hooks/use-ssh-keys', () => ({
-  useSshKeys: () => listHook(),
-  useCreateSshKey: () => createHook(),
-  useDeleteSshKey: () => deleteHook(),
-}));
+vi.mock('../hooks/use-ssh-keys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-ssh-keys')>();
+  return {
+    ...actual,
+    useSshKeys: () => listHook(),
+    useCreateSshKey: () => createHook(),
+    useDeleteSshKey: () => deleteHook(),
+    useUpdateSshKey: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  };
+});
 
 function createWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

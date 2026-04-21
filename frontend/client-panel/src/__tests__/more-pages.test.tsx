@@ -36,25 +36,30 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
-vi.mock('../hooks/use-file-manager', () => ({
-  useFileManagerStatus: vi.fn(() => ({ data: { ready: false, phase: 'starting' }, isLoading: false, error: null })),
-  useStartFileManager: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useDirectoryListing: vi.fn(() => ({ data: undefined, isLoading: false, error: null, refetch: vi.fn() })),
-  useFileContent: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
-  useCreateDirectory: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useWriteFile: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useRenameFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
-  useDeleteFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
-  useDownloadFile: vi.fn(() => vi.fn()),
-  useUploadFiles: vi.fn(() => ({ uploads: [], uploadFiles: vi.fn(), clearUploads: vi.fn(), visible: false, setVisible: vi.fn() })),
-  useCopyFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
-  useArchiveFiles: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useExtractArchive: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useGitClone: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useAuthenticatedBlobUrl: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
-  useDiskUsage: vi.fn(() => ({ data: null, isLoading: false })),
-  useFolderSize: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-}));
+vi.mock('../hooks/use-file-manager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-file-manager')>();
+  return {
+    ...actual,
+    useFileManagerStatus: vi.fn(() => ({ data: { ready: false, phase: 'starting' }, isLoading: false, error: null })),
+    useStartFileManager: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useDirectoryListing: vi.fn(() => ({ data: undefined, isLoading: false, error: null, refetch: vi.fn() })),
+    useFileContent: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+    useCreateDirectory: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useWriteFile: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useRenameFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+    useDeleteFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+    useDownloadFile: vi.fn(() => vi.fn()),
+    useUploadFiles: vi.fn(() => ({ uploads: [], uploadFiles: vi.fn(), clearUploads: vi.fn(), visible: false, setVisible: vi.fn() })),
+    useCopyFile: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+    useArchiveFiles: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useExtractArchive: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useGitClone: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useAuthenticatedBlobUrl: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+    useDiskUsage: vi.fn(() => ({ data: null, isLoading: false })),
+    useFolderSize: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+    useChmod: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })),
+  };
+});
 
 vi.mock('@monaco-editor/react', () => ({
   default: () => null,

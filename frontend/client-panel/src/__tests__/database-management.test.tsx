@@ -17,18 +17,22 @@ const mockUseCreateDbUser = vi.fn();
 const mockUseDropDbUser = vi.fn();
 const mockUseSetDbUserPassword = vi.fn();
 
-vi.mock('../hooks/use-deployments', () => ({
-  useDeploymentCredentials: (...args: unknown[]) => mockUseDeploymentCredentials(...args),
-  useRegenerateCredentials: (...args: unknown[]) => mockUseRegenerateCredentials(...args),
-  useRestartDeployment: (...args: unknown[]) => mockUseRestartDeployment(...args),
-  useDbDatabases: (...args: unknown[]) => mockUseDbDatabases(...args),
-  useCreateDbDatabase: (...args: unknown[]) => mockUseCreateDbDatabase(...args),
-  useDropDbDatabase: (...args: unknown[]) => mockUseDropDbDatabase(...args),
-  useDbUsers: (...args: unknown[]) => mockUseDbUsers(...args),
-  useCreateDbUser: (...args: unknown[]) => mockUseCreateDbUser(...args),
-  useDropDbUser: (...args: unknown[]) => mockUseDropDbUser(...args),
-  useSetDbUserPassword: (...args: unknown[]) => mockUseSetDbUserPassword(...args),
-}));
+vi.mock('../hooks/use-deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-deployments')>();
+  return {
+    ...actual,
+    useDeploymentCredentials: (...args: unknown[]) => mockUseDeploymentCredentials(...args),
+    useRegenerateCredentials: (...args: unknown[]) => mockUseRegenerateCredentials(...args),
+    useRestartDeployment: (...args: unknown[]) => mockUseRestartDeployment(...args),
+    useDbDatabases: (...args: unknown[]) => mockUseDbDatabases(...args),
+    useCreateDbDatabase: (...args: unknown[]) => mockUseCreateDbDatabase(...args),
+    useDropDbDatabase: (...args: unknown[]) => mockUseDropDbDatabase(...args),
+    useDbUsers: (...args: unknown[]) => mockUseDbUsers(...args),
+    useCreateDbUser: (...args: unknown[]) => mockUseCreateDbUser(...args),
+    useDropDbUser: (...args: unknown[]) => mockUseDropDbUser(...args),
+    useSetDbUserPassword: (...args: unknown[]) => mockUseSetDbUserPassword(...args),
+  };
+});
 
 function createTestQueryClient() {
   return new QueryClient({

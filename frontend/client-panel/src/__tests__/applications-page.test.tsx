@@ -31,20 +31,25 @@ vi.mock('../hooks/use-client-context', () => ({
   })),
 }));
 
-vi.mock('../hooks/use-deployments', () => ({
-  useDeployments: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
-  useCreateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useUpdateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, mutate: vi.fn() })),
-  useUpdateDeploymentResources: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
-  useDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useRestoreDeployment: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePermanentDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useResourceAvailability: vi.fn(() => ({ data: undefined, isLoading: false })),
-  useDeploymentLogs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
-  useDeploymentLiveMetrics: vi.fn(() => ({ data: undefined, isLoading: false })),
-  useDeletePreview: vi.fn(() => ({ data: undefined, isLoading: false })),
-  useStorageFolders: vi.fn(() => ({ data: undefined, isLoading: false })),
-}));
+vi.mock('../hooks/use-deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-deployments')>();
+  return {
+    ...actual,
+    useDeployments: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+    useCreateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+    useUpdateDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, mutate: vi.fn() })),
+    useUpdateDeploymentResources: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isError: false, error: null })),
+    useDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+    useRestartDeployment: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    useRestoreDeployment: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+    usePermanentDeleteDeployment: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+    useResourceAvailability: vi.fn(() => ({ data: undefined, isLoading: false })),
+    useDeploymentLogs: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+    useDeploymentLiveMetrics: vi.fn(() => ({ data: undefined, isLoading: false })),
+    useDeletePreview: vi.fn(() => ({ data: undefined, isLoading: false })),
+    useStorageFolders: vi.fn(() => ({ data: undefined, isLoading: false })),
+  };
+});
 
 vi.mock('../hooks/use-catalog', () => ({
   useCatalog: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false, error: null })),

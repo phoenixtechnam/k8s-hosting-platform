@@ -29,9 +29,14 @@ vi.mock('../hooks/use-backups', () => ({
   useBackups: vi.fn(() => ({ data: { data: [] } })),
 }));
 
-vi.mock('../hooks/use-deployments', () => ({
-  useDeployments: vi.fn(() => ({ data: { data: [] } })),
-}));
+vi.mock('../hooks/use-deployments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/use-deployments')>();
+  return {
+    ...actual,
+    useDeployments: vi.fn(() => ({ data: { data: [] } })),
+    useResourceUsage: vi.fn(() => ({ data: null, isLoading: false })),
+  };
+});
 
 vi.mock('../hooks/use-email', () => ({
   useMailboxUsage: vi.fn(() => ({
