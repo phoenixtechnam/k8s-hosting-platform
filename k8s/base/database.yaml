@@ -19,7 +19,13 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:18-alpine
+          # postgres:18 changed the expected mount layout — it wants a
+          # single mount at /var/lib/postgresql with PGDATA in a subdir.
+          # Our StatefulSet mounts at /var/lib/postgresql/data with
+          # subPath=pgdata, which postgres:18 refuses to initdb into.
+          # Pin to 17-alpine until we migrate the mount path (requires
+          # a data migration on any environment that already has 18).
+          image: postgres:17-alpine
           ports:
             - containerPort: 5432
               protocol: TCP

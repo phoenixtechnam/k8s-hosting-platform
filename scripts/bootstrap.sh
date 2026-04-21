@@ -822,6 +822,24 @@ generate_platform_secrets() {
       --from-literal=OAUTH2_PROXY_REDIRECT_URL="$redirect_url"
     log "OAuth2 Proxy config secret created (env=${PLATFORM_ENV})."
   fi
+
+  # sftp-gateway needs an ed25519 host key mounted as `sftp-host-keys`
+  # in the platform-system namespace. Only local.sh generated this
+  # historically; add it here so real-server bootstraps don't leave
+  # sftp-gateway stuck in ContainerCreating waiting for the secret.
+  kctl create namespace platform-system 2>/dev/null || true
+  if kctl get secret -n platform-system sftp-host-keys &>/dev/null 2>&1; then
+    log "SFTP host keys secret already exists, skipping."
+  else
+    local sftp_tmp
+    sftp_tmp="$(mktemp -d)"
+    ssh-keygen -t ed25519 -N "" -f "${sftp_tmp}/ssh_host_ed25519_key" -q
+    kctl create secret generic sftp-host-keys \
+      --namespace=platform-system \
+      --from-file=ssh_host_ed25519_key="${sftp_tmp}/ssh_host_ed25519_key"
+    rm -rf "$sftp_tmp"
+    log "SFTP host keys secret created."
+  fi
 }
 
 create_platform_configmap() {
