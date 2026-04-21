@@ -18,7 +18,7 @@ export default function SearchableClientSelect({
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch search results only when there is a debounced query
   const { data: searchData, isLoading: searchLoading } = useClients(
@@ -32,7 +32,7 @@ export default function SearchableClientSelect({
 
   const handleQueryChange = useCallback((value: string) => {
     setQuery(value);
-    clearTimeout(debounceRef.current);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setDebouncedQuery(value);
     }, 300);
@@ -69,7 +69,9 @@ export default function SearchableClientSelect({
 
   // Cleanup debounce on unmount
   useEffect(() => {
-    return () => clearTimeout(debounceRef.current);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, []);
 
   const showDropdown = isOpen && query.length > 0;
