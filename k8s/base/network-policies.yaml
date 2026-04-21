@@ -114,11 +114,11 @@ spec:
         - protocol: TCP
           port: 4180
 ---
-# Allow intra-platform-namespace traffic to the data-plane pods.
-# Without this, platform-api can't reach postgres (5432) or redis (6379)
-# and all DB/cache operations time out — the app comes up but falls
-# over on the first query. Narrowly scoped to the two backends and
-# the known platform clients.
+# Allow intra-platform-namespace traffic to the data-plane + API pods.
+# Without this, platform-api can't reach postgres/redis (all DB/cache
+# operations time out) and the panels' nginx reverse-proxies can't
+# reach platform-api:3000 (all /api/v1/* requests 499).
+# Narrowly scoped: named sources → named target ports.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -131,7 +131,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: ["postgres", "redis", "dex"]
+        values: ["postgres", "redis", "dex", "platform-api"]
   policyTypes:
     - Ingress
   ingress:
@@ -148,3 +148,5 @@ spec:
           port: 6379  # redis
         - protocol: TCP
           port: 5556  # dex (OIDC discovery inside cluster)
+        - protocol: TCP
+          port: 3000  # platform-api (admin/client-panel nginx → backend)
