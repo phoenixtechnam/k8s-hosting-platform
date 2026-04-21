@@ -97,19 +97,19 @@ function ConnectionInfoCard({ clientId }: { clientId: string }) {
         <div className="space-y-1.5 text-xs font-mono text-gray-600 dark:text-gray-400">
           <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">Password authentication:</p>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SFTP</span> {info.instructions.sftp}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">SFTP</span> {info.instructions.sftp}
             <CopyButton value={info.instructions.sftp} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SCP</span> {info.instructions.scp}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">SCP</span> {info.instructions.scp}
             <CopyButton value={info.instructions.scp} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">RSYNC</span> {info.instructions.rsync}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">RSYNC</span> {info.instructions.rsync}
             <CopyButton value={info.instructions.rsync} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">FTPS</span> {info.instructions.ftps}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">FTPS</span> {info.instructions.ftps}
             <CopyButton value={info.instructions.ftps} />
           </div>
         </div>
@@ -118,22 +118,22 @@ function ConnectionInfoCard({ clientId }: { clientId: string }) {
         <div className="space-y-1.5 text-xs font-mono text-gray-600 dark:text-gray-400">
           <p className="text-xs font-sans font-medium text-gray-500 dark:text-gray-400 mb-1">SSH key authentication (SFTP, SCP, RSYNC):</p>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SFTP</span> {info.instructions.sftp_key}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">SFTP</span> {info.instructions.sftp_key}
             <CopyButton value={info.instructions.sftp_key} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">SCP</span> {info.instructions.scp_key}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">SCP</span> {info.instructions.scp_key}
             <CopyButton value={info.instructions.scp_key} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 flex-shrink-0">RSYNC</span> {info.instructions.rsync_key}
+            <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">RSYNC</span> {info.instructions.rsync_key}
             <CopyButton value={info.instructions.rsync_key} />
           </div>
         </div>
 
         {/* SSH key note */}
         <p className="text-xs text-blue-700 dark:text-blue-400 flex items-start gap-1.5">
-          <KeyRound size={12} className="flex-shrink-0 mt-0.5" /> {info.ssh_key_note}
+          <KeyRound size={12} className="shrink-0 mt-0.5" /> {info.ssh_key_note}
         </p>
       </div>
     </div>
@@ -450,9 +450,9 @@ export default function SftpUsers() {
                         onChange={() => toggleKeySelection(key.id)}
                         className="rounded text-brand-500 focus:ring-brand-500"
                       />
-                      <KeyRound size={12} className="text-gray-400 flex-shrink-0" />
+                      <KeyRound size={12} className="text-gray-400 shrink-0" />
                       <span className="truncate">{key.name}</span>
-                      <span className="text-xs text-gray-400 ml-auto flex-shrink-0">{key.keyAlgorithm ?? ''}</span>
+                      <span className="text-xs text-gray-400 ml-auto shrink-0">{key.keyAlgorithm ?? ''}</span>
                     </label>
                   ))}
                 </div>
@@ -686,9 +686,9 @@ export default function SftpUsers() {
                           onChange={() => setEditKeyIds((prev) => prev.includes(key.id) ? prev.filter((id) => id !== key.id) : [...prev, key.id])}
                           className="rounded text-brand-500 focus:ring-brand-500"
                         />
-                        <KeyRound size={12} className="text-gray-400 flex-shrink-0" />
+                        <KeyRound size={12} className="text-gray-400 shrink-0" />
                         <span className="truncate">{key.name}</span>
-                        <span className="text-xs text-gray-400 ml-auto flex-shrink-0">{key.keyAlgorithm ?? ''}</span>
+                        <span className="text-xs text-gray-400 ml-auto shrink-0">{key.keyAlgorithm ?? ''}</span>
                       </label>
                     ))}
                   </div>

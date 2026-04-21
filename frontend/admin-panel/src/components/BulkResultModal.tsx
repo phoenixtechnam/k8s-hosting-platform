@@ -26,7 +26,7 @@ export default function BulkResultModal({ result, action, onClose }: BulkResultM
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-70 flex items-center justify-center bg-black/50 p-4"
       data-testid="bulk-result-modal"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >

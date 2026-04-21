@@ -1,8 +1,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand-50: #e6f0ff;
+  --color-brand-100: #b3d1ff;
+  --color-brand-200: #80b3ff;
+  --color-brand-300: #4d94ff;
+  --color-brand-400: #1a75ff;
+  --color-brand-500: #0066cc;
+  --color-brand-600: #0052a3;
+  --color-brand-700: #003d7a;
+  --color-brand-800: #002952;
+  --color-brand-900: #001429;
+
+  --color-accent-500: #00663d;
+  --color-accent-600: #005232;
+  --color-accent-700: #003d26;
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
 
 @layer base {
   body {

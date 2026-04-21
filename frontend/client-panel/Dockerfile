@@ -12,8 +12,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 COPY frontend/client-panel/package.json ./package.json
 RUN sed -i 's|"@k8s-hosting/api-contracts": "\*"|"@k8s-hosting/api-contracts": "file:./packages/api-contracts"|' package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm install --ignore-scripts --prefer-offline --no-audit --no-fund
-COPY frontend/client-panel/index.html frontend/client-panel/tsconfig.json frontend/client-panel/vite.config.ts frontend/client-panel/tailwind.config.js frontend/client-panel/postcss.config.js ./
+    npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
+COPY frontend/client-panel/index.html frontend/client-panel/tsconfig.json frontend/client-panel/vite.config.ts frontend/client-panel/postcss.config.js ./
 COPY frontend/client-panel/src/ src/
 COPY frontend/client-panel/public/ public/
 RUN npx vite build

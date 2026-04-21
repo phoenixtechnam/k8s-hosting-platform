@@ -76,7 +76,7 @@ export default function ResizeStorageModal({ clientId, open, initialMib, onClose
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
       data-testid="resize-storage-modal"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >

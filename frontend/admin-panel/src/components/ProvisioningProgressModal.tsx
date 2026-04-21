@@ -70,7 +70,7 @@ export default function ProvisioningProgressModal({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="provisioning-modal-backdrop"
     >

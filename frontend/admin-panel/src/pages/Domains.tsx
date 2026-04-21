@@ -227,7 +227,7 @@ export default function Domains() {
 
       {/* Confirmation dialog */}
       {confirmAction && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50" onClick={() => setConfirmAction(null)}>
           <div className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
               {confirmAction === 'delete' ? 'Delete' : 'Verify'} {selection.selectedCount} domain{selection.selectedCount !== 1 ? 's' : ''}?

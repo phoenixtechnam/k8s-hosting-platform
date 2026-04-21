@@ -200,7 +200,7 @@ function DkimRotationModal({ domain: d, onClose }: { readonly domain: EmailDomai
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div className="w-full max-w-3xl rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
           <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">

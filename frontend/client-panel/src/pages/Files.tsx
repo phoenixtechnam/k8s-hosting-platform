@@ -1262,7 +1262,7 @@ function ContextMenu({
 
   return (
     <>
-      <div className="fixed inset-0 z-[99]" onClick={onClose} />
+      <div className="fixed inset-0 z-99" onClick={onClose} />
       <div ref={menuRef} style={style} className="min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
         {isDir && <button className={itemClass} onClick={() => onNavigate(fullPath)}><FolderOpen size={14} /> Open</button>}
         {isDir && <button className={itemClass} onClick={() => onCalculateFolderSize(fullPath)}><Calculator size={14} /> Calculate Folder Size</button>}
@@ -1279,7 +1279,7 @@ function ContextMenu({
         <button className={itemClass} onClick={() => onMove(fullPath)}><Move size={14} /> Move to...</button>
         <button className={itemClass} onClick={() => onRename(entry.name)}><Edit3 size={14} /> Rename</button>
         <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
-        <button className={`${itemClass} !text-red-600 dark:!text-red-400`} onClick={() => onDelete(entry.name)}><Trash2 size={14} /> Delete</button>
+        <button className={`${itemClass} text-red-600! dark:text-red-400!`} onClick={() => onDelete(entry.name)}><Trash2 size={14} /> Delete</button>
       </div>
     </>
   );

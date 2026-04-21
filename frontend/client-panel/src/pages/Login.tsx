@@ -77,7 +77,7 @@ export default function Login() {
   // Show spinner while auto-redirecting to SSO
   if (shouldAutoLogin) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-linear-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800">
         <Loader2 className="h-8 w-8 animate-spin text-white" />
         <p className="mt-4 text-white/80 text-sm">Signing in via SSO...</p>
       </div>
@@ -85,7 +85,7 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500 text-white"><Globe size={24} /></div>

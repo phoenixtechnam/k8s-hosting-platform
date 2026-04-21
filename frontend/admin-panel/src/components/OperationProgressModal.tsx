@@ -68,7 +68,7 @@ export default function OperationProgressModal({ operationId, title, onClose }: 
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
       data-testid="operation-progress-modal"
       onClick={(e) => { if (e.target === e.currentTarget && isTerminal) { setDismissed(true); onClose(); } }}
     >

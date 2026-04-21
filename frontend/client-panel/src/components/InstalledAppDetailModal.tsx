@@ -282,7 +282,7 @@ export default function InstalledAppDetailModal({
             className="mb-6 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400"
             data-testid="last-error-banner"
           >
-            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>Last error: {deployment.lastError}</span>
           </div>
         )}
