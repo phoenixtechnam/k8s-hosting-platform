@@ -1,8 +1,15 @@
 # Multi-Node Infrastructure Roadmap
 
-> Status: Planning
-> Last updated: 2026-04-13
+> Status: Planning (Phase 0 + Phase 3 in progress 2026-04-21)
+> Last updated: 2026-04-21
 > Principles: No vendor lock-in. Worker nodes before HA. Open-source stack only.
+>
+> **2026-04-21 update:** Phase 3 (Longhorn distributed storage) is being rolled out
+> alongside Phase 0 (real-server bootstrap) because no production deployment exists
+> yet — destructive reprovision is acceptable. See [`../04-deployment/STAGING_DEPLOYMENT.md`](../04-deployment/STAGING_DEPLOYMENT.md)
+> and [`ADR-028`](../07-reference/ADR-028-backup-architecture.md). The migration
+> script originally scoped in §3B is no longer needed — there is nothing to
+> migrate.
 
 ## Overview
 

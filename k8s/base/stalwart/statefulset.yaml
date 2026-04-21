@@ -120,7 +120,11 @@ spec:
           app.kubernetes.io/part-of: hosting-platform
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: local-path
+        # Intentionally NOT setting storageClassName — falls back to the
+        # cluster default storage class. In dev the overlay pins it to
+        # `local-path`; in staging/production bootstrap.sh installs
+        # Longhorn as the default. Overlays can override via a patch if
+        # a different class is required.
         resources:
           requests:
             storage: 20Gi

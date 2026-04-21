@@ -46,6 +46,11 @@ K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.31.4+k3s1"
 CALICO_VERSION="v3.28.0"
+# Longhorn version — keep pinned so staging/production bootstraps are
+# reproducible and we don't get surprise chart changes on a redeploy.
+# Bump this after testing against a newer release. Latest verified
+# stable: v1.11.1 (2026-03-13).
+LONGHORN_VERSION="v1.11.1"
 ACME_EMAIL=""
 ENABLE_MONITORING=false
 SKIP_FLUX=false
@@ -591,6 +596,7 @@ install_longhorn() {
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
+    --version "${LONGHORN_VERSION}" \
     --set defaultSettings.defaultReplicaCount=1 \
     --set defaultSettings.replicaAutoBalance=best-effort \
     --set defaultSettings.storageMinimalAvailablePercentage=15 \

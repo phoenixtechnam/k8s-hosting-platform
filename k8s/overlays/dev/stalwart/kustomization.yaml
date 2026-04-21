@@ -44,3 +44,19 @@ patches:
       metadata:
         name: stalwart-mail
         namespace: mail
+  # Dev runs on DinD single-node with local-path as the cluster default,
+  # but we pin the class explicitly so future changes to the cluster
+  # default (e.g. Longhorn landing here later) don't silently migrate
+  # the Stalwart volume.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: stalwart-mail
+        namespace: mail
+      spec:
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              storageClassName: local-path
