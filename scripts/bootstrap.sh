@@ -511,6 +511,10 @@ install_nginx_ingress() {
     --set controller.kind=DaemonSet \
     --set controller.hostPort.enabled=true \
     --set controller.service.type=ClusterIP \
+    --set controller.hostNetwork=true \
+    --set controller.dnsPolicy=ClusterFirstWithHostNet \
+    --set controller.config.ssl-redirect=false \
+    --set controller.config.force-ssl-redirect=false \
     --set controller.metrics.enabled=true \
     --set controller.allowSnippetAnnotations=false \
     --set controller.config.use-gzip=true \
@@ -841,6 +845,20 @@ generate_platform_secrets() {
     log "SFTP host keys secret created."
   fi
 
+  # sftp-gateway also references platform-secrets (for OIDC_ENCRYPTION_KEY
+  # used to decrypt mailbox credentials). Mirror the secret to
+  # platform-system so the sftp-gateway Deployment can mount it there
+  # without cross-namespace secret references (which k8s doesn't support).
+  if kctl get secret -n platform-system platform-secrets &>/dev/null 2>&1; then
+    log "platform-secrets already mirrored to platform-system, skipping."
+  else
+    kctl get secret -n platform platform-secrets -o yaml \
+      | sed -E "s|namespace: platform$|namespace: platform-system|" \
+      | grep -vE "resourceVersion|uid|creationTimestamp|ownerReferences" \
+      | kctl apply -f - >/dev/null
+    log "platform-secrets mirrored to platform-system namespace."
+  fi
+
   # The backend's db/seed.js refuses to seed the default admin user
   # unless ADMIN_PASSWORD is set in the platform-api pod env. Generate
   # one, inject as a Secret, and persist to /etc/platform/admin-credentials
@@ -1048,6 +1066,16 @@ verify() {
   log "════════════════════════════════════════════════"
   log "VERIFICATION"
   log "════════════════════════════════════════════════"
+
+  # Re-assert the default StorageClass after everything else settles.
+  # Longhorn occasionally re-marks local-path as default via k3s's
+  # restart behaviour, so running this late is more reliable than
+  # running it inline with Longhorn install.
+  log "Finalising default StorageClass (longhorn)..."
+  kubectl patch storageclass local-path \
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || true
+  kubectl patch storageclass longhorn \
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
 
   log ""
   log "── Node Status ──"

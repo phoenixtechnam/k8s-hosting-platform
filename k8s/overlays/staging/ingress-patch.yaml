@@ -8,6 +8,10 @@ metadata:
   namespace: platform
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-staging-http01
+    # Global ssl-redirect is disabled (so cert-manager HTTP-01 solver
+    # ingresses can serve /.well-known/acme-challenge on port 80) —
+    # keep the redirect behaviour on the platform ingress itself.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
   tls:
     - hosts:
