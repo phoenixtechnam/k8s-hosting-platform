@@ -73,9 +73,13 @@ export async function runMigrations() {
         // migrate runner does (duplicate_table / duplicate_object /
         // duplicate_column). This lets the test suite be re-run
         // against a DB that already contains partial state.
-        const pgErr = err as { code?: string };
+        // Drizzle wraps pg errors since 0.45 — the pg error code now
+        // lives on `err.cause.code` instead of `err.code`. Check both
+        // so the tolerated-code path works on either shape.
+        const pgErr = err as { code?: string; cause?: { code?: string } };
+        const code = pgErr.code ?? pgErr.cause?.code ?? '';
         const tolerated = ['42P07', '42701', '42P16', '42710', '42P04'];
-        if (tolerated.includes(pgErr.code ?? '')) continue;
+        if (tolerated.includes(code)) continue;
         throw new Error(
           `Migration ${file} failed on statement:\n${stmt.slice(0, 200)}\n\n${
             err instanceof Error ? err.message : String(err)

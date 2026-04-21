@@ -9,10 +9,9 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 30000,
     setupFiles: ['./src/test-setup.ts'],
+    // Vitest 4 flattened poolOptions — forks config is now top-level.
     pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: true },
-    },
+    forks: { singleFork: true },
     sequence: { concurrent: false },
     fileParallelism: false,
   },

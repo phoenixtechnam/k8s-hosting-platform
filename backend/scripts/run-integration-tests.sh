@@ -29,8 +29,17 @@ for i in $(seq 1 30); do
 done
 
 # Run migrations
+# Resolve the Postgres host — when running inside a DinD container the
+# docker daemon is on a separate host (DOCKER_HOST=tcp://dind:2375), so
+# `localhost:5433` doesn't reach the port mapping; use `dind` in that
+# case. Default to localhost for plain-docker environments.
 log "Running migrations..."
-export DATABASE_URL="postgresql://platform:platform@localhost:5433/hosting_platform_test"
+if [ -n "${DOCKER_HOST:-}" ] && [[ "$DOCKER_HOST" == tcp://dind:* ]]; then
+  PG_HOST="dind"
+else
+  PG_HOST="${PG_HOST:-localhost}"
+fi
+export DATABASE_URL="postgresql://platform:platform@${PG_HOST}:5433/hosting_platform_test"
 export JWT_SECRET="test-secret-key-for-testing-only"
 export NODE_ENV="test"
 npx tsx src/db/migrate.ts || log "Warning: Migration runner failed (tables may already exist)"
