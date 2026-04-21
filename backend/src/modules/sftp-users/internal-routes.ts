@@ -16,13 +16,13 @@ import { success } from '../../shared/response.js';
 const passwordAuthSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
-  source_ip: z.string().ip(),
+  source_ip: z.ipv4().or(z.ipv6()),
 });
 
 const keyAuthSchema = z.object({
   username: z.string().min(1),
   public_key_fingerprint: z.string().min(1),
-  source_ip: z.string().ip(),
+  source_ip: z.ipv4().or(z.ipv6()),
 });
 
 const auditEventSchema = z.object({
@@ -47,7 +47,7 @@ const ensureFileManagerSchema = z.object({
 
 const updateLoginSchema = z.object({
   username: z.string().min(1),
-  source_ip: z.string().ip(),
+  source_ip: z.ipv4().or(z.ipv6()),
 });
 
 // ─── IP Whitelist Checking ─────────────────────────────────────────────────

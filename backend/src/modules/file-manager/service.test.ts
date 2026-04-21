@@ -4,18 +4,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockApplyToHTTPSOptions = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('@kubernetes/client-node', () => ({
-  KubeConfig: vi.fn().mockImplementation(() => ({
-    loadFromFile: vi.fn(),
-    loadFromCluster: vi.fn(),
-    getCurrentCluster: vi.fn().mockReturnValue({
+// Vitest 4 requires real class constructors (plain factory functions
+// aren't callable with `new`). See db-manager.test.ts for the same pattern.
+vi.mock('@kubernetes/client-node', () => {
+  class MockKubeConfig {
+    loadFromFile = vi.fn();
+    loadFromCluster = vi.fn();
+    getCurrentCluster = vi.fn().mockReturnValue({
       server: 'https://localhost:6443',
       name: 'default',
-    }),
-    applyToHTTPSOptions: mockApplyToHTTPSOptions,
-    getCurrentUser: vi.fn().mockReturnValue({ token: 'test-bearer-token' }),
-  })),
-}));
+    });
+    applyToHTTPSOptions = mockApplyToHTTPSOptions;
+    getCurrentUser = vi.fn().mockReturnValue({ token: 'test-bearer-token' });
+  }
+  return { KubeConfig: MockKubeConfig };
+});
 
 // ─── Mock k8s-lifecycle ─────────────────────────────────────────────────────
 

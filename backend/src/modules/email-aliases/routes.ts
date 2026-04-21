@@ -25,7 +25,7 @@ export async function emailAliasRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, emailDomainId } = request.params as { clientId: string; emailDomainId: string };
     const parsed = createEmailAliasSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -43,7 +43,7 @@ export async function emailAliasRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, id } = request.params as { clientId: string; id: string };
     const parsed = updateEmailAliasSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

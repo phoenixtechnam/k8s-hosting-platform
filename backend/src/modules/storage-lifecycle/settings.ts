@@ -198,9 +198,9 @@ export async function saveStorageLifecycleSettings(
   if (!parsed.success) {
     throw new ApiError(
       'VALIDATION_ERROR',
-      `Invalid storage-lifecycle settings: ${parsed.error.errors[0].message}`,
+      `Invalid storage-lifecycle settings: ${parsed.error.issues[0].message}`,
       400,
-      { field: parsed.error.errors[0].path.join('.') },
+      { field: parsed.error.issues[0].path.join('.') },
     );
   }
 

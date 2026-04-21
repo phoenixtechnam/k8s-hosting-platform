@@ -57,7 +57,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = resizeSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
     const result = await service.resizeDryRunMib(await ctx(), clientId, mib);
     return success(result);
@@ -73,7 +73,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = resizeSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     const mib = parsed.data.newMib ?? (parsed.data.newGi! * 1024);
     const { operationId } = await service.resizeClient(await ctx(), clientId, {
@@ -95,7 +95,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = snapshotSchema.safeParse(request.body ?? {});
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     const snap = await service.snapshotClient(await ctx(), clientId, {
       label: parsed.data.label,
@@ -150,7 +150,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = archiveSchema.safeParse(request.body ?? {});
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     return success(await service.archiveClient(await ctx(), clientId, {
       retentionDays: parsed.data.retentionDays,
@@ -164,7 +164,7 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = restoreSchema.safeParse(request.body ?? {});
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     return success(await service.restoreArchivedClient(await ctx(), clientId, {
       newGi: parsed.data.newGi,
@@ -248,8 +248,8 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   }, async (request) => {
     const parsed = storageLifecycleSettingsSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400, {
-        field: parsed.error.errors[0].path.join('.'),
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400, {
+        field: parsed.error.issues[0].path.join('.'),
       });
     }
     await saveStorageLifecycleSettings(app.db, parsed.data);

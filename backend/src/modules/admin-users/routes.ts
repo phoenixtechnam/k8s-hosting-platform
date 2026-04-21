@@ -36,7 +36,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const parsed = createAdminUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'VALIDATION_ERROR',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -95,7 +95,7 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
 
     const parsed = updateAdminUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'VALIDATION_ERROR',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

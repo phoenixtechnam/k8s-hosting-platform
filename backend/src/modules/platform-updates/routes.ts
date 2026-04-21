@@ -72,7 +72,7 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
   }, async (request) => {
     const parsed = updateSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'VALIDATION_ERROR',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

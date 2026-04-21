@@ -20,7 +20,7 @@ export async function planRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     const parsed = createPlanSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -57,7 +57,7 @@ export async function planRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const parsed = updatePlanSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

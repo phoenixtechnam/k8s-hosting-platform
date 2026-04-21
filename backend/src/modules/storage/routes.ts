@@ -35,7 +35,7 @@ export async function storageRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const parsed = purgeImagesInputSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
-      throw new ApiError('INVALID_INPUT', 'Invalid purge input', 400, { errors: parsed.error.errors });
+      throw new ApiError('INVALID_INPUT', 'Invalid purge input', 400, { errors: parsed.error.issues });
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);

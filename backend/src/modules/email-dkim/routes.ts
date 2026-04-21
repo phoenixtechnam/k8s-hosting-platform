@@ -127,7 +127,7 @@ export async function emailDkimRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const parsed = autoRotateBodySchema.safeParse(request.body ?? {});
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

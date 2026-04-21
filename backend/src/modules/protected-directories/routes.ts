@@ -30,7 +30,7 @@ export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<vo
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
     const parsed = createProtectedDirectorySchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     const dir = await service.createDirectory(app.db, clientId, domainId, parsed.data);
     reply.status(201).send(success(dir));
@@ -48,7 +48,7 @@ export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<vo
     const { clientId, domainId, dirId } = request.params as { clientId: string; domainId: string; dirId: string };
     const parsed = updateProtectedDirectorySchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     const updated = await service.updateDirectory(app.db, clientId, domainId, dirId, parsed.data);
     return success(updated);
@@ -75,7 +75,7 @@ export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<vo
     const { clientId, domainId, dirId } = request.params as { clientId: string; domainId: string; dirId: string };
     const parsed = createProtectedDirectoryUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     const user = await service.createDirectoryUser(app.db, clientId, domainId, dirId, parsed.data);
     reply.status(201).send(success(user));
@@ -88,7 +88,7 @@ export async function protectedDirectoryRoutes(app: FastifyInstance): Promise<vo
     };
     const parsed = changeProtectedDirectoryUserPasswordSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     await service.changeDirectoryUserPassword(app.db, clientId, domainId, dirId, userId, parsed.data.password);
     return success({ message: 'Password updated' });

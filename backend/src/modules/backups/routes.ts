@@ -28,7 +28,7 @@ export async function backupRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const parsed = createBackupSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

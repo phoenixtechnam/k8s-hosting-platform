@@ -201,7 +201,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = createDirectoryInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -226,7 +226,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = writeFileInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -251,7 +251,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = renameInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -277,7 +277,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = deleteInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -302,7 +302,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = copyInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -327,7 +327,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = archiveInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -352,7 +352,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = extractInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -377,7 +377,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = gitCloneInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -402,7 +402,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = chmodInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();
@@ -427,7 +427,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = chownInputSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
     recordFileManagerAccess(namespace);
     const { k8sClients, kubeconfigPath } = getK8s();

@@ -109,7 +109,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
     const parsed = createIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const body = parsed.data as { hostname: string; path?: string; deployment_id?: string | null };
@@ -148,7 +148,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = updateIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await updateRoute(app.db, routeId, {
@@ -207,7 +207,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = updateRedirectSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await updateRedirectSettings(app.db, routeId, clientId, parsed.data);
@@ -227,7 +227,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = updateSecuritySettingsSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await updateSecuritySettings(app.db, routeId, clientId, parsed.data);
@@ -247,7 +247,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = updateAdvancedSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await updateAdvancedSettings(app.db, routeId, clientId, parsed.data);
@@ -283,7 +283,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId } = request.params as { clientId: string; routeId: string };
     const parsed = createRouteProtectedDirSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const dir = await createProtectedDir(app.db, routeId, clientId, parsed.data);
@@ -303,7 +303,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
     const parsed = updateRouteProtectedDirSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await updateProtectedDir(app.db, dirId, routeId, clientId, parsed.data);
@@ -366,7 +366,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId, dirId } = request.params as { clientId: string; routeId: string; dirId: string };
     const parsed = createAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const user = await createDirUser(app.db, dirId, parsed.data.username, parsed.data.password);
@@ -401,7 +401,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
     const parsed = toggleAuthUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     await toggleDirUser(app.db, dirId, userId, parsed.data.enabled);
@@ -421,7 +421,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, routeId, dirId, userId } = request.params as { clientId: string; routeId: string; dirId: string; userId: string };
     const parsed = changeAuthUserPasswordSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     await changeDirUserPassword(app.db, dirId, userId, parsed.data.password);

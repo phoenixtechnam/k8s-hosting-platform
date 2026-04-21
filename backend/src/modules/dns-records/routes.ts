@@ -37,7 +37,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     await assertNotSecondaryDns(app, clientId, domainId);
     const parsed = createDnsRecordSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -58,7 +58,7 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     await assertNotSecondaryDns(app, clientId, domainId);
     const parsed = updateDnsRecordSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

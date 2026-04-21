@@ -86,7 +86,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const parsed = createClientSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -210,7 +210,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const parsed = updateClientSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -323,7 +323,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     const parsed = createSubUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         firstError.path.length > 0 ? 'INVALID_FIELD_VALUE' : 'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
@@ -359,7 +359,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     const parsed = updateSubUserSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,
@@ -397,7 +397,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     const parsed = resetSubUserPasswordSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message}${firstError.path.length > 0 ? ` (${firstError.path.join('.')})` : ''}`,

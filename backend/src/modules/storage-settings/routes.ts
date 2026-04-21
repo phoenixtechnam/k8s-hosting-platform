@@ -30,7 +30,7 @@ export async function storageSettingsRoutes(app: FastifyInstance): Promise<void>
   }, async (request) => {
     const parsed = updateStorageSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+      throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
     const updated = await service.updateStorageSettings(app.db, parsed.data);

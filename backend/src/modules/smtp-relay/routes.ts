@@ -47,7 +47,7 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
   app.post('/admin/email/smtp-relays', async (request, reply) => {
     const parsed = createSmtpRelaySchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -66,7 +66,7 @@ export async function smtpRelayRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const parsed = updateSmtpRelaySchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

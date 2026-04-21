@@ -60,7 +60,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const parsed = createAiProviderSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
 
     const existing = await service.getProvider(app.db, parsed.data.id);
     if (existing) throw new ApiError('DUPLICATE', `Provider "${parsed.data.id}" already exists`, 409);
@@ -80,7 +80,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { id } = request.params as { id: string };
     const parsed = updateAiProviderSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
 
     const provider = await service.updateProvider(app.db, id, {
       displayName: parsed.data.display_name,
@@ -113,7 +113,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const parsed = createAiModelSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
 
     const provider = await service.getProvider(app.db, parsed.data.provider_id);
     if (!provider) throw new ApiError('NOT_FOUND', `Provider "${parsed.data.provider_id}" not found`, 404);
@@ -140,7 +140,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { id } = request.params as { id: string };
     const parsed = updateAiModelSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
 
     const model = await service.updateModel(app.db, id, {
       displayName: parsed.data.display_name,
@@ -169,7 +169,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const parsed = aiTestConnectionSchema.safeParse(request.body);
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.errors[0].message, 400);
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
 
     const result = await service.testProviderConnection(
       app.db,
@@ -218,7 +218,7 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const parsed = aiEditRequestSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError('VALIDATION_ERROR', `${firstError.message} (${firstError.path.join('.')})`, 400);
     }
 

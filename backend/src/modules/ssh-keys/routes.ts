@@ -24,7 +24,7 @@ export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const parsed = createSshKeySchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     const key = await service.createSshKey(app.db, clientId, parsed.data);
     reply.status(201).send(success(key));
@@ -35,7 +35,7 @@ export async function sshKeyRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, keyId } = request.params as { clientId: string; keyId: string };
     const parsed = updateSshKeySchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.errors[0].message}`, 400);
+      throw new ApiError('MISSING_REQUIRED_FIELD', `Validation error: ${parsed.error.issues[0].message}`, 400);
     }
     const key = await service.updateSshKey(app.db, clientId, keyId, parsed.data);
     return success(key);

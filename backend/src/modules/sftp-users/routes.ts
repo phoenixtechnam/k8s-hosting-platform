@@ -24,7 +24,7 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
-        `Validation error: ${parsed.error.errors[0].message}`,
+        `Validation error: ${parsed.error.issues[0].message}`,
         400,
       );
     }
@@ -52,7 +52,7 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
-        `Validation error: ${parsed.error.errors[0].message}`,
+        `Validation error: ${parsed.error.issues[0].message}`,
         400,
       );
     }
@@ -74,7 +74,7 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError(
         'MISSING_REQUIRED_FIELD',
-        `Validation error: ${parsed.error.errors[0].message}`,
+        `Validation error: ${parsed.error.issues[0].message}`,
         400,
       );
     }

@@ -3,16 +3,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Shared mock exec function accessible by both mock and test code
 const mockExecFn = vi.fn();
 
-// Mock @kubernetes/client-node before importing db-manager
-vi.mock('@kubernetes/client-node', () => ({
-  KubeConfig: vi.fn().mockImplementation(() => ({
-    loadFromFile: vi.fn(),
-    loadFromCluster: vi.fn(),
-  })),
-  Exec: vi.fn().mockImplementation(() => ({
-    exec: mockExecFn,
-  })),
-}));
+// Mock @kubernetes/client-node before importing db-manager.
+// Vitest 4 requires real classes here — a plain vi.fn(() => ({...}))
+// factory is not callable with `new`, so we use class declarations.
+vi.mock('@kubernetes/client-node', () => {
+  class MockKubeConfig {
+    loadFromFile = vi.fn();
+    loadFromCluster = vi.fn();
+  }
+  class MockExec {
+    exec = mockExecFn;
+  }
+  return { KubeConfig: MockKubeConfig, Exec: MockExec };
+});
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {

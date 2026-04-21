@@ -11,7 +11,7 @@ export const createPlanSchema = z.object({
   max_sub_users: z.number().int().min(0).max(100).optional(),
   max_mailboxes: z.number().int().min(0).max(10000).optional(),
   weekly_ai_budget_cents: z.number().int().min(0).max(100000).optional(),
-  features: z.record(z.unknown()).optional().default({}),
+  features: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
 export const updatePlanSchema = createPlanSchema.partial().strict();

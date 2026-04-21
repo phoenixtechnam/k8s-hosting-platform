@@ -44,7 +44,7 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
 
     const parsed = enableEmailDomainSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
@@ -154,7 +154,7 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     const { clientId, domainId } = request.params as { clientId: string; domainId: string };
     const parsed = updateEmailDomainSchema.safeParse(request.body);
     if (!parsed.success) {
-      const firstError = parsed.error.errors[0];
+      const firstError = parsed.error.issues[0];
       throw new ApiError(
         'INVALID_FIELD_VALUE',
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,

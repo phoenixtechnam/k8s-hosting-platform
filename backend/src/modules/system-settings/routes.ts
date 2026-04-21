@@ -92,7 +92,7 @@ export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> 
   }, async (request) => {
     const parsed = updateSchema.safeParse(request.body);
     if (!parsed.success) {
-      throw new ApiError('INVALID_FIELD_VALUE', parsed.error.errors[0].message, 400);
+      throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     }
 
     const updated = await service.updateSettings(app.db, parsed.data);
