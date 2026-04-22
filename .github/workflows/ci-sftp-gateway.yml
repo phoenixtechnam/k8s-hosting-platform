@@ -56,7 +56,13 @@ jobs:
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          # docker/metadata-action tags with type=sha,prefix= use the
+          # short (7-char) sha by default, but github.sha is the full
+          # 40-char sha — so the previous ${env.IMAGE}:${github.sha}
+          # referenced a tag that was never pushed and every Trivy run
+          # died with "manifest unknown". Use the first tag emitted by
+          # metadata-action instead.
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
