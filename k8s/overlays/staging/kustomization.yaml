@@ -14,6 +14,7 @@ resources:
 
 patches:
   - path: platform-version-patch.yaml
+  - path: deploy-rev-patch.yaml
   - path: resource-quotas-patch.yaml
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
