@@ -39,6 +39,7 @@ export * from './mail-admin.js';
 export * from './smtp-relay.js';
 export * from './webmail-settings.js';
 export * from './platform-updates.js';
+export * from './platform-urls.js';
 export * from './ssl-certs.js';
 export * from './storage-settings.js';
 export * from './eol-settings.js';

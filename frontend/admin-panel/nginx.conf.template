@@ -61,6 +61,19 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Runtime config MUST NOT be cached. It is re-rendered on every pod
+    # start (envsubst over config.template.js) and we explicitly want
+    # operators to see changes to e.g. LONGHORN_URL on the next page
+    # load, not after a browser cache purge. `no-store` beats the
+    # 30-day static-asset rule below because a more specific location
+    # block wins in nginx.
+    location = /config.js {
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        expires 0;
+        try_files $uri =404;
+    }
+
     # SPA: all other routes fall back to index.html
     location / {
         try_files $uri $uri/ /index.html;

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useStalwartCredentials, useRotateStalwartPassword } from '@/hooks/use-stalwart';
 import { config } from '@/lib/runtime-config';
+import { usePlatformUrls, resolveStalwartAdminUrl } from '@/hooks/use-platform-urls';
 
 /**
  * Admin panel controls for the Stalwart mail-server.
@@ -211,6 +212,8 @@ function CopyableField({ label, value, testId, mono }: CopyableFieldProps) {
 }
 
 function StalwartIframeModal({ onClose }: { readonly onClose: () => void }) {
+  const { data: urls } = usePlatformUrls();
+  const stalwartUrl = resolveStalwartAdminUrl(urls) || config.STALWART_ADMIN_URL || '/__stalwart/';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
@@ -240,7 +243,7 @@ function StalwartIframeModal({ onClose }: { readonly onClose: () => void }) {
           // paste the credentials from "Show Stalwart credentials". Stalwart
           // stores its own token in localStorage under THIS origin, so
           // subsequent opens skip login until the token expires.
-          src={config.STALWART_ADMIN_URL || '/__stalwart/'}
+          src={stalwartUrl}
           title="Stalwart Web Admin"
           className="flex-1 w-full border-0 bg-white"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"

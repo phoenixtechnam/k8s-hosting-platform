@@ -1,5 +1,6 @@
 import { SettingsIcon } from 'lucide-react';
 import SystemSettingsForm from '@/components/SystemSettings';
+import IntegrationsSettings from '@/components/IntegrationsSettings';
 
 export default function SystemSettings() {
   return (
@@ -16,6 +17,7 @@ export default function SystemSettings() {
         </div>
       </div>
       <SystemSettingsForm />
+      <IntegrationsSettings />
     </div>
   );
 }

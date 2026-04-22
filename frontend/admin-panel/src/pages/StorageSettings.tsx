@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle } from 'lucide-react';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
-import { config } from '@/lib/runtime-config';
+import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 
 /**
  * Storage Configuration
@@ -19,10 +19,13 @@ import { config } from '@/lib/runtime-config';
 export default function StorageSettings() {
   const [showIframe, setShowIframe] = useState(false);
   const { data: configsResp, isLoading } = useBackupConfigs();
+  const { data: urls } = usePlatformUrls();
 
   const configs = configsResp?.data ?? [];
   const activeConfig = configs.find((c) => c.active);
-  const longhornUrl = config.LONGHORN_URL;
+  // Prefer the DB-resolved URL; fall back to the ConfigMap-derived
+  // value during the window between first paint and the query resolving.
+  const longhornUrl = resolveLonghornUrl(urls);
 
   return (
     <div className="space-y-6">
@@ -74,8 +77,10 @@ export default function StorageSettings() {
           >
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <div>
-              LONGHORN_URL is not configured. Set <code className="font-mono">longhorn-url</code>{' '}
-              in the <code className="font-mono">platform-config</code> ConfigMap for this environment.
+              Longhorn URL is not configured.{' '}
+              <Link to="/settings/system" className="underline font-medium">
+                Set it in System Settings →
+              </Link>
             </div>
           </div>
         )}

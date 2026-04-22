@@ -14,13 +14,6 @@ import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
-// Read env at call time, not module-load time, so tests and runtime
-// env changes are reflected. Fall back to a hardcoded sentinel only
-// when neither the DB setting nor the env var is configured.
-function defaultUrlFromEnv(): string {
-  return process.env.WEBMAIL_URL ?? 'https://webmail.example.com';
-}
-
 async function getSetting(db: Database, key: string): Promise<string | null> {
   const [row] = await db
     .select()
@@ -36,18 +29,35 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
     .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
-function defaultMailHostnameFromEnv(): string {
-  return process.env.STALWART_HOSTNAME ?? process.env.MAIL_SERVER_HOSTNAME ?? 'mail.example.com';
+// Apex-derived defaults.
+//
+// Precedence:
+//   1. explicit DB row (operator edited via admin panel)
+//   2. legacy env var (WEBMAIL_URL / STALWART_HOSTNAME / MAIL_SERVER_HOSTNAME)
+//   3. webmail.<apex> / mail.<apex> derived from platform_settings.ingress_base_domain
+//   4. placeholder literal — only reached on a fresh install before the
+//      apex has been configured
+async function defaultWebmailUrl(db: Database): Promise<string> {
+  if (process.env.WEBMAIL_URL) return process.env.WEBMAIL_URL;
+  const apex = (await getSetting(db, 'ingress_base_domain'))?.trim().replace(/\.+$/, '');
+  return apex ? `https://webmail.${apex}/` : 'https://webmail.example.com';
+}
+
+async function defaultMailHostname(db: Database): Promise<string> {
+  if (process.env.STALWART_HOSTNAME) return process.env.STALWART_HOSTNAME;
+  if (process.env.MAIL_SERVER_HOSTNAME) return process.env.MAIL_SERVER_HOSTNAME;
+  const apex = (await getSetting(db, 'ingress_base_domain'))?.trim().replace(/\.+$/, '');
+  return apex ? `mail.${apex}` : 'mail.example.com';
 }
 
 export async function getWebmailSettings(db: Database) {
-  const defaultWebmailUrl = await getSetting(db, 'default_webmail_url');
-  const mailServerHostname = await getSetting(db, 'mail_server_hostname');
+  const defaultWebmailUrlStored = await getSetting(db, 'default_webmail_url');
+  const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
   const rateLimitRaw = await getSetting(db, 'email_send_rate_limit_default');
   const emailSendRateLimitDefault = rateLimitRaw ? parseInt(rateLimitRaw, 10) : null;
   return {
-    defaultWebmailUrl: defaultWebmailUrl ?? defaultUrlFromEnv(),
-    mailServerHostname: mailServerHostname ?? defaultMailHostnameFromEnv(),
+    defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
+    mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
     emailSendRateLimitDefault: Number.isFinite(emailSendRateLimitDefault) ? emailSendRateLimitDefault : null,
   };
 }
