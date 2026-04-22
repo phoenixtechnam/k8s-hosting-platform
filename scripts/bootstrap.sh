@@ -63,6 +63,8 @@ SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_VPN=false
 SKIP_LONGHORN=false
+OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
+FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
@@ -86,6 +88,16 @@ OPTIONS:
   --skip-vpn             Skip WireGuard + NetBird
   --skip-longhorn        Skip Longhorn storage (use local-path)
   --acme-email <email>   Email for Let's Encrypt (required for server role)
+  --operator-age-recipient <age1...>
+                         Public age recipient for operator-held backup
+                         encryption. If omitted, a fresh keypair is
+                         generated and the PRIVATE KEY is printed to
+                         stderr ONCE — save it, it's the only way to
+                         decrypt backups. Accepts comma-separated list
+                         for team-held multi-recipient setups.
+  --force-rotate-operator-key
+                         Regenerate the operator keypair even if the
+                         ConfigMap already exists (rotation drill).
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
@@ -132,6 +144,8 @@ parse_args() {
       --skip-vpn)        SKIP_VPN=true; shift ;;
       --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
+      --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
+      --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -208,6 +222,7 @@ install_packages() {
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
+    age \
     >/dev/null 2>&1
 
   log "Base packages installed."
@@ -926,6 +941,102 @@ create_platform_configmap() {
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
 
+generate_operator_recipient() {
+  # The operator holds the age private key that decrypts backup bundles.
+  # The public half (recipient) goes into the platform-operator-recipient
+  # ConfigMap; the secrets-backup CronJob reads it and encrypts-to-many
+  # without ever needing the private key on-cluster.
+  #
+  # Idempotent: if the ConfigMap already exists and --force-rotate-
+  # operator-key was NOT passed, leave everything alone. Re-running the
+  # bootstrap must not regenerate the key by accident — that would
+  # invalidate every pre-existing backup.
+  #
+  # Public OSS repo: the private key MUST NOT be persisted anywhere on
+  # disk. We print it to stderr with loud banners and rely on the
+  # operator to capture it. `age-keygen` writes to a tmpfile under
+  # /dev/shm so it never hits non-volatile storage even briefly.
+  log "Configuring operator age recipient..."
+
+  if [[ "$FORCE_ROTATE_OPERATOR_KEY" != true ]] && kctl get configmap platform-operator-recipient -n platform >/dev/null 2>&1; then
+    log "platform-operator-recipient ConfigMap already exists, skipping (use --force-rotate-operator-key to regenerate)."
+    return 0
+  fi
+
+  local recipient=""
+  if [[ -n "$OPERATOR_AGE_RECIPIENT" ]]; then
+    # Operator supplied the public half — validate shape and use as-is.
+    # Accept comma-separated list for team-held multi-recipient setups.
+    local part
+    IFS=',' read -ra _parts <<< "$OPERATOR_AGE_RECIPIENT"
+    for part in "${_parts[@]}"; do
+      part="${part# }"; part="${part% }"
+      if [[ ! "$part" =~ ^age1[a-z0-9]{48,}$ ]]; then
+        error "Invalid age recipient: '${part}'. Expected an 'age1...' Bech32 string."
+      fi
+    done
+    recipient="$OPERATOR_AGE_RECIPIENT"
+    log "Using operator-provided recipient(s) — no keypair generated."
+  else
+    if ! command -v age-keygen >/dev/null 2>&1; then
+      error "age-keygen not found on PATH. Run install_packages first, or install the 'age' package."
+    fi
+    # Write to tmpfs so the private key never lands on the root
+    # filesystem's journal. Best-effort — /dev/shm is world-writable but
+    # this process is already root and only we read it immediately below.
+    local tmpkey
+    tmpkey="$(mktemp --tmpdir=/dev/shm bootstrap-age.XXXXXX 2>/dev/null || mktemp)"
+    chmod 600 "$tmpkey"
+    # age-keygen emits the private key AND a comment line with the public
+    # recipient. Capture both, then shred the file.
+    age-keygen -o "$tmpkey" 2>/dev/null
+    recipient="$(grep -E '^# public key:' "$tmpkey" | awk '{print $NF}')"
+    local private_key
+    private_key="$(grep -v '^#' "$tmpkey")"
+
+    # Shred + remove. `shred` isn't in base Debian installs via coreutils'
+    # /usr/bin; the alternative is overwrite-then-unlink which works on
+    # any filesystem (including tmpfs where shred is a no-op anyway).
+    : > "$tmpkey"
+    rm -f "$tmpkey"
+
+    # Loud banner to stderr. Operator MUST save this — it is the only
+    # copy that will ever exist, and backup decryption depends on it.
+    {
+      echo ""
+      echo "╔════════════════════════════════════════════════════════════════╗"
+      echo "║  OPERATOR AGE PRIVATE KEY — SAVE THIS NOW                      ║"
+      echo "║                                                                ║"
+      echo "║  This key decrypts every backup bundle this cluster produces.  ║"
+      echo "║  Losing it = backups unrecoverable.                            ║"
+      echo "║  Leaking it = anyone can decrypt the backups.                  ║"
+      echo "║                                                                ║"
+      echo "║  Store in: password manager (1Password/Bitwarden) AND an       ║"
+      echo "║            offline paper/metal backup. Do not commit to git.   ║"
+      echo "║                                                                ║"
+      echo "║  Public recipient (safe to share):                             ║"
+      echo "║    ${recipient}"
+      echo "║                                                                ║"
+      echo "║  Private key (SECRET — save and delete from terminal scroll):  ║"
+      echo "║    ${private_key}"
+      echo "║                                                                ║"
+      echo "║  See docs/02-operations/OPERATOR_KEY_SETUP.md for more.        ║"
+      echo "╚════════════════════════════════════════════════════════════════╝"
+      echo ""
+    } >&2
+  fi
+
+  # ConfigMap is intentionally simple — a single `recipient` key the
+  # secrets-backup CronJob reads into $OPERATOR_RECIPIENT. Replace-ok
+  # because a rotation is expected to be deliberate (the existence-gate
+  # at the top of this function handles the idempotent no-op path).
+  kctl create configmap platform-operator-recipient \
+    --namespace=platform \
+    --from-literal=recipient="$recipient" \
+    --dry-run=client -o yaml | kctl apply -f -
+  log "platform-operator-recipient ConfigMap applied."
+}
+
 apply_platform_manifests() {
   log "Applying platform manifests..."
 
@@ -1195,6 +1306,7 @@ main() {
     install_flux
     generate_platform_secrets
     create_platform_configmap
+    generate_operator_recipient
     apply_platform_manifests
 
     # Phase 4: Verify
@@ -1221,4 +1333,9 @@ main() {
   marker_set "bootstrap-complete"
 }
 
-main "$@"
+# Only call main() when the script is executed directly, not when sourced.
+# Sourced invocations (e.g. unit tests that need individual helpers like
+# generate_operator_recipient) should NOT trigger the full bootstrap path.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
