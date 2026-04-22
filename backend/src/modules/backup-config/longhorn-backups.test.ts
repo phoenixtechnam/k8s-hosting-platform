@@ -91,7 +91,7 @@ describe('triggerBackupNow', () => {
     clients = createMockClients();
   });
 
-  it('calls snapshotCreate, polls snapshot ready, then snapshotBackup per labeled volume', async () => {
+  it('calls snapshotCreate, polls snapshotGet, then snapshotBackup per labeled volume', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [
         { metadata: { name: 'pvc-a' } },
@@ -100,10 +100,10 @@ describe('triggerBackupNow', () => {
     const fetchMock = vi.fn()
       // snapshotCreate
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      // poll: first tick "in-progress"
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'in-progress' }) })
-      // poll: second tick "ready"
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
+      // poll tick 1: in-progress (created empty)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'manual-x', created: '' }) })
+      // poll tick 2: ready
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'manual-x', created: '2026-04-22T17:53:21Z' }) })
       // snapshotBackup
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -112,8 +112,8 @@ describe('triggerBackupNow', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
     const urls = fetchMock.mock.calls.map(([u]) => u);
     expect(urls[0]).toContain('action=snapshotCreate');
-    expect(urls[1]).toMatch(/\/snapshots\/manual-/);
-    expect(urls[2]).toMatch(/\/snapshots\/manual-/);
+    expect(urls[1]).toContain('action=snapshotGet');
+    expect(urls[2]).toContain('action=snapshotGet');
     expect(urls[3]).toContain('action=snapshotBackup');
   }, 25_000);
 
@@ -159,11 +159,11 @@ describe('triggerBackupNow', () => {
     const fetchMock = vi.fn()
       // pvc-a: snapshotCreate ok, poll ready, snapshotBackup ok
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'x', created: '2026-04-22T17:00:00Z' }) })
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
       // pvc-b: snapshotCreate ok, poll ready, snapshotBackup fails
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'x', created: '2026-04-22T17:00:00Z' }) })
       .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { fetch: fetchMock });

@@ -98,9 +98,12 @@ function toRecord(b: LonghornBackup): BackupRecord {
 // manager's REST service (not the UI frontend).
 const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
 
-// Poll GET /v1/volumes/<name>/snapshots/<snapName> until snapshot exists
-// with state=ready. Longhorn's engine-controller sync loop typically
-// promotes snapshots in 1-3s but can lag under load.
+// Wait for Longhorn's engine-controller sync loop to promote the new
+// snapshot into a CR. Poll via POST /v1/volumes/<name>?action=snapshotGet
+// body={name} — the only REST endpoint that returns single-snapshot
+// state. Probe response: the `created` field is set only after the
+// engine finishes taking the snapshot (empty string while it's in
+// progress). `usercreated: true` + non-empty `created` = ready to back up.
 async function pollSnapshotReady(
   fetchFn: typeof globalThis.fetch,
   volUrl: string,
@@ -109,18 +112,23 @@ async function pollSnapshotReady(
 ): Promise<{ ready: boolean; reason?: string }> {
   const deadline = Date.now() + totalMs;
   let lastErr = '';
+  // Initial delay — engine-controller sync loop is on a 1s cadence, so
+  // there's no point hitting the API with zero wait.
+  await new Promise((r) => setTimeout(r, 500));
   while (Date.now() < deadline) {
     try {
-      const res = await fetchFn(`${volUrl}/snapshots/${encodeURIComponent(snapName)}`, {
-        method: 'GET',
+      const res = await fetchFn(`${volUrl}?action=snapshotGet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: snapName }),
         signal: AbortSignal.timeout(5_000),
       });
       if (res.ok) {
-        const body = await res.json() as { state?: string; size?: string };
-        // Longhorn snapshot states include: in-progress, ready,
-        // error. We accept "ready" (CR present, engine done).
-        if (body.state === 'ready') return { ready: true };
-        lastErr = `state=${body.state ?? 'unknown'}`;
+        const body = await res.json() as { created?: string; usercreated?: boolean; id?: string };
+        if (body.id && body.created && body.created.length > 0) {
+          return { ready: true };
+        }
+        lastErr = `created=${body.created ?? '(empty)'} id=${body.id ?? '(none)'}`;
       } else {
         lastErr = `HTTP ${res.status}`;
       }
