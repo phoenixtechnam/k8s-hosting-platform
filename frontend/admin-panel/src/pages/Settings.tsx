@@ -56,26 +56,52 @@ export default function Settings() {
           <div className="space-y-4">
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Current Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="current-version">{version.currentVersion}</dd></div>
-              <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Latest Version</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="latest-version">{version.latestVersion ?? '—'}</dd></div>
+              <div>
+                <dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Latest Version</dt>
+                <dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="latest-version">
+                  {version.latestVersion ?? (
+                    version.latestSource === 'none'
+                      ? <span className="text-gray-500 dark:text-gray-400">no releases published</span>
+                      : version.latestSource === 'unreachable'
+                        ? <span className="text-amber-700 dark:text-amber-300">GitHub unreachable</span>
+                        : '—'
+                  )}
+                </dd>
+              </div>
               <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Environment</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100" data-testid="environment">{version.environment}</dd></div>
               <div><dt className="text-sm font-medium text-gray-500 dark:text-gray-400">Last Checked</dt><dd className="mt-1 text-sm text-gray-900 dark:text-gray-100">{version.lastCheckedAt ? new Date(version.lastCheckedAt).toLocaleString() : '—'}</dd></div>
             </dl>
 
             <div className="flex flex-wrap items-center gap-4 border-t border-gray-100 dark:border-gray-700 pt-4">
-              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                <input
-                  type="checkbox"
-                  data-testid="auto-update-toggle"
-                  checked={autoUpdateLocal ?? version.autoUpdate}
-                  onChange={(e) => {
-                    const newValue = e.target.checked;
-                    setAutoUpdateLocal(newValue);
-                    updateSettings.mutate(newValue);
-                  }}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                Automatic Updates
-              </label>
+              {version.imageUpdateStrategy === 'auto' ? (
+                // Staging/dev: Flux Image Automation (or our deploy-rev rollout)
+                // handles rollouts on every main-branch push. The manual
+                // Auto-Update toggle + Update Now button don't apply here —
+                // they'd mislead the operator into thinking they can gate
+                // rollouts from this UI.
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-md bg-green-50 dark:bg-green-900/20 px-3 py-1.5 text-sm font-medium text-green-700 dark:text-green-300"
+                  data-testid="auto-managed-badge"
+                >
+                  <CheckCircle size={14} />
+                  Auto-managed by Flux — pods roll on every main push
+                </span>
+              ) : (
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    data-testid="auto-update-toggle"
+                    checked={autoUpdateLocal ?? version.autoUpdate}
+                    onChange={(e) => {
+                      const newValue = e.target.checked;
+                      setAutoUpdateLocal(newValue);
+                      updateSettings.mutate(newValue);
+                    }}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Automatic Updates
+                </label>
+              )}
 
               <button
                 type="button"
@@ -84,28 +110,32 @@ export default function Settings() {
                 className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
               >
                 <RefreshCw size={14} />
-                Check for Updates
+                {version.imageUpdateStrategy === 'auto' ? 'Refresh' : 'Check for Updates'}
               </button>
 
-              <button
-                type="button"
-                data-testid="settings-update-now-btn"
-                disabled={!version.updateAvailable || triggerUpdate.isPending}
-                onClick={() => triggerUpdate.mutate()}
-                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {triggerUpdate.isPending ? (
-                  <><Loader2 size={14} className="animate-spin" />Updating...</>
-                ) : (
-                  'Update Now'
-                )}
-              </button>
+              {version.imageUpdateStrategy === 'manual' && (
+                <>
+                  <button
+                    type="button"
+                    data-testid="settings-update-now-btn"
+                    disabled={!version.updateAvailable || triggerUpdate.isPending}
+                    onClick={() => triggerUpdate.mutate()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {triggerUpdate.isPending ? (
+                      <><Loader2 size={14} className="animate-spin" />Updating...</>
+                    ) : (
+                      'Update Now'
+                    )}
+                  </button>
 
-              {triggerUpdate.isSuccess && (
-                <span className="flex items-center gap-1 text-sm text-green-700 dark:text-green-300"><CheckCircle size={14} />Update started</span>
-              )}
-              {triggerUpdate.isError && (
-                <span className="flex items-center gap-1 text-sm text-red-700 dark:text-red-300"><AlertCircle size={14} />Update failed</span>
+                  {triggerUpdate.isSuccess && (
+                    <span className="flex items-center gap-1 text-sm text-green-700 dark:text-green-300"><CheckCircle size={14} />Update started</span>
+                  )}
+                  {triggerUpdate.isError && (
+                    <span className="flex items-center gap-1 text-sm text-red-700 dark:text-red-300"><AlertCircle size={14} />Update failed</span>
+                  )}
+                </>
               )}
             </div>
           </div>

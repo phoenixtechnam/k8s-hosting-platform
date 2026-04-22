@@ -8,6 +8,16 @@ import { parseResourceValue } from '../../shared/resource-parser.js';
 // tags. We previously hit GHCR's tags/list which requires auth for
 // public images and always returned 401.
 const RELEASES_API = 'https://api.github.com/repos/phoenixtechnam/k8s-hosting-platform/releases/latest';
+// Fallback when no releases are published yet (fresh repos). Lists all
+// tags; we pick the newest valid semver. Keeps the UI from showing a
+// permanent "—" just because release.yml hasn't been cut yet.
+const TAGS_API = 'https://api.github.com/repos/phoenixtechnam/k8s-hosting-platform/tags?per_page=20';
+const FETCH_OPTS = {
+  signal: AbortSignal.timeout(10_000),
+  headers: { 'Accept': 'application/vnd.github+json' } as const,
+} as const;
+
+type LatestSource = 'releases' | 'tags' | 'none' | 'unreachable';
 // PLATFORM_VERSION is injected into the Deployment from the platform-
 // version ConfigMap. Before that landed the default was a stale '0.1.0'
 // which made the UI always show that regardless of reality; 'unknown'
@@ -25,42 +35,70 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
   await db.insert(platformSettings).values({ key, value }).onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
+async function resolveLatestVersion(): Promise<{ version: string | null; source: LatestSource }> {
+  // Try releases first — preferred because release.yml publishes pinned,
+  // promoted versions (not every green main build).
+  try {
+    const resp = await fetch(RELEASES_API, FETCH_OPTS);
+    if (resp.ok) {
+      const data = await resp.json() as { tag_name?: string };
+      const tag = (data.tag_name ?? '').replace(/^v/, '');
+      if (/^\d+\.\d+\.\d+$/.test(tag)) return { version: tag, source: 'releases' };
+    } else if (resp.status !== 404) {
+      // 404 is expected on repos without a published release — fall
+      // through to tags. Any other non-2xx (rate limit, 5xx) is a
+      // connectivity issue, bail to 'unreachable'.
+      return { version: null, source: 'unreachable' };
+    }
+  } catch {
+    return { version: null, source: 'unreachable' };
+  }
+
+  // Fallback: inspect tags. Useful on fresh repos that haven't cut a
+  // GitHub release yet but have started tagging (e.g., v0.1.0).
+  try {
+    const resp = await fetch(TAGS_API, FETCH_OPTS);
+    if (resp.ok) {
+      const tags = await resp.json() as Array<{ name?: string }>;
+      const semvers = tags
+        .map(t => (t.name ?? '').replace(/^v/, ''))
+        .filter(n => /^\d+\.\d+\.\d+$/.test(n))
+        .sort((a, b) => isNewer(b, a) ? 1 : isNewer(a, b) ? -1 : 0);
+      if (semvers.length > 0) return { version: semvers[0], source: 'tags' };
+    }
+  } catch {
+    // Ignore — fall through to 'none'.
+  }
+
+  return { version: null, source: 'none' };
+}
+
 export async function getVersionInfo(db: Database) {
   const autoUpdate = (await getSetting(db, 'auto_update')) === 'true';
   const lastCheckedAt = await getSetting(db, 'last_update_check');
   let latestVersion = await getSetting(db, 'latest_version');
+  let latestSource: LatestSource = (await getSetting(db, 'latest_source')) as LatestSource | null ?? 'none';
 
-  // Check GHCR for latest version (cache for 5 minutes)
+  // Re-check upstream at most every 5 minutes
   const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
   const lastCheck = lastCheckedAt ? new Date(lastCheckedAt).getTime() : 0;
 
   if (lastCheck < fiveMinutesAgo) {
-    try {
-      const response = await fetch(RELEASES_API, {
-        signal: AbortSignal.timeout(10_000),
-        headers: { 'Accept': 'application/vnd.github+json' },
-      });
-      if (response.ok) {
-        const data = await response.json() as { tag_name?: string };
-        // Release tags are like `v1.2.3` — strip the leading v to
-        // match the currentVersion format.
-        const tag = (data.tag_name ?? '').replace(/^v/, '');
-        if (/^\d+\.\d+\.\d+$/.test(tag)) {
-          latestVersion = tag;
-        }
-      }
-    } catch {
-      // GitHub unreachable — use cached value
+    const resolved = await resolveLatestVersion();
+    // Only overwrite the cache on a definitive result; 'unreachable'
+    // preserves the last-known-good value instead of regressing the UI.
+    if (resolved.source !== 'unreachable') {
+      latestVersion = resolved.version;
+      latestSource = resolved.source;
+      await setSetting(db, 'latest_source', resolved.source);
+      if (resolved.version) await setSetting(db, 'latest_version', resolved.version);
     }
     await setSetting(db, 'last_update_check', new Date().toISOString());
-    if (latestVersion) {
-      await setSetting(db, 'latest_version', latestVersion);
-    }
   }
 
   // "unknown" currentVersion means PLATFORM_VERSION isn't wired up —
   // we can't compare semver, so never claim an update is available.
-  const canCompare = CURRENT_VERSION !== 'unknown';
+  const canCompare = CURRENT_VERSION !== 'unknown' && /^\d+\.\d+\.\d+/.test(CURRENT_VERSION);
   const updateAvailable = canCompare && latestVersion !== null && latestVersion !== CURRENT_VERSION && isNewer(latestVersion, CURRENT_VERSION);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
@@ -69,6 +107,7 @@ export async function getVersionInfo(db: Database) {
   return {
     currentVersion: CURRENT_VERSION,
     latestVersion,
+    latestSource,
     updateAvailable,
     environment: ENVIRONMENT,
     autoUpdate,
@@ -79,8 +118,11 @@ export async function getVersionInfo(db: Database) {
 }
 
 function isNewer(latest: string, current: string): boolean {
-  const [lMaj, lMin, lPat] = latest.split('.').map(Number);
-  const [cMaj, cMin, cPat] = current.split('.').map(Number);
+  // Strip any pre-release suffix (0.0.0-<sha>) before comparing so CI-
+  // derived currentVersions compare cleanly against pure-semver tags.
+  const parse = (v: string) => v.split('-')[0].split('.').map(Number);
+  const [lMaj, lMin, lPat] = parse(latest);
+  const [cMaj, cMin, cPat] = parse(current);
   if (lMaj !== cMaj) return lMaj > cMaj;
   if (lMin !== cMin) return lMin > cMin;
   return lPat > cPat;

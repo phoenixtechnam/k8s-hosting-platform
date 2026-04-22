@@ -5,9 +5,12 @@ interface PlatformVersionResponse {
   readonly data: {
     readonly currentVersion: string;
     readonly latestVersion: string | null;
+    readonly latestSource: 'releases' | 'tags' | 'none' | 'unreachable';
     readonly updateAvailable: boolean;
     readonly environment: string;
     readonly autoUpdate: boolean;
+    readonly imageUpdateStrategy: 'auto' | 'manual';
+    readonly pendingVersion: string | null;
     readonly lastCheckedAt: string | null;
   };
 }

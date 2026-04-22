@@ -113,11 +113,42 @@ describe('platform-updates service', () => {
 
       expect(result).toHaveProperty('currentVersion');
       expect(result).toHaveProperty('latestVersion');
+      expect(result).toHaveProperty('latestSource');
       expect(result).toHaveProperty('updateAvailable');
       expect(result).toHaveProperty('environment');
       expect(result).toHaveProperty('autoUpdate');
       expect(result).toHaveProperty('lastCheckedAt');
       expect(result.latestVersion).toBe('1.2.0');
+      expect(result.latestSource).toBe('releases');
+    });
+
+    it('should fall back to tags when releases endpoint returns 404', async () => {
+      // First call (releases) → 404; second call (tags) → valid list.
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 404, json: () => Promise.resolve({}) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([{ name: 'v0.5.0' }, { name: 'v0.4.2' }]),
+        });
+
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+
+      expect(result.latestVersion).toBe('0.5.0');
+      expect(result.latestSource).toBe('tags');
+    });
+
+    it('should report none when both releases and tags are empty', async () => {
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 404, json: () => Promise.resolve({}) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) });
+
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+
+      expect(result.latestVersion).toBeNull();
+      expect(result.latestSource).toBe('none');
+      expect(result.updateAvailable).toBe(false);
     });
 
     it('should detect update available when latest > current', async () => {
