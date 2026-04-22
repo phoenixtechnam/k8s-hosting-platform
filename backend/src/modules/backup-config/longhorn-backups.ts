@@ -98,6 +98,40 @@ function toRecord(b: LonghornBackup): BackupRecord {
 // manager's REST service (not the UI frontend).
 const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
 
+// Poll GET /v1/volumes/<name>/snapshots/<snapName> until snapshot exists
+// with state=ready. Longhorn's engine-controller sync loop typically
+// promotes snapshots in 1-3s but can lag under load.
+async function pollSnapshotReady(
+  fetchFn: typeof globalThis.fetch,
+  volUrl: string,
+  snapName: string,
+  totalMs: number,
+): Promise<{ ready: boolean; reason?: string }> {
+  const deadline = Date.now() + totalMs;
+  let lastErr = '';
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetchFn(`${volUrl}/snapshots/${encodeURIComponent(snapName)}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.ok) {
+        const body = await res.json() as { state?: string; size?: string };
+        // Longhorn snapshot states include: in-progress, ready,
+        // error. We accept "ready" (CR present, engine done).
+        if (body.state === 'ready') return { ready: true };
+        lastErr = `state=${body.state ?? 'unknown'}`;
+      } else {
+        lastErr = `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+    }
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  return { ready: false, reason: lastErr || 'timeout' };
+}
+
 export async function triggerBackupNow(
   clients: LonghornReadClients & { core?: k8s.CoreV1Api },
   opts: { apiBase?: string; fetch?: typeof globalThis.fetch } = {},
@@ -151,6 +185,17 @@ export async function triggerBackupNow(
       if (!snapRes.ok) {
         const text = await snapRes.text().catch(() => '');
         errors.push(`${volumeName} (snapshotCreate): HTTP ${snapRes.status} ${text.slice(0, 200)}`);
+        continue;
+      }
+      // Wait for the Snapshot CR to show up in Longhorn. snapshotCreate
+      // returns 200 as soon as the engine operation is queued, but the
+      // Snapshot CR isn't created by the engine-controller sync loop
+      // for another 1-3 seconds. Calling snapshotBackup in that
+      // window fails with "snapshot <nil> is invalid". Poll the
+      // volume's /snapshots/<name> endpoint until it resolves (max 20s).
+      const snapshotReady = await pollSnapshotReady(fetchFn, volUrl, snapName, 20_000);
+      if (!snapshotReady.ready) {
+        errors.push(`${volumeName} (snapshot not ready in 20s): ${snapshotReady.reason ?? 'timeout'}`);
         continue;
       }
       const backupRes = await fetchFn(`${volUrl}?action=snapshotBackup`, {

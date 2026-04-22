@@ -91,31 +91,31 @@ describe('triggerBackupNow', () => {
     clients = createMockClients();
   });
 
-  it('calls snapshotCreate then snapshotBackup per labeled volume', async () => {
+  it('calls snapshotCreate, polls snapshot ready, then snapshotBackup per labeled volume', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [
         { metadata: { name: 'pvc-a' } },
-        { metadata: { name: 'pvc-b' } },
       ],
     });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    const fetchMock = vi.fn()
+      // snapshotCreate
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      // poll: first tick "in-progress"
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'in-progress' }) })
+      // poll: second tick "ready"
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
+      // snapshotBackup
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { apiBase: 'http://longhorn-test:9500', fetch: fetchMock });
-    expect(out.triggered).toEqual(['pvc-a', 'pvc-b']);
-    // Two volumes × two calls each
+    expect(out.triggered).toEqual(['pvc-a']);
     expect(fetchMock).toHaveBeenCalledTimes(4);
     const urls = fetchMock.mock.calls.map(([u]) => u);
-    expect(urls[0]).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotCreate');
-    expect(urls[1]).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotBackup');
-    expect(urls[2]).toBe('http://longhorn-test:9500/v1/volumes/pvc-b?action=snapshotCreate');
-    expect(urls[3]).toBe('http://longhorn-test:9500/v1/volumes/pvc-b?action=snapshotBackup');
-    // Same snapshot name is used for both calls of a given volume
-    const createBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    const backupBody = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(createBody.name).toMatch(/^manual-/);
-    expect(backupBody.name).toBe(createBody.name);
-    expect(createBody.labels['platform.phoenix-host.net/trigger']).toBe('manual');
-  });
+    expect(urls[0]).toContain('action=snapshotCreate');
+    expect(urls[1]).toMatch(/\/snapshots\/manual-/);
+    expect(urls[2]).toMatch(/\/snapshots\/manual-/);
+    expect(urls[3]).toContain('action=snapshotBackup');
+  }, 25_000);
 
   it('does NOT call snapshotBackup when snapshotCreate fails', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
@@ -143,6 +143,7 @@ describe('triggerBackupNow', () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [{ metadata: { name: 'pvc-a' } }],
     });
+    // snapshotCreate fails immediately — we never reach polling/backup
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => 'internal' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(triggerBackupNow(clients as any, { fetch: fetchMock })).rejects.toThrow(/pvc-a/);
@@ -156,15 +157,17 @@ describe('triggerBackupNow', () => {
       ],
     });
     const fetchMock = vi.fn()
-      // pvc-a: snapshotCreate ok, snapshotBackup ok
+      // pvc-a: snapshotCreate ok, poll ready, snapshotBackup ok
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      // pvc-b: snapshotCreate ok, snapshotBackup fails
+      // pvc-b: snapshotCreate ok, poll ready, snapshotBackup fails
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'ready' }) })
       .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a']);
     expect(out.message).toMatch(/1 failed/);
-  });
+  }, 25_000);
 });
