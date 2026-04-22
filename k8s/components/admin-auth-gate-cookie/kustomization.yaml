@@ -1,0 +1,37 @@
+# admin-auth-gate-cookie — Kustomize Component
+#
+# Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
+# behind the platform_session cookie via nginx auth_request.
+#
+# The cluster-internal bits (auth-url to platform-api, cookie forwarding,
+# Authorization stripping, audit marker) live here. The per-environment
+# auth-signin redirect (public admin URL) is set on each overlay's
+# ingress patch, because the apex differs between dev/staging/production.
+#
+# Pick exactly ONE admin-auth-gate component per overlay:
+#   - components/admin-auth-gate-cookie  → platform_session + local login
+#   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC
+#
+# Context on the cookie-only contract: the verify endpoint intentionally
+# ignores Authorization Bearer to prevent Stalwart web-admin's own OAuth
+# token from contaminating the JWT verifier. See backend routes.ts.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Strategic merge patch. We keep the patch inline as a heredoc instead
+# of a separate file so the component stays self-contained.
+patches:
+  - target:
+      kind: Ingress
+      labelSelector: platform.phoenix-host.net/admin-ui=true
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: _  # patched by labelSelector — name placeholder required by SM
+        annotations:
+          nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
+          nginx.ingress.kubernetes.io/auth-snippet: |
+            proxy_set_header Cookie $http_cookie;
+            proxy_set_header Authorization "";
+          platform.phoenix-host.net/auth-gate: "cookie"

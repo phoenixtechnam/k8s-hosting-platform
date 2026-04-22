@@ -1,0 +1,33 @@
+# Longhorn dashboard on staging — longhorn.staging.phoenix-host.net
+#
+# Gated by k8s/components/admin-auth-gate-cookie (see
+# staging/kustomization.yaml components: block). Switch to
+# admin-auth-gate-oauth2 when oauth2-proxy is wired into the admin
+# panel's public ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: longhorn-ui
+  namespace: longhorn-system
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
+    # Per-overlay auth-signin — the cookie/oauth2 component sets
+    # auth-url + snippet but the redirect URL uses the public admin
+    # apex, which differs across environments.
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.staging.phoenix-host.net/login?rd=$escaped_request_uri"
+spec:
+  tls:
+    - hosts:
+        - longhorn.staging.phoenix-host.net
+      secretName: longhorn-ui-staging-tls
+  rules:
+    - host: longhorn.staging.phoenix-host.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: longhorn-frontend
+                port:
+                  number: 80

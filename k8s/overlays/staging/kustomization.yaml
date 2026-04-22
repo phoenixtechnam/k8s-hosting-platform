@@ -10,7 +10,17 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - ../../base/longhorn
   - dex/
+
+# Admin-auth gate — applies an auth_request to every Ingress labelled
+# `platform.phoenix-host.net/admin-ui=true` (Longhorn UI, Stalwart web-
+# admin, future admin-only UIs). Cookie mode gates on platform_session
+# (current staging login flow). Switch to admin-auth-gate-oauth2 when
+# oauth2-proxy is wired into the public admin ingress — every admin
+# UI picks up the oauth2 gate automatically.
+components:
+  - ../../components/admin-auth-gate-cookie
 
 patches:
   - path: platform-version-patch.yaml
@@ -18,6 +28,7 @@ patches:
   - path: resource-quotas-patch.yaml
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
+  - path: longhorn-ui-patch.yaml
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

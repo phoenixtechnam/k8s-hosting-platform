@@ -305,4 +305,118 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(403);
     });
   });
+
+  // ─── GET /auth/verify-admin-email (oauth2-proxy gate) ───
+  //
+  // When oauth2-proxy sits in front of admin-only subdomains with
+  // --set-xauthrequest=true, it sets X-Auth-Request-Email. Nginx passes that
+  // header to this endpoint via auth_request, and we resolve it against our
+  // users table + role allow-list.
+  //
+  // This endpoint is the OAuth2-proxy-mode equivalent of
+  // /auth/verify-admin-session (cookie-mode). Overlays pick one gate or the
+  // other via Kustomize components.
+
+  describe('GET /auth/verify-admin-email', () => {
+    const adminRow = { email: 'admin@example.com', roleName: 'admin', status: 'active' };
+    const billingRow = { email: 'billing@example.com', roleName: 'billing', status: 'active' };
+    const supportRow = { email: 'support@example.com', roleName: 'support', status: 'active' };
+    const superRow = { email: 'root@example.com', roleName: 'super_admin', status: 'active' };
+    const readOnlyRow = { email: 'ro@example.com', roleName: 'read_only', status: 'active' };
+    const inactiveRow = { email: 'old@example.com', roleName: 'admin', status: 'disabled' };
+
+    // mockReturnValueOnce accumulates across tests that don't consume the
+    // mock (e.g. 401-header-missing never touches the DB). Use the sticky
+    // mockReturnValue instead; each test sets what its own call will see,
+    // and subsequent tests overwrite it cleanly.
+    function mockDbLookup(rows: Array<{ email: string }>) {
+      mockSelectWhere.mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      });
+    }
+
+    it('returns 401 when X-Auth-Request-Email header is missing', async () => {
+      mockDbLookup([]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 401 when X-Auth-Request-Email header is empty', async () => {
+      mockDbLookup([]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': '' },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 401 when the header is whitespace only (trim empties it)', async () => {
+      mockDbLookup([]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': '   ' },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 403 when the email does not match any user', async () => {
+      mockDbLookup([]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': 'nobody@example.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 403 for a client_user role (structurally different from read_only)', async () => {
+      mockDbLookup([{ email: 'cu@example.com', roleName: 'client_user', status: 'active' }]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': 'cu@example.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 403 for a read_only user (matches session gate behaviour)', async () => {
+      mockDbLookup([readOnlyRow]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': readOnlyRow.email },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 403 for a disabled user even with an allowed role', async () => {
+      mockDbLookup([inactiveRow]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': inactiveRow.email },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it.each([
+      ['super_admin', superRow],
+      ['admin', adminRow],
+      ['billing', billingRow],
+      ['support', supportRow],
+    ])('returns 204 for an active %s user', async (_label, row) => {
+      mockDbLookup([row]);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/auth/verify-admin-email',
+        headers: { 'x-auth-request-email': row.email },
+      });
+      expect(res.statusCode).toBe(204);
+    });
+  });
 });

@@ -1,0 +1,10 @@
+# Longhorn: only the bits the platform itself defines. The Longhorn
+# operator/CSI stack is installed separately (via Flux HelmRelease or
+# the cluster bootstrap script) into the `longhorn-system` namespace.
+# This kustomization wires the dashboard Ingress + any backup policies
+# that should live in git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ui-ingress.yaml

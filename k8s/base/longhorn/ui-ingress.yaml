@@ -1,0 +1,24 @@
+# Longhorn dashboard — admin-only web UI.
+#
+# The ingress carries the `admin-ui=true` label so a
+# `k8s/components/admin-auth-gate-*` component applies an auth_request
+# gate. Pick exactly one gate per overlay; CLAUDE.md has the policy.
+#
+# Hostname + TLS secret are set per-overlay since the apex differs
+# between dev/staging/production.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: longhorn-ui
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/admin-ui: "true"
+  annotations:
+    # Overlays set cert-manager.io/cluster-issuer and, via components,
+    # nginx.ingress.kubernetes.io/auth-* annotations.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  # tls + rules are filled in by each overlay's patch (host is env-specific)
+  rules: []

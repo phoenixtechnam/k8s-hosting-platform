@@ -23,3 +23,8 @@ resources:
   - oauth2-proxy/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml
+  # longhorn/ is NOT included in base — Longhorn itself is installed per-
+  # environment via the bootstrap script, and the dashboard Ingress
+  # depends on a TLS cert-manager issuer that varies by overlay. Each
+  # overlay that wants the dashboard adds `k8s/base/longhorn` or its own
+  # equivalent to its resources + supplies an Ingress patch.

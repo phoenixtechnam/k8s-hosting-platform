@@ -333,6 +333,65 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
+  // GET /auth/verify-admin-email — nginx auth_request gate for admin-only
+  // subdomains when oauth2-proxy is the front door.
+  //
+  // oauth2-proxy (configured with --set-xauthrequest=true) authenticates
+  // the user against Dex and then populates X-Auth-Request-Email on the
+  // subrequest that nginx forwards here. We look up that email in our
+  // users table and enforce the same role allow-list as the cookie gate.
+  //
+  // This is the companion to /auth/verify-admin-session — overlays choose
+  // one gate via the admin-auth-gate Kustomize component:
+  //   - admin-auth-gate-oauth2 → this endpoint
+  //   - admin-auth-gate-cookie → verify-admin-session
+  //
+  // Status codes mirror the cookie gate so nginx rules stay identical:
+  //   204 — active user with allowed role
+  //   401 — header missing or empty (upstream oauth2-proxy misconfigured)
+  //   403 — email unknown, user disabled, or role not in allow-list
+  const allowedAdminRoles: ReadonlySet<string> = new Set([
+    'super_admin', 'admin', 'billing', 'support',
+  ]);
+  // Redact email for audit logs: keep the domain, redact the local part.
+  // Prevents leaking user identities into logs while still giving enough
+  // signal to diagnose "which tenant got blocked" incidents.
+  function redactEmail(email: string): string {
+    const at = email.lastIndexOf('@');
+    return at > 0 ? `***@${email.slice(at + 1)}` : '***';
+  }
+  app.get('/auth/verify-admin-email', async (request, reply) => {
+    const rawHeader = request.headers['x-auth-request-email'];
+    const email = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    if (!email) {
+      request.log.warn({ gate: 'admin-email', reason: 'HEADER_MISSING' }, 'auth gate denied');
+      return reply.code(401).send();
+    }
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) {
+      request.log.warn({ gate: 'admin-email', reason: 'HEADER_EMPTY' }, 'auth gate denied');
+      return reply.code(401).send();
+    }
+    const [user] = await app.db
+      .select()
+      .from(users)
+      .where(eq(users.email, trimmed))
+      .limit(1);
+    if (!user) {
+      request.log.warn({ gate: 'admin-email', reason: 'UNKNOWN_USER', email: redactEmail(trimmed) }, 'auth gate denied');
+      return reply.code(403).send();
+    }
+    if (user.status !== 'active') {
+      request.log.warn({ gate: 'admin-email', reason: 'INACTIVE', email: redactEmail(trimmed) }, 'auth gate denied');
+      return reply.code(403).send();
+    }
+    if (!allowedAdminRoles.has(user.roleName)) {
+      request.log.warn({ gate: 'admin-email', reason: 'INSUFFICIENT_ROLE', role: user.roleName, email: redactEmail(trimmed) }, 'auth gate denied');
+      return reply.code(403).send();
+    }
+    return reply.code(204).send();
+  });
+
   // POST /auth/refresh — issue a new token and revoke the old one
   app.post('/auth/refresh', async (request, reply) => {
     await request.jwtVerify();

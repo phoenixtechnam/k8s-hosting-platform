@@ -120,6 +120,19 @@ packages/api-contracts/src/
 - **Immutability:** Prefer new objects over mutation
 - **Test coverage target:** 80%+ (Phase 1: 70%+)
 
+## Admin-only UIs (Longhorn, Stalwart, future)
+
+Every Ingress that exposes an admin-only web UI (Longhorn dashboard, Stalwart web-admin, etc.) MUST:
+
+1. Be labelled `platform.phoenix-host.net/admin-ui: "true"` on `metadata.labels`
+2. Be included via an overlay that lists exactly one of these Kustomize components:
+   - `k8s/components/admin-auth-gate-cookie` → gate by `platform_session` cookie
+   - `k8s/components/admin-auth-gate-oauth2` → gate by oauth2-proxy + Dex OIDC
+
+The choice is per-overlay. When oauth2-proxy is enabled for the admin panel, switch the overlay to `admin-auth-gate-oauth2` — every admin-only UI will pick up the oauth2 gate simultaneously.
+
+`./scripts/ci-admin-auth-check.sh` (wired into Infrastructure CI) fails the build if an Ingress has the admin-ui label but no gate annotation.
+
 ## External Dependencies (ADR-022, ADR-025, ADR-026)
 
 These services are managed by **separate projects** — this platform consumes their APIs:

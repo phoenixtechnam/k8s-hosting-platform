@@ -50,6 +50,22 @@ jobs:
           # range parse errors) still fail the job.
           shellcheck --severity=warning scripts/*.sh
 
+  admin-auth-gate-check:
+    name: Admin-auth gate guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yq
+        run: |
+          # mikefarah/yq v4 — exact syntax used in scripts/ci-admin-auth-check.sh.
+          # Ubuntu's apt yq is Python-based and incompatible.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      - name: Verify admin-only Ingresses have an auth gate
+        run: ./scripts/ci-admin-auth-check.sh
+
   docker-build:
     name: Docker Build (no push)
     runs-on: ubuntu-latest

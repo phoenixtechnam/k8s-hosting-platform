@@ -1,0 +1,66 @@
+# admin-auth-gate-oauth2 — Kustomize Component
+#
+# Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
+# behind oauth2-proxy's Dex-OIDC session.
+#
+# Flow per request:
+#   1. nginx auth_request → oauth2-proxy /oauth2/auth
+#        - 202/200: user has a valid oauth2-proxy cookie
+#        - 401: redirect to auth-signin → oauth2-proxy /oauth2/start → Dex
+#   2. oauth2-proxy is configured with --set-xauthrequest=true so the
+#      subrequest response includes X-Auth-Request-Email
+#   3. auth-snippet forwards that header to an INTERNAL nginx location
+#      that calls the backend's /auth/verify-admin-email — maps email
+#      to user row and checks role ∈ {super_admin, admin, billing, support}
+#
+# The role check is what separates oauth2-proxy-as-auth (Dex user OK) from
+# admin-UI-as-authorization (user is an admin). Both are required.
+#
+# The per-overlay auth-signin URL is set on each ingress patch because
+# the admin-panel apex differs between dev/staging/production.
+#
+# Pick exactly ONE admin-auth-gate component per overlay:
+#   - components/admin-auth-gate-cookie  → platform_session + local login
+#   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC (this)
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: Ingress
+      labelSelector: platform.phoenix-host.net/admin-ui=true
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: _  # patched by labelSelector — name placeholder required by SM
+        annotations:
+          nginx.ingress.kubernetes.io/auth-url: "http://oauth2-proxy.platform.svc.cluster.local:4180/oauth2/auth"
+          nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email,X-Auth-Request-User"
+          nginx.ingress.kubernetes.io/auth-snippet: |
+            # Chain a second subrequest to the backend role-gate. oauth2-proxy
+            # already confirmed the user has a valid Dex session; this second
+            # step confirms the email maps to an admin role in our DB.
+            auth_request_set $auth_email $upstream_http_x_auth_request_email;
+            access_by_lua_block {
+              local res = ngx.location.capture(
+                "/__platform_role_check__",
+                { method = ngx.HTTP_GET, share_all_vars = true }
+              )
+              if res.status ~= 204 then
+                ngx.exit(res.status == 0 and 502 or res.status)
+              end
+            }
+          nginx.ingress.kubernetes.io/server-snippet: |
+            # Internal-only location used by auth-snippet above to run the
+            # second verification step (oauth2-proxy → email → role lookup).
+            location = /__platform_role_check__ {
+              internal;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_set_header X-Auth-Request-Email $auth_email;
+              proxy_set_header Authorization "";
+              proxy_set_header Cookie "";
+              proxy_pass http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-email;
+            }
+          platform.phoenix-host.net/auth-gate: "oauth2"
