@@ -14,3 +14,6 @@ resources:
   - etcd-snapshot-cronjob.yaml
   - postgres-dump-cronjob.yaml
   - cluster-state-cronjob.yaml
+  - secrets-backup-cronjob.yaml
+  - backup-audit-cronjob.yaml
+  - hostpath-snapshot-cronjob.yaml

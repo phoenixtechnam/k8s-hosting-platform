@@ -145,6 +145,19 @@ describe('K8s Provisioner Service', () => {
         }),
       );
     });
+
+    it('should label new tenant PVCs into the Longhorn default backup group', async () => {
+      // Silent-footgun guard: every fresh tenant PVC must carry the
+      // recurring-job-group label so Longhorn's backup schedule picks
+      // it up. Missing label = silently excluded from backups.
+      const { applyPVC } = await import('./service.js');
+      await applyPVC(mockK8s, 'client-fresh', '10', 'longhorn');
+      const [call] = mockK8s.core.createNamespacedPersistentVolumeClaim.mock.calls;
+      const labels = call[0].body.metadata.labels;
+      expect(labels['recurring-job-group.longhorn.io/default']).toBe('enabled');
+      expect(labels['app.kubernetes.io/part-of']).toBe('hosting-platform');
+      expect(labels['app.kubernetes.io/component']).toBe('tenant-storage');
+    });
   });
 
   describe('buildStepsLog', () => {

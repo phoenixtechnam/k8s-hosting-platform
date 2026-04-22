@@ -10,6 +10,10 @@ kind: Kustomization
 
 resources:
   - ../../base
+  # DR backup CronJobs (etcd/postgres/cluster-state/secrets/hostpath/audit).
+  # Included in production + staging only — dev DinD has no real etcd and
+  # backups-against-local-path would be noise.
+  - ../../base/backup
 
 patches:
   - path: platform-config-patch.yaml

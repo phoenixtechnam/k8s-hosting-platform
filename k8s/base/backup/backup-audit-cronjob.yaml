@@ -1,0 +1,134 @@
+# Daily audit of Longhorn PVC backup coverage. Emits a Kubernetes
+# Warning event for every Longhorn PVC missing the
+# recurring-job-group.longhorn.io/default=enabled label — UNLESS the
+# PVC carries the opt-out annotation
+# platform.phoenix-host.net/backup-excluded=true.
+#
+# This closes the silent-footgun: without this, a tenant PVC provisioned
+# outside the backend path (kubectl apply, operator mistake) would be
+# excluded from backups with no surface signal. Warning events surface
+# in admin-panel notifications + `kubectl get events`.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-audit
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-audit
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-audit
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  # Create Events so operators see the warning in
+  # `kubectl describe pvc` and in admin-panel's event feed.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-audit
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backup-audit
+subjects:
+  - kind: ServiceAccount
+    name: backup-audit
+    namespace: platform
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-backup-audit
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-audit
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: backup-audit
+          containers:
+            - name: audit
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null
+                  # Enumerate every Longhorn PVC cluster-wide; emit a
+                  # Warning event per unlabeled + non-opted-out.
+                  MISSING=$(kubectl get pvc -A -o json \
+                    | jq -r '.items[]
+                             | select(.spec.storageClassName=="longhorn")
+                             | select((.metadata.labels["recurring-job-group.longhorn.io/default"] // "") != "enabled")
+                             | select((.metadata.annotations["platform.phoenix-host.net/backup-excluded"] // "false") != "true")
+                             | [.metadata.namespace, .metadata.name] | @tsv')
+                  if [ -z "${MISSING}" ]; then
+                    echo "[backup-audit] all Longhorn PVCs are covered"
+                    exit 0
+                  fi
+                  echo "${MISSING}" | while IFS=$'\t' read -r ns name; do
+                    [ -z "$ns" ] && continue
+                    echo "[backup-audit] UNLABELED: ${ns}/${name}"
+                    UID=$(kubectl get pvc "$name" -n "$ns" -o jsonpath='{.metadata.uid}')
+                    MESSAGE="PVC ${ns}/${name} is not in the Longhorn default recurring-job group. Backups will skip it. Run scripts/apply-backup-labels.sh or add platform.phoenix-host.net/backup-excluded=true to suppress."
+                    kubectl create -f - <<EOF
+                    apiVersion: v1
+                    kind: Event
+                    metadata:
+                      generateName: backup-audit-unlabeled-
+                      namespace: ${ns}
+                    type: Warning
+                    reason: PVCNotInBackupGroup
+                    message: "${MESSAGE}"
+                    source:
+                      component: backup-audit
+                    involvedObject:
+                      apiVersion: v1
+                      kind: PersistentVolumeClaim
+                      name: ${name}
+                      namespace: ${ns}
+                      uid: ${UID}
+                    firstTimestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    lastTimestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    count: 1
+                  EOF
+                  done
+                  # Exit non-zero so operator-facing monitoring picks up
+                  # the failure state beyond the Event stream.
+                  echo "[backup-audit] FAIL: unlabeled Longhorn PVCs detected" >&2
+                  exit 1
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi

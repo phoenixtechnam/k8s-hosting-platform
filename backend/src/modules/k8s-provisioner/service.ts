@@ -269,6 +269,16 @@ export async function applyPVC(
         metadata: {
           name: `${namespace}-storage`,
           namespace,
+          labels: {
+            // Opt this PVC into Longhorn's `default` RecurringJob group
+            // so the daily/weekly backup schedule picks it up
+            // automatically. Without this label a new tenant PVC would
+            // silently fall outside the backup set — see
+            // project_backup_restore_benchmarks.md and N6 audit.
+            'recurring-job-group.longhorn.io/default': 'enabled',
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'tenant-storage',
+          },
         },
         spec: {
           accessModes: ['ReadWriteOnce'],

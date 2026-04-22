@@ -1,0 +1,131 @@
+# Ship storage-lifecycle tarballs off the node. Lives at
+# /var/lib/platform/snapshots — the hostPath the platform-api mounts
+# when building archives, resize-snapshots, and clear-failed recovery
+# bundles. These aren't on a PV, so Longhorn's backup isn't aware of
+# them. Node loss without this CronJob = lost archives.
+#
+# Runs daily at 03:30 after the DB + secrets-backup windows so the
+# node isn't doing concurrent uploads.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-hostpath-snapshot-upload
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # The hostPath lives on the node running the platform-api.
+          # On a HA multi-node cluster the backend can be rescheduled;
+          # we pin this CronJob to the control-plane node which
+          # always has the hostPath (bootstrap.sh creates it there).
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              effect: NoSchedule
+              operator: Exists
+            - key: node-role.kubernetes.io/master
+              effect: NoSchedule
+              operator: Exists
+          containers:
+            - name: upload
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_ACCESS_KEY_ID, optional: true } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_SECRET_ACCESS_KEY, optional: true } }
+                - name: AWS_ENDPOINT_URL
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_ENDPOINTS, optional: true } }
+                - name: AWS_DEFAULT_REGION
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_REGION, optional: true } }
+                - name: S3_BUCKET
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_BUCKET, optional: true } }
+                - name: S3_PATH_PREFIX
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_PATH_PREFIX, optional: true } }
+                - name: SSH_HOST
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: SSH_HOST, optional: true } }
+                - name: SSH_PORT
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: SSH_PORT, optional: true } }
+                - name: SSH_USER
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: SSH_USER, optional: true } }
+                - name: SSH_PATH
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: SSH_PATH, optional: true } }
+                - name: TARGET_KIND
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: TARGET_KIND, optional: true } }
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /snapshots
+                  readOnly: true
+                - name: ssh-key
+                  mountPath: /secrets/ssh
+                  readOnly: true
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  apt-get update -qq >/dev/null
+                  apt-get install -y -qq awscli openssh-client rsync findutils >/dev/null
+                  SRC=/snapshots
+                  if [ ! -d "${SRC}" ]; then
+                    echo "[hostpath] ${SRC} missing, nothing to do"; exit 0
+                  fi
+                  # Count + size for telemetry; if empty we exit fast.
+                  COUNT=$(find "${SRC}" -type f -mtime -2 2>/dev/null | wc -l)
+                  if [ "${COUNT}" -eq 0 ]; then
+                    echo "[hostpath] no files modified in last 48h, exiting"; exit 0
+                  fi
+                  echo "[hostpath] ${COUNT} files to upload"
+                  KIND=${TARGET_KIND:-s3}
+                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}node-hostpath-snapshots"
+                  case "${KIND}" in
+                    s3)
+                      aws s3 sync --endpoint-url="${AWS_ENDPOINT_URL}" \
+                        --exclude "*" --include "*.tar*" --size-only \
+                        "${SRC}/" "s3://${S3_BUCKET}/${PREFIX}/"
+                      ;;
+                    ssh)
+                      chmod 600 /secrets/ssh/key
+                      rsync -az --delete \
+                        -e "ssh -i /secrets/ssh/key -p ${SSH_PORT:-22} -o StrictHostKeyChecking=accept-new" \
+                        "${SRC}/" "${SSH_USER}@${SSH_HOST}:${SSH_PATH}/node-hostpath-snapshots/"
+                      ;;
+                    *)
+                      echo "[hostpath] ERROR: unknown TARGET_KIND=${KIND}"; exit 1
+                      ;;
+                  esac
+                  echo "[hostpath] done"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 300m
+                  memory: 256Mi
+          volumes:
+            - name: snapshots
+              hostPath:
+                path: /var/lib/platform/snapshots
+                type: DirectoryOrCreate
+            - name: ssh-key
+              secret:
+                secretName: backup-credentials
+                optional: true
+                items:
+                  - key: SSH_PRIVATE_KEY
+                    path: key
+                    mode: 0600
