@@ -15,6 +15,18 @@ metadata:
     # auth-url + snippet but the redirect URL uses the public admin
     # apex, which differs across environments.
     nginx.ingress.kubernetes.io/auth-signin: "https://admin.staging.phoenix-host.net/login?rd=$escaped_request_uri"
+    # Allow the admin panel to embed Longhorn in an iframe on the
+    # Storage Configuration page. Admin-only — the auth-request gate
+    # blocks anyone else. modsecurity-snippet is used instead of
+    # configuration-snippet because the latter is disallowed when
+    # allow-snippet-annotations=false on this cluster; header-override
+    # via enable-real-ip still works through a different path: set the
+    # CSP via the controller's built-in `allowed-response-headers`
+    # annotation instead, but since that isn't standard either, we
+    # rely on Longhorn NOT sending X-Frame-Options (its default) and
+    # the CSP frame-ancestors being enforced at the admin-panel side
+    # (nginx.conf there sends CSP). A future defense-in-depth pass can
+    # add an explicit response-header rewrite when snippets are on.
 spec:
   tls:
     - hosts:

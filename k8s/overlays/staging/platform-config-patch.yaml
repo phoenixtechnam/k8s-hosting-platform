@@ -14,3 +14,5 @@ data:
   cors-origins: "https://admin.staging.phoenix-host.net,https://client.staging.phoenix-host.net"
   # Per-client sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
+  # Longhorn dashboard URL for the Storage Configuration iframe.
+  longhorn-url: "https://longhorn.staging.phoenix-host.net/"

@@ -41,6 +41,15 @@ spec:
                   name: platform-config
                   key: stalwart-admin-url
                   optional: true
+            # Longhorn dashboard URL for the Storage Configuration iframe.
+            # Gated by admin-auth-gate-cookie — platform_session travels
+            # cross-subdomain because the cookie's Domain=.<apex>.
+            - name: LONGHORN_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: longhorn-url
+                  optional: true
           resources:
             requests:
               cpu: 50m

@@ -13,6 +13,7 @@ interface RuntimeConfig {
   API_URL: string;
   CLIENT_PANEL_URL: string;
   STALWART_ADMIN_URL: string;
+  LONGHORN_URL: string;
 }
 
 declare global {
@@ -39,6 +40,13 @@ function getConfig(): RuntimeConfig {
     STALWART_ADMIN_URL:
       runtime.STALWART_ADMIN_URL ||
       import.meta.env.VITE_STALWART_ADMIN_URL ||
+      '',
+    // Longhorn dashboard URL, iframed in the Storage Configuration page.
+    // Same pattern as STALWART_ADMIN_URL — gated by ingress auth_request
+    // against verify-admin-session, cookie travels cross-subdomain.
+    LONGHORN_URL:
+      runtime.LONGHORN_URL ||
+      import.meta.env.VITE_LONGHORN_URL ||
       '',
   };
 }

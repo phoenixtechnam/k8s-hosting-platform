@@ -19,6 +19,7 @@ import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
 import BackupSettings from '@/pages/BackupSettings';
+import StorageSettings from '@/pages/StorageSettings';
 import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
@@ -71,6 +72,7 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
+            <Route path="settings/storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><StorageSettings /></ProtectedRoute>} />
             <Route path="settings/users" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AdminUsers /></ProtectedRoute>} />
             <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
             <Route path="monitoring/health" element={<HealthDashboard />} />

@@ -31,6 +31,7 @@ RUN chmod +x /docker-entrypoint.sh
 ENV API_URL=""
 ENV CLIENT_PANEL_URL=""
 ENV STALWART_ADMIN_URL=""
+ENV LONGHORN_URL=""
 ENV BACKEND_HOST="platform-api.platform.svc.cluster.local"
 ENV BACKEND_PORT="3000"
 
