@@ -3,6 +3,14 @@
 # Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
 # behind oauth2-proxy's Dex-OIDC session.
 #
+# REQUIRES `allow-snippet-annotations: "true"` on the nginx-ingress
+# controller — the chained role-check is implemented with an auth-snippet
+# (lua ngx.location.capture) and a server-snippet (internal location
+# block). If snippets are disabled cluster-wide, this component's
+# rendered Ingress will be rejected by the admission webhook. The
+# hardening trade-off is documented; flip snippets on only when you
+# intentionally move to oauth2-proxy as the admin-panel front door.
+#
 # Flow per request:
 #   1. nginx auth_request → oauth2-proxy /oauth2/auth
 #        - 202/200: user has a valid oauth2-proxy cookie

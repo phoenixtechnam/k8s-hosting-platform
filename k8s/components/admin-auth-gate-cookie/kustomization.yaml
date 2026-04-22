@@ -3,23 +3,31 @@
 # Gates every Ingress labelled `platform.phoenix-host.net/admin-ui=true`
 # behind the platform_session cookie via nginx auth_request.
 #
-# The cluster-internal bits (auth-url to platform-api, cookie forwarding,
-# Authorization stripping, audit marker) live here. The per-environment
-# auth-signin redirect (public admin URL) is set on each overlay's
-# ingress patch, because the apex differs between dev/staging/production.
+# Intentionally snippet-free. Most managed nginx-ingress installs ship
+# with `allow-snippet-annotations: "false"` as a hardening default
+# (Longhorn's admission webhook rejects any Ingress that uses
+# auth-snippet / server-snippet / configuration-snippet when that flag
+# is off). This component uses only first-class annotations, so it
+# works on hardened clusters.
+#
+# Two design points that this edit relies on:
+#   1. nginx auth_request forwards the browser's Cookie header to the
+#      subrequest by default — no explicit proxy_set_header needed.
+#   2. The verify-admin-session endpoint ONLY reads the platform_session
+#      cookie; it ignores Authorization entirely. That means we don't
+#      need a snippet to strip Bearer tokens set by a gated SPA — the
+#      backend is already safe against that contamination.
+#
+# The per-environment auth-signin redirect (public admin URL) is set on
+# each overlay's ingress patch, because the apex differs between
+# dev/staging/production.
 #
 # Pick exactly ONE admin-auth-gate component per overlay:
 #   - components/admin-auth-gate-cookie  → platform_session + local login
 #   - components/admin-auth-gate-oauth2  → oauth2-proxy + Dex OIDC
-#
-# Context on the cookie-only contract: the verify endpoint intentionally
-# ignores Authorization Bearer to prevent Stalwart web-admin's own OAuth
-# token from contaminating the JWT verifier. See backend routes.ts.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-# Strategic merge patch. We keep the patch inline as a heredoc instead
-# of a separate file so the component stays self-contained.
 patches:
   - target:
       kind: Ingress
@@ -31,7 +39,4 @@ patches:
         name: _  # patched by labelSelector — name placeholder required by SM
         annotations:
           nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
-          nginx.ingress.kubernetes.io/auth-snippet: |
-            proxy_set_header Cookie $http_cookie;
-            proxy_set_header Authorization "";
           platform.phoenix-host.net/auth-gate: "cookie"
