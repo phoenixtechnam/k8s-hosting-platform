@@ -3,6 +3,43 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Loader2, Server, Shield, KeyRound } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { apiFetch, API_BASE } from '@/lib/api-client';
+import { sanitizeRedirect } from '@/lib/sanitize-redirect';
+
+// Apex is the admin panel's hostname with its first label stripped.
+// admin.staging.phoenix-host.net  → staging.phoenix-host.net
+// admin.k8s-platform.test         → k8s-platform.test
+// Used to allow-list cross-subdomain redirects coming in via ?rd=.
+function getPlatformApex(): string {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const parts = host.split('.');
+  return parts.length > 1 ? parts.slice(1).join('.') : host;
+}
+
+// Route to `target` appropriately:
+//   - Same-origin absolute URL → react-router navigate (keeps SPA state)
+//   - Cross-subdomain absolute URL → window.location.href (browser nav
+//     so the browser sends platform_session to the other subdomain)
+//   - Relative path → react-router navigate
+function goToTarget(target: string, navigate: (to: string, opts?: { replace?: boolean }) => void): void {
+  if (target.startsWith('/')) {
+    navigate(target, { replace: true });
+    return;
+  }
+  try {
+    const url = new URL(target);
+    if (typeof window !== 'undefined' && url.origin === window.location.origin) {
+      navigate(url.pathname + url.search + url.hash, { replace: true });
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.location.href = target;
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  navigate('/', { replace: true });
+}
 
 interface AuthStatus {
   readonly localAuthEnabled: boolean;
@@ -21,7 +58,18 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
+  // Post-login destination. Priority:
+  //   1. ?rd= query param (set by nginx auth-signin on gated subdomains
+  //      like longhorn.<apex>) — sanitised against the apex allow-list
+  //   2. Router state.from (React Router's internal mechanism when an
+  //      authenticated route bounced the user here)
+  //   3. "/" fallback
+  // rd= takes priority because it's the caller that triggered the login
+  // flow — state.from is often empty when the Login route is hit directly.
+  const routerFrom = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const apex = getPlatformApex();
+  const redirectTarget = sanitizeRedirect(searchParams.get('rd'), origin, apex, routerFrom);
   const isEmergency = searchParams.get('emergency') === 'true';
 
   useEffect(() => {
@@ -39,10 +87,10 @@ export default function Login() {
       try {
         const user = JSON.parse(decodeURIComponent(userJson));
         setTokenAndUser(token, user);
-        navigate('/', { replace: true });
+        goToTarget(redirectTarget, navigate);
       } catch { /* ignore */ }
     }
-  }, [searchParams, navigate, setTokenAndUser]);
+  }, [searchParams, navigate, setTokenAndUser, redirectTarget]);
 
   // Auto-login: if OIDC-only (or proxy-protected) and single provider, redirect automatically
   const shouldAutoLogin = !isEmergency && !existingToken && authStatus !== null
@@ -64,7 +112,7 @@ export default function Login() {
     setSubmitting(true);
     try {
       await login(email, password);
-      navigate(from, { replace: true });
+      goToTarget(redirectTarget, navigate);
     } catch { /* error in store */ } finally { setSubmitting(false); }
   };
 
@@ -77,7 +125,7 @@ export default function Login() {
         body: JSON.stringify({ email, password, break_glass_secret: breakGlassSecret }),
       });
       setTokenAndUser(res.data.token, res.data.user);
-      navigate('/', { replace: true });
+      goToTarget(redirectTarget, navigate);
     } catch { /* error shown */ } finally { setSubmitting(false); }
   };
 
