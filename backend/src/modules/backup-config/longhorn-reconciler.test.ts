@@ -168,6 +168,39 @@ describe('reconcileBackupTarget', () => {
       statusCode: 500,
     });
   });
+
+  it('recognises @kubernetes/client-node v1 wrapped 404 (message + string body)', async () => {
+    // Exact shape observed in staging logs 2026-04-22:
+    //   HTTP-Code: 404 Message: Unknown API Status Code!
+    //   Body: "{\"kind\":\"Status\",\"code\":404,\"reason\":\"NotFound\",...}"
+    // None of the outer properties (statusCode/code) are set — signal
+    // lives only in message + JSON-stringified body.
+    const wrappedErr = new Error(
+      'HTTP-Code: 404 Message: Unknown API Status Code! Body: "{\\"kind\\":\\"Status\\",\\"code\\":404,\\"reason\\":\\"NotFound\\"}" Headers: {}',
+    );
+    clients.core.replaceNamespacedSecret.mockRejectedValueOnce(wrappedErr);
+    clients.core.createNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    // Fallback create was reached
+    expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
+  });
+
+  it('recognises v1 404 when body is a parseable JSON string carrying reason=NotFound', async () => {
+    const err = {
+      body: '{"kind":"Status","status":"Failure","code":404,"reason":"NotFound"}',
+      message: 'Request failed',
+    };
+    clients.core.replaceNamespacedSecret.mockRejectedValueOnce(err);
+    clients.core.createNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    expect(clients.core.createNamespacedSecret).toHaveBeenCalled();
+  });
 });
 
 describe('clearBackupTarget', () => {

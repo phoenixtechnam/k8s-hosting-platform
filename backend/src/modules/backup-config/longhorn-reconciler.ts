@@ -181,6 +181,29 @@ async function patchBackupTarget(
 
 function isNotFound(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
-  const e = err as { statusCode?: number; status?: number; body?: { code?: number } };
-  return e.statusCode === 404 || e.status === 404 || e.body?.code === 404;
+  const e = err as {
+    statusCode?: number;
+    status?: number;
+    code?: number;
+    body?: unknown;
+    message?: string;
+  };
+  if (e.statusCode === 404 || e.status === 404 || e.code === 404) return true;
+  // @kubernetes/client-node v1 wraps API errors in a generic Error whose
+  // message begins with "HTTP-Code: 404 Message: Unknown API Status
+  // Code! Body: <json-string>". Neither .statusCode nor .code is set on
+  // the outer object — the only machine-readable signal is the message
+  // prefix and the stringified body.
+  if (typeof e.message === 'string' && /HTTP-Code:\s*404\b/.test(e.message)) return true;
+  if (typeof e.body === 'object' && e.body !== null) {
+    const b = e.body as { code?: number; reason?: string };
+    if (b.code === 404 || b.reason === 'NotFound') return true;
+  }
+  if (typeof e.body === 'string') {
+    try {
+      const parsed = JSON.parse(e.body) as { code?: number; reason?: string };
+      if (parsed.code === 404 || parsed.reason === 'NotFound') return true;
+    } catch { /* body wasn't JSON; ignore */ }
+  }
+  return false;
 }
