@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle } from 'lucide-react';
+import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
   useBackupConfigs,
   useCreateBackupConfig,
+  useUpdateBackupConfig,
   useDeleteBackupConfig,
   useTestBackupConfig,
   useTestBackupDraft,
@@ -19,6 +20,7 @@ type StorageType = 'ssh' | 's3';
 export default function BackupSettings() {
   const { data: response, isLoading } = useBackupConfigs();
   const createConfig = useCreateBackupConfig();
+  const updateConfig = useUpdateBackupConfig();
   const deleteConfig = useDeleteBackupConfig();
   const testConfig = useTestBackupConfig();
   const testDraft = useTestBackupDraft();
@@ -32,6 +34,12 @@ export default function BackupSettings() {
   const [showForm, setShowForm] = useState(false);
   const [storageType, setStorageType] = useState<StorageType>('ssh');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  // Editing mode: when non-null, the form submits a PATCH to this id
+  // instead of a POST. Secret fields start blank and are only sent if
+  // the operator explicitly types a new value — PATCH omits undefined
+  // fields so the existing stored secret is preserved.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [changeSecret, setChangeSecret] = useState(false);
   const [testResult, setTestResult] = useState<{
     id: string;
     ok: boolean;
@@ -65,6 +73,35 @@ export default function BackupSettings() {
       s3_prefix: '', retention_days: '30', schedule_expression: '0 2 * * *',
     });
     setShowForm(false);
+    setEditingId(null);
+    setChangeSecret(false);
+    setDraftResult(null);
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const startEdit = (config: any) => {
+    setStorageType(config.storageType);
+    setForm({
+      name: config.name ?? '',
+      ssh_host: config.sshHost ?? '',
+      ssh_port: String(config.sshPort ?? 22),
+      ssh_user: config.sshUser ?? '',
+      ssh_key: '', // always blank — a secret the server never returns
+      ssh_path: config.sshPath ?? '/backups',
+      s3_endpoint: config.s3Endpoint ?? '',
+      s3_bucket: config.s3Bucket ?? '',
+      s3_region: config.s3Region ?? 'us-east-1',
+      s3_access_key: '', // blank; server redacts
+      s3_secret_key: '', // blank; server redacts
+      s3_prefix: config.s3Prefix ?? '',
+      retention_days: String(config.retentionDays ?? 30),
+      schedule_expression: config.scheduleExpression ?? '0 2 * * *',
+    });
+    setEditingId(config.id);
+    setChangeSecret(false);
+    setShowForm(true);
+    setDraftResult(null);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const buildInput = () => {
@@ -79,12 +116,49 @@ export default function BackupSettings() {
       : { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined };
   };
 
+  // PATCH payload for edit mode. Strictly omits secrets unless the
+  // operator toggled "Change secret". The backend's
+  // updateBackupConfigSchema is partial + service.ts uses
+  // `if (input.field !== undefined)` on each field, so omitted fields
+  // preserve the existing stored value.
+  const buildPatchInput = () => {
+    const payload: Record<string, unknown> = {
+      name: form.name,
+      retention_days: Number(form.retention_days),
+      schedule_expression: form.schedule_expression,
+    };
+    if (storageType === 'ssh') {
+      payload.ssh_host = form.ssh_host;
+      payload.ssh_port = Number(form.ssh_port);
+      payload.ssh_user = form.ssh_user;
+      payload.ssh_path = form.ssh_path;
+      if (changeSecret && form.ssh_key.trim().length > 0) {
+        payload.ssh_key = form.ssh_key;
+      }
+    } else {
+      payload.s3_endpoint = form.s3_endpoint;
+      payload.s3_bucket = form.s3_bucket;
+      payload.s3_region = form.s3_region;
+      payload.s3_prefix = form.s3_prefix || undefined;
+      if (changeSecret && form.s3_access_key.trim().length > 0) {
+        payload.s3_access_key = form.s3_access_key;
+      }
+      if (changeSecret && form.s3_secret_key.trim().length > 0) {
+        payload.s3_secret_key = form.s3_secret_key;
+      }
+    }
+    return payload;
+  };
+
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createConfig.mutateAsync(buildInput());
+      if (editingId) {
+        await updateConfig.mutateAsync({ id: editingId, input: buildPatchInput() });
+      } else {
+        await createConfig.mutateAsync(buildInput());
+      }
       resetForm();
-      setDraftResult(null);
     } catch { /* error shown below */ }
   };
 
@@ -135,7 +209,7 @@ export default function BackupSettings() {
         </div>
         <button
           type="button"
-          onClick={() => setShowForm((p) => !p)}
+          onClick={() => { if (showForm) { resetForm(); } else { setShowForm(true); } }}
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
           data-testid="add-backup-config-button"
         >
@@ -183,8 +257,23 @@ export default function BackupSettings() {
                 <input id="bc-ssh-path" className={INPUT_CLASS + ' mt-1'} value={form.ssh_path} onChange={(e) => setForm({ ...form, ssh_path: e.target.value })} required data-testid="bc-ssh-path" />
               </div>
               <div className="sm:col-span-2">
-                <label htmlFor="bc-ssh-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300">SSH Private Key</label>
-                <textarea id="bc-ssh-key" rows={4} className={INPUT_CLASS + ' mt-1 font-mono text-xs'} value={form.ssh_key} onChange={(e) => setForm({ ...form, ssh_key: e.target.value })} required placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" data-testid="bc-ssh-key" />
+                <label htmlFor="bc-ssh-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  SSH Private Key
+                  {editingId && (
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep current)</span>
+                  )}
+                </label>
+                <textarea
+                  id="bc-ssh-key"
+                  rows={4}
+                  className={INPUT_CLASS + ' mt-1 font-mono text-xs disabled:opacity-50'}
+                  value={form.ssh_key}
+                  onChange={(e) => setForm({ ...form, ssh_key: e.target.value })}
+                  required={!editingId}
+                  disabled={!!editingId && !changeSecret}
+                  placeholder={editingId ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+                  data-testid="bc-ssh-key"
+                />
               </div>
             </div>
           )}
@@ -208,13 +297,56 @@ export default function BackupSettings() {
                 <input id="bc-s3-prefix" className={INPUT_CLASS + ' mt-1'} value={form.s3_prefix} onChange={(e) => setForm({ ...form, s3_prefix: e.target.value })} data-testid="bc-s3-prefix" />
               </div>
               <div>
-                <label htmlFor="bc-s3-access" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Access Key</label>
-                <input id="bc-s3-access" className={INPUT_CLASS + ' mt-1 font-mono'} value={form.s3_access_key} onChange={(e) => setForm({ ...form, s3_access_key: e.target.value })} required data-testid="bc-s3-access" />
+                <label htmlFor="bc-s3-access" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Access Key
+                  {editingId && (
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep)</span>
+                  )}
+                </label>
+                <input
+                  id="bc-s3-access"
+                  className={INPUT_CLASS + ' mt-1 font-mono disabled:opacity-50'}
+                  value={form.s3_access_key}
+                  onChange={(e) => setForm({ ...form, s3_access_key: e.target.value })}
+                  required={!editingId}
+                  disabled={!!editingId && !changeSecret}
+                  placeholder={editingId ? '(unchanged)' : undefined}
+                  data-testid="bc-s3-access"
+                />
               </div>
               <div>
-                <label htmlFor="bc-s3-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Secret Key</label>
-                <input id="bc-s3-secret" className={INPUT_CLASS + ' mt-1 font-mono'} value={form.s3_secret_key} onChange={(e) => setForm({ ...form, s3_secret_key: e.target.value })} required data-testid="bc-s3-secret" />
+                <label htmlFor="bc-s3-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Secret Key
+                  {editingId && (
+                    <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">(leave blank to keep)</span>
+                  )}
+                </label>
+                <input
+                  id="bc-s3-secret"
+                  type="password"
+                  className={INPUT_CLASS + ' mt-1 font-mono disabled:opacity-50'}
+                  value={form.s3_secret_key}
+                  onChange={(e) => setForm({ ...form, s3_secret_key: e.target.value })}
+                  required={!editingId}
+                  disabled={!!editingId && !changeSecret}
+                  placeholder={editingId ? '(unchanged)' : undefined}
+                  data-testid="bc-s3-secret"
+                />
               </div>
+              {editingId && (
+                <div className="sm:col-span-2">
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={changeSecret}
+                      onChange={(e) => setChangeSecret(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                      data-testid="bc-change-secret"
+                    />
+                    Change S3 access/secret keys
+                  </label>
+                </div>
+              )}
             </div>
           )}
 
@@ -254,9 +386,14 @@ export default function BackupSettings() {
               {testDraft.isPending ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
               Test Connection
             </button>
-            <button type="submit" disabled={createConfig.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="bc-submit">
-              {createConfig.isPending && <Loader2 size={14} className="animate-spin" />}
-              Create Backup Target
+            <button
+              type="submit"
+              disabled={createConfig.isPending || updateConfig.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="bc-submit"
+            >
+              {(createConfig.isPending || updateConfig.isPending) && <Loader2 size={14} className="animate-spin" />}
+              {editingId ? 'Save Changes' : 'Create Backup Target'}
             </button>
           </div>
         </form>
@@ -314,6 +451,14 @@ export default function BackupSettings() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => handleTest(config.id)} disabled={testConfig.isPending} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`test-backup-${config.id}`}>
                   <TestTube size={12} /> Test Connection
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startEdit(config)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  data-testid={`edit-backup-${config.id}`}
+                >
+                  <Edit2 size={12} /> Edit
                 </button>
                 {config.storageType === 's3' && (
                   config.active ? (

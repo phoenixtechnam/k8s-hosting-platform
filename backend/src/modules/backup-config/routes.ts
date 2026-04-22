@@ -68,6 +68,31 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
     const updated = await service.updateBackupConfig(app.db, id, parsed.data, encryptionKey);
+
+    // If the edited row is the active Longhorn target, the cluster
+    // Secret + BackupTarget CR still reference the OLD creds/URL. Re-
+    // reconcile so the UI edit actually takes effect without an extra
+    // Deactivate→Activate dance.
+    if (updated.active) {
+      try {
+        const active = await service.getActiveBackupConfig(app.db, encryptionKey);
+        if (active) {
+          const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
+          const clients = getK8sClients(app);
+          if (clients) {
+            await reconcileBackupTarget(clients, active);
+          }
+        }
+      } catch (err) {
+        request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn after PATCH of active config');
+        throw new ApiError(
+          'RECONCILE_FAILED',
+          `Config saved but Longhorn update failed: ${err instanceof Error ? err.message : 'unknown'}. Toggle Deactivate+Activate to retry.`,
+          502,
+        );
+      }
+    }
+
     return success(updated);
   });
 

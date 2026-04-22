@@ -64,10 +64,13 @@ export function useCreateBackupConfig() {
   });
 }
 
-export function useUpdateBackupConfig(id: string) {
+// Update by PATCH. id is part of the mutation args (not a hook param)
+// so a single hook instance can edit any row — the parent component
+// doesn't need to re-create the hook when the selected row changes.
+export function useUpdateBackupConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: Record<string, unknown>) =>
+    mutationFn: ({ id, input }: { id: string; input: Record<string, unknown> }) =>
       apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(input),
