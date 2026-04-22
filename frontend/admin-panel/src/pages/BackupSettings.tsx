@@ -1,11 +1,14 @@
 import { useState, type FormEvent } from 'react';
-import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud } from 'lucide-react';
+import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
   useBackupConfigs,
   useCreateBackupConfig,
   useDeleteBackupConfig,
   useTestBackupConfig,
+  useTestBackupDraft,
+  useActivateBackupConfig,
+  useDeactivateBackupConfig,
 } from '@/hooks/use-backup-config';
 
 const INPUT_CLASS =
@@ -18,6 +21,14 @@ export default function BackupSettings() {
   const createConfig = useCreateBackupConfig();
   const deleteConfig = useDeleteBackupConfig();
   const testConfig = useTestBackupConfig();
+  const testDraft = useTestBackupDraft();
+  const activateConfig = useActivateBackupConfig();
+  const deactivateConfig = useDeactivateBackupConfig();
+  const [draftResult, setDraftResult] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    error?: { code: string; message: string };
+  } | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [storageType, setStorageType] = useState<StorageType>('ssh');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -56,23 +67,42 @@ export default function BackupSettings() {
     setShowForm(false);
   };
 
-  const handleCreate = async (e: FormEvent) => {
-    e.preventDefault();
+  const buildInput = () => {
     const base = {
       name: form.name,
       retention_days: Number(form.retention_days),
       schedule_expression: form.schedule_expression,
       enabled: true,
     };
-
-    const input = storageType === 'ssh'
+    return storageType === 'ssh'
       ? { ...base, storage_type: 'ssh' as const, ssh_host: form.ssh_host, ssh_port: Number(form.ssh_port), ssh_user: form.ssh_user, ssh_key: form.ssh_key, ssh_path: form.ssh_path }
       : { ...base, storage_type: 's3' as const, s3_endpoint: form.s3_endpoint, s3_bucket: form.s3_bucket, s3_region: form.s3_region, s3_access_key: form.s3_access_key, s3_secret_key: form.s3_secret_key, s3_prefix: form.s3_prefix || undefined };
+  };
 
+  const handleCreate = async (e: FormEvent) => {
+    e.preventDefault();
     try {
-      await createConfig.mutateAsync(input);
+      await createConfig.mutateAsync(buildInput());
       resetForm();
+      setDraftResult(null);
     } catch { /* error shown below */ }
+  };
+
+  const handleDraftTest = async () => {
+    setDraftResult(null);
+    try {
+      const result = await testDraft.mutateAsync(buildInput());
+      setDraftResult(result.data);
+    } catch (err) {
+      setDraftResult({
+        ok: false,
+        latencyMs: 0,
+        error: {
+          code: 'CLIENT_ERROR',
+          message: err instanceof Error ? err.message : 'Request failed',
+        },
+      });
+    }
   };
 
   const handleTest = async (id: string) => {
@@ -202,8 +232,28 @@ export default function BackupSettings() {
           {createConfig.error && (
             <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{createConfig.error instanceof Error ? createConfig.error.message : 'Failed to create'}</div>
           )}
+          {draftResult && (
+            <div
+              className={`flex items-center gap-2 text-sm ${draftResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}
+              data-testid="bc-draft-result"
+            >
+              {draftResult.ok
+                ? <><CheckCircle size={14} /> Connection test passed ({draftResult.latencyMs}ms)</>
+                : <><AlertCircle size={14} /> {draftResult.error?.code ?? 'ERROR'}: {draftResult.error?.message ?? 'Test failed'}</>}
+            </div>
+          )}
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleDraftTest}
+              disabled={testDraft.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-50"
+              data-testid="bc-test-draft"
+            >
+              {testDraft.isPending ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+              Test Connection
+            </button>
             <button type="submit" disabled={createConfig.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="bc-submit">
               {createConfig.isPending && <Loader2 size={14} className="animate-spin" />}
               Create Backup Target
@@ -240,6 +290,11 @@ export default function BackupSettings() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {config.active && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300" data-testid={`active-badge-${config.id}`}>
+                      <Zap size={11} /> Active
+                    </span>
+                  )}
                   <StatusBadge status={config.enabled ? 'active' : 'suspended'} label={config.enabled ? 'Enabled' : 'Disabled'} />
                   {config.lastTestStatus && (
                     <StatusBadge status={config.lastTestStatus === 'ok' ? 'active' : 'error'} label={config.lastTestStatus} />
@@ -256,19 +311,56 @@ export default function BackupSettings() {
                   Test: {testResult.ok ? 'ok' : 'error'} ({testResult.latencyMs}ms){testResult.error ? ` — ${testResult.error.message}` : ''}
                 </div>
               )}
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => handleTest(config.id)} disabled={testConfig.isPending} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`test-backup-${config.id}`}>
                   <TestTube size={12} /> Test Connection
                 </button>
+                {config.storageType === 's3' && (
+                  config.active ? (
+                    <button
+                      type="button"
+                      onClick={() => deactivateConfig.mutate(config.id)}
+                      disabled={deactivateConfig.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-800 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
+                      data-testid={`deactivate-backup-${config.id}`}
+                    >
+                      {deactivateConfig.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                      Deactivate
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => activateConfig.mutate(config.id)}
+                      disabled={activateConfig.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 dark:border-green-800 px-3 py-1.5 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+                      data-testid={`activate-backup-${config.id}`}
+                    >
+                      {activateConfig.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                      Activate
+                    </button>
+                  )
+                )}
                 {deleteConfirmId === config.id ? (
                   <div className="flex gap-1">
                     <button type="button" onClick={() => handleDelete(config.id)} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">Confirm</button>
                     <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>
                   </div>
                 ) : (
-                  <button type="button" onClick={() => setDeleteConfirmId(config.id)} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20" data-testid={`delete-backup-${config.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmId(config.id)}
+                    disabled={config.active}
+                    title={config.active ? 'Deactivate before deleting' : undefined}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid={`delete-backup-${config.id}`}
+                  >
                     <Trash2 size={12} /> Delete
                   </button>
+                )}
+                {activateConfig.error && (
+                  <span className="text-xs text-red-600 dark:text-red-400 w-full">
+                    Activate failed: {activateConfig.error instanceof Error ? activateConfig.error.message : 'unknown error'}
+                  </span>
                 )}
               </div>
             </div>
