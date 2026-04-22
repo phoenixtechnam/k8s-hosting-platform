@@ -3,6 +3,7 @@ import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSettingsSchema } from './schema.js';
 import * as service from './service.js';
 import { getImageInventory } from './image-inventory.js';
+import { getStorageInventory } from './storage-inventory.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -95,6 +96,18 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
     },
   }, async () => {
     const inventory = await getImageInventory();
+    return success(inventory);
+  });
+
+  // GET /api/v1/admin/platform/storage — Longhorn node/volume summary
+  app.get('/admin/platform/storage', {
+    schema: {
+      tags: ['Platform Updates'],
+      summary: 'Longhorn node + volume + backup-target summary for the Storage Configuration card',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const inventory = await getStorageInventory();
     return success(inventory);
   });
 

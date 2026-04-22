@@ -1,0 +1,138 @@
+# Daily sync of k3s etcd snapshots to S3. Runs at 02:30 — before the
+# pg_dump so both make it off-box within a 30-minute window.
+#
+# k3s ships automatic etcd snapshots to
+#   /var/lib/rancher/k3s/server/db/snapshots
+# on the server node (default schedule every 12h, retention 5). We
+# mount that path read-only and upload anything newer than 36h. This
+# means if an operator destroys the whole server VM we can restore from
+# the latest S3 object without needing the original node.
+#
+# SECURITY: the snapshot dir contains the full cluster state including
+# Secrets. ServiceAccount has no extra cluster privileges — only
+# hostPath-mount. Pod runs as root (it needs to read files owned by
+# k3s); a non-root sidecar option would require chown at snapshot-time
+# which k3s doesn't support. Acceptable for staging/single-node; a
+# dedicated backup node with a RO bind mount is the prod path.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-etcd-snapshot-upload
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # Must run on the control-plane node — that's where k3s writes
+          # the snapshots. On a single-node staging cluster this is a
+          # no-op; on a HA cluster it pins to one of the server nodes.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          # k3s masters tolerate NoSchedule by default; add an explicit
+          # toleration for the common control-plane taint so the cron
+          # scheduler doesn't get stuck when someone hardens the node.
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              effect: NoSchedule
+              operator: Exists
+            - key: node-role.kubernetes.io/master
+              effect: NoSchedule
+              operator: Exists
+          containers:
+            - name: etcd-upload
+              image: alpine:3.20
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_ENDPOINTS
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_REGION
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_BUCKET
+                - name: S3_PATH_PREFIX
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_PATH_PREFIX
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  apk add --no-cache aws-cli findutils >/dev/null
+                  SRC=/snapshots
+                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}etcd"
+                  if [ ! -d "${SRC}" ]; then
+                    echo "[etcd] snapshot dir missing — is this a k3s server node?"
+                    exit 1
+                  fi
+                  # Only upload files touched in the last 36 hours. k3s
+                  # prunes old snapshots on its own schedule; we ship
+                  # the recent ones to S3 each day.
+                  cd "${SRC}"
+                  find . -maxdepth 1 -type f -mtime -2 -name 'etcd-snapshot-*' \
+                    | while read -r f; do
+                        name=${f#./}
+                        echo "[etcd] upload ${name}"
+                        aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
+                          "${name}" "s3://${S3_BUCKET}/${PREFIX}/${name}"
+                      done
+                  # Retention: keep 14 newest in S3.
+                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
+                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                    | awk '{print $4}' \
+                    | grep -E '^etcd-snapshot-' \
+                    | sort -r \
+                    | tail -n +15 \
+                    | while read -r f; do
+                        echo "[etcd] evict ${PREFIX}/${f}"
+                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
+                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                      done
+                  echo "[etcd] done"
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /snapshots
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 300m
+                  memory: 256Mi
+          volumes:
+            - name: snapshots
+              hostPath:
+                path: /var/lib/rancher/k3s/server/db/snapshots
+                type: Directory

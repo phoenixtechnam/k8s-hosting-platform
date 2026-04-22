@@ -1,0 +1,162 @@
+# Daily dump of platform-relevant cluster state. Runs at 03:00, after
+# etcd-snapshot + pg-dump so all three slots don't collide.
+#
+# Captures the "soft" config the operator would need to rebuild a
+# lookalike cluster from scratch: namespace + ingress + cronjob +
+# service inventory plus platform-owned CRDs. Secret *data* is NOT
+# included — only names and types. If operators need a secret restore
+# they have etcd.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-state-backup
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-state-backup
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "services", "configmaps", "persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # Metadata only — do NOT give `get` (reads decrypted data). list
+    # returns Items with data fields empty unless `get` is granted.
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes", "backuptargets", "recurringjobs", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-state-backup
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-state-backup
+subjects:
+  - kind: ServiceAccount
+    name: cluster-state-backup
+    namespace: platform
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-cluster-state-backup
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: cluster-state-backup
+          containers:
+            - name: cluster-state
+              image: bitnami/kubectl:1.31
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_SECRET_ACCESS_KEY } }
+                - name: AWS_ENDPOINT_URL
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: AWS_ENDPOINTS } }
+                - name: AWS_DEFAULT_REGION
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_REGION } }
+                - name: S3_BUCKET
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_BUCKET } }
+                - name: S3_PATH_PREFIX
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_PATH_PREFIX } }
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  # bitnami/kubectl is based on minideb — aws-cli is an
+                  # official Debian package.
+                  apt-get update -qq && apt-get install -y -qq awscli tar gzip >/dev/null
+                  OUT=$(mktemp -d)
+                  STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}cluster-state"
+                  KEY="${PREFIX}/cluster-state-${STAMP}.tar.gz"
+
+                  # Platform-wide inventory. Output captures enough to
+                  # rebuild the surface — Deployments, Services,
+                  # Ingresses, CronJobs, NetworkPolicies, ConfigMaps,
+                  # PVCs/PVs, and Longhorn CRs. Secret metadata only,
+                  # not contents.
+                  dump() {
+                    local name=$1; shift
+                    kubectl "$@" -o yaml 2>/dev/null > "${OUT}/${name}.yaml" || true
+                  }
+                  dump namespaces               get ns
+                  dump deployments              get deploy -A
+                  dump statefulsets             get sts -A
+                  dump daemonsets               get ds -A
+                  dump services                 get svc -A
+                  dump ingresses                get ing -A
+                  dump configmaps               get cm -A
+                  dump networkpolicies          get netpol -A
+                  dump cronjobs                 get cronjob -A
+                  dump pvcs                     get pvc -A
+                  dump pvs                      get pv
+                  dump longhorn-volumes         get volumes.longhorn.io -A
+                  dump longhorn-backuptargets   get backuptargets.longhorn.io -A
+                  dump longhorn-recurringjobs   get recurringjobs.longhorn.io -A
+                  # Secret names + types only.
+                  kubectl get secrets -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,TYPE:.type' \
+                    > "${OUT}/secrets-inventory.txt" 2>/dev/null || true
+
+                  tar -czf "${OUT}.tar.gz" -C "${OUT}" .
+                  aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
+                    "${OUT}.tar.gz" "s3://${S3_BUCKET}/${KEY}"
+                  echo "[cluster-state] wrote s3://${S3_BUCKET}/${KEY}"
+
+                  # Retain 14 newest bundles.
+                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
+                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                    | awk '{print $4}' \
+                    | grep -E '^cluster-state-.*\.tar\.gz$' \
+                    | sort -r \
+                    | tail -n +15 \
+                    | while read -r f; do
+                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
+                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                      done
+                  echo "[cluster-state] done"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

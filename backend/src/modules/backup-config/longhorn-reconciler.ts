@@ -6,6 +6,11 @@ import * as k8s from '@kubernetes/client-node';
 const LONGHORN_SECRET_NAME = 'longhorn-backup-credentials';
 const LONGHORN_NAMESPACE = 'longhorn-system';
 const BACKUP_TARGET_NAME = 'default';
+// A sibling copy lives in the platform namespace so the DR CronJobs
+// (etcd snapshot, pg_dump, cluster-state) can mount the same creds
+// without crossing the longhorn-system boundary. Same keys, same shape.
+const PLATFORM_SECRET_NAME = 'backup-credentials';
+const PLATFORM_NAMESPACE = 'platform';
 
 export interface LonghornBackupTargetInput {
   readonly endpoint: string;       // e.g. https://fsn1.your-objectstorage.com
@@ -36,8 +41,19 @@ export async function reconcileBackupTarget(
   clients: LonghornClients,
   input: LonghornBackupTargetInput,
 ): Promise<void> {
-  await upsertCredentialsSecret(clients.core, input);
+  // Longhorn's own Secret must succeed — if it fails the BackupTarget
+  // patch below won't have creds to bind to, so we let the error bubble.
+  await upsertCredentialsSecret(clients.core, input, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE);
   await upsertBackupTarget(clients.custom, input);
+  // Platform-ns sibling for DR CronJobs. Best-effort: a failure here
+  // would mean pg_dump/etcd uploads lose their creds at the next cron
+  // tick, but it doesn't affect Longhorn's own backups. Log + move on.
+  try {
+    await upsertCredentialsSecret(clients.core, input, PLATFORM_SECRET_NAME, PLATFORM_NAMESPACE);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
+  }
 }
 
 /**
@@ -55,6 +71,8 @@ export async function clearBackupTarget(clients: LonghornClients): Promise<void>
 async function upsertCredentialsSecret(
   core: k8s.CoreV1Api,
   input: LonghornBackupTargetInput,
+  secretName: string = LONGHORN_SECRET_NAME,
+  secretNamespace: string = LONGHORN_NAMESPACE,
 ): Promise<void> {
   // Longhorn's reference docs list four keys (see
   // https://longhorn.io/docs/1.6.2/snapshots-and-backups/backup-and-restore/set-backup-target):
@@ -65,14 +83,17 @@ async function upsertCredentialsSecret(
   //                        path-style providers like Hetzner/MinIO)
   //
   // We always send all four so switching from Hetzner to AWS doesn't
-  // leave stale keys behind. Base64 encoding is done by the @kubernetes
-  // client-node Secret API when we pass `stringData`.
+  // leave stale keys behind. We also add S3_BUCKET + S3_REGION +
+  // S3_PATH_PREFIX as a convenience for the platform-ns DR CronJobs
+  // (aws s3 cp target) — Longhorn itself ignores unknown keys.
+  // Base64 encoding is done by the @kubernetes client-node Secret API
+  // when we pass `stringData`.
   const body: k8s.V1Secret = {
     apiVersion: 'v1',
     kind: 'Secret',
     metadata: {
-      name: LONGHORN_SECRET_NAME,
-      namespace: LONGHORN_NAMESPACE,
+      name: secretName,
+      namespace: secretNamespace,
       labels: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/managed-by': 'platform-api',
@@ -84,18 +105,21 @@ async function upsertCredentialsSecret(
       AWS_SECRET_ACCESS_KEY: input.secretAccessKey,
       AWS_ENDPOINTS: input.endpoint,
       VIRTUAL_HOSTED_STYLE: '',
+      S3_BUCKET: input.bucket,
+      S3_REGION: input.region,
+      S3_PATH_PREFIX: input.pathPrefix ?? '',
     },
   };
 
   try {
     await core.replaceNamespacedSecret({
-      name: LONGHORN_SECRET_NAME,
-      namespace: LONGHORN_NAMESPACE,
+      name: secretName,
+      namespace: secretNamespace,
       body,
     });
   } catch (err) {
     if (isNotFound(err)) {
-      await core.createNamespacedSecret({ namespace: LONGHORN_NAMESPACE, body });
+      await core.createNamespacedSecret({ namespace: secretNamespace, body });
       return;
     }
     throw err;

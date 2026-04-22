@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle } from 'lucide-react';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
+import StorageInventoryCard from '@/components/StorageInventoryCard';
 
 /**
  * Storage Configuration
@@ -35,6 +36,9 @@ export default function StorageSettings() {
           Storage Configuration
         </h1>
       </div>
+
+      {/* ─── Live inventory ─── */}
+      <StorageInventoryCard />
 
       {/* ─── Longhorn dashboard ─── */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4">

@@ -44,17 +44,51 @@ describe('reconcileBackupTarget', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(clients as any, INPUT);
 
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledOnce();
+    // Called twice — once for longhorn-system, once for platform ns
+    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
     const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
     expect(args.name).toBe('longhorn-backup-credentials');
     expect(args.namespace).toBe('longhorn-system');
     expect(args.body.stringData.AWS_ACCESS_KEY_ID).toBe(INPUT.accessKeyId);
     expect(args.body.stringData.AWS_SECRET_ACCESS_KEY).toBe(INPUT.secretAccessKey);
     expect(args.body.stringData.AWS_ENDPOINTS).toBe(INPUT.endpoint);
+    expect(args.body.stringData.S3_BUCKET).toBe(INPUT.bucket);
     expect(args.body.metadata.labels['app.kubernetes.io/managed-by']).toBe('platform-api');
   });
 
-  it('falls back to create when the Secret does not yet exist', async () => {
+  it('also writes backup-credentials Secret into the platform namespace for DR CronJobs', async () => {
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, INPUT);
+
+    const calls = clients.core.replaceNamespacedSecret.mock.calls;
+    expect(calls).toHaveLength(2);
+    const [, platformArgs] = calls;
+    expect(platformArgs[0].name).toBe('backup-credentials');
+    expect(platformArgs[0].namespace).toBe('platform');
+    // Same creds + convenience keys for aws-cli (bucket/region/prefix)
+    expect(platformArgs[0].body.stringData.AWS_ACCESS_KEY_ID).toBe(INPUT.accessKeyId);
+    expect(platformArgs[0].body.stringData.S3_BUCKET).toBe(INPUT.bucket);
+    expect(platformArgs[0].body.stringData.S3_REGION).toBe(INPUT.region);
+  });
+
+  it('continues successfully when the platform-ns sync fails (best-effort)', async () => {
+    // Longhorn-ns call succeeds, BackupTarget patch succeeds, but
+    // platform-ns call fails. The reconciler should log + return, not
+    // throw, so the operator sees the Longhorn target go live.
+    clients.core.replaceNamespacedSecret
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce({ statusCode: 500, message: 'platform ns down' });
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    expect(clients.custom.patchClusterCustomObject).toHaveBeenCalled();
+  });
+
+  it('falls back to create when the Secret does not yet exist (both namespaces)', async () => {
     clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
     clients.core.createNamespacedSecret.mockResolvedValue({});
     clients.custom.patchClusterCustomObject.mockResolvedValue({});
@@ -62,11 +96,14 @@ describe('reconcileBackupTarget', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await reconcileBackupTarget(clients as any, INPUT);
 
-    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledOnce();
-    expect(clients.core.createNamespacedSecret).toHaveBeenCalledOnce();
-    const [args] = clients.core.createNamespacedSecret.mock.calls[0];
-    expect(args.namespace).toBe('longhorn-system');
-    expect(args.body.metadata.name).toBe('longhorn-backup-credentials');
+    // Called twice total — once for longhorn-system, once for platform
+    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(2);
+    expect(clients.core.createNamespacedSecret).toHaveBeenCalledTimes(2);
+    const calls = clients.core.createNamespacedSecret.mock.calls;
+    expect(calls[0][0].namespace).toBe('longhorn-system');
+    expect(calls[0][0].body.metadata.name).toBe('longhorn-backup-credentials');
+    expect(calls[1][0].namespace).toBe('platform');
+    expect(calls[1][0].body.metadata.name).toBe('backup-credentials');
   });
 
   it('patches BackupTarget/default with correct S3 URL', async () => {

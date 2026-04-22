@@ -1,0 +1,116 @@
+# Daily pg_dump of the platform DB, uploaded to the active S3 backup
+# target. Runs at 02:45 — 15 minutes after Longhorn's daily-backup so
+# the two don't contend for the same S3 connection slot.
+#
+# Credentials:
+#   - DB:  platform-db-credentials Secret (same one backend uses; key `url`)
+#   - S3:  backup-credentials Secret (written by the Longhorn reconciler
+#          when an admin marks a config active in the admin panel)
+#
+# If no backup target is active the Secret doesn't exist — the pod will
+# CrashLoopBackOff at first reconcile attempt and the next cron fire.
+# Operators see the failure via kubectl get cronjob platform-pg-backup.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-pg-backup
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: dr-backup
+spec:
+  schedule: "45 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # Single small container that has both postgres-client and
+          # aws-cli. bitnami/postgresql ships a matching PG17 client;
+          # we add aws-cli via pip at startup to avoid building a
+          # custom image in this repo.
+          containers:
+            - name: pg-dump
+              image: postgres:17-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-db-credentials
+                      key: url
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: AWS_ENDPOINTS
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_REGION
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_BUCKET
+                - name: S3_PATH_PREFIX
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-credentials
+                      key: S3_PATH_PREFIX
+              # 14-day retention = keep the 14 most recent objects.
+              # Sweep runs AFTER a successful new upload so a failing
+              # pg_dump never deletes yesterday's good backup.
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -euo pipefail
+                  apk add --no-cache aws-cli >/dev/null
+                  STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+                  PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}db/platform"
+                  KEY="${PREFIX}/pg-${STAMP}.dump"
+                  echo "[pg-dump] start ${KEY}"
+                  pg_dump --format=custom --compress=6 --dbname="${DATABASE_URL}" \
+                    | aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
+                        --expected-size $((20*1024*1024*1024)) \
+                        - "s3://${S3_BUCKET}/${KEY}"
+                  echo "[pg-dump] wrote s3://${S3_BUCKET}/${KEY}"
+                  # Retain the 14 newest dumps. List sorted newest-first,
+                  # delete anything past row 14. Prefix-filtered so we
+                  # never touch etcd/ or cluster-state/ objects.
+                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
+                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                    | awk '{print $4}' \
+                    | grep -E '^pg-.*\.dump$' \
+                    | sort -r \
+                    | tail -n +15 \
+                    | while read -r f; do
+                        echo "[pg-dump] evict ${PREFIX}/${f}"
+                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
+                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                      done
+                  echo "[pg-dump] done"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

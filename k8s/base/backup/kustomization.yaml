@@ -1,0 +1,16 @@
+# DR backup CronJobs — etcd, platform DB, cluster state. All three
+# consume the `backup-credentials` Secret in the platform namespace,
+# which is reconciled from the active admin-panel backup target
+# (see backend/src/modules/backup-config/longhorn-reconciler.ts).
+#
+# Included in the staging + production overlays via base/kustomization.yaml
+# Included wherever Longhorn + platform-api are available. Dev overlay
+# omits them (DinD doesn't have a meaningful etcd and pg_dump on
+# DinD backups is noise).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - etcd-snapshot-cronjob.yaml
+  - postgres-dump-cronjob.yaml
+  - cluster-state-cronjob.yaml
