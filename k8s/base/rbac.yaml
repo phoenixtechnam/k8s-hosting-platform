@@ -98,6 +98,18 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["issuers", "clusterissuers"]
     verbs: ["get", "list", "watch"]
+  # Phase B3: Longhorn backup-target reconciliation. The backend's
+  # backup-config module owns the admin-panel UI for defining S3 backup
+  # targets; activating one writes the `longhorn-backup-credentials`
+  # Secret into the longhorn-system namespace AND patches the
+  # BackupTarget/default CR. Keep these narrow — list/patch on the
+  # BackupTarget, get/list for read-only inventory (Phase D).
+  - apiGroups: ["longhorn.io"]
+    resources: ["backuptargets", "backupvolumes", "backups", "nodes", "volumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["longhorn.io"]
+    resources: ["backuptargets"]
+    verbs: ["update", "patch"]
 ---
 # ServiceAccount for the management API
 apiVersion: v1

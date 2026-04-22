@@ -16,6 +16,9 @@ interface BackupConfig {
   readonly retentionDays: number;
   readonly scheduleExpression: string | null;
   readonly enabled: number;
+  // Designates the cluster's current Longhorn backup target. At most
+  // one config is active at a time (enforced by DB partial unique index).
+  readonly active: boolean;
   readonly lastTestedAt: string | null;
   readonly lastTestStatus: string | null;
   readonly createdAt: string;
@@ -101,5 +104,30 @@ export function useTestBackupDraft() {
         method: 'POST',
         body: JSON.stringify(input),
       }),
+  });
+}
+
+// Activate this config as the cluster's Longhorn backup target. The
+// backend also reconciles the cluster state (BackupTarget CR + Secret)
+// so a successful response means the target is actually wired up.
+export function useActivateBackupConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}/activate`, {
+        method: 'POST',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
+  });
+}
+
+export function useDeactivateBackupConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}/deactivate`, {
+        method: 'POST',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
   });
 }

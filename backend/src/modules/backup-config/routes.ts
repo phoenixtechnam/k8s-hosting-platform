@@ -84,4 +84,58 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     const result = await service.testConnection(app.db, id, encryptionKey);
     return success(result);
   });
+
+  // POST /api/v1/admin/backup-configs/:id/activate — designate this
+  // config as the cluster's active Longhorn backup target. Routes the
+  // decrypted creds through the reconciler to create/update the
+  // BackupTarget CR + credentials Secret. Only one config can be
+  // active at a time — activating a new one deactivates the previous.
+  app.post('/admin/backup-configs/:id/activate', async (request) => {
+    const { id } = request.params as { id: string };
+    const row = await service.activateBackupConfig(app.db, id);
+    const active = await service.getActiveBackupConfig(app.db, encryptionKey);
+    if (active) {
+      try {
+        const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
+        const clients = getK8sClients(app);
+        if (clients) {
+          await reconcileBackupTarget(clients, active);
+        }
+      } catch (err) {
+        request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn BackupTarget on activate');
+        throw new ApiError(
+          'RECONCILE_FAILED',
+          `Config was activated in the DB but Longhorn update failed: ${err instanceof Error ? err.message : 'unknown'}. Fix the issue and POST /activate again.`,
+          502,
+        );
+      }
+    }
+    return success(row);
+  });
+
+  // POST /api/v1/admin/backup-configs/:id/deactivate
+  app.post('/admin/backup-configs/:id/deactivate', async (request) => {
+    const { id } = request.params as { id: string };
+    const row = await service.deactivateBackupConfig(app.db, id);
+    try {
+      const { clearBackupTarget } = await import('./longhorn-reconciler.js');
+      const clients = getK8sClients(app);
+      if (clients) {
+        await clearBackupTarget(clients);
+      }
+    } catch (err) {
+      request.log.warn({ err, configId: id }, 'Failed to clear Longhorn BackupTarget on deactivate');
+    }
+    return success(row);
+  });
+}
+
+// Resolve K8s clients from the Fastify app. Tests that don't need the
+// cluster write path can decorate app without this — the reconciler
+// call becomes a no-op. Production pods use the in-cluster config via
+// the platform-api ServiceAccount.
+function getK8sClients(app: import('fastify').FastifyInstance) {
+  const provider = (app as unknown as { k8sClients?: { core: unknown; custom: unknown } }).k8sClients;
+  if (!provider) return null;
+  return provider as unknown as import('./longhorn-reconciler.js').LonghornClients;
 }

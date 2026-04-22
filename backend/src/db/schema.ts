@@ -419,6 +419,10 @@ export const backupConfigurations = pgTable('backup_configurations', {
   retentionDays: integer('retention_days').notNull().default(30),
   scheduleExpression: varchar('schedule_expression', { length: 100 }).default('0 2 * * *'),
   enabled: integer('enabled').notNull().default(1),
+  // Exactly one row per cluster may have active=true. A partial unique
+  // index (`WHERE active=true`) in migration 0045 enforces that. The
+  // Longhorn reconciler syncs the active row to BackupTarget/default.
+  active: boolean('active').notNull().default(false),
   lastTestedAt: timestamp('last_tested_at'),
   lastTestStatus: varchar('last_test_status', { length: 50 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),

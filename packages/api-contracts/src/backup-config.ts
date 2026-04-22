@@ -102,6 +102,9 @@ export const backupConfigResponseSchema = z.object({
   retentionDays: z.number(),
   scheduleExpression: z.string().nullable(),
   enabled: z.number(),
+  // Exactly one config per cluster may be active — the Longhorn reconciler
+  // syncs this row to the BackupTarget CR + credentials Secret.
+  active: z.boolean(),
   lastTestedAt: z.string().nullable(),
   lastTestStatus: z.string().nullable(),
   createdAt: z.string(),

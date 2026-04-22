@@ -32,6 +32,21 @@ vi.mock('./service.js', () => ({
   deleteBackupConfig: vi.fn().mockResolvedValue(undefined),
   testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 42 }),
   testDraft: vi.fn().mockResolvedValue({ ok: true, latencyMs: 38 }),
+  activateBackupConfig: vi.fn().mockResolvedValue({ ...mockConfig, active: true }),
+  deactivateBackupConfig: vi.fn().mockResolvedValue({ ...mockConfig, active: false }),
+  getActiveBackupConfig: vi.fn().mockResolvedValue({
+    id: 'bc-1',
+    endpoint: 'https://fsn1.example.com',
+    region: 'eu-central',
+    bucket: 'k8s-staging',
+    accessKeyId: 'AKIA' + 'X'.repeat(16),
+    secretAccessKey: 'S'.repeat(40),
+    pathPrefix: undefined,
+  }),
+}));
+vi.mock('./longhorn-reconciler.js', () => ({
+  reconcileBackupTarget: vi.fn().mockResolvedValue(undefined),
+  clearBackupTarget: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { backupConfigRoutes } = await import('./routes.js');
@@ -247,5 +262,36 @@ describe('backup-config routes', () => {
       payload: validS3Payload,
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  // ─── Activate / deactivate ──────────────────────────────────────────────
+
+  it('POST backup-configs/:id/activate returns the updated row with active=true', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/bc-1/activate',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.active).toBe(true);
+  });
+
+  it('POST backup-configs/:id/activate requires admin role', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/bc-1/activate',
+      headers: { authorization: `Bearer ${supportToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('POST backup-configs/:id/deactivate returns the updated row with active=false', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/bc-1/deactivate',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.active).toBe(false);
   });
 });

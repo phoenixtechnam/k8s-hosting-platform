@@ -31,6 +31,7 @@ function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
     retentionDays: row.retentionDays,
     scheduleExpression: row.scheduleExpression,
     enabled: row.enabled,
+    active: row.active,
     lastTestedAt: row.lastTestedAt,
     lastTestStatus: row.lastTestStatus,
     createdAt: row.createdAt,
@@ -125,8 +126,76 @@ export async function updateBackupConfig(db: Database, id: string, input: Update
 }
 
 export async function deleteBackupConfig(db: Database, id: string) {
-  await getRawBackupConfig(db, id);
+  const row = await getRawBackupConfig(db, id);
+  if (row.active) {
+    throw new ApiError(
+      'BACKUP_CONFIG_ACTIVE',
+      'Cannot delete the active backup target. Deactivate it first.',
+      409,
+    );
+  }
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
+}
+
+// activateBackupConfig — swap the `active` flag so this row becomes
+// THE cluster backup target. Because the partial unique index enforces
+// at-most-one-active, we explicitly clear other rows in the same
+// transaction.
+//
+// Does NOT call the Longhorn reconciler directly — the route does that
+// after activation succeeds. Separating DB and cluster writes lets tests
+// exercise activation without mocking the k8s client.
+export async function activateBackupConfig(db: Database, id: string) {
+  const row = await getRawBackupConfig(db, id);
+  if (row.storageType !== 's3') {
+    throw new ApiError(
+      'UNSUPPORTED_PROVIDER',
+      'Only s3 backup targets can be activated on Longhorn. SSH targets feed a separate backup writer (not yet wired).',
+      400,
+    );
+  }
+  await db.transaction(async (tx) => {
+    await tx.update(backupConfigurations)
+      .set({ active: false })
+      .where(eq(backupConfigurations.active, true));
+    await tx.update(backupConfigurations)
+      .set({ active: true })
+      .where(eq(backupConfigurations.id, id));
+  });
+  return getBackupConfig(db, id);
+}
+
+// deactivateBackupConfig — flip active off. The Longhorn reconciler
+// is called by the route to clear the BackupTarget CR.
+export async function deactivateBackupConfig(db: Database, id: string) {
+  await getRawBackupConfig(db, id);
+  await db.update(backupConfigurations)
+    .set({ active: false })
+    .where(eq(backupConfigurations.id, id));
+  return getBackupConfig(db, id);
+}
+
+// getActiveBackupConfig — returns decrypted creds for the currently
+// active config, or null. Consumed by the Longhorn reconciler to
+// refresh the Secret on application startup / periodic reconcile.
+export async function getActiveBackupConfig(db: Database, encryptionKey: string) {
+  const [row] = await db.select()
+    .from(backupConfigurations)
+    .where(eq(backupConfigurations.active, true))
+    .limit(1);
+  if (!row) return null;
+  if (row.storageType !== 's3' || !row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
+    throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active backup target is missing required S3 fields', 500);
+  }
+  return {
+    id: row.id,
+    endpoint: row.s3Endpoint,
+    region: row.s3Region,
+    bucket: row.s3Bucket,
+    accessKeyId: decrypt(row.s3AccessKeyEncrypted, encryptionKey),
+    secretAccessKey: decrypt(row.s3SecretKeyEncrypted, encryptionKey),
+    pathPrefix: row.s3Prefix ?? undefined,
+  };
 }
 
 export async function testConnection(db: Database, id: string, encryptionKey: string): Promise<TestConnectionResult> {
