@@ -1,0 +1,70 @@
+# Longhorn RecurringJobs — periodic snapshot + backup schedule for any
+# volume opted into the `default` job group.
+#
+# A volume opts in by either:
+#   (a) carrying label `recurring-job-group.longhorn.io/default: enabled`
+#       (direct, per-PVC), OR
+#   (b) being provisioned by a StorageClass whose parameters include
+#       `recurringJobSelector` listing this group (cluster-wide, applies
+#       to every future volume). For staging we rely on (a) + a one-time
+#       labelling pass on existing PVCs, since the default longhorn
+#       StorageClass was already created by the Longhorn installer and
+#       modifying its parameters post-hoc is awkward.
+#
+# The three jobs together give 24h of hourly snapshots + 14 days of
+# daily backups + 4 weeks of weekly backups uploaded to the active
+# BackupTarget (wired via the backup-config reconciler).
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: hourly-snap
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  # Top of the hour + 5 minutes so snapshots don't pile up at the same
+  # wall-clock second as the daily-backup.
+  cron: "5 * * * *"
+  task: snapshot
+  # 24 hourly snapshots kept — one day of in-volume rollback points.
+  retain: 24
+  concurrency: 2
+  groups:
+    - default
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: daily-backup
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  # 02:00 local (UTC for a fresh k3s install). Uploaded to the active
+  # BackupTarget — which is whatever S3 config has active=true in
+  # backup_configurations.
+  cron: "0 2 * * *"
+  task: backup
+  retain: 14
+  concurrency: 2
+  groups:
+    - default
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: weekly-backup
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  # 03:00 on Sunday — an hour after the daily-backup so they don't
+  # contend for upload bandwidth. retain=4 gives a rolling month of
+  # weekly long-term restore points without bloating the bucket.
+  cron: "0 3 * * 0"
+  task: backup
+  retain: 4
+  concurrency: 2
+  groups:
+    - default

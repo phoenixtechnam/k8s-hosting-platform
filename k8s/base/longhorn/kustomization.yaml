@@ -8,3 +8,4 @@ kind: Kustomization
 
 resources:
   - ui-ingress.yaml
+  - recurring-jobs.yaml
