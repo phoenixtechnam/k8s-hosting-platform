@@ -99,41 +99,43 @@ function toRecord(b: LonghornBackup): BackupRecord {
 const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
 
 // Wait for Longhorn's engine-controller sync loop to promote the new
-// snapshot into a CR. Poll via POST /v1/volumes/<name>?action=snapshotGet
-// body={name} — the only REST endpoint that returns single-snapshot
-// state. Probe response: the `created` field is set only after the
-// engine finishes taking the snapshot (empty string while it's in
-// progress). `usercreated: true` + non-empty `created` = ready to back up.
-async function pollSnapshotReady(
-  fetchFn: typeof globalThis.fetch,
-  volUrl: string,
+// snapshot into a CR. The Longhorn REST `snapshotGet` action responds
+// the instant the engine finishes taking the snapshot (populates the
+// `created` field from engine state), but the Snapshot CR itself isn't
+// committed to the apiserver until the next engine-controller sync
+// tick. `snapshotBackup`'s validator specifically checks for the CR
+// and rejects with "snapshot <nil> is invalid" if it hasn't landed.
+// So: poll the apiserver directly for the Snapshot CR and its
+// `.status.readyToUse=true` — that's the only authoritative signal.
+async function pollSnapshotReadyViaCR(
+  custom: k8s.CustomObjectsApi,
   snapName: string,
   totalMs: number,
 ): Promise<{ ready: boolean; reason?: string }> {
   const deadline = Date.now() + totalMs;
   let lastErr = '';
-  // Initial delay — engine-controller sync loop is on a 1s cadence, so
-  // there's no point hitting the API with zero wait.
   await new Promise((r) => setTimeout(r, 500));
   while (Date.now() < deadline) {
     try {
-      const res = await fetchFn(`${volUrl}?action=snapshotGet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: snapName }),
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (res.ok) {
-        const body = await res.json() as { created?: string; usercreated?: boolean; id?: string };
-        if (body.id && body.created && body.created.length > 0) {
-          return { ready: true };
-        }
-        lastErr = `created=${body.created ?? '(empty)'} id=${body.id ?? '(none)'}`;
-      } else {
-        lastErr = `HTTP ${res.status}`;
-      }
+      const obj = await custom.getNamespacedCustomObject({
+        group: LONGHORN_GROUP,
+        version: LONGHORN_VERSION,
+        namespace: LONGHORN_NS,
+        plural: 'snapshots',
+        name: snapName,
+      } as Parameters<typeof custom.getNamespacedCustomObject>[0]);
+      const status = (obj as { status?: { readyToUse?: boolean; error?: string } }).status;
+      if (status?.readyToUse === true) return { ready: true };
+      if (status?.error) return { ready: false, reason: status.error };
+      lastErr = `readyToUse=${status?.readyToUse ?? '(unset)'}`;
     } catch (e) {
-      lastErr = e instanceof Error ? e.message : String(e);
+      // 404 = CR not yet committed; keep polling. Other errors = bail.
+      const code = (e as { statusCode?: number; code?: number }).statusCode
+        ?? (e as { code?: number }).code;
+      if (code !== 404) {
+        return { ready: false, reason: e instanceof Error ? e.message : String(e) };
+      }
+      lastErr = 'CR not yet present';
     }
     await new Promise((r) => setTimeout(r, 1_000));
   }
@@ -195,15 +197,12 @@ export async function triggerBackupNow(
         errors.push(`${volumeName} (snapshotCreate): HTTP ${snapRes.status} ${text.slice(0, 200)}`);
         continue;
       }
-      // Wait for the Snapshot CR to show up in Longhorn. snapshotCreate
-      // returns 200 as soon as the engine operation is queued, but the
-      // Snapshot CR isn't created by the engine-controller sync loop
-      // for another 1-3 seconds. Calling snapshotBackup in that
-      // window fails with "snapshot <nil> is invalid". Poll the
-      // volume's /snapshots/<name> endpoint until it resolves (max 20s).
-      const snapshotReady = await pollSnapshotReady(fetchFn, volUrl, snapName, 20_000);
+      // Wait for the Snapshot CR to be committed AND have
+      // .status.readyToUse=true. See pollSnapshotReadyViaCR for why we
+      // can't trust the Longhorn REST snapshotGet response alone.
+      const snapshotReady = await pollSnapshotReadyViaCR(clients.custom, snapName, 30_000);
       if (!snapshotReady.ready) {
-        errors.push(`${volumeName} (snapshot not ready in 20s): ${snapshotReady.reason ?? 'timeout'}`);
+        errors.push(`${volumeName} (snapshot not ready in 30s): ${snapshotReady.reason ?? 'timeout'}`);
         continue;
       }
       const backupRes = await fetchFn(`${volUrl}?action=snapshotBackup`, {

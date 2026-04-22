@@ -5,11 +5,13 @@ function createMockClients() {
   const custom = {
     listNamespacedCustomObject: vi.fn(),
     createNamespacedCustomObject: vi.fn(),
+    getNamespacedCustomObject: vi.fn(),
   };
   return { custom } as unknown as {
     custom: {
       listNamespacedCustomObject: ReturnType<typeof vi.fn>;
       createNamespacedCustomObject: ReturnType<typeof vi.fn>;
+      getNamespacedCustomObject: ReturnType<typeof vi.fn>;
     };
   };
 }
@@ -91,31 +93,45 @@ describe('triggerBackupNow', () => {
     clients = createMockClients();
   });
 
-  it('calls snapshotCreate, polls snapshotGet, then snapshotBackup per labeled volume', async () => {
+  it('calls snapshotCreate, polls Snapshot CR for readyToUse, then snapshotBackup', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [
         { metadata: { name: 'pvc-a' } },
       ],
     });
+    // First CR-get tick: not ready. Second: ready.
+    clients.custom.getNamespacedCustomObject
+      .mockResolvedValueOnce({ status: { readyToUse: false } })
+      .mockResolvedValueOnce({ status: { readyToUse: true } });
     const fetchMock = vi.fn()
       // snapshotCreate
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      // poll tick 1: in-progress (created empty)
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'manual-x', created: '' }) })
-      // poll tick 2: ready
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'manual-x', created: '2026-04-22T17:53:21Z' }) })
       // snapshotBackup
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { apiBase: 'http://longhorn-test:9500', fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a']);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(clients.custom.getNamespacedCustomObject).toHaveBeenCalledTimes(2);
     const urls = fetchMock.mock.calls.map(([u]) => u);
     expect(urls[0]).toContain('action=snapshotCreate');
-    expect(urls[1]).toContain('action=snapshotGet');
-    expect(urls[2]).toContain('action=snapshotGet');
-    expect(urls[3]).toContain('action=snapshotBackup');
-  }, 25_000);
+    expect(urls[1]).toContain('action=snapshotBackup');
+  }, 35_000);
+
+  it('treats 404 on Snapshot CR get as "not yet ready" (keeps polling)', async () => {
+    clients.custom.listNamespacedCustomObject.mockResolvedValue({
+      items: [{ metadata: { name: 'pvc-a' } }],
+    });
+    clients.custom.getNamespacedCustomObject
+      .mockRejectedValueOnce({ statusCode: 404 })
+      .mockResolvedValueOnce({ status: { readyToUse: true } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await triggerBackupNow(clients as any, { fetch: fetchMock });
+    expect(out.triggered).toEqual(['pvc-a']);
+  }, 35_000);
 
   it('does NOT call snapshotBackup when snapshotCreate fails', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
@@ -156,18 +172,20 @@ describe('triggerBackupNow', () => {
         { metadata: { name: 'pvc-b' } },
       ],
     });
+    // Both volumes' Snapshot CRs are ready on first poll.
+    clients.custom.getNamespacedCustomObject
+      .mockResolvedValueOnce({ status: { readyToUse: true } })
+      .mockResolvedValueOnce({ status: { readyToUse: true } });
     const fetchMock = vi.fn()
-      // pvc-a: snapshotCreate ok, poll ready, snapshotBackup ok
+      // pvc-a: snapshotCreate ok, snapshotBackup ok
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'x', created: '2026-04-22T17:00:00Z' }) })
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      // pvc-b: snapshotCreate ok, poll ready, snapshotBackup fails
+      // pvc-b: snapshotCreate ok, snapshotBackup fails
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'x', created: '2026-04-22T17:00:00Z' }) })
       .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a']);
     expect(out.message).toMatch(/1 failed/);
-  }, 25_000);
+  }, 35_000);
 });
