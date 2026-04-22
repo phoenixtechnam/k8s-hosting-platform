@@ -105,11 +105,18 @@ rules:
   # BackupTarget/default CR. Keep these narrow — list/patch on the
   # BackupTarget, get/list for read-only inventory (Phase D).
   - apiGroups: ["longhorn.io"]
-    resources: ["backuptargets", "backupvolumes", "backups", "nodes", "volumes"]
+    resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
     verbs: ["update", "patch"]
+  # The Backup-Now admin action creates Backup CRs directly; Longhorn's
+  # controller then snapshots the volume and uploads to the active
+  # BackupTarget. Snapshot CRs are needed for the two-step create-
+  # snapshot-then-backup pattern some Longhorn versions require.
+  - apiGroups: ["longhorn.io"]
+    resources: ["backups", "snapshots"]
+    verbs: ["create", "delete"]
 ---
 # ServiceAccount for the management API
 apiVersion: v1
