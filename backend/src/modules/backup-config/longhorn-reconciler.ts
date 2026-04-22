@@ -41,19 +41,18 @@ export async function reconcileBackupTarget(
   clients: LonghornClients,
   input: LonghornBackupTargetInput,
 ): Promise<void> {
-  // Longhorn's own Secret must succeed — if it fails the BackupTarget
-  // patch below won't have creds to bind to, so we let the error bubble.
+  // Write both Secrets FIRST — a BackupTarget patch failure later leaves
+  // partial-but-useful state (DR CronJobs still have creds). The Longhorn
+  // Secret is mandatory for the subsequent patch to succeed; bubble its
+  // error. The platform-ns Secret is best-effort.
   await upsertCredentialsSecret(clients.core, input, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE);
-  await upsertBackupTarget(clients.custom, input);
-  // Platform-ns sibling for DR CronJobs. Best-effort: a failure here
-  // would mean pg_dump/etcd uploads lose their creds at the next cron
-  // tick, but it doesn't affect Longhorn's own backups. Log + move on.
   try {
     await upsertCredentialsSecret(clients.core, input, PLATFORM_SECRET_NAME, PLATFORM_NAMESPACE);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
   }
+  await upsertBackupTarget(clients.custom, input);
 }
 
 /**
@@ -152,27 +151,63 @@ async function patchBackupTarget(
   custom: k8s.CustomObjectsApi,
   patch: Record<string, unknown>,
 ): Promise<void> {
+  // Longhorn BackupTarget accepts RFC 7396 merge-patch but NOT the
+  // default JSON-patch the @kubernetes/client-node v1 library sends
+  // (which expects [{op, path, value}] arrays). Without the explicit
+  // Content-Type the apiserver rejects our object-shaped body with
+  // "cannot unmarshal object into Go value of type []handlers.jsonPatchOp".
+  //
+  // v1.x library exposes a middleware hook on the second arg of every
+  // API call. pre()/post() return an Observable (rxjsStub) — we wrap
+  // our synchronous header override using the stub's `of(...)` helper.
+  //
+  // Using `as unknown as` cast because the library's exported
+  // Middleware interface is internal to rxjsStub and types resist a
+  // cleaner path without pulling rxjs in as a direct dep.
+  const mergePatchOverride = {
+    middleware: [
+      {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        pre: (ctx: any) => {
+          ctx.setHeaderParam('Content-Type', 'application/merge-patch+json');
+          // Observable<T> created from a resolved Promise — the library
+          // internally awaits it, so the value lands immediately.
+          return { toPromise: () => Promise.resolve(ctx), pipe: () => undefined };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        post: (ctx: any) => ({ toPromise: () => Promise.resolve(ctx), pipe: () => undefined }),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
   try {
-    await custom.patchClusterCustomObject({
-      group: 'longhorn.io',
-      version: 'v1beta2',
-      plural: 'backuptargets',
-      name: BACKUP_TARGET_NAME,
-      body: patch,
-    } as unknown as Parameters<typeof custom.patchClusterCustomObject>[0]);
+    await custom.patchClusterCustomObject(
+      {
+        group: 'longhorn.io',
+        version: 'v1beta2',
+        plural: 'backuptargets',
+        name: BACKUP_TARGET_NAME,
+        body: patch,
+      } as unknown as Parameters<typeof custom.patchClusterCustomObject>[0],
+      mergePatchOverride,
+    );
   } catch (err) {
     // Older Longhorn installs scope BackupTargets to longhorn-system
     // as namespaced resources. Fall through on 404 and retry with the
     // namespaced API — keeps the reconciler version-agnostic.
     if (isNotFound(err)) {
-      await custom.patchNamespacedCustomObject({
-        group: 'longhorn.io',
-        version: 'v1beta2',
-        namespace: LONGHORN_NAMESPACE,
-        plural: 'backuptargets',
-        name: BACKUP_TARGET_NAME,
-        body: patch,
-      } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0]);
+      await custom.patchNamespacedCustomObject(
+        {
+          group: 'longhorn.io',
+          version: 'v1beta2',
+          namespace: LONGHORN_NAMESPACE,
+          plural: 'backuptargets',
+          name: BACKUP_TARGET_NAME,
+          body: patch,
+        } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
+        mergePatchOverride,
+      );
       return;
     }
     throw err;
