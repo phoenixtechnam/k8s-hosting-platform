@@ -127,29 +127,41 @@ export async function triggerBackupNow(
   const triggered: string[] = [];
   const errors: string[] = [];
   for (const volumeName of volumes) {
-    // Longhorn's REST API: POST /v1/volumes/<name>?action=snapshotBackup
-    // body: { name, labels } — Longhorn takes a snapshot AND backs it
-    // up to the active BackupTarget in one atomic call. Snapshot
-    // name must be DNS-1123 compliant and unique per volume.
+    // Longhorn's REST API flow is two-step:
+    //   1. POST /v1/volumes/<name>?action=snapshotCreate
+    //      body: { name, labels } → creates a snapshot on the volume
+    //   2. POST /v1/volumes/<name>?action=snapshotBackup
+    //      body: { name } → uploads that snapshot to the active
+    //      BackupTarget. Fails with "snapshot <nil> is invalid" if
+    //      called without a preceding snapshotCreate.
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const snapName = `manual-${ts}`.toLowerCase().slice(0, 40);
-    const url = `${apiBase}/v1/volumes/${encodeURIComponent(volumeName)}?action=snapshotBackup`;
+    const volUrl = `${apiBase}/v1/volumes/${encodeURIComponent(volumeName)}`;
+    const labels = {
+      'platform.phoenix-host.net/trigger': 'manual',
+      'app.kubernetes.io/managed-by': 'platform-api',
+    };
     try {
-      const res = await fetchFn(url, {
+      const snapRes = await fetchFn(`${volUrl}?action=snapshotCreate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: snapName,
-          labels: {
-            'platform.phoenix-host.net/trigger': 'manual',
-            'app.kubernetes.io/managed-by': 'platform-api',
-          },
-        }),
+        body: JSON.stringify({ name: snapName, labels }),
         signal: AbortSignal.timeout(15_000),
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        errors.push(`${volumeName}: HTTP ${res.status} ${text.slice(0, 200)}`);
+      if (!snapRes.ok) {
+        const text = await snapRes.text().catch(() => '');
+        errors.push(`${volumeName} (snapshotCreate): HTTP ${snapRes.status} ${text.slice(0, 200)}`);
+        continue;
+      }
+      const backupRes = await fetchFn(`${volUrl}?action=snapshotBackup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: snapName, labels }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!backupRes.ok) {
+        const text = await backupRes.text().catch(() => '');
+        errors.push(`${volumeName} (snapshotBackup): HTTP ${backupRes.status} ${text.slice(0, 200)}`);
         continue;
       }
       triggered.push(volumeName);

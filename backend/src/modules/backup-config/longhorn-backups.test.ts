@@ -91,7 +91,7 @@ describe('triggerBackupNow', () => {
     clients = createMockClients();
   });
 
-  it('calls Longhorn REST snapshotBackup action per labeled volume', async () => {
+  it('calls snapshotCreate then snapshotBackup per labeled volume', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [
         { metadata: { name: 'pvc-a' } },
@@ -102,13 +102,31 @@ describe('triggerBackupNow', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await triggerBackupNow(clients as any, { apiBase: 'http://longhorn-test:9500', fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a', 'pvc-b']);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [firstUrl, firstInit] = fetchMock.mock.calls[0];
-    expect(firstUrl).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotBackup');
-    expect(firstInit.method).toBe('POST');
-    const body = JSON.parse(firstInit.body);
-    expect(body.labels['platform.phoenix-host.net/trigger']).toBe('manual');
-    expect(body.name).toMatch(/^manual-/);
+    // Two volumes × two calls each
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const urls = fetchMock.mock.calls.map(([u]) => u);
+    expect(urls[0]).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotCreate');
+    expect(urls[1]).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotBackup');
+    expect(urls[2]).toBe('http://longhorn-test:9500/v1/volumes/pvc-b?action=snapshotCreate');
+    expect(urls[3]).toBe('http://longhorn-test:9500/v1/volumes/pvc-b?action=snapshotBackup');
+    // Same snapshot name is used for both calls of a given volume
+    const createBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const backupBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(createBody.name).toMatch(/^manual-/);
+    expect(backupBody.name).toBe(createBody.name);
+    expect(createBody.labels['platform.phoenix-host.net/trigger']).toBe('manual');
+  });
+
+  it('does NOT call snapshotBackup when snapshotCreate fails', async () => {
+    clients.custom.listNamespacedCustomObject.mockResolvedValue({
+      items: [{ metadata: { name: 'pvc-a' } }],
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false, status: 500, text: async () => 'snap failed',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(triggerBackupNow(clients as any, { fetch: fetchMock })).rejects.toThrow(/snapshotCreate/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns a helpful message when no volumes are labeled', async () => {
@@ -138,6 +156,10 @@ describe('triggerBackupNow', () => {
       ],
     });
     const fetchMock = vi.fn()
+      // pvc-a: snapshotCreate ok, snapshotBackup ok
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      // pvc-b: snapshotCreate ok, snapshotBackup fails
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
       .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
