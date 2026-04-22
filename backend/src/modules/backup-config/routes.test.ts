@@ -30,7 +30,8 @@ vi.mock('./service.js', () => ({
   createBackupConfig: vi.fn().mockResolvedValue(mockConfig),
   updateBackupConfig: vi.fn().mockResolvedValue({ ...mockConfig, name: 'Updated' }),
   deleteBackupConfig: vi.fn().mockResolvedValue(undefined),
-  testConnection: vi.fn().mockResolvedValue({ status: 'ok', message: 'Configuration is valid' }),
+  testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 42 }),
+  testDraft: vi.fn().mockResolvedValue({ ok: true, latencyMs: 38 }),
 }));
 
 const { backupConfigRoutes } = await import('./routes.js');
@@ -149,6 +150,102 @@ describe('backup-config routes', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.status).toBe('ok');
+    expect(res.json().data.ok).toBe(true);
+    expect(res.json().data.latencyMs).toBeGreaterThan(0);
+  });
+
+  // ─── Strict validation via Zod ───────────────────────────────────────────
+
+  const validS3Payload = {
+    name: 'Primary S3',
+    storage_type: 's3' as const,
+    s3_endpoint: 'https://fsn1.example.com',
+    s3_bucket: 'my-bucket',
+    s3_region: 'eu-central',
+    s3_access_key: 'A'.repeat(20),
+    s3_secret_key: 'S'.repeat(40),
+  };
+
+  const postS3 = (overrides: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { ...validS3Payload, ...overrides },
+    });
+
+  it('POST rejects S3 endpoint without http/https scheme', async () => {
+    const res = await postS3({ s3_endpoint: 'fsn1.example.com' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/s3_endpoint|endpoint|url/i);
+  });
+
+  it('POST rejects S3 bucket with uppercase letters', async () => {
+    const res = await postS3({ s3_bucket: 'My-Bucket' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/bucket/i);
+  });
+
+  it('POST rejects S3 bucket shorter than 3 chars', async () => {
+    const res = await postS3({ s3_bucket: 'ab' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/bucket/i);
+  });
+
+  it('POST rejects S3 bucket longer than 63 chars', async () => {
+    const res = await postS3({ s3_bucket: 'a'.repeat(64) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/bucket/i);
+  });
+
+  it('POST rejects S3 bucket with leading hyphen', async () => {
+    const res = await postS3({ s3_bucket: '-leading' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/bucket/i);
+  });
+
+  it('POST rejects S3 access key shorter than 16 chars', async () => {
+    const res = await postS3({ s3_access_key: 'short' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/access_key|access key/i);
+  });
+
+  it('POST accepts a fully valid S3 payload', async () => {
+    const res = await postS3({});
+    expect(res.statusCode).toBe(201);
+  });
+
+  // ─── POST test-draft (test-before-save) ─────────────────────────────────
+
+  it('POST backup-configs/test-draft runs a real connectivity test on unsaved input', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/test-draft',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: validS3Payload,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.ok).toBe(true);
+    expect(res.json().data.latencyMs).toBeGreaterThan(0);
+  });
+
+  it('POST backup-configs/test-draft still runs Zod validation', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/test-draft',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { ...validS3Payload, s3_bucket: 'UPPERCASE' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('POST backup-configs/test-draft requires admin role', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/test-draft',
+      headers: { authorization: `Bearer ${supportToken}` },
+      payload: validS3Payload,
+    });
+    expect(res.statusCode).toBe(403);
   });
 });

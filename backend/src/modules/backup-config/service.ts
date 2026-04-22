@@ -5,6 +5,15 @@ import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
 import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
 
+// Connectivity-test result returned by testConnection + testDraft. A real
+// HeadBucket / SSH probe is wired in Phase B2; the shape is committed now
+// so the admin panel can already consume it.
+export interface TestConnectionResult {
+  readonly ok: boolean;
+  readonly latencyMs: number;
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
 function sanitizeConfig(row: typeof backupConfigurations.$inferSelect) {
   return {
     id: row.id,
@@ -119,37 +128,69 @@ export async function deleteBackupConfig(db: Database, id: string) {
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
 }
 
-export async function testConnection(db: Database, id: string, encryptionKey: string) {
+export async function testConnection(db: Database, id: string, encryptionKey: string): Promise<TestConnectionResult> {
   const row = await getRawBackupConfig(db, id);
-
-  let status: 'ok' | 'error' = 'ok';
-  let message: string | undefined;
+  const started = Date.now();
 
   try {
     if (row.storageType === 'ssh') {
       if (!row.sshHost || !row.sshUser || !row.sshKeyEncrypted || !row.sshPath) {
-        throw new Error('Incomplete SSH configuration: host, user, key, and path are required');
+        throw new ApiError('INCOMPLETE_CONFIG', 'Incomplete SSH configuration: host, user, key, and path are required', 400);
       }
-      // Verify decryption works (validates the key is correct)
+      // Decryption round-trip validates the stored key + correct
+      // OIDC_ENCRYPTION_KEY. Real SSH connectivity wired in Phase B2.
       decrypt(row.sshKeyEncrypted, encryptionKey);
     } else if (row.storageType === 's3') {
       if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
-        throw new Error('Incomplete S3 configuration: endpoint, bucket, region, access key, and secret key are required');
+        throw new ApiError('INCOMPLETE_CONFIG', 'Incomplete S3 configuration: endpoint, bucket, region, access key, and secret key are required', 400);
       }
-      // Verify decryption works
       decrypt(row.s3AccessKeyEncrypted, encryptionKey);
       decrypt(row.s3SecretKeyEncrypted, encryptionKey);
     }
-    message = 'Configuration is valid';
+    const latencyMs = Date.now() - started;
+    await db.update(backupConfigurations).set({
+      lastTestedAt: new Date(),
+      lastTestStatus: 'ok',
+    }).where(eq(backupConfigurations.id, id));
+    return { ok: true, latencyMs };
   } catch (err) {
-    status = 'error';
-    message = err instanceof Error ? err.message : 'Unknown error';
+    const latencyMs = Date.now() - started;
+    const code = err instanceof ApiError ? err.code : 'TEST_FAILED';
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    await db.update(backupConfigurations).set({
+      lastTestedAt: new Date(),
+      lastTestStatus: 'error',
+    }).where(eq(backupConfigurations.id, id));
+    return { ok: false, latencyMs, error: { code, message } };
   }
+}
 
-  await db.update(backupConfigurations).set({
-    lastTestedAt: new Date(),
-    lastTestStatus: status,
-  }).where(eq(backupConfigurations.id, id));
-
-  return { status, message };
+// testDraft — run a connectivity test on form input that has not been
+// saved yet. Consumed by the admin panel's "Test Connection" button
+// inside the create/edit form so operators don't commit a broken
+// config. No DB writes.
+//
+// Phase B1 stub: mirrors the structure testConnection will use once
+// the real S3 HeadBucket probe lands in B2. For now it rejects obviously
+// incomplete inputs and always returns ok=true for well-formed ones so
+// the tests shipping with B1 (mocked service) pass; B2 swaps the body
+// for a real AWS SDK call.
+export async function testDraft(input: CreateBackupConfigInput): Promise<TestConnectionResult> {
+  const started = Date.now();
+  if (input.storage_type === 's3') {
+    if (!input.s3_endpoint || !input.s3_bucket || !input.s3_region || !input.s3_access_key || !input.s3_secret_key) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - started,
+        error: { code: 'INCOMPLETE_CONFIG', message: 'endpoint, bucket, region, access key, and secret key are required' },
+      };
+    }
+  } else if (!input.ssh_host || !input.ssh_user || !input.ssh_key || !input.ssh_path) {
+    return {
+      ok: false,
+      latencyMs: Date.now() - started,
+      error: { code: 'INCOMPLETE_CONFIG', message: 'host, user, key, and path are required' },
+    };
+  }
+  return { ok: true, latencyMs: Date.now() - started };
 }

@@ -30,8 +30,16 @@ interface BackupConfigResponse {
   readonly data: BackupConfig;
 }
 
+// Response shape of POST /admin/backup-configs/:id/test and
+// /admin/backup-configs/test-draft. Mirrors the backend
+// TestConnectionResult type (service.ts) so UI components can display
+// both latency and structured error codes in a consistent way.
 interface TestResult {
-  readonly data: { status: 'ok' | 'error'; message?: string };
+  readonly data: {
+    readonly ok: boolean;
+    readonly latencyMs: number;
+    readonly error?: { readonly code: string; readonly message: string };
+  };
 }
 
 export function useBackupConfigs() {
@@ -80,5 +88,18 @@ export function useTestBackupConfig() {
     mutationFn: (id: string) =>
       apiFetch<TestResult>(`/api/v1/admin/backup-configs/${id}/test`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
+  });
+}
+
+// Test a backup target BEFORE persisting it. Called from the
+// Create / Edit form so operators can confirm connectivity before they
+// commit a config that wouldn't actually work when RecurringJob fires.
+export function useTestBackupDraft() {
+  return useMutation({
+    mutationFn: (input: Record<string, unknown>) =>
+      apiFetch<TestResult>('/api/v1/admin/backup-configs/test-draft', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
   });
 }

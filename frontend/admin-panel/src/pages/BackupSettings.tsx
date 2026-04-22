@@ -21,7 +21,12 @@ export default function BackupSettings() {
   const [showForm, setShowForm] = useState(false);
   const [storageType, setStorageType] = useState<StorageType>('ssh');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ id: string; status: string; message?: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    id: string;
+    ok: boolean;
+    latencyMs: number;
+    error?: { code: string; message: string };
+  } | null>(null);
 
   const configs = response?.data ?? [];
 
@@ -75,7 +80,12 @@ export default function BackupSettings() {
       const result = await testConfig.mutateAsync(id);
       setTestResult({ id, ...result.data });
     } catch {
-      setTestResult({ id, status: 'error', message: 'Connection test failed' });
+      setTestResult({
+        id,
+        ok: false,
+        latencyMs: 0,
+        error: { code: 'CLIENT_ERROR', message: 'Connection test failed' },
+      });
     }
   };
 
@@ -242,8 +252,8 @@ export default function BackupSettings() {
                 {config.lastTestedAt && <span>Last tested: {new Date(config.lastTestedAt).toLocaleString()}</span>}
               </div>
               {testResult?.id === config.id && (
-                <div className={`mt-2 text-xs ${testResult.status === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                  Test: {testResult.status}{testResult.message ? ` — ${testResult.message}` : ''}
+                <div className={`mt-2 text-xs ${testResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                  Test: {testResult.ok ? 'ok' : 'error'} ({testResult.latencyMs}ms){testResult.error ? ` — ${testResult.error.message}` : ''}
                 </div>
               )}
               <div className="mt-3 flex gap-2">

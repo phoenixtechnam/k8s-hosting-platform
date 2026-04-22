@@ -233,16 +233,17 @@ describe('testConnection', () => {
     const { db } = createMockDb([SSH_ROW]);
     const result = await testConnection(db, 'cfg-1', ENCRYPTION_KEY);
 
-    expect(result.status).toBe('ok');
-    expect(result.message).toBe('Configuration is valid');
+    expect(result.ok).toBe(true);
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.error).toBeUndefined();
   });
 
   it('should return ok for a valid S3 config', async () => {
     const { db } = createMockDb([S3_ROW]);
     const result = await testConnection(db, 'cfg-2', ENCRYPTION_KEY);
 
-    expect(result.status).toBe('ok');
-    expect(result.message).toBe('Configuration is valid');
+    expect(result.ok).toBe(true);
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it('should return error for incomplete SSH config', async () => {
@@ -250,8 +251,9 @@ describe('testConnection', () => {
     const { db } = createMockDb([incompleteRow]);
     const result = await testConnection(db, 'cfg-1', ENCRYPTION_KEY);
 
-    expect(result.status).toBe('error');
-    expect(result.message).toContain('Incomplete SSH configuration');
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INCOMPLETE_CONFIG');
+    expect(result.error?.message).toContain('Incomplete SSH configuration');
   });
 
   it('should return error for incomplete S3 config', async () => {
@@ -259,7 +261,65 @@ describe('testConnection', () => {
     const { db } = createMockDb([incompleteRow]);
     const result = await testConnection(db, 'cfg-2', ENCRYPTION_KEY);
 
-    expect(result.status).toBe('error');
-    expect(result.message).toContain('Incomplete S3 configuration');
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INCOMPLETE_CONFIG');
+    expect(result.error?.message).toContain('Incomplete S3 configuration');
+  });
+});
+
+describe('testDraft', () => {
+  it('returns ok for a well-formed S3 input', async () => {
+    const result = await (await import('./service.js')).testDraft({
+      storage_type: 's3',
+      name: 'draft',
+      s3_endpoint: 'https://s3.example.com',
+      s3_bucket: 'bucket',
+      s3_region: 'us-east-1',
+      s3_access_key: 'A'.repeat(20),
+      s3_secret_key: 'S'.repeat(40),
+      retention_days: 30,
+      schedule_expression: '0 2 * * *',
+      enabled: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns INCOMPLETE_CONFIG for S3 input missing creds', async () => {
+    const result = await (await import('./service.js')).testDraft({
+      storage_type: 's3',
+      name: 'draft',
+      s3_endpoint: 'https://s3.example.com',
+      s3_bucket: 'bucket',
+      s3_region: 'us-east-1',
+      // missing s3_access_key + s3_secret_key — not caught by Zod (they
+      // have `.min(1)`) if the caller fakes the object, but our service
+      // guard still rejects them so the draft API never pretends the
+      // test succeeded without credentials.
+      s3_access_key: '',
+      s3_secret_key: '',
+      retention_days: 30,
+      schedule_expression: '0 2 * * *',
+      enabled: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INCOMPLETE_CONFIG');
+  });
+
+  it('returns INCOMPLETE_CONFIG for SSH input missing fields', async () => {
+    const result = await (await import('./service.js')).testDraft({
+      storage_type: 'ssh',
+      name: 'draft',
+      ssh_host: '',
+      ssh_port: 22,
+      ssh_user: 'backup',
+      ssh_key: 'key',
+      ssh_path: '/backups',
+      retention_days: 30,
+      schedule_expression: '0 2 * * *',
+      enabled: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INCOMPLETE_CONFIG');
   });
 });
