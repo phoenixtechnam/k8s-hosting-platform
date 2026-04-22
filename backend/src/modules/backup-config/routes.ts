@@ -201,7 +201,9 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     try {
       const { clearBackupTarget } = await import('./longhorn-reconciler.js');
       if (longhornClients) {
-        await clearBackupTarget(longhornClients);
+        // Pass the kind so SSH deactivate skips the Longhorn BackupTarget
+        // CR patch (nothing to clear there — SSH never wrote to it).
+        await clearBackupTarget(longhornClients, { kind: row.storageType });
       }
     } catch (err) {
       request.log.warn({ err, configId: id }, 'Failed to clear Longhorn BackupTarget on deactivate');

@@ -23,11 +23,21 @@ function createMockClients() {
 }
 
 const INPUT = {
+  kind: 's3' as const,
   endpoint: 'https://fsn1.example.com',
   region: 'eu-central',
   bucket: 'k8s-staging',
   accessKeyId: 'AKIA' + 'X'.repeat(16),
   secretAccessKey: 'S'.repeat(40),
+};
+
+const SSH_INPUT = {
+  kind: 'ssh' as const,
+  host: 'backup.example.com',
+  port: 22,
+  user: 'platformbackup',
+  path: '/srv/backups/staging',
+  privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nAAA...\n-----END OPENSSH PRIVATE KEY-----\n',
 };
 
 describe('reconcileBackupTarget', () => {
@@ -54,6 +64,22 @@ describe('reconcileBackupTarget', () => {
     expect(args.body.stringData.AWS_ENDPOINTS).toBe(INPUT.endpoint);
     expect(args.body.stringData.S3_BUCKET).toBe(INPUT.bucket);
     expect(args.body.metadata.labels['app.kubernetes.io/managed-by']).toBe('platform-api');
+  });
+
+  it('marks the platform-ns Secret with TARGET_KIND=s3 on S3 activate', async () => {
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, INPUT);
+
+    const [, platformArgs] = clients.core.replaceNamespacedSecret.mock.calls;
+    expect(platformArgs[0].body.stringData.TARGET_KIND).toBe('s3');
+    // Switching back from SSH→S3 must drop stale SSH keys. stringData set
+    // to '' lets replaceNamespacedSecret overwrite them without leaving
+    // ghost values from a prior SSH activation.
+    expect(platformArgs[0].body.stringData.SSH_HOST).toBe('');
+    expect(platformArgs[0].body.stringData.SSH_PRIVATE_KEY).toBe('');
   });
 
   it('also writes backup-credentials Secret into the platform namespace for DR CronJobs', async () => {
@@ -203,6 +229,83 @@ describe('reconcileBackupTarget', () => {
   });
 });
 
+describe('reconcileBackupTarget — SSH variant', () => {
+  let clients: ReturnType<typeof createMockClients>;
+  beforeEach(() => { clients = createMockClients(); });
+
+  it('writes SSH_* keys + TARGET_KIND=ssh to the platform-ns Secret only', async () => {
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, SSH_INPUT);
+
+    // Exactly one Secret call — the platform-ns one. Longhorn-system is
+    // never touched for SSH because Longhorn's BackupTarget only talks S3.
+    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
+    expect(args.name).toBe('backup-credentials');
+    expect(args.namespace).toBe('platform');
+    expect(args.body.stringData.TARGET_KIND).toBe('ssh');
+    expect(args.body.stringData.SSH_HOST).toBe(SSH_INPUT.host);
+    expect(args.body.stringData.SSH_PORT).toBe(String(SSH_INPUT.port));
+    expect(args.body.stringData.SSH_USER).toBe(SSH_INPUT.user);
+    expect(args.body.stringData.SSH_PATH).toBe(SSH_INPUT.path);
+    expect(args.body.stringData.SSH_PRIVATE_KEY).toBe(SSH_INPUT.privateKey);
+  });
+
+  it('clears stale AWS_* keys when activating SSH after a prior S3 config', async () => {
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, SSH_INPUT);
+
+    const [args] = clients.core.replaceNamespacedSecret.mock.calls[0];
+    // Empty-string stringData overwrites prior AWS_* on replace — keeps
+    // the Secret shape deterministic across target-kind switches.
+    expect(args.body.stringData.AWS_ACCESS_KEY_ID).toBe('');
+    expect(args.body.stringData.AWS_SECRET_ACCESS_KEY).toBe('');
+    expect(args.body.stringData.AWS_ENDPOINTS).toBe('');
+    expect(args.body.stringData.S3_BUCKET).toBe('');
+    expect(args.body.stringData.S3_REGION).toBe('');
+  });
+
+  it('does NOT patch the Longhorn BackupTarget CR on SSH activate', async () => {
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, SSH_INPUT);
+
+    // Longhorn does not support SSH as a BackupTarget backend — the CR
+    // is left untouched. Longhorn-level volume backups are disabled when
+    // the admin panel's active config is SSH-only.
+    expect(clients.custom.patchClusterCustomObject).not.toHaveBeenCalled();
+    expect(clients.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('falls back to createNamespacedSecret on 404 for SSH variant', async () => {
+    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 404 });
+    clients.core.createNamespacedSecret.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, SSH_INPUT);
+
+    expect(clients.core.createNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [args] = clients.core.createNamespacedSecret.mock.calls[0];
+    expect(args.namespace).toBe('platform');
+    expect(args.body.metadata.name).toBe('backup-credentials');
+    expect(args.body.stringData.TARGET_KIND).toBe('ssh');
+  });
+
+  it('propagates non-404 errors from the SSH Secret write', async () => {
+    clients.core.replaceNamespacedSecret.mockRejectedValue({ statusCode: 500, message: 'boom' });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(clients as any, SSH_INPUT)).rejects.toMatchObject({
+      statusCode: 500,
+    });
+  });
+});
+
 describe('clearBackupTarget', () => {
   it('empties the URL and secret reference', async () => {
     const clients = createMockClients();
@@ -214,5 +317,18 @@ describe('clearBackupTarget', () => {
     const [args] = clients.custom.patchClusterCustomObject.mock.calls[0];
     expect(args.body.spec.backupTargetURL).toBe('');
     expect(args.body.spec.credentialSecret).toBe('');
+  });
+
+  it('skips the BackupTarget CR patch when kind=ssh is supplied', async () => {
+    const clients = createMockClients();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await clearBackupTarget(clients as any, { kind: 'ssh' });
+
+    // SSH was never patched-in, so clearing has nothing to clear. The
+    // caller still wants a well-defined no-op instead of needing to
+    // branch on kind externally.
+    expect(clients.custom.patchClusterCustomObject).not.toHaveBeenCalled();
+    expect(clients.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });

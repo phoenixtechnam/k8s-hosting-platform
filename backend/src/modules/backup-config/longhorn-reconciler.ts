@@ -7,12 +7,39 @@ const LONGHORN_SECRET_NAME = 'longhorn-backup-credentials';
 const LONGHORN_NAMESPACE = 'longhorn-system';
 const BACKUP_TARGET_NAME = 'default';
 // A sibling copy lives in the platform namespace so the DR CronJobs
-// (etcd snapshot, pg_dump, cluster-state) can mount the same creds
-// without crossing the longhorn-system boundary. Same keys, same shape.
+// (etcd snapshot, pg_dump, cluster-state, secrets-backup, hostpath-
+// snapshot) can mount the same creds without crossing the longhorn-
+// system boundary. Shape depends on TARGET_KIND:
+//   TARGET_KIND=s3  → AWS_* + S3_* keys  (Longhorn + DR CronJobs share)
+//   TARGET_KIND=ssh → SSH_* keys         (DR CronJobs only; Longhorn
+//                                         BackupTarget CR is left inert)
 const PLATFORM_SECRET_NAME = 'backup-credentials';
 const PLATFORM_NAMESPACE = 'platform';
 
-export interface LonghornBackupTargetInput {
+// All Secret-data keys the CronJobs read. Enumerated here so that
+// switching target kinds (S3 ↔ SSH) leaves no stale fields behind —
+// absent fields on a `replaceNamespacedSecret` call would otherwise
+// retain their previous values.
+const S3_KEYS = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_ENDPOINTS',
+  'VIRTUAL_HOSTED_STYLE',
+  'S3_BUCKET',
+  'S3_REGION',
+  'S3_PATH_PREFIX',
+] as const;
+
+const SSH_KEYS = [
+  'SSH_HOST',
+  'SSH_PORT',
+  'SSH_USER',
+  'SSH_PATH',
+  'SSH_PRIVATE_KEY',
+] as const;
+
+export interface S3BackupTargetInput {
+  readonly kind: 's3';
   readonly endpoint: string;       // e.g. https://fsn1.your-objectstorage.com
   readonly region: string;          // e.g. eu-central
   readonly bucket: string;          // e.g. k8s-staging
@@ -21,33 +48,60 @@ export interface LonghornBackupTargetInput {
   readonly pathPrefix?: string;     // optional, e.g. "longhorn-staging"
 }
 
+export interface SshBackupTargetInput {
+  readonly kind: 'ssh';
+  readonly host: string;
+  readonly port: number;
+  readonly user: string;
+  readonly path: string;
+  readonly privateKey: string;      // plaintext PEM body, handed to K8s Secret
+}
+
+// Discriminated union: reconciler callers pass one of these, and the
+// `kind` tag decides which branch of the Secret layout + Longhorn CR
+// handling gets applied.
+export type LonghornBackupTargetInput = S3BackupTargetInput | SshBackupTargetInput;
+
 export interface LonghornClients {
   readonly core: k8s.CoreV1Api;
   readonly custom: k8s.CustomObjectsApi;
 }
 
 /**
- * Create or update the Secret that Longhorn uses to authenticate with
- * the S3 backup target, then point BackupTarget/default at it. Called
- * from the backup-config service when a row is marked active (or when
- * the active row's S3 fields change).
+ * Create or update the credentials Secret(s) the cluster needs to run
+ * backups, then (for S3 only) point Longhorn's BackupTarget/default at
+ * that Secret. Called from the backup-config service when a row is
+ * marked active, or when the active row's fields change.
+ *
+ * - S3 variant  → writes longhorn-system Secret + platform-ns Secret
+ *                 + patches BackupTarget CR.
+ * - SSH variant → writes ONLY the platform-ns Secret (Longhorn upstream
+ *                 does not speak SSH; SSH is platform-level only for
+ *                 our DR CronJobs).
  *
  * Idempotent: running it twice with the same input leaves the cluster
- * in the same state. An operator `kubectl edit`-ing either resource
- * will be overwritten on next reconcile — that's intentional. The
- * admin panel is the source of truth.
+ * in the same state. An operator `kubectl edit`-ing the Secret or the
+ * BackupTarget will be overwritten on next reconcile — that's intentional.
+ * The admin panel is the source of truth.
  */
 export async function reconcileBackupTarget(
   clients: LonghornClients,
   input: LonghornBackupTargetInput,
 ): Promise<void> {
-  // Write both Secrets FIRST — a BackupTarget patch failure later leaves
-  // partial-but-useful state (DR CronJobs still have creds). The Longhorn
-  // Secret is mandatory for the subsequent patch to succeed; bubble its
-  // error. The platform-ns Secret is best-effort.
-  await upsertCredentialsSecret(clients.core, input, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE);
+  if (input.kind === 'ssh') {
+    await upsertPlatformSecret(clients.core, buildSshSecretData(input));
+    // Longhorn BackupTarget CR is intentionally left alone — SSH is
+    // platform-level only. `clearBackupTarget({kind:'ssh'})` is the
+    // reverse path and also a no-op on the CR.
+    return;
+  }
+  // S3 path — longhorn-system Secret mandatory (BackupTarget patch reads
+  // from it), platform-ns copy is best-effort so DR CronJobs keep working
+  // even if that namespace is misconfigured.
+  const s3Secret = buildS3SecretData(input);
+  await upsertNamespacedSecret(clients.core, LONGHORN_SECRET_NAME, LONGHORN_NAMESPACE, s3Secret);
   try {
-    await upsertCredentialsSecret(clients.core, input, PLATFORM_SECRET_NAME, PLATFORM_NAMESPACE);
+    await upsertPlatformSecret(clients.core, s3Secret);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
@@ -57,34 +111,77 @@ export async function reconcileBackupTarget(
 
 /**
  * Clear the BackupTarget. Called when the only active config is
- * deactivated. The Secret is kept so re-activating the same config
+ * deactivated. For SSH, there's nothing on the CR to clear — the caller
+ * still invokes this so a single de-activation codepath exists
+ * regardless of target kind.
+ *
+ * The credentials Secret is kept so re-activating the same config
  * doesn't force a credential round-trip — delete-on-deactivate would
  * be an operator surprise if they intend to toggle the flag.
  */
-export async function clearBackupTarget(clients: LonghornClients): Promise<void> {
+export async function clearBackupTarget(
+  clients: LonghornClients,
+  opts: { readonly kind?: 's3' | 'ssh' } = {},
+): Promise<void> {
+  if (opts.kind === 'ssh') return;
   await patchBackupTarget(clients.custom, {
     spec: { backupTargetURL: '', credentialSecret: '' },
   });
 }
 
-async function upsertCredentialsSecret(
-  core: k8s.CoreV1Api,
-  input: LonghornBackupTargetInput,
-  secretName: string = LONGHORN_SECRET_NAME,
-  secretNamespace: string = LONGHORN_NAMESPACE,
-): Promise<void> {
+// Build the Secret data block for an S3 target. Explicit empty strings
+// for SSH_* so switching SSH→S3 drops stale SSH keys on `replace`.
+export function buildS3SecretData(input: S3BackupTargetInput): Record<string, string> {
   // Longhorn's reference docs list four keys (see
   // https://longhorn.io/docs/1.6.2/snapshots-and-backups/backup-and-restore/set-backup-target):
-  //   AWS_ACCESS_KEY_ID
-  //   AWS_SECRET_ACCESS_KEY
-  //   AWS_ENDPOINTS       (non-AWS providers — scheme://host)
-  //   VIRTUAL_HOSTED_STYLE (set to "true" for AWS, leave empty for
-  //                        path-style providers like Hetzner/MinIO)
-  //
-  // We always send all four so switching from Hetzner to AWS doesn't
-  // leave stale keys behind. We also add S3_BUCKET + S3_REGION +
-  // S3_PATH_PREFIX as a convenience for the platform-ns DR CronJobs
-  // (aws s3 cp target) — Longhorn itself ignores unknown keys.
+  //   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINTS /
+  //   VIRTUAL_HOSTED_STYLE ("true" for AWS, empty for path-style providers
+  //   like Hetzner/MinIO). We always send all four + S3_BUCKET/S3_REGION/
+  //   S3_PATH_PREFIX (convenience for the aws-cli calls in DR CronJobs).
+  const data: Record<string, string> = {
+    TARGET_KIND: 's3',
+    AWS_ACCESS_KEY_ID: input.accessKeyId,
+    AWS_SECRET_ACCESS_KEY: input.secretAccessKey,
+    AWS_ENDPOINTS: input.endpoint,
+    VIRTUAL_HOSTED_STYLE: '',
+    S3_BUCKET: input.bucket,
+    S3_REGION: input.region,
+    S3_PATH_PREFIX: input.pathPrefix ?? '',
+  };
+  for (const k of SSH_KEYS) data[k] = '';
+  return data;
+}
+
+// Build the Secret data block for an SSH target. Explicit empty strings
+// for AWS_*/S3_* so switching S3→SSH drops stale AWS keys on `replace`.
+// SSH_PORT is written as a string because Kubernetes Secret values are
+// always strings; the consumer scripts treat `${SSH_PORT:-22}` as a string.
+export function buildSshSecretData(input: SshBackupTargetInput): Record<string, string> {
+  const data: Record<string, string> = {
+    TARGET_KIND: 'ssh',
+    SSH_HOST: input.host,
+    SSH_PORT: String(input.port),
+    SSH_USER: input.user,
+    SSH_PATH: input.path,
+    SSH_PRIVATE_KEY: input.privateKey,
+  };
+  for (const k of S3_KEYS) data[k] = '';
+  return data;
+}
+
+async function upsertPlatformSecret(
+  core: k8s.CoreV1Api,
+  stringData: Record<string, string>,
+): Promise<void> {
+  await upsertNamespacedSecret(core, PLATFORM_SECRET_NAME, PLATFORM_NAMESPACE, stringData);
+}
+
+async function upsertNamespacedSecret(
+  core: k8s.CoreV1Api,
+  secretName: string,
+  secretNamespace: string,
+  stringData: Record<string, string>,
+): Promise<void> {
   // Base64 encoding is done by the @kubernetes client-node Secret API
   // when we pass `stringData`.
   const body: k8s.V1Secret = {
@@ -99,15 +196,7 @@ async function upsertCredentialsSecret(
       },
     },
     type: 'Opaque',
-    stringData: {
-      AWS_ACCESS_KEY_ID: input.accessKeyId,
-      AWS_SECRET_ACCESS_KEY: input.secretAccessKey,
-      AWS_ENDPOINTS: input.endpoint,
-      VIRTUAL_HOSTED_STYLE: '',
-      S3_BUCKET: input.bucket,
-      S3_REGION: input.region,
-      S3_PATH_PREFIX: input.pathPrefix ?? '',
-    },
+    stringData,
   };
 
   try {
@@ -127,7 +216,7 @@ async function upsertCredentialsSecret(
 
 async function upsertBackupTarget(
   custom: k8s.CustomObjectsApi,
-  input: LonghornBackupTargetInput,
+  input: S3BackupTargetInput,
 ): Promise<void> {
   // Longhorn parses backupTargetURL as `<scheme>://<bucket>@<region>/[<prefix>]`.
   // Scheme is `s3` for any S3-compatible provider; endpoint (discovered

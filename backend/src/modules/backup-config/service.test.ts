@@ -23,6 +23,8 @@ const {
   updateBackupConfig,
   deleteBackupConfig,
   testConnection,
+  activateBackupConfig,
+  getActiveBackupConfig,
 } = await import('./service.js');
 
 const ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -79,10 +81,17 @@ function createMockDb(rows: unknown[] = []) {
   let selectCallCount = 0;
   const selectResults = Array.isArray(rows) ? rows : [rows];
 
+  const limitFn = vi.fn().mockReturnValue(Promise.resolve(selectResults));
+  // whereFn doubles as a thenable (Promise-like) AND a chain target for
+  // `.limit()` so `select.from.where.limit(1)` and `select.from.where`
+  // both resolve to `selectResults`.
   const whereFn = vi.fn().mockImplementation(() => {
     selectCallCount++;
-    // First where() call in create is for getRaw, subsequent ones for getBackupConfig
-    return Promise.resolve(selectResults);
+    const chain: PromiseLike<unknown[]> & { limit: typeof limitFn } = {
+      limit: limitFn,
+      then: (onFulfilled, onRejected) => Promise.resolve(selectResults).then(onFulfilled, onRejected),
+    };
+    return chain;
   });
   const orderByFn = vi.fn().mockReturnValue(Promise.resolve(selectResults));
   const fromFn = vi.fn().mockReturnValue({ where: whereFn, orderBy: orderByFn });
@@ -98,14 +107,22 @@ function createMockDb(rows: unknown[] = []) {
   const insertValues = vi.fn().mockResolvedValue(undefined);
   const insertFn = vi.fn().mockReturnValue({ values: insertValues });
 
+  // activateBackupConfig wraps writes in db.transaction — the mock
+  // invokes the callback with the same `db` object so `tx.update(...)`
+  // calls are captured by `updateFn`.
+  const txFn = vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) => {
+    return cb({ update: updateFn });
+  });
+
   return {
     db: {
       select: selectFn,
       insert: insertFn,
       update: updateFn,
       delete: deleteFn,
+      transaction: txFn,
     } as unknown as Parameters<typeof listBackupConfigs>[0],
-    mocks: { selectFn, insertFn, updateFn, deleteFn, insertValues, updateSet, updateWhere, deleteWhere, whereFn },
+    mocks: { selectFn, insertFn, updateFn, deleteFn, insertValues, updateSet, updateWhere, deleteWhere, whereFn, txFn },
   };
 }
 
@@ -337,5 +354,91 @@ describe('testDraft', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('INCOMPLETE_CONFIG');
+  });
+});
+
+describe('activateBackupConfig — SSH', () => {
+  it('allows activating a well-formed SSH config', async () => {
+    const { db, mocks } = createMockDb([SSH_ROW]);
+    const result = await activateBackupConfig(db, 'cfg-1');
+    expect(result.storageType).toBe('ssh');
+    // Transaction fired (clears prior active + sets this one active).
+    expect(mocks.txFn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an SSH config missing required fields', async () => {
+    const incomplete = { ...SSH_ROW, sshHost: null };
+    const { db } = createMockDb([incomplete]);
+    await expect(activateBackupConfig(db, 'cfg-1')).rejects.toMatchObject({
+      code: 'INCOMPLETE_CONFIG',
+      status: 400,
+    });
+  });
+
+  it('rejects an S3 config missing required fields', async () => {
+    const incomplete = { ...S3_ROW, s3Bucket: null };
+    const { db } = createMockDb([incomplete]);
+    await expect(activateBackupConfig(db, 'cfg-2')).rejects.toMatchObject({
+      code: 'INCOMPLETE_CONFIG',
+      status: 400,
+    });
+  });
+
+  it('rejects an unknown storage type with UNSUPPORTED_PROVIDER', async () => {
+    const bogus = { ...S3_ROW, storageType: 'ftp' as unknown as 's3' };
+    const { db } = createMockDb([bogus]);
+    await expect(activateBackupConfig(db, 'cfg-x')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_PROVIDER',
+      status: 400,
+    });
+  });
+});
+
+describe('getActiveBackupConfig', () => {
+  it('returns a discriminated SSH variant for an active SSH row', async () => {
+    const row = { ...SSH_ROW, active: true };
+    const { db } = createMockDb([row]);
+    const active = await getActiveBackupConfig(db, ENCRYPTION_KEY);
+    expect(active).not.toBeNull();
+    expect(active!.kind).toBe('ssh');
+    if (active!.kind === 'ssh') {
+      expect(active.host).toBe(SSH_ROW.sshHost);
+      expect(active.port).toBe(SSH_ROW.sshPort);
+      expect(active.user).toBe(SSH_ROW.sshUser);
+      expect(active.path).toBe(SSH_ROW.sshPath);
+      // Private key must come back decrypted — otherwise the reconciler
+      // writes the ciphertext into the Secret and rsync fails on wire.
+      expect(active.privateKey).toBe('private-key-data');
+    }
+  });
+
+  it('returns a discriminated S3 variant for an active S3 row', async () => {
+    const row = { ...S3_ROW, active: true };
+    const { db } = createMockDb([row]);
+    const active = await getActiveBackupConfig(db, ENCRYPTION_KEY);
+    expect(active).not.toBeNull();
+    expect(active!.kind).toBe('s3');
+    if (active!.kind === 's3') {
+      expect(active.endpoint).toBe(S3_ROW.s3Endpoint);
+      expect(active.bucket).toBe(S3_ROW.s3Bucket);
+      expect(active.region).toBe(S3_ROW.s3Region);
+      expect(active.accessKeyId).toBe('AKIAIOSFODNN7EXAMPLE');
+      expect(active.secretAccessKey).toBe('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+      expect(active.pathPrefix).toBe(S3_ROW.s3Prefix);
+    }
+  });
+
+  it('returns null when no row is active', async () => {
+    const { db } = createMockDb([]);
+    const active = await getActiveBackupConfig(db, ENCRYPTION_KEY);
+    expect(active).toBeNull();
+  });
+
+  it('throws ACTIVE_CONFIG_INCOMPLETE for a partial SSH row', async () => {
+    const row = { ...SSH_ROW, sshPath: null, active: true };
+    const { db } = createMockDb([row]);
+    await expect(getActiveBackupConfig(db, ENCRYPTION_KEY)).rejects.toMatchObject({
+      code: 'ACTIVE_CONFIG_INCOMPLETE',
+    });
   });
 });

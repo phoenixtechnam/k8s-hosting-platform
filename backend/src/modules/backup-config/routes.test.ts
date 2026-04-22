@@ -35,6 +35,7 @@ vi.mock('./service.js', () => ({
   activateBackupConfig: vi.fn().mockResolvedValue({ ...mockConfig, active: true }),
   deactivateBackupConfig: vi.fn().mockResolvedValue({ ...mockConfig, active: false }),
   getActiveBackupConfig: vi.fn().mockResolvedValue({
+    kind: 's3',
     id: 'bc-1',
     endpoint: 'https://fsn1.example.com',
     region: 'eu-central',
@@ -293,5 +294,32 @@ describe('backup-config routes', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.active).toBe(false);
+  });
+
+  it('POST activate on an SSH config passes kind=ssh to the reconciler', async () => {
+    // Re-mock getActiveBackupConfig to return the SSH discriminated
+    // variant — the route must hand it to reconcileBackupTarget which,
+    // in real code, skips the Longhorn BackupTarget CR patch.
+    const reconcilerMock = await import('./longhorn-reconciler.js');
+    const serviceMock = await import('./service.js');
+    (serviceMock.getActiveBackupConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      kind: 'ssh',
+      id: 'bc-1',
+      host: 'backup.example.com',
+      port: 22,
+      user: 'backupuser',
+      path: '/backups',
+      privateKey: 'PRIVATEKEY',
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/backup-configs/bc-1/activate',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const calls = (reconcilerMock.reconcileBackupTarget as ReturnType<typeof vi.fn>).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[1].kind).toBe('ssh');
+    expect(lastCall[1].host).toBe('backup.example.com');
   });
 });

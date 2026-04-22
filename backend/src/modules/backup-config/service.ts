@@ -5,6 +5,7 @@ import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
 import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
 import { probeS3 } from './s3-probe.js';
+import type { LonghornBackupTargetInput } from './longhorn-reconciler.js';
 
 // Connectivity-test result returned by testConnection + testDraft. A real
 // HeadBucket / SSH probe is wired in Phase B2; the shape is committed now
@@ -145,14 +146,32 @@ export async function deleteBackupConfig(db: Database, id: string) {
 // Does NOT call the Longhorn reconciler directly — the route does that
 // after activation succeeds. Separating DB and cluster writes lets tests
 // exercise activation without mocking the k8s client.
+//
+// Accepts BOTH s3 and ssh kinds. SSH configs don't drive Longhorn's
+// BackupTarget CR (Longhorn upstream is S3-only); they populate the
+// platform-ns backup-credentials Secret with SSH_* keys + TARGET_KIND=ssh
+// so the DR CronJobs (secrets-backup, hostpath-snapshot, etc.) can rsync
+// over SSH instead of aws-cli.
 export async function activateBackupConfig(db: Database, id: string) {
   const row = await getRawBackupConfig(db, id);
-  if (row.storageType !== 's3') {
+  if (row.storageType !== 's3' && row.storageType !== 'ssh') {
     throw new ApiError(
       'UNSUPPORTED_PROVIDER',
-      'Only s3 backup targets can be activated on Longhorn. SSH targets feed a separate backup writer (not yet wired).',
+      `Unsupported backup target kind: ${row.storageType}`,
       400,
     );
+  }
+  // Completeness check before flipping the flag — a half-filled row
+  // activating would corrupt the reconcile. Mirror the testConnection
+  // checks so the admin panel gives matching feedback.
+  if (row.storageType === 's3') {
+    if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
+      throw new ApiError('INCOMPLETE_CONFIG', 'S3 config missing required fields (endpoint, bucket, region, access/secret key)', 400);
+    }
+  } else {
+    if (!row.sshHost || !row.sshUser || !row.sshPath || !row.sshKeyEncrypted) {
+      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config missing required fields (host, user, path, key)', 400);
+    }
   }
   await db.transaction(async (tx) => {
     await tx.update(backupConfigurations)
@@ -178,24 +197,51 @@ export async function deactivateBackupConfig(db: Database, id: string) {
 // getActiveBackupConfig — returns decrypted creds for the currently
 // active config, or null. Consumed by the Longhorn reconciler to
 // refresh the Secret on application startup / periodic reconcile.
-export async function getActiveBackupConfig(db: Database, encryptionKey: string) {
+//
+// The return shape is a discriminated union on `kind`, matching the
+// reconciler's LonghornBackupTargetInput so the route can pass the
+// result straight through without remapping.
+export type ActiveBackupConfig = LonghornBackupTargetInput & { readonly id: string };
+
+export async function getActiveBackupConfig(db: Database, encryptionKey: string): Promise<ActiveBackupConfig | null> {
   const [row] = await db.select()
     .from(backupConfigurations)
     .where(eq(backupConfigurations.active, true))
     .limit(1);
   if (!row) return null;
-  if (row.storageType !== 's3' || !row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
-    throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active backup target is missing required S3 fields', 500);
+
+  if (row.storageType === 's3') {
+    if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
+      throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active S3 backup target is missing required fields', 500);
+    }
+    return {
+      kind: 's3',
+      id: row.id,
+      endpoint: row.s3Endpoint,
+      region: row.s3Region,
+      bucket: row.s3Bucket,
+      accessKeyId: decrypt(row.s3AccessKeyEncrypted, encryptionKey),
+      secretAccessKey: decrypt(row.s3SecretKeyEncrypted, encryptionKey),
+      pathPrefix: row.s3Prefix ?? undefined,
+    };
   }
-  return {
-    id: row.id,
-    endpoint: row.s3Endpoint,
-    region: row.s3Region,
-    bucket: row.s3Bucket,
-    accessKeyId: decrypt(row.s3AccessKeyEncrypted, encryptionKey),
-    secretAccessKey: decrypt(row.s3SecretKeyEncrypted, encryptionKey),
-    pathPrefix: row.s3Prefix ?? undefined,
-  };
+
+  if (row.storageType === 'ssh') {
+    if (!row.sshHost || !row.sshUser || !row.sshPath || !row.sshKeyEncrypted) {
+      throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', 'Active SSH backup target is missing required fields', 500);
+    }
+    return {
+      kind: 'ssh',
+      id: row.id,
+      host: row.sshHost,
+      port: row.sshPort ?? 22,
+      user: row.sshUser,
+      path: row.sshPath,
+      privateKey: decrypt(row.sshKeyEncrypted, encryptionKey),
+    };
+  }
+
+  throw new ApiError('ACTIVE_CONFIG_INCOMPLETE', `Active backup target has unknown kind: ${row.storageType}`, 500);
 }
 
 export async function testConnection(db: Database, id: string, encryptionKey: string): Promise<TestConnectionResult> {
