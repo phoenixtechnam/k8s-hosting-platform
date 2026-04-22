@@ -4,6 +4,7 @@ import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import type { Database } from '../../db/index.js';
 import type { CreateBackupConfigInput, UpdateBackupConfigInput } from '@k8s-hosting/api-contracts';
+import { probeS3 } from './s3-probe.js';
 
 // Connectivity-test result returned by testConnection + testDraft. A real
 // HeadBucket / SSH probe is wired in Phase B2; the shape is committed now
@@ -130,67 +131,103 @@ export async function deleteBackupConfig(db: Database, id: string) {
 
 export async function testConnection(db: Database, id: string, encryptionKey: string): Promise<TestConnectionResult> {
   const row = await getRawBackupConfig(db, id);
-  const started = Date.now();
 
-  try {
-    if (row.storageType === 'ssh') {
-      if (!row.sshHost || !row.sshUser || !row.sshKeyEncrypted || !row.sshPath) {
-        throw new ApiError('INCOMPLETE_CONFIG', 'Incomplete SSH configuration: host, user, key, and path are required', 400);
+  let result: TestConnectionResult;
+  if (row.storageType === 'ssh') {
+    if (!row.sshHost || !row.sshUser || !row.sshKeyEncrypted || !row.sshPath) {
+      result = {
+        ok: false,
+        latencyMs: 0,
+        error: {
+          code: 'INCOMPLETE_CONFIG',
+          message: 'Incomplete SSH configuration: host, user, key, and path are required',
+        },
+      };
+    } else {
+      // SSH probe not yet wired — decrypt as a smoke-test so we at least
+      // catch encryption-key mismatches. Phase C/future work can dial a
+      // TCP connection + exec a listing here.
+      try {
+        decrypt(row.sshKeyEncrypted, encryptionKey);
+        result = { ok: true, latencyMs: 0 };
+      } catch (err) {
+        result = {
+          ok: false,
+          latencyMs: 0,
+          error: { code: 'DECRYPT_FAILED', message: err instanceof Error ? err.message : 'Unknown error' },
+        };
       }
-      // Decryption round-trip validates the stored key + correct
-      // OIDC_ENCRYPTION_KEY. Real SSH connectivity wired in Phase B2.
-      decrypt(row.sshKeyEncrypted, encryptionKey);
-    } else if (row.storageType === 's3') {
-      if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
-        throw new ApiError('INCOMPLETE_CONFIG', 'Incomplete S3 configuration: endpoint, bucket, region, access key, and secret key are required', 400);
-      }
-      decrypt(row.s3AccessKeyEncrypted, encryptionKey);
-      decrypt(row.s3SecretKeyEncrypted, encryptionKey);
     }
-    const latencyMs = Date.now() - started;
-    await db.update(backupConfigurations).set({
-      lastTestedAt: new Date(),
-      lastTestStatus: 'ok',
-    }).where(eq(backupConfigurations.id, id));
-    return { ok: true, latencyMs };
-  } catch (err) {
-    const latencyMs = Date.now() - started;
-    const code = err instanceof ApiError ? err.code : 'TEST_FAILED';
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    await db.update(backupConfigurations).set({
-      lastTestedAt: new Date(),
-      lastTestStatus: 'error',
-    }).where(eq(backupConfigurations.id, id));
-    return { ok: false, latencyMs, error: { code, message } };
+  } else {
+    if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
+      result = {
+        ok: false,
+        latencyMs: 0,
+        error: {
+          code: 'INCOMPLETE_CONFIG',
+          message: 'Incomplete S3 configuration: endpoint, bucket, region, access key, and secret key are required',
+        },
+      };
+    } else {
+      try {
+        const accessKeyId = decrypt(row.s3AccessKeyEncrypted, encryptionKey);
+        const secretAccessKey = decrypt(row.s3SecretKeyEncrypted, encryptionKey);
+        result = await probeS3({
+          endpoint: row.s3Endpoint,
+          region: row.s3Region,
+          accessKeyId,
+          secretAccessKey,
+          bucket: row.s3Bucket,
+        });
+      } catch (err) {
+        result = {
+          ok: false,
+          latencyMs: 0,
+          error: { code: 'DECRYPT_FAILED', message: err instanceof Error ? err.message : 'Unknown error' },
+        };
+      }
+    }
   }
+
+  await db.update(backupConfigurations).set({
+    lastTestedAt: new Date(),
+    lastTestStatus: result.ok ? 'ok' : 'error',
+  }).where(eq(backupConfigurations.id, id));
+
+  return result;
 }
 
 // testDraft — run a connectivity test on form input that has not been
 // saved yet. Consumed by the admin panel's "Test Connection" button
 // inside the create/edit form so operators don't commit a broken
 // config. No DB writes.
-//
-// Phase B1 stub: mirrors the structure testConnection will use once
-// the real S3 HeadBucket probe lands in B2. For now it rejects obviously
-// incomplete inputs and always returns ok=true for well-formed ones so
-// the tests shipping with B1 (mocked service) pass; B2 swaps the body
-// for a real AWS SDK call.
 export async function testDraft(input: CreateBackupConfigInput): Promise<TestConnectionResult> {
-  const started = Date.now();
   if (input.storage_type === 's3') {
     if (!input.s3_endpoint || !input.s3_bucket || !input.s3_region || !input.s3_access_key || !input.s3_secret_key) {
       return {
         ok: false,
-        latencyMs: Date.now() - started,
+        latencyMs: 0,
         error: { code: 'INCOMPLETE_CONFIG', message: 'endpoint, bucket, region, access key, and secret key are required' },
       };
     }
-  } else if (!input.ssh_host || !input.ssh_user || !input.ssh_key || !input.ssh_path) {
+    return probeS3({
+      endpoint: input.s3_endpoint,
+      region: input.s3_region,
+      accessKeyId: input.s3_access_key,
+      secretAccessKey: input.s3_secret_key,
+      bucket: input.s3_bucket,
+    });
+  }
+  if (!input.ssh_host || !input.ssh_user || !input.ssh_key || !input.ssh_path) {
     return {
       ok: false,
-      latencyMs: Date.now() - started,
+      latencyMs: 0,
       error: { code: 'INCOMPLETE_CONFIG', message: 'host, user, key, and path are required' },
     };
   }
-  return { ok: true, latencyMs: Date.now() - started };
+  // SSH probe intentionally minimal — real SSH dial + directory test
+  // belongs with the SSH-backed backup writer (out of scope for this
+  // Longhorn-first rollout). The UI already surfaces this as a best-
+  // effort check.
+  return { ok: true, latencyMs: 0 };
 }

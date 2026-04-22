@@ -1,13 +1,29 @@
 import { describe, it, expect, vi } from 'vitest';
 import { encrypt, decrypt } from '../oidc/crypto.js';
-import {
+
+// Mock @aws-sdk/client-s3 BEFORE importing service.js so the probeS3
+// module (transitively imported by service.js) uses the fake client.
+// Default behaviour: HeadBucket succeeds. Individual tests override via
+// vi.mocked(...).mockRejectedValue.
+const s3SendMock = vi.fn().mockResolvedValue({ $metadata: { httpStatusCode: 200 } });
+vi.mock('@aws-sdk/client-s3', () => ({
+  S3Client: class {
+    send = s3SendMock;
+    destroy() { /* noop in tests */ }
+  },
+  HeadBucketCommand: class {
+    constructor(public readonly input: { Bucket: string }) {}
+  },
+}));
+
+const {
   createBackupConfig,
   listBackupConfigs,
   getBackupConfig,
   updateBackupConfig,
   deleteBackupConfig,
   testConnection,
-} from './service.js';
+} = await import('./service.js');
 
 const ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
