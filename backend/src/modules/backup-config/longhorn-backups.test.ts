@@ -91,52 +91,58 @@ describe('triggerBackupNow', () => {
     clients = createMockClients();
   });
 
-  it('creates one Backup CR per labeled volume', async () => {
+  it('calls Longhorn REST snapshotBackup action per labeled volume', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [
         { metadata: { name: 'pvc-a' } },
         { metadata: { name: 'pvc-b' } },
       ],
     });
-    clients.custom.createNamespacedCustomObject.mockResolvedValue({});
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out = await triggerBackupNow(clients as any);
+    const out = await triggerBackupNow(clients as any, { apiBase: 'http://longhorn-test:9500', fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a', 'pvc-b']);
-    expect(clients.custom.createNamespacedCustomObject).toHaveBeenCalledTimes(2);
-    const [firstCall] = clients.custom.createNamespacedCustomObject.mock.calls;
-    expect(firstCall[0].body.kind).toBe('Backup');
-    expect(firstCall[0].body.metadata.labels['longhornvolume']).toBe('pvc-a');
-    expect(firstCall[0].body.spec.snapshotName).toBe('');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl, firstInit] = fetchMock.mock.calls[0];
+    expect(firstUrl).toBe('http://longhorn-test:9500/v1/volumes/pvc-a?action=snapshotBackup');
+    expect(firstInit.method).toBe('POST');
+    const body = JSON.parse(firstInit.body);
+    expect(body.labels['platform.phoenix-host.net/trigger']).toBe('manual');
+    expect(body.name).toMatch(/^manual-/);
   });
 
   it('returns a helpful message when no volumes are labeled', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({ items: [] });
+    const fetchMock = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out = await triggerBackupNow(clients as any);
+    const out = await triggerBackupNow(clients as any, { fetch: fetchMock });
     expect(out.triggered).toEqual([]);
     expect(out.message).toMatch(/no volumes carry/i);
-    expect(clients.custom.createNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('treats a 409 Already-Exists as success (idempotent trigger)', async () => {
+  it('collects per-volume errors and surfaces them when all fail', async () => {
     clients.custom.listNamespacedCustomObject.mockResolvedValue({
       items: [{ metadata: { name: 'pvc-a' } }],
     });
-    clients.custom.createNamespacedCustomObject.mockRejectedValue({ statusCode: 409 });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => 'internal' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out = await triggerBackupNow(clients as any);
+    await expect(triggerBackupNow(clients as any, { fetch: fetchMock })).rejects.toThrow(/pvc-a/);
+  });
+
+  it('partial success: some volumes triggered + error list surfaced', async () => {
+    clients.custom.listNamespacedCustomObject.mockResolvedValue({
+      items: [
+        { metadata: { name: 'pvc-a' } },
+        { metadata: { name: 'pvc-b' } },
+      ],
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' })
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await triggerBackupNow(clients as any, { fetch: fetchMock });
     expect(out.triggered).toEqual(['pvc-a']);
-  });
-
-  it('throws on non-409 errors', async () => {
-    clients.custom.listNamespacedCustomObject.mockResolvedValue({
-      items: [{ metadata: { name: 'pvc-a' } }],
-    });
-    clients.custom.createNamespacedCustomObject.mockRejectedValue({
-      statusCode: 500,
-      message: 'boom',
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await expect(triggerBackupNow(clients as any)).rejects.toThrow(/pvc-a/);
+    expect(out.message).toMatch(/1 failed/);
   });
 });

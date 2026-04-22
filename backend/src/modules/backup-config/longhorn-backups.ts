@@ -84,17 +84,27 @@ function toRecord(b: LonghornBackup): BackupRecord {
 
 /**
  * Trigger an on-demand backup for every volume opted into the `default`
- * recurring-job group. Creates a Snapshot CR per volume — Longhorn's
- * controller then watches for the recurring-job-trigger label and
- * uploads the snapshot via the active BackupTarget.
+ * recurring-job group. Uses Longhorn's own HTTP REST API (longhorn-
+ * backend:9500) rather than k8s Backup CR creation — direct Backup CR
+ * creates are rejected by Longhorn's admission webhook because the
+ * snapshot-then-upload orchestration is internal to the controller.
+ * The REST API's `snapshotBackup` action does both in one call.
  *
  * Returns the names of the volumes that were triggered; an empty list
  * means no volumes carry the opt-in label yet (operator needs to run
  * `kubectl label pvc … recurring-job-group.longhorn.io/default=enabled`).
  */
+// Configurable for tests; in-cluster default points at the Longhorn
+// manager's REST service (not the UI frontend).
+const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
+
 export async function triggerBackupNow(
   clients: LonghornReadClients & { core?: k8s.CoreV1Api },
+  opts: { apiBase?: string; fetch?: typeof globalThis.fetch } = {},
 ): Promise<{ triggered: string[]; message: string }> {
+  const apiBase = opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE;
+  const fetchFn = opts.fetch ?? globalThis.fetch;
+
   const labeled = await clients.custom.listNamespacedCustomObject({
     group: LONGHORN_GROUP,
     version: LONGHORN_VERSION,
@@ -115,58 +125,44 @@ export async function triggerBackupNow(
   }
 
   const triggered: string[] = [];
+  const errors: string[] = [];
   for (const volumeName of volumes) {
-    // Create a one-shot Backup CR. Longhorn's controller takes a
-    // snapshot first, then uploads it to the active BackupTarget.
-    // Name is deterministic-with-timestamp so repeated triggers don't
-    // collide and the admin-panel can correlate by timestamp.
+    // Longhorn's REST API: POST /v1/volumes/<name>?action=snapshotBackup
+    // body: { name, labels } — Longhorn takes a snapshot AND backs it
+    // up to the active BackupTarget in one atomic call. Snapshot
+    // name must be DNS-1123 compliant and unique per volume.
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupName = `manual-${volumeName}-${ts}`.toLowerCase().slice(0, 63);
+    const snapName = `manual-${ts}`.toLowerCase().slice(0, 40);
+    const url = `${apiBase}/v1/volumes/${encodeURIComponent(volumeName)}?action=snapshotBackup`;
     try {
-      await clients.custom.createNamespacedCustomObject({
-        group: LONGHORN_GROUP,
-        version: LONGHORN_VERSION,
-        namespace: LONGHORN_NS,
-        plural: 'backups',
-        body: {
-          apiVersion: `${LONGHORN_GROUP}/${LONGHORN_VERSION}`,
-          kind: 'Backup',
-          metadata: {
-            name: backupName,
-            labels: {
-              'longhornvolume': volumeName,
-              'app.kubernetes.io/managed-by': 'platform-api',
-              'platform.phoenix-host.net/backup-trigger': 'manual',
-            },
+      const res = await fetchFn(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: snapName,
+          labels: {
+            'platform.phoenix-host.net/trigger': 'manual',
+            'app.kubernetes.io/managed-by': 'platform-api',
           },
-          spec: {
-            // Empty snapshotName tells Longhorn to take a fresh
-            // snapshot and back it up in one go.
-            snapshotName: '',
-            labels: {
-              'platform.phoenix-host.net/trigger': 'manual',
-            },
-          },
-        },
-      } as Parameters<typeof clients.custom.createNamespacedCustomObject>[0]);
-      triggered.push(volumeName);
-    } catch (err) {
-      // Already-exists (409) is fine — a prior click produced the
-      // same name (second-resolution collision). Anything else
-      // surfaces as a partial-success warning.
-      const status = (err as { statusCode?: number }).statusCode;
-      if (status === 409) {
-        triggered.push(volumeName);
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        errors.push(`${volumeName}: HTTP ${res.status} ${text.slice(0, 200)}`);
         continue;
       }
-      throw new Error(
-        `Failed to trigger backup for volume ${volumeName}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      triggered.push(volumeName);
+    } catch (err) {
+      errors.push(`${volumeName}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  return {
-    triggered,
-    message: `Triggered backup on ${triggered.length} volume${triggered.length === 1 ? '' : 's'}.`,
-  };
+  if (triggered.length === 0 && errors.length > 0) {
+    throw new Error(`All backup triggers failed: ${errors.join('; ')}`);
+  }
+
+  const parts = [`Triggered backup on ${triggered.length} volume${triggered.length === 1 ? '' : 's'}`];
+  if (errors.length > 0) parts.push(`(${errors.length} failed: ${errors.join('; ')})`);
+  return { triggered, message: parts.join(' ') };
 }
