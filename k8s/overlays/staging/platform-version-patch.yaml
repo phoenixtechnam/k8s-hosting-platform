@@ -6,4 +6,4 @@ metadata:
   name: platform-version
   namespace: platform
 data:
-  version: "0.0.0-0d0a224"
+  version: "0.0.0-47b4fc8"
