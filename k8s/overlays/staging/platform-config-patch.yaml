@@ -16,3 +16,9 @@ data:
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   longhorn-url: "https://longhorn.staging.phoenix-host.net/"
+  # platform_session cookie Domain attribute. Shares the cookie across
+  # all admin-only subdomains (longhorn, mail-admin, future ones) so
+  # admin-panel iframes carry the auth automatically. Without this the
+  # cookie is host-only to admin.<apex> and cross-subdomain iframes
+  # hit the nginx auth_request gate with no cookie → redirect loop.
+  session-cookie-domain: ".staging.phoenix-host.net"

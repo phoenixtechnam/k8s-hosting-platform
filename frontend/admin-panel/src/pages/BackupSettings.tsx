@@ -10,7 +10,10 @@ import {
   useTestBackupDraft,
   useActivateBackupConfig,
   useDeactivateBackupConfig,
+  useBackupList,
+  useBackupNow,
 } from '@/hooks/use-backup-config';
+import { formatBytes } from '@/hooks/use-platform-storage';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -512,6 +515,114 @@ export default function BackupSettings() {
           ))}
         </div>
       )}
+
+      <RecentBackupsPanel activeConfigId={configs.find((c) => c.active)?.id ?? null} />
+    </div>
+  );
+}
+
+/**
+ * Shows the 10 most recent Longhorn Backups tied to the active backup
+ * target + a "Backup Now" button that triggers an on-demand backup on
+ * every PVC opted into the default recurring-job group. The list polls
+ * every 30s so a Backup Now click surfaces its artifacts automatically.
+ */
+function RecentBackupsPanel({ activeConfigId }: { activeConfigId: string | null }) {
+  const { data: backupsResp, isLoading } = useBackupList(activeConfigId);
+  const triggerNow = useBackupNow(activeConfigId ?? '');
+  const [lastResult, setLastResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const backups = (backupsResp?.data ?? []).slice(0, 10);
+
+  if (!activeConfigId) {
+    return null;
+  }
+
+  const handleBackupNow = async () => {
+    setLastResult(null);
+    try {
+      const res = await triggerNow.mutateAsync();
+      setLastResult({ ok: true, message: res.data.message });
+    } catch (err) {
+      setLastResult({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Trigger failed',
+      });
+    }
+  };
+
+  return (
+    <div
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+      data-testid="recent-backups-panel"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <HardDrive size={20} className="text-gray-700 dark:text-gray-300" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent Backups</h2>
+        </div>
+        <button
+          type="button"
+          onClick={handleBackupNow}
+          disabled={triggerNow.isPending}
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="backup-now-btn"
+        >
+          {triggerNow.isPending ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+          Backup Now
+        </button>
+      </div>
+
+      {lastResult && (
+        <div
+          className={`mt-3 text-xs ${lastResult.ok ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}`}
+          data-testid="backup-now-result"
+        >
+          {lastResult.message}
+        </div>
+      )}
+
+      <div className="mt-4">
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+            <Loader2 size={14} className="animate-spin" /> Loading backups…
+          </div>
+        ) : backups.length === 0 ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400" data-testid="no-backups">
+            No backups yet. Click Backup Now or wait for the next daily RecurringJob (02:00 UTC).
+          </p>
+        ) : (
+          <table className="w-full text-sm" data-testid="backups-table">
+            <thead>
+              <tr className="text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                <th className="pb-2">Name</th>
+                <th className="pb-2">Volume</th>
+                <th className="pb-2">Size</th>
+                <th className="pb-2">State</th>
+                <th className="pb-2">Created</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+              {backups.map((b) => (
+                <tr key={b.name} className="text-gray-900 dark:text-gray-100" data-testid={`backup-row-${b.name}`}>
+                  <td className="py-2 font-mono text-xs truncate max-w-[280px]" title={b.name}>{b.name}</td>
+                  <td className="py-2 font-mono text-xs truncate max-w-[180px]" title={b.volumeName}>{b.volumeName}</td>
+                  <td className="py-2">{formatBytes(Number(b.size) || 0)}</td>
+                  <td className="py-2">
+                    <StatusBadge
+                      status={b.state === 'Completed' ? 'active' : b.state === 'Error' ? 'error' : 'pending'}
+                      label={b.state}
+                    />
+                  </td>
+                  <td className="py-2 text-xs text-gray-500 dark:text-gray-400">
+                    {b.createdAt ? new Date(b.createdAt).toLocaleString() : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

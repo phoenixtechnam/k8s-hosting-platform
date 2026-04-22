@@ -16,12 +16,26 @@ function buildSessionCookie(token: string, maxAge: number): string {
   const domain = process.env.SESSION_COOKIE_DOMAIN;
   // Secure is always on — dev uses self-signed TLS on :2011 and prod is
   // TLS everywhere. Browsers accept Secure cookies on https://*.test.
+  //
+  // SameSite=Lax is the safer default — blocks cross-site cookies on
+  // all requests except top-level navigation. That's fine when the
+  // admin panel is the only origin that sees this cookie.
+  //
+  // But when SESSION_COOKIE_DOMAIN is explicitly configured (Domain=
+  // attribute, e.g. `.staging.phoenix-host.net`), we're deliberately
+  // sharing this cookie across subdomains — Longhorn iframe,
+  // Stalwart iframe, webmail, etc. SameSite=Lax breaks those iframe
+  // auth flows because cross-origin subresource requests are not
+  // considered top-level navigation. Upgrade to SameSite=None (with
+  // Secure, required by all modern browsers) so the cookie travels on
+  // iframe-initiated requests inside the apex.
+  const sameSite = domain ? 'None' : 'Lax';
   const parts = [
     `${PLATFORM_SESSION_COOKIE}=${token}`,
     'Path=/',
     'HttpOnly',
     'Secure',
-    'SameSite=Lax',
+    `SameSite=${sameSite}`,
     `Max-Age=${maxAge}`,
   ];
   if (domain) parts.push(`Domain=${domain}`);

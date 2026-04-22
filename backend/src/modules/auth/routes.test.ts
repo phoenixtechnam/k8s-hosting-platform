@@ -192,21 +192,54 @@ describe('auth routes', () => {
   // ─── Session cookie (Phase 7: subdomain auth_request) ───
 
   describe('platform_session cookie', () => {
-    it('POST /auth/login sets platform_session cookie with HttpOnly/Secure/SameSite=Lax', async () => {
-      const res = await app.inject({
-        method: 'POST',
-        url: '/api/v1/auth/login',
-        payload: { email: 'admin@example.com', password: 'correct-password' },
-      });
-      expect(res.statusCode).toBe(200);
-      const setCookie = res.headers['set-cookie'];
-      const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
-      expect(header).toMatch(/platform_session=/);
-      expect(header).toMatch(/HttpOnly/i);
-      expect(header).toMatch(/SameSite=Lax/i);
-      expect(header).toMatch(/Secure/i);
-      expect(header).toMatch(/Path=\//);
-      expect(header).toMatch(/Max-Age=3600/);
+    it('POST /auth/login sets platform_session cookie with SameSite=Lax when no SESSION_COOKIE_DOMAIN (dev)', async () => {
+      const prev = process.env.SESSION_COOKIE_DOMAIN;
+      delete process.env.SESSION_COOKIE_DOMAIN;
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/login',
+          payload: { email: 'admin@example.com', password: 'correct-password' },
+        });
+        expect(res.statusCode).toBe(200);
+        const setCookie = res.headers['set-cookie'];
+        const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
+        expect(header).toMatch(/platform_session=/);
+        expect(header).toMatch(/HttpOnly/i);
+        expect(header).toMatch(/SameSite=Lax/i);
+        expect(header).toMatch(/Secure/i);
+        expect(header).toMatch(/Path=\//);
+        expect(header).toMatch(/Max-Age=3600/);
+        expect(header).not.toMatch(/Domain=/i);
+      } finally {
+        if (prev !== undefined) process.env.SESSION_COOKIE_DOMAIN = prev;
+      }
+    });
+
+    it('POST /auth/login upgrades to SameSite=None when SESSION_COOKIE_DOMAIN is set (staging/prod)', async () => {
+      // Cross-subdomain iframes (admin.<apex> embedding longhorn.<apex>)
+      // require SameSite=None so the cookie is sent on subresource
+      // loads. Browsers also require Secure for SameSite=None, which
+      // the cookie builder already includes unconditionally.
+      const prev = process.env.SESSION_COOKIE_DOMAIN;
+      process.env.SESSION_COOKIE_DOMAIN = '.staging.phoenix-host.net';
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/login',
+          payload: { email: 'admin@example.com', password: 'correct-password' },
+        });
+        expect(res.statusCode).toBe(200);
+        const setCookie = res.headers['set-cookie'];
+        const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
+        expect(header).toMatch(/SameSite=None/i);
+        expect(header).not.toMatch(/SameSite=Lax/i);
+        expect(header).toMatch(/Secure/i);
+        expect(header).toMatch(/Domain=\.staging\.phoenix-host\.net/);
+      } finally {
+        if (prev === undefined) delete process.env.SESSION_COOKIE_DOMAIN;
+        else process.env.SESSION_COOKIE_DOMAIN = prev;
+      }
     });
 
     it('POST /auth/logout clears platform_session cookie (Max-Age=0)', async () => {

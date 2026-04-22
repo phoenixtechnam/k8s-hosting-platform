@@ -178,39 +178,55 @@ export default function StorageSettings() {
 
 function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/60 backdrop-blur-sm" data-testid="longhorn-iframe-modal">
-      <div className="flex items-center justify-between gap-3 bg-white dark:bg-gray-800 px-4 py-2 shadow-sm">
-        <div className="flex items-center gap-2">
-          <Database size={18} className="text-gray-700 dark:text-gray-300" />
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Longhorn Dashboard</span>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-2 text-xs text-brand-600 dark:text-brand-400 hover:underline inline-flex items-center gap-1"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      data-testid="longhorn-iframe-modal"
+      onClick={onClose}
+    >
+      {/* Centered bounded modal — matches the Stalwart web-admin iframe
+          presentation so operators get a consistent admin-tool
+          experience. Clicks on the backdrop close; clicks inside the
+          panel (stopPropagation below) don't. */}
+      <div
+        className="relative w-full max-w-[1400px] h-[90vh] bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-2">
+          <div className="flex items-center gap-2">
+            <Database size={18} className="text-gray-700 dark:text-gray-300" />
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Longhorn Dashboard</span>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-2 text-xs text-brand-600 dark:text-brand-400 hover:underline inline-flex items-center gap-1"
+            >
+              <ExternalLink size={12} /> open in new tab
+            </a>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+            data-testid="close-longhorn-iframe"
+            aria-label="Close Longhorn"
           >
-            <ExternalLink size={12} /> open in new tab
-          </a>
+            <X size={18} />
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-          data-testid="close-longhorn-iframe"
-          aria-label="Close Longhorn"
-        >
-          <X size={18} />
-        </button>
+        <iframe
+          src={url}
+          title="Longhorn Dashboard"
+          className="flex-1 w-full border-0 bg-white"
+          // Longhorn's SPA is served by its own ingress which was rendered
+          // by the admin-auth-gate-cookie component — the platform_session
+          // cookie travels along with the iframe request because its
+          // Domain=.<apex> attribute includes the longhorn subdomain and
+          // SameSite=None (set when SESSION_COOKIE_DOMAIN is configured).
+        />
       </div>
-      <iframe
-        src={url}
-        title="Longhorn Dashboard"
-        className="flex-1 border-0 bg-white"
-        // Longhorn's SPA is served by its own ingress which was rendered
-        // by the admin-auth-gate-cookie component — the platform_session
-        // cookie travels along with the iframe request because its
-        // Domain=.<apex> attribute includes the longhorn subdomain.
-      />
     </div>
   );
 }

@@ -134,3 +134,46 @@ export function useDeactivateBackupConfig() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
   });
 }
+
+// ─── Longhorn Backups (read + manual trigger) ────────────────────────────
+
+interface BackupRecord {
+  readonly name: string;
+  readonly volumeName: string;
+  readonly size: string;
+  readonly state: string;
+  readonly createdAt: string | null;
+  readonly url: string;
+}
+
+interface BackupsResponse {
+  readonly data: readonly BackupRecord[];
+}
+
+interface BackupNowResponse {
+  readonly data: { triggered: string[]; message: string };
+}
+
+export function useBackupList(configId: string | null) {
+  return useQuery({
+    queryKey: ['backup-list', configId],
+    enabled: !!configId,
+    queryFn: () =>
+      apiFetch<BackupsResponse>(`/api/v1/admin/backup-configs/${configId}/backups`),
+    // Backups take seconds-to-minutes — poll every 30s when operators
+    // are watching a Backup-Now trigger land.
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}
+
+export function useBackupNow(configId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<BackupNowResponse>(`/api/v1/admin/backup-configs/${configId}/backup-now`, {
+        method: 'POST',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-list', configId] }),
+  });
+}

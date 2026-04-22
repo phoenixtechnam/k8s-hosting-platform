@@ -9,6 +9,8 @@ import {
   type CreateBackupConfigInput,
 } from '@k8s-hosting/api-contracts';
 import type { ZodError } from 'zod';
+import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
+import type { LonghornClients } from './longhorn-reconciler.js';
 
 // Turn a Zod issue list into a single human-readable message that's safe
 // to surface to an operator via the admin panel. We preserve the field
@@ -25,6 +27,25 @@ function zodMessage(err: ZodError): string {
 
 export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
   const encryptionKey = app.config?.OIDC_ENCRYPTION_KEY ?? process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires OIDC_ENCRYPTION_KEY env var */;
+
+  // K8s client for the Longhorn reconciler. Created once at plugin
+  // registration; pattern mirrors webmail-settings/routes.ts. Undefined
+  // means the in-cluster config isn't loadable (e.g. vitest runs with
+  // no kubeconfig) — handlers that need it return 502 from the
+  // try/catch below rather than silently no-op-ing, which was the
+  // original bug where `app.k8sClients` was never decorated and the
+  // Longhorn reconciler was always skipped.
+  let k8s: K8sClients | undefined;
+  try {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    k8s = createK8sClients(kubeconfigPath);
+  } catch (err) {
+    app.log.warn({ err }, 'backup-config: k8s client unavailable — reconciler disabled');
+    k8s = undefined;
+  }
+  const longhornClients: LonghornClients | undefined = k8s
+    ? { core: k8s.core, custom: k8s.custom }
+    : undefined;
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
@@ -78,10 +99,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
         const active = await service.getActiveBackupConfig(app.db, encryptionKey);
         if (active) {
           const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-          const clients = getK8sClients(app);
-          if (clients) {
-            await reconcileBackupTarget(clients, active);
+          if (!longhornClients) {
+            throw new Error('K8s client unavailable — check platform-api pod logs on startup');
           }
+          await reconcileBackupTarget(longhornClients, active);
         }
       } catch (err) {
         request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn after PATCH of active config');
@@ -122,10 +143,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     if (active) {
       try {
         const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-        const clients = getK8sClients(app);
-        if (clients) {
-          await reconcileBackupTarget(clients, active);
+        if (!longhornClients) {
+          throw new Error('K8s client unavailable — check platform-api pod logs on startup');
         }
+        await reconcileBackupTarget(longhornClients, active);
       } catch (err) {
         request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn BackupTarget on activate');
         throw new ApiError(
@@ -138,29 +159,53 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     return success(row);
   });
 
+  // GET /api/v1/admin/backup-configs/:id/backups — list recent backups.
+  // `id` is the config row id; the scoping for which backups belong to
+  // this config is implicit (Longhorn only has one active BackupTarget
+  // at a time). When multiple historical targets are listed, the UI
+  // can filter client-side by `url` prefix if needed.
+  app.get('/admin/backup-configs/:id/backups', async () => {
+    if (!longhornClients) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    }
+    const { listBackups } = await import('./longhorn-backups.js');
+    const backups = await listBackups(longhornClients);
+    return success(backups);
+  });
+
+  // POST /api/v1/admin/backup-configs/:id/backup-now — trigger an
+  // on-demand backup of every PVC carrying the default recurring-job
+  // group label. Returns the list of volumes it triggered; operators
+  // poll /backups to see progress.
+  app.post('/admin/backup-configs/:id/backup-now', async () => {
+    if (!longhornClients) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    }
+    const { triggerBackupNow } = await import('./longhorn-backups.js');
+    try {
+      const result = await triggerBackupNow(longhornClients);
+      return success(result);
+    } catch (err) {
+      throw new ApiError(
+        'BACKUP_TRIGGER_FAILED',
+        err instanceof Error ? err.message : 'Unknown error triggering backup',
+        502,
+      );
+    }
+  });
+
   // POST /api/v1/admin/backup-configs/:id/deactivate
   app.post('/admin/backup-configs/:id/deactivate', async (request) => {
     const { id } = request.params as { id: string };
     const row = await service.deactivateBackupConfig(app.db, id);
     try {
       const { clearBackupTarget } = await import('./longhorn-reconciler.js');
-      const clients = getK8sClients(app);
-      if (clients) {
-        await clearBackupTarget(clients);
+      if (longhornClients) {
+        await clearBackupTarget(longhornClients);
       }
     } catch (err) {
       request.log.warn({ err, configId: id }, 'Failed to clear Longhorn BackupTarget on deactivate');
     }
     return success(row);
   });
-}
-
-// Resolve K8s clients from the Fastify app. Tests that don't need the
-// cluster write path can decorate app without this — the reconciler
-// call becomes a no-op. Production pods use the in-cluster config via
-// the platform-api ServiceAccount.
-function getK8sClients(app: import('fastify').FastifyInstance) {
-  const provider = (app as unknown as { k8sClients?: { core: unknown; custom: unknown } }).k8sClients;
-  if (!provider) return null;
-  return provider as unknown as import('./longhorn-reconciler.js').LonghornClients;
 }
