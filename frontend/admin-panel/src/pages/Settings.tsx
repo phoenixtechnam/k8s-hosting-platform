@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Globe, CreditCard, ChevronRight, Loader2, HardDrive, Users, Heart, Download, Mail, RefreshCw, CheckCircle, AlertCircle, Cpu, Container } from 'lucide-react';
 import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { usePlatformVersion, useUpdateSettings, useTriggerUpdate } from '@/hooks/use-platform-updates';
+import { usePlatformImages } from '@/hooks/use-platform-images';
 
 export default function Settings() {
   const { data: statusRes, isLoading } = usePlatformStatus();
@@ -113,6 +114,8 @@ export default function Settings() {
         )}
       </div>
 
+      <ImageInventoryCard />
+
       <Link to="/settings/system" className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-gray-700 transition-colors" data-testid="system-settings-link">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"><SettingsIcon size={20} /></div>
@@ -200,6 +203,70 @@ export default function Settings() {
         </div>
         <ChevronRight size={20} className="text-gray-400" />
       </Link>
+    </div>
+  );
+}
+
+/**
+ * Shows the container images + resolved tags currently running on the
+ * cluster for platform-owned components. Sourced from the k8s API at
+ * request time — "current version" reflects reality rather than what
+ * the platform-version ConfigMap claims.
+ */
+function ImageInventoryCard() {
+  const { data, isLoading, isError } = usePlatformImages();
+  const images = data?.data ?? [];
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="platform-images-section">
+      <div className="mb-4 flex items-center gap-2">
+        <Container size={20} className="text-gray-600 dark:text-gray-400" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Deployed Images</h2>
+      </div>
+      {isLoading ? (
+        <div className="flex items-center gap-2 py-4">
+          <Loader2 size={16} className="animate-spin text-gray-400" />
+          <span className="text-sm text-gray-500 dark:text-gray-400">Loading image inventory…</span>
+        </div>
+      ) : isError ? (
+        <p className="text-sm text-red-600 dark:text-red-400">Failed to load image inventory.</p>
+      ) : images.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">No images enumerated. The backend may lack cluster read permissions.</p>
+      ) : (
+        <div className="overflow-x-auto -mx-2">
+          <table className="min-w-full text-sm" data-testid="platform-images-table">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                <th className="px-2 py-2 font-medium">Component</th>
+                <th className="px-2 py-2 font-medium">Namespace</th>
+                <th className="px-2 py-2 font-medium">Image</th>
+                <th className="px-2 py-2 font-medium">Tag</th>
+                <th className="px-2 py-2 font-medium text-right">Ready</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+              {images.map((row) => (
+                <tr key={`${row.namespace}/${row.component}/${row.image}`}>
+                  <td className="px-2 py-2 text-gray-900 dark:text-gray-100 font-medium">{row.component}</td>
+                  <td className="px-2 py-2 text-gray-600 dark:text-gray-400 font-mono text-xs">{row.namespace}</td>
+                  <td className="px-2 py-2 text-gray-600 dark:text-gray-400 font-mono text-xs break-all">{row.image}</td>
+                  <td className="px-2 py-2 text-gray-900 dark:text-gray-100 font-mono text-xs">{row.tag}</td>
+                  <td className="px-2 py-2 text-right">
+                    <span className={`inline-flex items-center gap-1 text-xs font-medium ${
+                      row.healthy
+                        ? 'text-green-700 dark:text-green-400'
+                        : 'text-amber-700 dark:text-amber-400'
+                    }`}>
+                      {row.running}/{row.desired}
+                      {row.healthy ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,7 +9,11 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { fileManagerRequest, streamToFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager } from './service.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
 
-const FM_IMAGE = 'file-manager-sidecar:latest';
+// File-manager sidecar image. Default is the bare name used by local.sh
+// which imports the image into DinD's containerd with that exact tag. On
+// real clusters (staging/production) the platform-config ConfigMap
+// provides the registry-qualified path via FILE_MANAGER_IMAGE.
+const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
 
 async function resolveNamespace(app: FastifyInstance, clientId: string): Promise<string> {
   const [client] = await app.db.select().from(clients).where(eq(clients.id, clientId)).limit(1);

@@ -101,6 +101,14 @@ spec:
                   key: version
                   optional: true
             # PLATFORM_ENV is defined further down — don't redeclare.
+            # Per-client sidecar image (optional — default baked into code
+            # for local-dev uses the bare name imported into DinD containerd).
+            - name: FILE_MANAGER_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: file-manager-image
+                  optional: true
             # System-settings defaults populated by seed.ts on a fresh install.
             # All optional — when unset the seed leaves the column NULL and
             # the admin can fill it in via the UI later. Values come from

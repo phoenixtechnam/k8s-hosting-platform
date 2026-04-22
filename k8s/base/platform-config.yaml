@@ -26,3 +26,9 @@ data:
   # CORS — with same-origin proxy, CORS is not strictly needed for browser
   # requests. Kept for API consumers like Swagger UI or external tools.
   cors-origins: "https://admin.k8s-platform.test,https://client.k8s-platform.test"
+
+  # Per-client sidecar images. local.sh imports these into DinD's
+  # containerd with the bare names (matching this default). Staging
+  # and production overlays swap to the GHCR paths so the pods can
+  # pull from a real registry.
+  file-manager-image: "file-manager-sidecar:latest"

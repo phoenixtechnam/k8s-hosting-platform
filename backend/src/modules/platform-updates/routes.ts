@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSettingsSchema } from './schema.js';
 import * as service from './service.js';
+import { getImageInventory } from './image-inventory.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -82,6 +83,18 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
     }
     const result = await service.updateSettings(app.db, parsed.data.autoUpdate);
     return success(result);
+  });
+
+  // GET /api/v1/admin/platform/images — enumerate platform-owned images
+  app.get('/admin/platform/images', {
+    schema: {
+      tags: ['Platform Updates'],
+      summary: 'List container images currently running on the cluster for platform components',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const inventory = await getImageInventory();
+    return success(inventory);
   });
 
   // POST /api/v1/admin/platform/capacity-check

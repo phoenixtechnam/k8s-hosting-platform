@@ -12,3 +12,5 @@ data:
   admin-url: "https://admin.staging.phoenix-host.net"
   client-url: "https://client.staging.phoenix-host.net"
   cors-origins: "https://admin.staging.phoenix-host.net,https://client.staging.phoenix-host.net"
+  # Per-client sidecar image — pull from GHCR on real clusters.
+  file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
