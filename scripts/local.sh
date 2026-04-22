@@ -50,10 +50,13 @@ COMPOSE_FILE="${PROJECT_DIR}/docker-compose.local.yml"
 ENV_FILE="${PROJECT_DIR}/.env.local"
 ENV_LOCAL="${PROJECT_DIR}/.env.local.local"
 
-# Load env files
+# Load env files. shellcheck can't follow the paths statically since
+# they're composed from $PROJECT_DIR — tell it not to try.
+# shellcheck disable=SC1090
 if [[ -f "$ENV_FILE" ]]; then
   set -a; source "$ENV_FILE"; set +a
 fi
+# shellcheck disable=SC1090
 if [[ -f "$ENV_LOCAL" ]]; then
   set -a; source "$ENV_LOCAL"; set +a
 fi
