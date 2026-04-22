@@ -118,6 +118,17 @@ spec:
         labels:
           app: stalwart-mail
           app.kubernetes.io/part-of: hosting-platform
+          # Opt into Longhorn's `default` recurring-job group so the
+          # mail PVC gets hourly snapshots + nightly backups. Timing
+          # coupled with stalwart-backup CronJob (runs 01:45 UTC, 15-min
+          # buffer before Longhorn's daily-backup at 02:00 UTC) so the
+          # uploaded snapshot captures the fresh stalwart-cli backup
+          # tarball inside /opt/stalwart/backups.
+          recurring-job-group.longhorn.io/default: enabled
+          # Self-documenting marker so the backup-audit CronJob and
+          # operators know this PVC has a quiesce-hook producing
+          # consistent block-level backups, not just raw live state.
+          platform.phoenix-host.net/quiesce-hook: stalwart-cli
       spec:
         accessModes: ["ReadWriteOnce"]
         # Intentionally NOT setting storageClassName — falls back to the
