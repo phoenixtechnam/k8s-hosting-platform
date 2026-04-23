@@ -217,3 +217,69 @@ Copy-paste when starting a drill:
 
 **Verdict: PASS.** Staging is now on embedded etcd (production-aligned topology), all pre-rebootstrap data restored, backup chain end-to-end green, tenant Longhorn volumes enumerable for restore if needed.
 
+---
+
+### 2026-04-23 (late) — open-task cleanup
+
+After the staging rebootstrap, closed the remaining drill follow-ups:
+
+- **#184 fixed** — etcd-snapshot-upload CronJob: switched image from
+  `alpine:3.20 + apk install` to `alpine/k8s:1.33.3` (aws-cli bundled),
+  bash instead of sh, `mapfile` around the find pipeline so empty-
+  directory runs exit clean. Verified: 3 snapshots uploaded
+  (86 MB total) in 39s.
+
+- **#176 + #177 fixed** — `dr-restore.sh` rewrites:
+  * Phase 6 creates tenant namespaces before applying tenant Secrets,
+    respects `--secret-replace-mode=force` (default) for bootstrap-
+    created Secret conflicts, skips empty-byte placeholder YAMLs.
+  * Phase 6 skips `platform-db-credentials` by default (opt-in via
+    `--restore-db-credentials` if also rotating the postgres role pw).
+  * Phase 7 auto-patches `BackupTarget/default` when `--skip-postgres`
+    is set (reads bucket+region from restored `longhorn-backup-
+    credentials` Secret). Verified on drill VM: Available=true in 1s,
+    7 BackupVolumes enumerated in 30s.
+  * Phase 9 plumbs `--smoke-host` + env-var overrides through to
+    `scripts/smoke-test.sh`. Falls back to curl-based /api/v1/healthz
+    probe when smoke-test.sh absent.
+  * pg_restore path fix: correct pod name is `postgres-0`
+    (not `platform-postgres-0`); dump now matched under
+    `raw/db/platform/pg-*.dump` (new layout) + legacy `raw/postgres/`.
+
+- **#178 fixed** — `pg-backup` CronJob: NetworkPolicy allow-list
+  extended to cover pods with
+  `app.kubernetes.io/component=dr-backup`, label set on pg-backup
+  pod template (CronJob metadata labels are NOT inherited by pods).
+  pg_dump was hanging at TCP connect on 5432 for 45h+.
+
+- **#183 partial fix, #186 opened** — Stalwart pinned to v0.15.5
+  (last release accepting legacy monolithic TOML). v0.16 moved to
+  config.json-only + DB-backed declarative plans via `stalwart apply`.
+  Full v0.16 migration tracked as task #186; pin sustains mail until
+  the configmap rewrite + post-start Job land.
+  * stalwart-backup CronJob SUSPENDED on staging — `stalwart-cli
+    server backup` doesn't exist in v0.15.5 (command moved/renamed);
+    tracked as task #186. Longhorn volume-level snapshots still
+    capture the mail PVC without quiesce in the interim.
+  * webadmin cookie gate at `mail-admin.staging.phoenix-host.net`
+    returns 302 → `admin.staging.phoenix-host.net/login` as designed.
+
+- **#185 fixed** — Production overlay `configMapGenerator{behavior:
+  merge}` bug: replaced with a strategic-merge patch against the
+  ConfigMap's `data.config.toml` key. The generator-merge approach
+  required the base to also be a generator; base uses a plain
+  resource, so `kubectl kustomize k8s/overlays/production/stalwart`
+  was hard-failing until this week. `stalwart-config-cert.toml` file
+  deleted; content migrated inline into `configmap-patch.yaml`.
+  All 3 overlays (dev/staging/production) + the standalone
+  production/stalwart sub-overlay now `kustomize build` clean.
+
+**Known remaining gap (out of drill scope):**
+- External SMTP reachability on port 25/465/587 is currently blocked:
+  `stalwart-mail` Service is a LoadBalancer but Hetzner single-node
+  has no LB provider installed (shows EXTERNAL-IP `<pending>`).
+  Tracked as a separate mail-deliverability concern — the internal
+  listener is up, NodePorts allocated (31519/30581/…). Solving
+  requires either MetalLB, Hetzner Cloud LB, or a per-environment
+  Service type patch.
+
