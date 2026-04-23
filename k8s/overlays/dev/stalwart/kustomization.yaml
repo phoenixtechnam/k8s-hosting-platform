@@ -48,6 +48,15 @@ patches:
   # but we pin the class explicitly so future changes to the cluster
   # default (e.g. Longhorn landing here later) don't silently migrate
   # the Stalwart volume.
+  #
+  # IMPORTANT: Kustomize strategic-merge patches on volumeClaimTemplates
+  # REPLACE the whole list element (PVC spec has no strategic-merge
+  # directives), so this patch must re-declare every PVC field the
+  # StatefulSet needs — accessModes + resources.requests aren't
+  # inherited from the base. The labels are intentionally dropped here
+  # because dev has no Longhorn (base's recurring-job-group label would
+  # be inert). Smaller storage (5Gi vs base's 20Gi) since dev PVCs are
+  # ephemeral.
   - patch: |-
       apiVersion: apps/v1
       kind: StatefulSet
@@ -59,4 +68,8 @@ patches:
           - metadata:
               name: data
             spec:
+              accessModes: ["ReadWriteOnce"]
               storageClassName: local-path
+              resources:
+                requests:
+                  storage: 5Gi
