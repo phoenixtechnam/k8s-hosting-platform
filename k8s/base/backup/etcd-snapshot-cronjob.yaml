@@ -52,7 +52,12 @@ spec:
               operator: Exists
           containers:
             - name: etcd-upload
-              image: alpine:3.20
+              # alpine/k8s bundles aws-cli so we avoid the apk add step
+              # that was fast-failing on 2026-04-23 (the pod terminated
+              # within 2s with no log retained, likely apk network issue
+              # or a pipefail edge case in the retention-list step).
+              # Matches the image pattern used by the other DR CronJobs.
+              image: alpine/k8s:1.33.3
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID
@@ -85,41 +90,50 @@ spec:
                     secretKeyRef:
                       name: backup-credentials
                       key: S3_PATH_PREFIX
-              command: [/bin/sh, -c]
+              # Use bash explicitly — the script uses `mapfile -t` (bash
+              # builtin, not POSIX sh). alpine/k8s ships bash.
+              command: [/bin/bash, -c]
               args:
                 - |
                   set -euo pipefail
-                  apk add --no-cache aws-cli findutils >/dev/null
                   SRC=/snapshots
                   PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}etcd"
                   if [ ! -d "${SRC}" ]; then
                     echo "[etcd] snapshot dir missing — is this a k3s server node?"
                     exit 1
                   fi
-                  # Only upload files touched in the last 36 hours. k3s
-                  # prunes old snapshots on its own schedule; we ship
-                  # the recent ones to S3 each day.
                   cd "${SRC}"
-                  find . -maxdepth 1 -type f -mtime -2 -name 'etcd-snapshot-*' \
-                    | while read -r f; do
-                        name=${f#./}
-                        echo "[etcd] upload ${name}"
-                        aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
-                          "${name}" "s3://${S3_BUCKET}/${PREFIX}/${name}"
-                      done
-                  # Retention: keep 14 newest in S3.
-                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
+                  # Match k3s's auto-snapshot naming (etcd-snapshot-<host>-
+                  # <timestamp>) AND operator-created on-demand snapshots
+                  # (any filename the snapshot API produced). First-run
+                  # clusters may have no auto-snapshots yet — exit cleanly
+                  # in that case rather than treating "nothing to upload"
+                  # as an error. Populate `files` via mapfile so an empty
+                  # result doesn't trip set -e + pipefail on the pipeline.
+                  mapfile -t files < <(find . -maxdepth 1 -type f -mtime -2 2>/dev/null | sed 's|^\./||')
+                  if [ "${#files[@]}" -eq 0 ]; then
+                    echo "[etcd] no snapshots <36h old — k3s auto-snapshot-schedule-cron defaults to 0 */12 * * *; first run on a fresh cluster may skip an upload cycle. Exiting clean."
+                    exit 0
+                  fi
+                  for name in "${files[@]}"; do
+                    echo "[etcd] upload ${name}"
+                    aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
+                      "${name}" "s3://${S3_BUCKET}/${PREFIX}/${name}"
+                  done
+                  # Retention: keep 14 newest in S3. `aws s3 ls` on an
+                  # empty prefix returns 0 with no output — pipefail-safe.
+                  mapfile -t to_evict < <(aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
                     "s3://${S3_BUCKET}/${PREFIX}/" \
                     | awk '{print $4}' \
-                    | grep -E '^etcd-snapshot-' \
                     | sort -r \
-                    | tail -n +15 \
-                    | while read -r f; do
-                        echo "[etcd] evict ${PREFIX}/${f}"
-                        aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
-                          "s3://${S3_BUCKET}/${PREFIX}/${f}"
-                      done
-                  echo "[etcd] done"
+                    | tail -n +15)
+                  for f in "${to_evict[@]}"; do
+                    [ -z "$f" ] && continue
+                    echo "[etcd] evict ${PREFIX}/${f}"
+                    aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
+                      "s3://${S3_BUCKET}/${PREFIX}/${f}"
+                  done
+                  echo "[etcd] done (${#files[@]} uploaded)"
               volumeMounts:
                 - name: snapshots
                   mountPath: /snapshots
