@@ -362,11 +362,24 @@ install_k3s_server() {
     tls_sans="${tls_sans} --tls-san=${ip}"
   done
 
+  # --cluster-init switches k3s from the default embedded sqlite datastore
+  # to embedded etcd. This:
+  #   (1) enables `k3s etcd-snapshot` + populates /var/lib/rancher/k3s/
+  #       server/db/snapshots/, which the platform-etcd-snapshot-upload
+  #       CronJob hostPath-mounts for DR backups.
+  #   (2) makes the cluster HA-ready — additional server nodes can join
+  #       later without a reinstall (would require --server + --token).
+  #   (3) costs ~50-200 MB RAM for the embedded etcd vs sqlite. Worth it
+  #       for production-aligned topology + DR tooling compatibility.
+  #
+  # One-way: removing --cluster-init on a re-run requires a full cluster
+  # rebuild. Existing pre-etcd clusters must rebootstrap to migrate.
   # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="server" \
     sh -s - \
+      --cluster-init \
       --flannel-backend=none \
       --disable-network-policy \
       --disable=traefik \
