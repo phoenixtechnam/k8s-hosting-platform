@@ -54,9 +54,17 @@ patches:
     target:
       kind: StatefulSet
       name: stalwart-mail
-
-configMapGenerator:
-  - name: stalwart-config
-    behavior: merge
-    files:
-      - config.toml=stalwart-config-cert.toml
+  # Override the stalwart-config ConfigMap's config.toml key with the
+  # TLS-aware production TOML. Using a strategic-merge patch (not
+  # configMapGenerator{behavior:merge}) because the base defines the
+  # ConfigMap as a plain resource, not a generator — the configMap-
+  # Generator merge path requires both sides to be generators,
+  # otherwise Kustomize fails with
+  #   "merging from generator … stalwart-config does not exist;
+  #    cannot merge or replace"
+  # which was a latent bug until the 2026-04-23 staging deploy tried
+  # to build this overlay end-to-end.
+  - path: configmap-patch.yaml
+    target:
+      kind: ConfigMap
+      name: stalwart-config

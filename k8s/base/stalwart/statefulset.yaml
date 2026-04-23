@@ -26,7 +26,20 @@ spec:
         fsGroup: 0
       containers:
         - name: stalwart
-          image: stalwartlabs/stalwart:v0.16.0
+          # Pinned to v0.15.5 — last release that accepts a legacy
+          # monolithic TOML config. v0.16.0 moved to the
+          # "declarative deployments" architecture (config.json with a
+          # single DataStore pointer; everything else in a DB-backed
+          # config store populated via `stalwart apply` or the JMAP API).
+          # Our configmap.yaml is still in the v0.13-v0.15 TOML shape;
+          # bumping to v0.16 without first rewriting configmap + adding
+          # a post-start `stalwart apply` Job results in
+          # "Failed to parse data store settings at config.toml: expected
+          # value at line 1 column 1" within 2s of startup.
+          # See docs/02-operations/STALWART_DEPLOYMENT.md for the
+          # v0.16 migration plan. Upstream release notes:
+          #   https://github.com/stalwartlabs/mail-server/releases/tag/v0.16.0
+          image: stalwartlabs/stalwart:v0.15.5
           imagePullPolicy: IfNotPresent
           # Override default entrypoint: copy the ConfigMap-backed config.toml
           # into the PVC at /opt/stalwart/etc/ (which Stalwart expects as a

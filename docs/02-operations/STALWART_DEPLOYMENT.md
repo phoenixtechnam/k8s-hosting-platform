@@ -113,6 +113,31 @@ Fix: run step 2. Pod will auto-heal within 30 seconds.
   --db-password=<new>` and `kubectl rollout restart statefulset/
   stalwart-mail -n mail`.
 
+## Stalwart version pin: why v0.15.5?
+
+We pin `stalwartlabs/stalwart:v0.15.5` in `k8s/base/stalwart/statefulset.yaml` — NOT `latest` or `v0.16`. Upstream v0.16.0 (Apr 2026) replaced the monolithic TOML config with a "declarative deployments" model:
+
+- `config.json` on disk contains **only** a DataStore object (e.g. `{"@type":"RocksDb","path":"/opt/stalwart/data"}`).
+- Everything else (listeners, auth, directory SQL queries, spam filter rules) lives in a DB-backed config store populated via `stalwart apply <plan.json>` or the JMAP API / WebAdmin UI.
+
+Our current `k8s/base/stalwart/configmap.yaml` is written for the v0.13–v0.15 monolithic-TOML style. Booting v0.16.0 with it fails within 2s of startup with:
+
+```
+⚠️ Startup failed: Failed to parse data store settings at
+/opt/stalwart/etc/config.toml: expected value at line 1 column 1
+```
+
+Reproduced on 2026-04-23 staging rebootstrap. v0.15.5 accepts the exact same config and boots cleanly (verified on the drill VM at 46.224.122.58).
+
+**To migrate to v0.16 later:**
+1. Shrink `configmap.yaml` to just a tiny `config.json` with the DataStore pointer.
+2. Author a `plan.json` declarative deployment covering listeners, PostgreSQL directory, auth, etc.
+3. Add a post-start Job (or init container) that runs `stalwart apply /plans/plan.json` on first boot, keyed on a marker file so it's idempotent.
+4. Strip the TOML-specific env-var substitution (`%{env:VAR}%`) in favour of whatever v0.16 uses for templating its declarative plans.
+5. Bump the image pin.
+
+Tracked as task #183 (kept open until the rewrite lands).
+
 ## Staging-specific gaps vs production
 
 - **Postgres TLS**: staging ships with `[store.pg.tls].enable = false` (per
