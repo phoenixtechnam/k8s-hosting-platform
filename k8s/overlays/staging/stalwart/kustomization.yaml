@@ -1,0 +1,55 @@
+# Staging overlay for the Stalwart mail server.
+#
+# Deployed as a subdir of the main staging overlay (see
+# k8s/overlays/staging/kustomization.yaml `resources:`) so Flux reconciles
+# it on every push to the `staging` branch.
+#
+# Differences from dev/stalwart:
+#   - Real domain (mail.staging.phoenix-host.net) + letsencrypt-staging issuer
+#   - Longhorn default storageClass (not local-path)
+#   - NetworkPolicy kept (staging has Calico enforcer)
+#   - Admin web UI gated by platform_session cookie via the main staging
+#     overlay's admin-auth-gate-cookie component (the Ingress carries the
+#     `platform.phoenix-host.net/admin-ui=true` label which the component
+#     selector matches).
+#
+# Deliberately NOT in this overlay (documented known gaps for the
+# staging → production parity push):
+#   - Mutual TLS between Stalwart and Postgres. Base config ships with
+#     [store.pg.tls].enable = false / allow-invalid-certs = true;
+#     production enables it via k8s/overlays/production/stalwart/.
+#     Staging follows dev's simpler wiring until a platform-internal-ca
+#     ClusterIssuer is provisioned here.
+#
+# ┌───────────────────────────────────────────────────────────────────────┐
+# │  FIRST-DEPLOY PRE-FLIGHT — required once before Stalwart starts.      │
+# │                                                                       │
+# │  Stalwart's StatefulSet envFrom references `stalwart-secrets`. This   │
+# │  overlay does NOT declaratively create that Secret (it holds bcrypt-  │
+# │  hashed admin + master passwords that must be generated freshly per   │
+# │  environment). Miss this step → stalwart-mail-0 enters               │
+# │  CreateContainerConfigError within 30s of reconcile.                  │
+# │                                                                       │
+# │  ssh root@staging ./scripts/generate-stalwart-secret.sh \             │
+# │    --hostname=mail.staging.phoenix-host.net \                         │
+# │    --db-password="$(kubectl -n platform get secret \                  │
+# │      platform-db-credentials -o jsonpath='{.data.password}' \         │
+# │      | base64 -d)"                                                    │
+# │                                                                       │
+# │  Full runbook: docs/02-operations/STALWART_DEPLOYMENT.md              │
+# └───────────────────────────────────────────────────────────────────────┘
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart
+  # platform-postgres ExternalName → postgres.platform.svc.cluster.local.
+  # Same indirection as dev. Prod uses a different pattern (separate
+  # postgres deployment in mail ns, cert-managed TLS).
+  - platform-postgres.yaml
+  # Admin web-admin SPA reachable at https://mail-admin.staging.phoenix-
+  # host.net. Labelled admin-ui=true so the main staging overlay's
+  # admin-auth-gate-cookie component patches in the auth-url annotation.
+  - webadmin-ingress.yaml

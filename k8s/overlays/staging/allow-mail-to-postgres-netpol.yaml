@@ -1,0 +1,42 @@
+# Allow Stalwart (mail ns) to reach Postgres (platform ns).
+#
+# The base network-policies.yaml in k8s/base has a default-deny-ingress
+# on the platform namespace; without this rule, Stalwart's SQL directory
+# lookups for account auth would time out on every login.
+#
+# Scoped tightly: only pods with `app=postgres` in platform ns accept
+# traffic from the entire mail namespace on 5432. NOT a blanket
+# platform-ns opener. Keeps lateral-movement risk from an untrusted
+# mail payload bounded.
+#
+# Sibling of k8s/overlays/dev/allow-mail-to-postgres-netpol.yaml —
+# kept in the main staging overlay root (not under stalwart/) so the
+# stalwart/ kustomization's `namespace: mail` directive doesn't
+# reparent it into the wrong namespace.
+#
+# LOAD-BEARING: the explicit `namespace: platform` below is REQUIRED.
+# If this file were moved under stalwart/, Kustomize's
+# `namespace: mail` directive would override it and the NetworkPolicy
+# would apply to a non-existent `postgres` pod in the mail namespace,
+# silently blocking Stalwart's DB access. Do not remove the field or
+# relocate the file without duplicating the netpol under a root-level
+# kustomization.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mail-to-postgres
+  namespace: platform  # load-bearing — see file comment
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 5432

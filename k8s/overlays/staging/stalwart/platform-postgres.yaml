@@ -1,0 +1,26 @@
+# platform-postgres.mail.svc.cluster.local — ExternalName bridge to
+# the real postgres in the platform namespace. Stalwart's config refers
+# to the mail-ns name; this indirection lets the real DB move without
+# a Stalwart config rewrite.
+#
+# Same pattern as k8s/overlays/dev/stalwart/platform-postgres.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-postgres
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: platform-db-bridge
+spec:
+  type: ExternalName
+  externalName: postgres.platform.svc.cluster.local
+  ports:
+    - name: postgres
+      port: 5432
+      protocol: TCP
+# The cross-namespace NetworkPolicy (mail→postgres@platform) lives in
+# the main staging overlay's allow-mail-to-postgres-netpol.yaml — it
+# targets the platform namespace and this file's `namespace: mail`
+# directive would reparent it incorrectly.

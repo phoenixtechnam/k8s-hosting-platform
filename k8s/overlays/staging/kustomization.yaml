@@ -13,6 +13,15 @@ resources:
   - ../../base/longhorn
   - ../../base/backup
   - dex/
+  # Stalwart mail server + its staging webadmin ingress (mail-admin.staging.
+  # phoenix-host.net). Requires a one-time operator step to generate the
+  # stalwart-secrets — see stalwart/kustomization.yaml comment.
+  - stalwart/
+  # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
+  # Postgres (platform ns). Lives at the overlay root, not under
+  # stalwart/, because it targets the platform namespace and the
+  # stalwart subdir's `namespace: mail` directive would reparent it.
+  - allow-mail-to-postgres-netpol.yaml
 
 # Admin-auth gate — applies an auth_request to every Ingress labelled
 # `platform.phoenix-host.net/admin-ui=true` (Longhorn UI, Stalwart web-

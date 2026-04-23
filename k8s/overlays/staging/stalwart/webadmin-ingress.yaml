@@ -1,0 +1,58 @@
+# Dedicated subdomain for Stalwart's embedded web-admin SPA on staging.
+#
+# URL: https://mail-admin.staging.phoenix-host.net/
+# Backend: stalwart-mail-mgmt.mail.svc.cluster.local:8080
+#
+# Why a separate subdomain (see dev overlay comments for full detail):
+# Stalwart's SPA hard-codes "/" as its base path and can't be served
+# at a sub-path of admin.* without injected shims. A dedicated host
+# eliminates that whole class of problem.
+#
+# Access control: gated by the `platform_session` cookie via
+# components/admin-auth-gate-cookie — the main staging overlay includes
+# that component, which patches the auth-url annotation onto every
+# Ingress carrying the `platform.phoenix-host.net/admin-ui=true` label.
+# We add the auth-signin annotation here (component doesn't set it —
+# the login URL differs per overlay).
+#
+# TLS: letsencrypt-staging-http01 — expect browser TLS warning.
+# Swap to letsencrypt-prod-http01 for untrusted-warning-free browsing
+# once the staging domain serves real traffic.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stalwart-webadmin-ingress
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    # Picked up by components/admin-auth-gate-cookie (included in the
+    # main staging overlay) — adds the auth-url annotation that routes
+    # every request through the platform-api verify endpoint.
+    platform.phoenix-host.net/admin-ui: "true"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging-http01
+    # Where to send unauthenticated users. Cookie mode redirects to the
+    # admin panel's login; component leaves this blank because the URL
+    # varies per overlay.
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.staging.phoenix-host.net/login?redirect=/settings/mail"
+    # WebSocket support for live metrics / log streaming.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mail-admin.staging.phoenix-host.net
+      secretName: stalwart-webadmin-staging-tls
+  rules:
+    - host: mail-admin.staging.phoenix-host.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stalwart-mail-mgmt
+                port:
+                  number: 8080

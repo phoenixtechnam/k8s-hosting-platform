@@ -345,6 +345,18 @@ install_k3s() {
       return 0
     fi
     log "Upgrading from ${installed} to ${K3S_VERSION}..."
+    # Hard-fail when upgrading a pre-etcd (sqlite) cluster. Running the
+    # installer with `--cluster-init` against an existing sqlite datastore
+    # would trigger a k3s error mid-way through the install, leaving the
+    # cluster in a broken state. The only supported migration path is a
+    # fresh rebootstrap (back up data, k3s-uninstall.sh, then re-run this
+    # script on an empty node). Detection: the snapshots dir is only
+    # populated when the datastore is embedded etcd.
+    if [[ "$NODE_ROLE" == "server" ]] \
+        && [[ -f /var/lib/rancher/k3s/server/db/state.db ]] \
+        && [[ ! -d /var/lib/rancher/k3s/server/db/etcd ]]; then
+      error "Upgrade blocked: existing cluster uses the sqlite datastore but this script now installs with --cluster-init (embedded etcd). Back up data, run k3s-uninstall.sh, then re-run this script on the empty node. See docs/02-operations/DISASTER_RECOVERY.md for the supported path."
+    fi
   fi
 
   if [[ "$NODE_ROLE" == "server" ]]; then
