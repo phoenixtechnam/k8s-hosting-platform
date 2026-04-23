@@ -114,3 +114,45 @@ Copy-paste when starting a drill:
 - Drill VM left running at 46.224.122.58 for follow-up investigation (per drill-op's instructions; not auto-destroyed).
 - Next drill: after bugs 3–6 are fixed, re-run end-to-end including Postgres restore + tenant-data SHA256 + full RTO measurement.
 
+---
+
+### 2026-04-23 (afternoon) — staging-parity follow-up + etcd migration + Stalwart attempt
+
+**Triggered by:** the morning drill exposed that (a) staging k3s uses sqlite not etcd so `platform-etcd-snapshot-upload` CronJob was a permanent FailedMount, and (b) Stalwart mail server was never deployed on staging even though base+dev+production overlays existed.
+
+**Changes landed (committed, pushed, Flux-reconciled):**
+
+- `scripts/bootstrap.sh` — added `--cluster-init` to the k3s install line so fresh installs use embedded etcd (commit `1b3170e`). Validated on the drill VM (46.224.122.58): rebootstrap produced `/var/lib/rancher/k3s/server/db/etcd/` and `k3s etcd-snapshot save` wrote a 21.6 MB snapshot to `/var/lib/rancher/k3s/server/db/snapshots/`.
+- `scripts/bootstrap.sh` — upgrade guard: bootstrap now aborts with a clear error if run against a pre-existing sqlite datastore (no in-place migration path — only rebootstrap). Reviewer-found MEDIUM.
+- `k8s/overlays/staging/stalwart/` — new overlay mirroring dev's topology (ExternalName → postgres.platform, Longhorn-backed PVC, LE-staging cert, admin-ui cookie gate). `k8s/overlays/staging/allow-mail-to-postgres-netpol.yaml` opens mail→platform:postgres:5432. Commit `66eced6`.
+- `docs/02-operations/STALWART_DEPLOYMENT.md` — first-deploy runbook covering the one-time `generate-stalwart-secret.sh` step and expected CreateContainerConfigError when skipped.
+
+**Validation evidence:**
+
+- [x] `k3s etcd-snapshot list` on drill VM shows a 21.6 MB snapshot (2026-04-23T14:04:23Z).
+- [x] `kustomize build k8s/overlays/{dev,staging,production}` clean.
+- [x] `scripts/ci-admin-auth-check.sh` confirms stalwart-webadmin-ingress → auth-gate=cookie on staging.
+- [x] `shellcheck` on all scripts — 0 errors.
+- [x] Staging `mail` namespace + Secret (bcrypt hashes) successfully created via `generate-stalwart-secret.sh` (after installing apache2-utils on the node for htpasswd).
+- [ ] Stalwart pod Running — **FAILED**, see Bug #9 below.
+- [ ] WebAdmin HTTP 302 via cookie gate — **NOT TESTED** (pod never reached Ready).
+- [ ] SMTP/IMAP round-trip — **NOT TESTED**.
+
+**Bug found — BLOCKING this phase:**
+
+9. **Stalwart v0.16.0 rejects the committed `k8s/base/stalwart/configmap.yaml` TOML.** Parser error: `⚠️ Startup failed: Failed to parse data store settings at /opt/stalwart/etc/config.toml: expected value at line 1 column 1`. Reproduces with the simplest legal TOML stanza (`[server]\nhostname = "x"`). Error line+column shifts with config size but the `data store settings` message persists. Binary strings show camelCase identifiers (`fieldName`, `bindSecret`, `serviceAccountJson`) that don't match the TOML snake-case our config uses — v0.16 appears to have moved to a different config grammar (possibly YAML or a bespoke DSL).
+
+   **Impact:** Stalwart has never actually run with this configmap on any environment. Dev + production would have failed identically if they'd reconciled. We discovered it only now because staging was the first env to actually try reconciling the overlay end-to-end.
+
+   **Mitigation on staging:** `kubectl scale statefulset/stalwart-mail --replicas=0` to stop the CrashLoopBackOff. Overlay kept in place so re-enabling after the config fix is a one-scale.
+
+   **Fix options (filed as task #183):**
+   - Rewrite `k8s/base/stalwart/configmap.yaml` for v0.16's format (search Stalwart docs + GitHub for v0.16 examples).
+   - Pin `stalwartlabs/stalwart` to the last image tag where this config worked (last known-good version unclear; requires tag-bisection).
+
+**Verdict:** PARTIAL. etcd migration validated end-to-end. Stalwart overlay wiring landed and code-reviewed, but blocked on a pre-existing v0.16 config format regression that neither staging nor any other env would have spotted without the drill-driven deploy attempt.
+
+**Notes:**
+- Operator age key still at `/home/dev/operator-staging.key`; drill VM still at 46.224.122.58 — both kept per earlier instructions.
+- `stalwart-mail-0` scaled to 0 on staging; re-enable with `kubectl scale statefulset/stalwart-mail -n mail --replicas=1` once config is fixed.
+
