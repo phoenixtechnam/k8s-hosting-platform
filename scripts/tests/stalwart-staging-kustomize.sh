@@ -109,11 +109,15 @@ assert_stalwart_backup_cli_syntax() {
     fail "stalwart-backup uses removed 'server backup <path>' subcommand" "update to 'server database-maintenance' for v0.15+"
     return
   fi
-  if ! grep -qE 'server[[:space:]]+database-maintenance' <<< "$code"; then
-    fail "stalwart-backup missing 'server database-maintenance'" "v0.15+ requires a quiesce via database-maintenance"
+  # Either form is accepted: `stalwart-cli ... server database-maintenance`
+  # OR a direct HTTP call to /api/server/database-maintenance (workaround
+  # for a v0.15.5 stalwart-cli bug where a successful empty-body reply
+  # is parsed as "No data returned." and exits 1).
+  if ! grep -qE '(server[[:space:]]+database-maintenance|/api/server/database-maintenance)' <<< "$code"; then
+    fail "stalwart-backup missing database-maintenance call" "v0.15+ requires a quiesce via database-maintenance (CLI or direct API)"
     return
   fi
-  pass "stalwart-backup uses v0.15+ compatible CLI (database-maintenance, no 'server backup')"
+  pass "stalwart-backup uses v0.15+ compatible quiesce (database-maintenance, no 'server backup')"
 }
 
 assert_stalwart_backup_freshness_marker() {

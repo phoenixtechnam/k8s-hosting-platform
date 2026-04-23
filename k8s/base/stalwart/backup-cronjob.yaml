@@ -88,24 +88,40 @@ spec:
                   echo "[stalwart-backup] starting quiesce TS=$TS"
 
                   # Trigger a RocksDB WAL flush + SST compaction inside
-                  # the Stalwart pod. This is the v0.15+ replacement
-                  # for the removed `server backup <path>` subcommand;
-                  # it makes the on-disk state at /opt/stalwart/data
-                  # internally consistent at snapshot time (the
-                  # subsequent Longhorn recurring-job at 02:00 UTC is
-                  # the actual backup artefact; this script's job is
-                  # JUST to quiesce, not to produce a tarball).
-                  kubectl -n mail exec stalwart-mail-0 -- sh -c '
-                    set -eu
+                  # the Stalwart pod. The stalwart-cli's
+                  # `server database-maintenance` command has a v0.15.5
+                  # quirk: the HTTP endpoint returns success with an
+                  # empty body, but the CLI parses that as the error
+                  # "Request failed: No data returned." and exits 1 —
+                  # even though the maintenance actually ran.
+                  #
+                  # Workaround: capture stdout+stderr and treat this
+                  # specific message as a successful-but-noisy return.
+                  # Any OTHER error (network, auth, actual server
+                  # error) still propagates as a real failure.
+                  #
+                  # Can't use wget/curl — the stalwartlabs/stalwart
+                  # v0.15.5 image ships only openssl + stalwart-cli,
+                  # no generic HTTP clients.
+                  OUT=$(kubectl -n mail exec stalwart-mail-0 -- sh -c '
                     mkdir -p /opt/stalwart/backups
                     stalwart-cli --url http://127.0.0.1:8080 \
                       --credentials "admin:${ADMIN_SECRET_PLAIN}" \
-                      server database-maintenance
-                  ' || {
-                    echo "[stalwart-backup] database-maintenance failed" >&2
+                      server database-maintenance 2>&1
+                  ') || RC=$?
+                  RC=${RC:-0}
+                  if [ "$RC" = "0" ]; then
+                    echo "[stalwart-backup] quiesce OK: $OUT"
+                  elif printf "%s" "$OUT" | grep -qE 'No data returned'; then
+                    # Known v0.15.5 parser bug — maintenance ran, CLI
+                    # just didn't like the empty-body reply. Treat as
+                    # success.
+                    echo "[stalwart-backup] quiesce OK (v0.15.5 'No data returned' CLI quirk ignored)"
+                  else
+                    echo "[stalwart-backup] database-maintenance failed (exit=$RC):" >&2
+                    echo "$OUT" >&2
                     exit 1
-                  }
-                  echo "[stalwart-backup] quiesce OK"
+                  fi
 
                   # Drop a freshness marker INSIDE the PVC before the
                   # Longhorn snapshot runs at 02:00 UTC. The marker
