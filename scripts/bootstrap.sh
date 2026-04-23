@@ -768,6 +768,14 @@ install_flux() {
 generate_platform_secrets() {
   log "Generating platform secrets..."
 
+  # Ensure the `platform` namespace exists BEFORE we try to write Secrets
+  # into it. `apply_platform_manifests` creates it via k8s/base/namespaces.yaml
+  # later in the flow — but the Secret writes below run first, so without
+  # this, fresh-VM bootstraps fail with "namespaces 'platform' not found".
+  # Idempotent: kubectl create --dry-run=client applies are no-ops on
+  # pre-existing namespaces.
+  kctl create namespace platform --dry-run=client -o yaml | kctl apply -f -
+
   # Only create secrets if they don't already exist
   if kctl get secret -n platform platform-db-credentials &>/dev/null 2>&1; then
     log "DB credentials secret already exists, skipping."
