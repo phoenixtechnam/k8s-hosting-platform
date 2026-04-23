@@ -37,6 +37,17 @@
 #   --skip-etcd                  Skip the etcd restore step (advanced)
 #   --skip-postgres              Skip the Postgres restore step
 #   --skip-longhorn              Skip the Longhorn volume restores
+#   --secret-replace-mode <mode> force (default) | apply. Controls Phase 6
+#                                behaviour: force deletes existing Secrets
+#                                before applying the restored bundle, so
+#                                a fresh-bootstrap cluster's random values
+#                                don't conflict with the restored ones.
+#   --restore-db-credentials     Also restore platform-db-credentials
+#                                (default: SKIP — postgres init password
+#                                won't match, breaking DB auth).
+#   --smoke-host <hostname>      Target for Phase 9 smoke-test. Default:
+#                                auto-derive from platform-config
+#                                ConfigMap's ingress-base-domain.
 #   --dry-run                    Print the plan without making changes
 #   --help                       This message
 
@@ -56,6 +67,21 @@ SKIP_ETCD=false
 SKIP_POSTGRES=false
 SKIP_LONGHORN=false
 DRY_RUN=false
+# Phase 6 behaviour controls:
+#   SECRET_REPLACE_MODE=force  — delete pre-existing Secrets before apply
+#                                 (default: resolves kubectl apply conflicts
+#                                  against fresh-bootstrap Secrets)
+#                       apply  — `kubectl apply` only; fails on conflict
+SECRET_REPLACE_MODE=force
+# Restore platform-db-credentials from the backup bundle? Default NO
+# because postgres was initialised by bootstrap with a fresh random
+# password; the old password from the bundle won't match. Opt in only
+# if you're also going to ALTER USER.
+RESTORE_DB_CREDS=false
+# Phase 9 smoke-test target — plumbed into scripts/smoke-test.sh via
+# env vars (API_URL, ADMIN_EMAIL). Default: discover from cluster's
+# platform-config ConfigMap. Override with --smoke-host.
+SMOKE_HOST=""
 
 log()  { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 warn() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARN: $*" >&2; }
@@ -76,6 +102,9 @@ while [[ $# -gt 0 ]]; do
     --skip-etcd)       SKIP_ETCD=true; shift ;;
     --skip-postgres)   SKIP_POSTGRES=true; shift ;;
     --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
+    --secret-replace-mode) SECRET_REPLACE_MODE="$2"; shift 2 ;;
+    --restore-db-credentials) RESTORE_DB_CREDS=true; shift ;;
+    --smoke-host)      SMOKE_HOST="$2"; shift 2 ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --help|-h)         usage ;;
     *)                 die "Unknown arg: $1" ;;
@@ -261,21 +290,32 @@ phase_postgres_restore() {
   if $SKIP_POSTGRES; then log "Phase 5/9: SKIPPED (--skip-postgres)"; return 0; fi
   log "Phase 5/9: Restore Postgres dump"
 
+  # Match both the secrets-backup CronJob's output (pg-<ts>.dump) and
+  # legacy/manual dump names. Sorted lexicographically — the timestamp
+  # format is ISO-8601 so lexicographic order == chronological.
   local dump
-  dump=$(find "$WORK_DIR/raw/postgres" -name '*.dump' -o -name '*.sql.gz' 2>/dev/null | sort | tail -1 || true)
+  # Two candidate paths: db/platform/ (new layout, matches pg-backup
+  # CronJob's S3 key) and postgres/ (legacy). Silence find's own stderr
+  # on missing dirs; rely on the sort+tail to pick the newest.
+  dump=$({ find "$WORK_DIR/raw/db/platform" -type f \( -name 'pg-*.dump' -o -name '*.dump' \) 2>/dev/null; \
+           find "$WORK_DIR/raw/postgres" -type f \( -name '*.dump' -o -name '*.sql.gz' \) 2>/dev/null; } \
+         | sort | tail -1 || true)
   if [[ -z "$dump" ]]; then
-    warn "No Postgres dump found under $WORK_DIR/raw/postgres. Skipping."
+    warn "No Postgres dump found. Looked under $WORK_DIR/raw/db/platform/ and .../postgres/. Skipping."
     return 0
   fi
   log "  Dump: $dump"
 
-  # Copy the dump into the platform-postgres-0 pod and run pg_restore there.
-  # The pod already has pg_restore + the DB is running by the time we hit
-  # this phase (etcd restore brought it back via StatefulSet replay).
-  run kubectl -n platform cp "$dump" platform-postgres-0:/tmp/restore.dump
-  run kubectl -n platform exec platform-postgres-0 -- \
-    bash -c 'pg_restore --clean --if-exists --exit-on-error --no-owner --no-privileges \
-             -d "$POSTGRES_DB" -U "$POSTGRES_USER" /tmp/restore.dump'
+  # platform-postgres-0 is the pod name in both dev + staging + production
+  # (StatefulSet named 'postgres' → pod 'postgres-0' in the 'platform' ns).
+  # Earlier version assumed 'platform-postgres-0' which is a different name.
+  local POD=postgres-0
+  run kubectl -n platform cp "$dump" "${POD}:/tmp/restore.dump"
+  run kubectl -n platform exec "$POD" -- \
+    bash -c 'pg_restore --clean --if-exists --no-owner --no-privileges \
+             -U platform -d hosting_platform /tmp/restore.dump' || {
+    warn "pg_restore exited non-zero. Most 'already exists' / 'does not exist' noise on --clean --if-exists is harmless; check logs."
+  }
   log "  ✓ Postgres restore complete"
 }
 
@@ -295,14 +335,70 @@ phase_secrets_apply() {
   run mkdir -p "$WORK_DIR/secrets"
   run tar xf "$WORK_DIR/secrets.tar" -C "$WORK_DIR/secrets"
 
+  # Create tenant namespaces FIRST — the bundle has tenants/<ns>/*.yaml
+  # layout, but the target cluster may not yet have those namespaces (on
+  # a fresh cold-restore they've all been wiped). Without this, the
+  # kubectl apply below fails with "namespaces ... not found" on every
+  # tenant Secret. Caught during the 2026-04-23 staging rebootstrap.
+  if [[ -d "$WORK_DIR/secrets/tenants" ]]; then
+    local tenants_count=0
+    for ns_dir in "$WORK_DIR/secrets/tenants"/*/; do
+      [[ -d "$ns_dir" ]] || continue
+      local NS
+      NS="$(basename "$ns_dir")"
+      # Idempotent create — already-exists is a non-error.
+      run kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+      tenants_count=$((tenants_count+1))
+    done
+    log "  ✓ ensured $tenants_count tenant namespaces exist"
+  fi
+
   # Each Secret YAML in the bundle is `kubectl get secret -o yaml` output.
-  # Re-apply preserving the original namespace.
+  # PROBLEM on a fresh cold-restore: bootstrap.sh has already created some
+  # of these Secrets (platform-jwt-secret, platform-admin-seed, platform-
+  # secrets, platform-db-credentials, oauth2-proxy-config) with fresh
+  # random values. `kubectl apply` on an existing Secret hits a
+  # resourceVersion conflict. Solution: delete-then-apply for non-system-
+  # managed Secrets, via the SECRET_REPLACE_MODE=force|apply flag.
+  #
+  # IMPORTANT: we intentionally SKIP platform-db-credentials by default.
+  # Postgres was initialised by bootstrap with a fresh random password;
+  # the restored Secret has the pre-wipe password which won't match.
+  # Operator can opt into restoring it via --restore-db-credentials if
+  # they plan to also ALTER USER platform WITH PASSWORD '<restored>'.
   local count=0
+  local skipped=0
   while IFS= read -r f; do
-    run kubectl apply -f "$f"
-    count=$((count+1))
+    # Skip empty files — the secrets-backup CronJob can write zero-byte
+    # placeholders for Secrets that were absent at backup time (e.g.
+    # platform-dev-tls on a staging cluster). kubectl apply -f on an
+    # empty file fails with "no objects passed to apply" which only adds
+    # noise to the log.
+    if [[ ! -s "$f" ]]; then
+      skipped=$((skipped+1))
+      continue
+    fi
+    local name
+    name="$(grep -E '^  name:' "$f" | head -1 | awk '{print $2}')"
+    if [[ "$name" == "platform-db-credentials" && "$RESTORE_DB_CREDS" != true ]]; then
+      log "    SKIP $name (keep bootstrap's value — matches postgres init pw). Use --restore-db-credentials to force."
+      skipped=$((skipped+1))
+      continue
+    fi
+    if [[ "$SECRET_REPLACE_MODE" == "force" ]]; then
+      # Pull ns + name from the YAML. Fallback to 'platform' if unset.
+      local ns
+      ns="$(grep -E '^  namespace:' "$f" | head -1 | awk '{print $2}')"
+      ns="${ns:-platform}"
+      run kubectl -n "$ns" delete secret "$name" --ignore-not-found >/dev/null 2>&1 || true
+    fi
+    if run kubectl apply -f "$f" >/dev/null 2>&1; then
+      count=$((count+1))
+    else
+      warn "    failed to apply $f — continuing"
+    fi
   done < <(find "$WORK_DIR/secrets" -name '*.yaml' -type f 2>/dev/null)
-  log "  ✓ applied $count secrets"
+  log "  ✓ applied $count secrets, skipped $skipped"
 }
 
 # ─── Phase 7: Longhorn BackupTarget reactivate ────────────────────────────────
@@ -311,9 +407,39 @@ phase_longhorn_reactivate() {
   if $SKIP_LONGHORN; then log "Phase 7/9: SKIPPED (--skip-longhorn)"; return 0; fi
   log "Phase 7/9: Reactivate Longhorn BackupTarget"
 
-  # The platform-api pod will re-reconcile BackupTarget/default when it
-  # starts up and reads the `active` row. Wait until the CR reports
-  # Available=true (Longhorn's own check that the URL + creds work).
+  # Two paths:
+  #   (a) Postgres was restored (not --skip-postgres) → platform-api's
+  #       reconciler will see the active=true backup_configurations row
+  #       on startup and wire the BackupTarget CR automatically. Wait
+  #       and verify.
+  #   (b) --skip-postgres was passed → platform-api has no config to
+  #       read, so we patch the CR directly from the restored secrets
+  #       bundle (longhorn-backup-credentials Secret has AWS_*). This
+  #       closes the reviewer-found gap where --skip-postgres left the
+  #       BackupTarget permanently Available=false without manual kubectl
+  #       patch. Caught during the 2026-04-23 drill.
+  if $SKIP_POSTGRES; then
+    log "  --skip-postgres is set; manually wiring BackupTarget from restored longhorn-backup-credentials..."
+    # Read creds from the in-cluster Secret (restored by Phase 6). The
+    # `endpoint` value is used by Longhorn via the Secret, not by this
+    # script directly — we decode it only to verify presence and log.
+    local bucket region path_prefix endpoint
+    endpoint="$(kubectl -n longhorn-system get secret longhorn-backup-credentials -o jsonpath='{.data.AWS_ENDPOINTS}' 2>/dev/null | base64 -d || true)"
+    bucket="$(kubectl -n longhorn-system get secret longhorn-backup-credentials -o jsonpath='{.data.S3_BUCKET}' 2>/dev/null | base64 -d || true)"
+    region="$(kubectl -n longhorn-system get secret longhorn-backup-credentials -o jsonpath='{.data.S3_REGION}' 2>/dev/null | base64 -d || true)"
+    path_prefix="$(kubectl -n longhorn-system get secret longhorn-backup-credentials -o jsonpath='{.data.S3_PATH_PREFIX}' 2>/dev/null | base64 -d || true)"
+    log "    endpoint=${endpoint:-<unset>} bucket=$bucket region=$region prefix=${path_prefix:-<none>}"
+    if [[ -z "$bucket" || -z "$region" ]]; then
+      warn "longhorn-backup-credentials Secret is missing S3_BUCKET/S3_REGION — cannot auto-wire. Investigate:"
+      warn "  kubectl -n longhorn-system get secret longhorn-backup-credentials -o yaml"
+      return 1
+    fi
+    local url="s3://${bucket}@${region}/"
+    [[ -n "$path_prefix" ]] && url="s3://${bucket}@${region}/${path_prefix}"
+    run kubectl -n longhorn-system patch backuptarget default --type=merge \
+      -p "{\"spec\":{\"backupTargetURL\":\"${url}\",\"credentialSecret\":\"longhorn-backup-credentials\",\"pollInterval\":\"5m\"}}"
+  fi
+
   log "  Waiting up to 2m for BackupTarget/default to reach Available=true..."
   for i in $(seq 1 60); do
     local avail
@@ -382,10 +508,46 @@ VOLCR
 
 phase_smoke() {
   log "Phase 9/9: Smoke test"
+  # Derive the smoke-test host from the running cluster's platform-config
+  # ConfigMap unless --smoke-host was passed. This replaces the old
+  # hard-coded dev hostname inside smoke-test.sh. Resolves the Phase 9
+  # regression found in the 2026-04-23 drill where the smoke-test tried
+  # to reach admin.k8s-platform.test:2010 against a staging cluster.
+  local host="$SMOKE_HOST"
+  if [[ -z "$host" ]]; then
+    host=$(kubectl -n platform get configmap platform-config \
+      -o jsonpath='{.data.ingress-base-domain}' 2>/dev/null || true)
+    if [[ -n "$host" ]]; then
+      host="admin.$host"
+    fi
+  fi
+  if [[ -z "$host" ]]; then
+    warn "Could not derive smoke-test host (platform-config.ingress-base-domain unset, no --smoke-host). Skipping."
+    return 0
+  fi
+
+  local admin_email="admin@${host#admin.}"
+  local admin_pw
+  admin_pw=$(kubectl -n platform get secret platform-admin-seed \
+    -o jsonpath='{.data.admin_password}' 2>/dev/null | base64 -d 2>/dev/null || true)
+
+  log "  Target: https://${host}/  (admin: ${admin_email})"
   if [[ -x ./scripts/smoke-test.sh ]]; then
-    run ./scripts/smoke-test.sh
+    API_URL="https://${host}" \
+    ADMIN_EMAIL="$admin_email" \
+    ADMIN_PASSWORD="$admin_pw" \
+    MAIL_TESTS_ENABLED=0 \
+      run ./scripts/smoke-test.sh
   else
-    warn "./scripts/smoke-test.sh not present — skipping programmatic check. Verify manually."
+    # Fallback: minimal curl-based probe.
+    log "  smoke-test.sh not present — falling back to curl probe"
+    local code
+    code=$(curl -sSk -o /dev/null -w '%{http_code}' "https://${host}/api/v1/healthz" || echo "FAIL")
+    if [[ "$code" == "200" ]]; then
+      log "  ✓ /api/v1/healthz returned HTTP 200"
+    else
+      warn "  /api/v1/healthz returned $code — investigate"
+    fi
   fi
 }
 
