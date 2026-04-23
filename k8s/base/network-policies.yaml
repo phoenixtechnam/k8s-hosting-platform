@@ -141,6 +141,15 @@ spec:
               - key: app
                 operator: In
                 values: ["platform-api", "admin-panel", "client-panel", "oauth2-proxy", "dex"]
+        # DR backup CronJob pods (platform-pg-backup, cluster-state-backup,
+        # secrets-backup) carry the component label so they can reach
+        # postgres without being in the main app allow-list. Without this
+        # rule, pg_dump stalls at TCP connect on 5432 because default-
+        # deny-ingress blocks the CronJob-owned pod. Caught during the
+        # 2026-04-23 drill — pg-backup had been silently failing for 45h+.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: dr-backup
       ports:
         - protocol: TCP
           port: 5432  # postgres

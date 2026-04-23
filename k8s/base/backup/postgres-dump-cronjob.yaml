@@ -29,6 +29,15 @@ spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 604800
       template:
+        metadata:
+          # Pod-level label required — the allow-platform-internal
+          # NetworkPolicy matches on pod labels (K8s NetworkPolicy does
+          # NOT inherit CronJob/Job labels onto Pods). Without this the
+          # pg_dump TCP connect to postgres:5432 stalls at 127.0.0.1:
+          # default-deny-ingress blocks the packet. Verified 2026-04-23.
+          labels:
+            app.kubernetes.io/part-of: hosting-platform
+            app.kubernetes.io/component: dr-backup
         spec:
           restartPolicy: OnFailure
           # Single small container that has both postgres-client and
