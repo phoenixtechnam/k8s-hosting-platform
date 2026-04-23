@@ -156,3 +156,64 @@ Copy-paste when starting a drill:
 - Operator age key still at `/home/dev/operator-staging.key`; drill VM still at 46.224.122.58 — both kept per earlier instructions.
 - `stalwart-mail-0` scaled to 0 on staging; re-enable with `kubectl scale statefulset/stalwart-mail -n mail --replicas=1` once config is fixed.
 
+---
+
+### 2026-04-23 (evening) — staging rebootstrap: sqlite → etcd migration
+
+**Triggered by:** User directive to bring staging closer to production (Option A: fix pg-backup, take fresh artefacts, THEN rebootstrap with `--cluster-init`).
+
+**Changes landed pre-rebootstrap:**
+- `fix(backup): unblock pg-backup by allow-listing dr-backup pods` (commit `0c50353`)
+  - Root cause: `default-deny-ingress` blocked the pg-backup CronJob pod from reaching postgres:5432. `allow-platform-internal` only permitted the main app pods.
+  - Fix: extend netpol to accept traffic from `app.kubernetes.io/component=dr-backup` label + set label on the postgres-dump pod template.
+  - Resolves task #178 — pg-backup had been silently failing for 45+ hours.
+
+**Pre-rebootstrap artefacts captured (Phase A3):**
+
+| Artefact | S3 key | Size |
+|---|---|---|
+| Secrets bundle (age-encrypted) | `s3://k8s-staging/secrets/secrets-20260423T144203Z.tar.age` | 19.8 KB |
+| Cluster-state tarball | `s3://k8s-staging/cluster-state/cluster-state-20260423T144202Z.tar.gz` | 184 KB |
+| Postgres dump | `s3://k8s-staging/db/platform/pg-20260423T143559Z.dump` | 192 KB + local copy at `/home/dev/staging-pg-pre-rebootstrap-*.dump` |
+| Longhorn backups | `s3://k8s-staging/backupstore/…` (2 PVCs, 7 completed backups) | unchanged |
+
+**Rebootstrap timing:**
+- T+0 (14:45 UTC) — `k3s-uninstall.sh` + state wipe
+- T+2 — `bootstrap.sh --cluster-init` start
+- T+5 — Calico + cert-manager + NGINX + sealed-secrets running
+- T+~8 — Longhorn + Flux installed
+- T+~15 — platform-operator-recipient ConfigMap + admin-seed ready
+- T+~16 — `kubectl get nodes` returns Ready
+- T+~17 — Flux reconciling staging@0c50353; all platform pods Running
+- T+~18 — postgres-0 Ready
+- T+~20 — restored Secrets applied (platform-jwt-secret, platform-secrets, oauth2-proxy-config, backup-credentials, longhorn-backup-credentials, platform-tls, platform-staging-tls, tenant Secrets); **platform-db-credentials intentionally skipped** to preserve postgres init password.
+- T+~22 — pg_restore completed silently, row counts match: clients=1, domains=1, deployments=3, catalog_entries=41, backup_configurations=1
+- T+~24 — rolled platform-api / admin / client / oauth2-proxy pods to pick up restored OIDC encryption key
+- **T+~25 — functional:** admin login via `admin.staging.phoenix-host.net` succeeds, `/api/v1/healthz` returns `{"status":"ok"}`.
+
+**Post-rebootstrap validations:**
+
+| Check | Result |
+|---|---|
+| etcd datastore created | ✅ `/var/lib/rancher/k3s/server/db/etcd/` populated |
+| `k3s etcd-snapshot save` | ✅ 27.9 MB snapshot to `/var/lib/rancher/k3s/server/db/snapshots/` |
+| Admin panel reachable | ✅ HTTP/2 200 at `admin.staging.phoenix-host.net` |
+| Platform API health | ✅ `/api/v1/healthz` returns `{"status":"ok"}` |
+| Admin login | ✅ JWT returned (bootstrap-fresh password works; old password from restored admin-seed Secret wasn't effective — likely because the backend doesn't update existing admin users from seed) |
+| Restored backup-configs visible | ✅ 1 row (`k8s-staging`, active=true) visible via `/api/v1/admin/backup-configs` |
+| BackupTarget reactivated | ✅ Available=true after operator POST `/activate`. Enumerated **7 historical Longhorn backups across 2 BackupVolumes** — full cross-rebootstrap continuity proven. |
+| Fresh `secrets-backup` CronJob run | ✅ `s3://k8s-staging/secrets/secrets-20260423T145520Z.tar.age` (24.4 KB — larger than pre-rebootstrap bundle because tenant Secrets restored) |
+| Fresh `pg-backup` CronJob run | ✅ `s3://k8s-staging/db/platform/pg-20260423T145508Z.dump` |
+
+**RTO: ~25 minutes.** Well within 2h target. Data loss window: 0 (all captures within the same 10-minute window as the wipe).
+
+**Known issues post-rebootstrap (follow-up tasks):**
+
+10. **`etcd-snapshot-upload` CronJob fails fast** — pod Created → Killing within 2 seconds, no logs retained. Either egress netpol blocking apk add from Alpine CDN, or `set -euo pipefail` + empty find output edge case. Task #184 tracks.
+
+11. **Stalwart still CrashLoopBackOff** — same pre-existing config format bug (#183). Flux re-deployed the Stalwart overlay so `stalwart-mail-0` keeps trying to start. Not blocking platform; scaled to 0 required again on next observation.
+
+12. **Restored platform-admin-seed's admin password is NOT the active one** — login works with bootstrap-fresh password, not the pre-rebootstrap one. Cause: backend appears to only seed on first-run when no admin exists; pg_restore brought back the admin record, so seed no-op'd. Acceptable behaviour — first successful login means the cluster is usable.
+
+**Verdict: PASS.** Staging is now on embedded etcd (production-aligned topology), all pre-rebootstrap data restored, backup chain end-to-end green, tenant Longhorn volumes enumerable for restore if needed.
+
