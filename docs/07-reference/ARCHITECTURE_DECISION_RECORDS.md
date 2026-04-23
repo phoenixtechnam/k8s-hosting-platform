@@ -2368,6 +2368,39 @@ mailbox with replace semantics. Per-file restore is supported via a
 
 ---
 
+## ADR-029: Secrets + Disaster Recovery Architecture
+
+See [ADR-029-secrets-and-dr.md](ADR-029-secrets-and-dr.md).
+
+Summary: age + SOPS for secret encryption. Operator owns the age key
+(never in-cluster). Bootstrap.sh generates a platform-operator-recipient
+ConfigMap on first install. Secrets-backup CronJob enumerates platform +
+tenant Secrets daily, age-encrypts to operator recipient, uploads to
+S3 or SSH target per backup-credentials Secret's `TARGET_KIND`. Dual
+S3/SSH target supports both cloud and colo deployments. Tenant opt-in
+to backup via `platform.phoenix-host.net/backup-excluded` annotation;
+backup-audit CronJob daily enforces via Kubernetes Warning events.
+
+---
+
+## ADR-030: Mail Server Selection + Swappable-Architecture Feasibility
+
+See [ADR-030-mail-server-selection-and-swappable-architecture.md](ADR-030-mail-server-selection-and-swappable-architecture.md).
+
+Summary (2026-04-23): Kept Stalwart (v0.15.5 pinned) after evaluating
+the full ~15-candidate field. New hard requirement: OIDC/SASL XOAUTH2
+on IMAP/SMTP/POP3 + webmail. Stalwart is one of three candidates that
+satisfy it (others: Apache James 3.9 + Postfix+Dovecot 2.4 assembled);
+zero-migration-cost wins at ~3 test tenants. Trigger conditions
+documented for re-opening: another Stalwart breaking-release within
+12mo, security CVE >30d patch, scale past 50 clients needing tier-3
+HA, or Stalwart licence flip. Full swappable-mail-component
+architecture deferred — SQL-views-as-directory is already the strongest
+portability layer; build thin admin-API adapter only during an actual
+migration project.
+
+---
+
 ## References
 
 - ADR Format: https://adr.github.io/
