@@ -82,7 +82,9 @@ spec:
           serviceAccountName: cluster-state-backup
           containers:
             - name: cluster-state
-              image: bitnami/kubectl:1.31
+              # alpine/k8s bundles kubectl + aws + jq. bitnami/kubectl
+              # pinned tags sunsetted from Docker Hub in 2026.
+              image: alpine/k8s:1.33.3
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID
@@ -101,9 +103,8 @@ spec:
               args:
                 - |
                   set -euo pipefail
-                  # bitnami/kubectl is based on minideb — aws-cli is an
-                  # official Debian package.
-                  apt-get update -qq && apt-get install -y -qq awscli tar gzip >/dev/null
+                  # alpine/k8s already has kubectl + aws + tar + gzip.
+                  # No install step required.
                   OUT=$(mktemp -d)
                   STAMP=$(date -u +%Y%m%dT%H%M%SZ)
                   PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}cluster-state"

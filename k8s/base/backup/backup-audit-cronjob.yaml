@@ -75,13 +75,13 @@ spec:
           serviceAccountName: backup-audit
           containers:
             - name: audit
-              image: bitnami/kubectl:1.31
+              image: alpine/k8s:1.33.3
               imagePullPolicy: IfNotPresent
               command: [/bin/sh, -c]
               args:
                 - |
                   set -euo pipefail
-                  apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null
+                  # jq already bundled in alpine/k8s — no install step needed.
                   # Enumerate every Longhorn PVC cluster-wide; emit a
                   # Warning event per unlabeled + non-opted-out.
                   MISSING=$(kubectl get pvc -A -o json \

@@ -42,7 +42,9 @@ spec:
               operator: Exists
           containers:
             - name: upload
-              image: bitnami/kubectl:1.31
+              # Alpine-based image — bitnami/kubectl pinned tags were
+              # sunsetted from Docker Hub in 2026.
+              image: alpine/k8s:1.33.3
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID
@@ -78,8 +80,10 @@ spec:
               args:
                 - |
                   set -euo pipefail
-                  apt-get update -qq >/dev/null
-                  apt-get install -y -qq awscli openssh-client rsync findutils >/dev/null
+                  # alpine/k8s bundles aws + kubectl; we only add the
+                  # SSH/rsync extras. findutils not required — busybox
+                  # `find` supports `-mtime` which is all we use.
+                  apk add --no-cache openssh-client rsync >/dev/null
                   SRC=/snapshots
                   if [ ! -d "${SRC}" ]; then
                     echo "[hostpath] ${SRC} missing, nothing to do"; exit 0

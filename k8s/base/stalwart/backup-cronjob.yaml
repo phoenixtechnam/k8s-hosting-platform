@@ -53,7 +53,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: backup
-              image: bitnami/kubectl:1.33
+              image: alpine/k8s:1.33.3
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
