@@ -257,6 +257,22 @@ table inet filter {
     udp dport 51820 accept   # WireGuard (NetBird)
     udp dport 29899 accept   # NetBird direct connection
 
+    # Stalwart mail server ports — required for a node carrying the
+    # mail StatefulSet's pod (the staging + production overlays pin
+    # stalwart-mail Service with externalIPs to the node). Closed-by-
+    # default on non-mail clusters has no functional impact since
+    # Stalwart isn't listening; opening them on every k3s node keeps
+    # the cluster "mail-ready" if the StatefulSet reschedules across
+    # nodes (multi-node HA path).
+    tcp dport 25 accept      # SMTP
+    tcp dport 465 accept     # SMTP submissions (implicit TLS)
+    tcp dport 587 accept     # SMTP submission (STARTTLS)
+    tcp dport 143 accept     # IMAP
+    tcp dport 993 accept     # IMAPS
+    tcp dport 110 accept     # POP3
+    tcp dport 995 accept     # POP3S
+    tcp dport 4190 accept    # ManageSieve
+
     counter drop
   }
 

@@ -1,0 +1,47 @@
+# Staging patch: Stalwart Service externalIPs instead of LoadBalancer.
+#
+# Why: staging runs on a single Hetzner Cloud VPS (89.167.3.56) with
+# NO cloud LoadBalancer provider installed — k3s --disable=servicelb
+# plus no MetalLB / kube-vip / hcloud-cloud-controller-manager.
+# A Service of type LoadBalancer stays at EXTERNAL-IP <pending>
+# forever; NodePorts get allocated but mail MTAs won't retry on :31519.
+#
+# externalIPs is the vendor-neutral equivalent of a cloud LB for a
+# single-node cluster — traffic destined to 89.167.3.56:{25,465,587,
+# 143,993,110,995,4190} is forwarded to the stalwart-mail Service, no
+# ARP hijacking required (Hetzner public IPs can't be ARP-hijacked
+# anyway, so MetalLB L2 is off the table).
+#
+# Forward-compatible with multi-node HA: when a second Hetzner VPS
+# joins, extend the list → externalIPs: [89.167.3.56, <node2-ip>].
+# Combined with multi-A DNS records for mail.staging.phoenix-host.net,
+# each node becomes an entry point; SMTP MX preference + short DNS
+# TTLs handle failover without a cluster-level VIP.
+#
+# MULTI-NODE SOURCE-IP CAVEAT (read before extending the list):
+# When traffic arrives on node-B's IP but the Stalwart pod is on
+# node-A, kube-proxy (iptables mode, the k3s default) DNATs the packet
+# across the pod network. Stalwart then sees node-B's internal cluster
+# IP as the source, NOT the original client IP. Consequences:
+#   - SMTP source-IP rate limits become per-node, not per-client.
+#   - Spamhaus / reverse-DNS checks against "who sent this mail"
+#     become unreliable.
+#   - SPF / DKIM still work (they verify headers, not transport IP).
+# If per-client SMTP throttling matters, pin each node to a SINGLE IP
+# and use DNS-RR instead, OR use PROXY protocol via a small HAProxy
+# on each node. Not in scope for staging.
+#
+# Docs: docs/02-operations/STALWART_DEPLOYMENT.md + the DR drill log.
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail
+  namespace: mail
+spec:
+  type: ClusterIP
+  # Reset to Cluster (the default) — base sets Local which is LB/
+  # NodePort-only. k8s allows Cluster on ClusterIP + externalIPs
+  # without warning; Local on ClusterIP fails validation on k3s 1.28+.
+  externalTrafficPolicy: Cluster
+  externalIPs:
+    - 89.167.3.56

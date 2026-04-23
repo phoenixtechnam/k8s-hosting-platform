@@ -1,26 +1,36 @@
 # Stalwart pre-snapshot quiesce CronJob.
 #
 # Strategy: exec into the running stalwart-mail-0 pod and call
-# `stalwart-cli server backup`, which writes a consistent RocksDB
-# snapshot + blob archive to /opt/stalwart/backups/<date>.tar inside
-# the pod's existing PVC — live state is flushed before the archive
-# is written.
+# `stalwart-cli server database-maintenance`, which flushes RocksDB
+# WAL + triggers a compaction pass. Makes the on-disk state at
+# /opt/stalwart/data internally consistent before Longhorn takes its
+# block-level snapshot 15 minutes later.
+#
+# Why database-maintenance (not a `server backup <path>` tar):
+#   - Stalwart v0.15 removed the `server backup <file>` subcommand. The
+#     replacement `database-maintenance` triggers the same internal
+#     quiesce path (MemTable flush → SST compaction) but doesn't write
+#     a tarball — the Longhorn block-level snapshot IS the backup
+#     artefact, not a file inside the PVC.
+#   - Writing a .tar to the PVC we're about to snapshot double-counted
+#     the data inside every Longhorn snapshot. Dropping it is leaner.
+#   - For logical (cross-Stalwart-instance) restore use
+#     `stalwart-cli export account <email>` per-account — separate
+#     flow, not this CronJob.
 #
 # Coupled timing with Longhorn RecurringJobs (k8s/base/longhorn/
 # recurring-jobs.yaml):
-#   stalwart-backup  → 01:45 UTC daily  (this CronJob)
+#   stalwart-backup  → 01:45 UTC daily  (this CronJob flushes RocksDB)
 #   longhorn daily   → 02:00 UTC daily  (recurring-jobs.yaml daily-backup)
 #   longhorn weekly  → 03:00 UTC Sunday (recurring-jobs.yaml weekly-backup)
 #
-# The 15-minute buffer is defensive. When the Longhorn snapshot runs
-# at 02:00, the PVC contains the .tar archive written at ~01:45 plus a
-# freshness-marker file that the restore drill uses to assert the
-# captured snapshot is clean and not a live-DB mid-write.
-#
-# A successful run drops /opt/stalwart/backups/BACKUP_OK_<ts> — the
-# Longhorn snapshot includes that marker. During cold-restore, if the
-# newest marker is older than 26h, treat the snapshot as stale and
-# fall back to a previous backup.
+# The 15-minute buffer is defensive. After this CronJob runs, the PVC
+# on-disk RocksDB is quiesced to a consistent checkpoint and a
+# /opt/stalwart/backups/BACKUP_OK_<ts> freshness marker is written.
+# When Longhorn snapshots at 02:00, both the quiesced RocksDB and the
+# marker are captured. dr-restore.sh uses the marker to detect stale
+# backups (no quiesce ran within last 26h → fall back to earlier
+# snapshot or fail loud).
 #
 # The CronJob's ServiceAccount needs permission to exec into pods
 # in the `mail` namespace — granted by backup-rbac.yaml.
@@ -75,44 +85,67 @@ spec:
                 - |
                   set -eu
                   TS=$(date -u +%Y%m%d-%H%M%S)
-                  echo "[stalwart-backup] starting backup TS=$TS"
+                  echo "[stalwart-backup] starting quiesce TS=$TS"
 
+                  # Trigger a RocksDB WAL flush + SST compaction inside
+                  # the Stalwart pod. This is the v0.15+ replacement
+                  # for the removed `server backup <path>` subcommand;
+                  # it makes the on-disk state at /opt/stalwart/data
+                  # internally consistent at snapshot time (the
+                  # subsequent Longhorn recurring-job at 02:00 UTC is
+                  # the actual backup artefact; this script's job is
+                  # JUST to quiesce, not to produce a tarball).
                   kubectl -n mail exec stalwart-mail-0 -- sh -c '
                     set -eu
                     mkdir -p /opt/stalwart/backups
                     stalwart-cli --url http://127.0.0.1:8080 \
                       --credentials "admin:${ADMIN_SECRET_PLAIN}" \
-                      server backup /opt/stalwart/backups/'"${TS}"'.tar
+                      server database-maintenance
                   ' || {
-                    echo "[stalwart-backup] backup command failed" >&2
+                    echo "[stalwart-backup] database-maintenance failed" >&2
                     exit 1
                   }
-
-                  # Verify the file exists and has non-zero size.
-                  SIZE=$(kubectl -n mail exec stalwart-mail-0 -- stat -c '%s' "/opt/stalwart/backups/${TS}.tar" 2>/dev/null || echo 0)
-                  if [ "$SIZE" -lt 1024 ]; then
-                    echo "[stalwart-backup] backup file too small (${SIZE} bytes), aborting" >&2
-                    exit 1
-                  fi
-                  echo "[stalwart-backup] backup OK: /opt/stalwart/backups/${TS}.tar (${SIZE} bytes)"
+                  echo "[stalwart-backup] quiesce OK"
 
                   # Drop a freshness marker INSIDE the PVC before the
                   # Longhorn snapshot runs at 02:00 UTC. The marker
                   # carries the same $TS so dr-restore.sh can verify
                   # the captured snapshot is a post-quiesce one and
-                  # not a mid-write live state.
+                  # not a mid-write live state. Only one marker kept —
+                  # older ones pruned next. Each kubectl exec is
+                  # wrapped in || exit 1 so a silent failure inside
+                  # the pod (read-only filesystem, out of disk) doesn't
+                  # let the job succeed without a marker — which would
+                  # make dr-restore.sh treat today's Longhorn snapshot
+                  # as stale and fall back to yesterday's.
                   kubectl -n mail exec stalwart-mail-0 -- sh -c \
-                    "echo '${TS} SIZE=${SIZE}' > /opt/stalwart/backups/BACKUP_OK_${TS}"
+                    "echo '${TS} quiesce=database-maintenance' > /opt/stalwart/backups/BACKUP_OK_${TS}" || {
+                    echo "[stalwart-backup] ERROR: freshness marker write failed" >&2
+                    exit 1
+                  }
                   kubectl -n mail exec stalwart-mail-0 -- sh -c \
-                    "ls -1t /opt/stalwart/backups/BACKUP_OK_* 2>/dev/null | tail -n +2 | xargs -r rm -f"
+                    "ls -1t /opt/stalwart/backups/BACKUP_OK_* 2>/dev/null | tail -n +2 | xargs -r rm -f" || {
+                    echo "[stalwart-backup] WARN: marker prune failed (non-fatal)" >&2
+                  }
                   echo "[stalwart-backup] freshness marker BACKUP_OK_${TS} written"
 
-                  # Retention: keep newest 7 archives, delete the rest.
+                  # Clean up any legacy .tar archives from the
+                  # pre-v0.15 `server backup` era — we no longer
+                  # produce them and leaving them wastes PVC space +
+                  # snapshot bandwidth. `cd` guarded with `|| exit 0`
+                  # so a pristine PVC (no backups/ dir yet) is a
+                  # successful no-op, not a failure.
                   kubectl -n mail exec stalwart-mail-0 -- sh -c '
-                    cd /opt/stalwart/backups
-                    ls -1t *.tar 2>/dev/null | tail -n +8 | xargs -r rm -f
-                  '
-                  echo "[stalwart-backup] retention prune complete"
+                    set -eu
+                    cd /opt/stalwart/backups 2>/dev/null || exit 0
+                    # Preserve any .tar younger than 30 days (for
+                    # operators who triggered a manual legacy backup
+                    # we don''"'"'t know about). Evict anything older.
+                    find . -maxdepth 1 -type f -name "*.tar" -mtime +30 -delete 2>/dev/null || true
+                  ' || {
+                    echo "[stalwart-backup] WARN: legacy-tar cleanup failed (non-fatal)" >&2
+                  }
+                  echo "[stalwart-backup] done"
               # No env: ADMIN_SECRET is referenced from inside the
               # stalwart-mail-0 pod's own environment (single-quoted
               # shell expansion above), so the backup pod itself

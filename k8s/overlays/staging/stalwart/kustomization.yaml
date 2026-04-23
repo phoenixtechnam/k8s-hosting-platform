@@ -53,3 +53,13 @@ resources:
   # host.net. Labelled admin-ui=true so the main staging overlay's
   # admin-auth-gate-cookie component patches in the auth-url annotation.
   - webadmin-ingress.yaml
+
+patches:
+  # Convert the public-facing Stalwart Service from type=LoadBalancer
+  # (no provider on staging single-node) to type=ClusterIP with
+  # externalIPs binding directly to the node's public IP. See
+  # service-patch.yaml for the full rationale.
+  - path: service-patch.yaml
+    target:
+      kind: Service
+      name: stalwart-mail
