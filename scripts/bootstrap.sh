@@ -564,8 +564,16 @@ install_k3s_server() {
     tls_sans="${tls_sans} --tls-san=${ip}"
   done
 
-  # --cluster-init switches k3s from the default embedded sqlite datastore
-  # to embedded etcd. This:
+  # M8: joining vs bootstrapping the cluster.
+  #   - If --server + --token were passed, this node joins an
+  #     existing etcd cluster (uses `server --server <url>` instead
+  #     of `--cluster-init`). Use this to grow 1 → 3 → 5 servers.
+  #   - Otherwise the first server bootstraps the cluster with
+  #     `--cluster-init` (embedded etcd). Same config applies in
+  #     both cases; cluster-init just differs by wiring.
+  #
+  # --cluster-init switches k3s from sqlite datastore to embedded
+  # etcd. That:
   #   (1) enables `k3s etcd-snapshot` + populates /var/lib/rancher/k3s/
   #       server/db/snapshots/, which the platform-etcd-snapshot-upload
   #       CronJob hostPath-mounts for DR backups.
@@ -576,12 +584,21 @@ install_k3s_server() {
   #
   # One-way: removing --cluster-init on a re-run requires a full cluster
   # rebuild. Existing pre-etcd clusters must rebootstrap to migrate.
+  local init_or_join
+  if [[ -n "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
+    log "  joining existing cluster at ${K3S_SERVER_IP}..."
+    init_or_join="--server=https://${K3S_SERVER_IP}:6443 --token=${K3S_TOKEN}"
+  else
+    log "  bootstrapping new cluster (--cluster-init)..."
+    init_or_join="--cluster-init"
+  fi
+
   # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="server" \
     sh -s - \
-      --cluster-init \
+      ${init_or_join} \
       --flannel-backend=none \
       --disable-network-policy \
       --disable=traefik \
