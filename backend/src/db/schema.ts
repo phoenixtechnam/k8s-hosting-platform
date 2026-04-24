@@ -30,6 +30,7 @@ export const planStatusEnum = pgEnum('plan_status', ['active', 'deprecated']);
 //                restore (new PVC from snapshot).
 //   cancelled  — hard terminated, snapshot also released. Not reversible.
 export const clientStatusEnum = pgEnum('client_status', ['active', 'suspended', 'archived', 'pending']);
+export const clientStorageTierEnum = pgEnum('client_storage_tier', ['local', 'ha']);
 // Active storage-lifecycle operation (null when idle). Separate from
 // client.status so the UI can show both "active & resizing" without
 // losing the underlying state. Mirrors storage_operations.state for the
@@ -217,6 +218,10 @@ export const clients = pgTable('clients', {
   // workerNodeName parameter (M3), producing a
   // kubernetes.io/hostname nodeSelector.
   workerNodeName: varchar('worker_node_name', { length: 253 }),
+  // M7: tenant storage tier. 'local' = longhorn-tenant-local (1 replica);
+  // 'ha' = longhorn-tenant-ha (2 replicas). Default 'local' matches
+  // migration 0048 and preserves pre-M7 scheduling.
+  storageTier: clientStorageTierEnum('storage_tier').notNull().default('local'),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
   // Active storage-lifecycle op (null when the client isn't being
   // resized/suspended/archived/restored). The storage_operations row

@@ -44,6 +44,11 @@ export async function createClient(db: Database, input: CreateClientInput, creat
     // M5: optional worker pin. When unset, the scheduler picks at
     // first-deploy time; admins can still re-assign later via PATCH.
     workerNodeName: input.worker_node_name ?? null,
+    // M7: default storage tier is 'local' (cheap, 1 replica). Admin
+    // can flip to 'ha' at create or later; flipping after provisioning
+    // only changes the intent — the PVC keeps its original SC until
+    // a storage-migration flow moves the data (future work).
+    storageTier: input.storage_tier ?? 'local',
     subscriptionExpiresAt: input.subscription_expires_at ? new Date(input.subscription_expires_at) : null,
   });
 
@@ -219,6 +224,9 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   // current node until a migration (M6) or scheduler-triggered
   // eviction moves them.
   if (input.worker_node_name !== undefined) updateValues.workerNodeName = input.worker_node_name;
+  // M7: storage-tier flip. Field only — PVC migration is a separate
+  // orchestrated flow (to be added alongside M6 migration work).
+  if (input.storage_tier !== undefined) updateValues.storageTier = input.storage_tier;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));

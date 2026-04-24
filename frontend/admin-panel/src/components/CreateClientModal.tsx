@@ -26,6 +26,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const [planId, setPlanId] = useState('');
   const [regionId, setRegionId] = useState('');
   const [workerNodeName, setWorkerNodeName] = useState('');
+  const [storageTier, setStorageTier] = useState<'local' | 'ha'>('local');
 
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
@@ -49,6 +50,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
     setPlanId('');
     setRegionId('');
     setWorkerNodeName('');
+    setStorageTier('local');
     setCreatedClient(null);
     setView('form');
     setCopied(false);
@@ -70,6 +72,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
         plan_id: planId,
         region_id: regionId,
         worker_node_name: workerNodeName || undefined,
+        storage_tier: storageTier,
       });
       const data = (result as { data: Record<string, unknown> & { id?: string; clientUser?: { email: string; generatedPassword: string } } }).data;
       const id = typeof data?.id === 'string' ? data.id : '';
@@ -324,6 +327,25 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 Pin this client's pods to a specific node. Leave as default unless you need worker placement control.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="storage-tier" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Storage tier
+              </label>
+              <select
+                id="storage-tier"
+                value={storageTier}
+                onChange={(e) => setStorageTier(e.target.value as 'local' | 'ha')}
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                data-testid="storage-tier-select"
+              >
+                <option value="local">Local (1 replica — default)</option>
+                <option value="ha">HA (2 replicas — longhorn-tenant-ha)</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                HA costs 2× storage and requires ≥2 worker nodes to stay fully replicated.
               </p>
             </div>
           </div>

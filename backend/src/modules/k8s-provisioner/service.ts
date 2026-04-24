@@ -330,7 +330,17 @@ export async function runProvisionNamespace(
   const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(plan.cpuLimit));
   const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(plan.memoryLimit));
   const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(plan.storageLimit));
-  const storageClass = await getDefaultStorageClass(db);
+  // M7: pick SC by storage tier. `local` → longhorn-tenant-local (1
+  // replica, M2 default), `ha` → longhorn-tenant-ha (2 replicas). Fall
+  // back to the operator-configured default for clients that haven't
+  // been assigned a tier yet or for clusters that haven't applied the
+  // M2 StorageClass manifests. The platform-managed SC names come
+  // from k8s/base/longhorn/storageclasses.yaml.
+  const storageClass = client.storageTier === 'ha'
+    ? 'longhorn-tenant-ha'
+    : client.storageTier === 'local'
+      ? 'longhorn-tenant-local'
+      : await getDefaultStorageClass(db);
 
   let stepsLog = buildStepsLog(PROVISION_STEPS);
   let completedSteps = 0;

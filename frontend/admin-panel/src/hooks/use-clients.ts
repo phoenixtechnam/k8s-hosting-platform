@@ -44,6 +44,7 @@ interface CreateClientInput {
   readonly region_id: string;
   // M5: optional worker pin at provisioning time.
   readonly worker_node_name?: string;
+  readonly storage_tier?: 'local' | 'ha';
 }
 
 export function useCreateClient() {

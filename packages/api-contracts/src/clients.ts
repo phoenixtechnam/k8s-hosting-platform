@@ -18,6 +18,11 @@ export const createClientSchema = z.object({
   // M5: optional worker pin at provisioning time. The admin UI
   // presents free-resource-ranked options; unset = default scheduler.
   worker_node_name: z.string().min(1).max(253).optional(),
+  // M7: tenant storage tier. 'local' (1 replica, cheap) is the default;
+  // 'ha' requests 2 replicas via longhorn-tenant-ha. Enabling HA on an
+  // existing client doesn't migrate the PVC — operator must run the
+  // storage-migration flow (future).
+  storage_tier: z.enum(['local', 'ha']).optional(),
 });
 
 export const updateClientSchema = z.object({
@@ -43,6 +48,9 @@ export const updateClientSchema = z.object({
   // M5: re-assign the client to a different worker. A subsequent
   // deployment revision (M6 migration flow) actually moves the pods.
   worker_node_name: z.string().min(1).max(253).nullable().optional(),
+  // M7: toggle tenant HA. Flipping 'local' → 'ha' on a provisioned
+  // client marks the intent but doesn't move existing data.
+  storage_tier: z.enum(['local', 'ha']).optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -69,6 +77,8 @@ export const clientResponseSchema = z.object({
   emailSendRateLimit: z.number().nullable().optional(),
   // M5: current worker pin (k8s node name) or null for default scheduler.
   workerNodeName: z.string().nullable().optional(),
+  // M7: current tenant storage tier.
+  storageTier: z.enum(['local', 'ha']).optional(),
   createdBy: z.string().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),
