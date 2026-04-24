@@ -5,9 +5,11 @@ import {
   text,
   integer,
   numeric,
+  bigint,
   boolean,
   timestamp,
   jsonb,
+  inet,
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
@@ -1366,3 +1368,48 @@ export const storageOperations = pgTable('storage_operations', {
   index('storage_operations_state_idx').on(table.state),
   index('storage_operations_created_idx').on(table.createdAt),
 ]);
+
+// ─── M1 Node-role Taxonomy (migration 0046) ───
+//
+// Backend mirror of k8s node inventory with platform-specific role +
+// config annotations. Source of truth for platform-managed fields (role,
+// canHostClientWorkloads); k8s labels are the source of truth for
+// operator-managed ad-hoc state and are captured in `labels`. The
+// node-sync reconciler upserts from `kubectl get nodes` every 60s.
+//
+// See migration 0046_cluster_nodes.sql for column semantics.
+
+export const nodeRoleEnum = pgEnum('node_role', ['server', 'worker']);
+
+interface NodeCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+}
+
+export const clusterNodes = pgTable('cluster_nodes', {
+  name: varchar('name', { length: 253 }).primaryKey(),
+  role: nodeRoleEnum('role').notNull().default('worker'),
+  canHostClientWorkloads: boolean('can_host_client_workloads').notNull().default(true),
+  publicIp: inet('public_ip'),
+  kubeletVersion: varchar('kubelet_version', { length: 32 }),
+  k3sVersion: varchar('k3s_version', { length: 32 }),
+  cpuMillicores: integer('cpu_millicores'),
+  memoryBytes: bigint('memory_bytes', { mode: 'number' }),
+  storageBytes: bigint('storage_bytes', { mode: 'number' }),
+  statusConditions: jsonb('status_conditions').$type<NodeCondition[] | null>(),
+  joinedAt: timestamp('joined_at').notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),
+  notes: text('notes'),
+  labels: jsonb('labels').$type<Record<string, string> | null>(),
+  taints: jsonb('taints').$type<Array<{ key: string; value?: string; effect: string }> | null>(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('cluster_nodes_role_idx').on(table.role),
+  index('cluster_nodes_last_seen_idx').on(table.lastSeenAt),
+]);
+
+export type ClusterNode = typeof clusterNodes.$inferSelect;
+export type NewClusterNode = typeof clusterNodes.$inferInsert;

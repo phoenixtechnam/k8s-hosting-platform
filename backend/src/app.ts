@@ -56,6 +56,7 @@ import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
+import { nodeRoutes } from './modules/nodes/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -88,6 +89,7 @@ import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
+import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
@@ -268,6 +270,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
+  await app.register(nodeRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
@@ -412,6 +415,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
         const webmailReconTimer = startWebmailReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => stopWebmailReconciler(webmailReconTimer));
+
+        // M1: node-role taxonomy. Upserts cluster_nodes from k8s every
+        // 60s. Shares the same k8s client instance as mail reconcilers
+        // to avoid re-reading the kubeconfig. Stops cleanly on app
+        // close.
+        const nodeSyncHandle = startNodeSyncReconciler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => nodeSyncHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }
