@@ -87,10 +87,12 @@ rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
-  # Node awareness: get/list for health checks and Phase 1 node pinning
+  # Node awareness: list/get for health checks and M1 node pinning,
+  # plus patch so the admin API can update platform-managed labels
+  # (node-role, host-client-workloads) + taints (server-only).
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
