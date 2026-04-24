@@ -1,0 +1,135 @@
+# M2: Longhorn StorageClass tiers.
+#
+# Five platform-managed classes that map the role+tier taxonomy from
+# ADR-031 onto Longhorn provisioning. The default `longhorn` class
+# installed by the Longhorn chart is left untouched for backwards
+# compatibility; these classes are additive.
+#
+# Tier matrix:
+#   Namespace │ Default        │ HA variant
+#   ──────────┼────────────────┼────────────────────
+#   system    │ system-ha (3×) │ (always HA)
+#   tenant    │ tenant-local   │ tenant-ha (2×)
+#   mail      │ mail-local     │ mail-ha (2×)
+#
+# numberOfReplicas = desired Longhorn replica count per volume.
+# On a single-node cluster Longhorn schedules min(replicas, nodes)
+# and keeps the remainder pending — volumes stay functional, just
+# degraded until more nodes join. At 3-server HA (M8) replica count
+# is fulfilled automatically for system-ha; tenant-ha needs 2+ nodes.
+#
+# dataLocality strategies:
+#   - `disabled`     → replicas spread freely (HA classes, system-ha)
+#   - `best-effort`  → prefer the node hosting the pod (tenant-local,
+#                      mail-local) so reads stay node-local
+#   - `strict-local` → REQUIRE a local replica; pod can't schedule
+#                      if the node has no replica. Too strict for
+#                      tenant workloads (blocks rescheduling) — not
+#                      used.
+#
+# recurringJobSelector references the `default` job group defined in
+# recurring-jobs.yaml. Marking each SC here means fresh PVCs
+# auto-enroll without the per-PVC label dance described in the
+# recurring-jobs.yaml comment. The default Longhorn SC (installed
+# by the chart) did not set this, so legacy PVCs still rely on (a)
+# the direct label.
+#
+# reclaimPolicy=Retain protects against accidental PVC deletion
+# cascading to data loss — operators restore via the normal PVC
+# restore path (storage-lifecycle module) rather than relying on the
+# PVC lifecycle.
+#
+# Changing the storageClassName on an existing StatefulSet is BLOCKED
+# by k8s (volumeClaimTemplates is immutable). Migration to a new tier
+# requires delete-recreate + restore-from-backup. Planned as part of
+# M8 for system workloads; M7 for tenant HA opt-in.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-system-ha
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: system-ha
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "3"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+  dataLocality: "disabled"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-tenant-local
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: tenant-local
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+  dataLocality: "best-effort"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-tenant-ha
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: tenant-ha
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+  dataLocality: "disabled"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-mail-local
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: mail-local
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+  dataLocality: "best-effort"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-mail-ha
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    platform.phoenix-host.net/tier: mail-ha
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+  dataLocality: "disabled"
+  recurringJobSelector: '[{"name":"default","isGroup":true}]'

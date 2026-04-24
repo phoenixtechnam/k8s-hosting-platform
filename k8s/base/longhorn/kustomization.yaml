@@ -9,3 +9,8 @@ kind: Kustomization
 resources:
   - ui-ingress.yaml
   - recurring-jobs.yaml
+  # M2: platform-managed StorageClass tiers (system-ha / tenant-local
+  # / tenant-ha / mail-local / mail-ha). Additive to the default
+  # `longhorn` class installed by the Helm chart — existing PVCs
+  # continue to work.
+  - storageclasses.yaml
