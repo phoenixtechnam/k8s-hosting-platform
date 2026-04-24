@@ -3,6 +3,12 @@ import type { Database } from '../../db/index.js';
 import { upsertNodeFromK8s, NODE_ROLE_LABEL, HOST_CLIENT_WORKLOADS_LABEL, type ObservedNode } from './service.js';
 import type { NodeRole } from '@k8s-hosting/api-contracts';
 
+interface NodeUsageAggregate {
+  pods: number;
+  cpuMillis: number;
+  memoryBytes: number;
+}
+
 /**
  * Pull every Node from the API server, project it into the ObservedNode
  * shape expected by the service, and upsert into cluster_nodes.
@@ -13,13 +19,53 @@ import type { NodeRole } from '@k8s-hosting/api-contracts';
  * pre-M1 behavior (every node hosted everything).
  */
 export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<number> {
-  const res = await k8s.core.listNode();
-  const items = res.items ?? [];
+  const [nodesRes, usage] = await Promise.all([
+    k8s.core.listNode(),
+    collectNodeUsage(k8s),
+  ]);
+  const items = nodesRes.items ?? [];
   for (const node of items) {
     const observed = projectNode(node);
+    const u = usage.get(observed.name);
+    observed.scheduledPods = u?.pods ?? 0;
+    observed.cpuRequestsMillicores = u?.cpuMillis ?? 0;
+    observed.memoryRequestsBytes = u?.memoryBytes ?? 0;
     await upsertNodeFromK8s(db, observed);
   }
   return items.length;
+}
+
+/**
+ * One cluster-wide pod listing, aggregated by node name. Cheaper than
+ * one listNamespacedPod per node when tenant namespaces are numerous.
+ * Excludes pods in a terminal phase — only running / pending workload
+ * counts toward the "this node is busy" signal.
+ */
+async function collectNodeUsage(k8s: K8sClients): Promise<Map<string, NodeUsageAggregate>> {
+  const res = await k8s.core.listPodForAllNamespaces();
+  const byNode = new Map<string, NodeUsageAggregate>();
+
+  for (const pod of res.items ?? []) {
+    const nodeName = pod.spec?.nodeName;
+    if (!nodeName) continue;
+    const phase = pod.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+
+    let agg = byNode.get(nodeName);
+    if (!agg) {
+      agg = { pods: 0, cpuMillis: 0, memoryBytes: 0 };
+      byNode.set(nodeName, agg);
+    }
+    agg.pods += 1;
+
+    for (const container of pod.spec?.containers ?? []) {
+      const req = container.resources?.requests ?? {};
+      agg.cpuMillis += parseCpuMillicores(req.cpu) ?? 0;
+      agg.memoryBytes += parseMemoryBytes(req.memory) ?? 0;
+    }
+  }
+
+  return byNode;
 }
 
 interface K8sNode {
@@ -98,6 +144,12 @@ export function projectNode(node: K8sNode): ObservedNode {
     statusConditions: conditions,
     labels,
     taints,
+    // Usage values land via `collectNodeUsage` in syncNodesOnce; the
+    // default zeros are fine for the unit tests that exercise
+    // projection-only paths.
+    scheduledPods: null,
+    cpuRequestsMillicores: null,
+    memoryRequestsBytes: null,
   };
 }
 

@@ -1410,6 +1410,12 @@ export const clusterNodes = pgTable('cluster_nodes', {
   cpuMillicores: integer('cpu_millicores'),
   memoryBytes: bigint('memory_bytes', { mode: 'number' }),
   storageBytes: bigint('storage_bytes', { mode: 'number' }),
+  // Live-usage snapshot from the node-sync reconciler. Aggregates
+  // pods.spec.containers[*].resources.requests per node. Null until
+  // the reconciler has observed this node at least once.
+  scheduledPods: integer('scheduled_pods'),
+  cpuRequestsMillicores: integer('cpu_requests_millicores'),
+  memoryRequestsBytes: bigint('memory_requests_bytes', { mode: 'number' }),
   statusConditions: jsonb('status_conditions').$type<NodeCondition[] | null>(),
   joinedAt: timestamp('joined_at').notNull().defaultNow(),
   lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),

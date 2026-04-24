@@ -19,6 +19,12 @@ export const clusterNodeSchema = z.object({
   cpuMillicores: z.number().nullable(),
   memoryBytes: z.number().nullable(),
   storageBytes: z.number().nullable(),
+  // Live usage from the last reconciler tick. null = reconciler hasn't
+  // observed this node yet (e.g. between bootstrap seed and first
+  // 60s tick).
+  scheduledPods: z.number().nullable().optional(),
+  cpuRequestsMillicores: z.number().nullable().optional(),
+  memoryRequestsBytes: z.number().nullable().optional(),
   statusConditions: z.array(z.object({
     type: z.string(),
     status: z.string(),

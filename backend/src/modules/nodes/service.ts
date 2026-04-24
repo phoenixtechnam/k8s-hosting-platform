@@ -48,6 +48,10 @@ export interface ObservedNode {
   statusConditions: Array<{ type: string; status: string; reason?: string; message?: string }>;
   labels: Record<string, string>;
   taints: Array<{ key: string; value?: string; effect: string }>;
+  // Live usage — filled by the reconciler after projection.
+  scheduledPods: number | null;
+  cpuRequestsMillicores: number | null;
+  memoryRequestsBytes: number | null;
 }
 
 /**
@@ -71,6 +75,9 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     statusConditions: observed.statusConditions,
     labels: observed.labels,
     taints: observed.taints,
+    scheduledPods: observed.scheduledPods,
+    cpuRequestsMillicores: observed.cpuRequestsMillicores,
+    memoryRequestsBytes: observed.memoryRequestsBytes,
     lastSeenAt: new Date(),
     updatedAt: new Date(),
   }).onConflictDoUpdate({
@@ -87,6 +94,9 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
       statusConditions: observed.statusConditions,
       labels: observed.labels,
       taints: observed.taints,
+      scheduledPods: observed.scheduledPods,
+      cpuRequestsMillicores: observed.cpuRequestsMillicores,
+      memoryRequestsBytes: observed.memoryRequestsBytes,
       lastSeenAt: sql`NOW()`,
       updatedAt: sql`NOW()`,
     },

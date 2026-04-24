@@ -168,38 +168,86 @@ function ReadyPill({ ready }: { readonly ready: 'Ready' | 'NotReady' | 'Unknown'
   return <span className={clsx('rounded-full px-2 py-0.5 text-xs font-medium', styles[ready])}>{ready}</span>;
 }
 
+function UsageBar({ used, capacity, label, formatValue }: {
+  readonly used: number | null | undefined;
+  readonly capacity: number | null | undefined;
+  readonly label: string;
+  readonly formatValue: (n: number | null) => string;
+}) {
+  const hasData = used != null && capacity != null && capacity > 0;
+  const pct = hasData ? Math.min(100, Math.round((used / capacity) * 100)) : 0;
+  const tone =
+    pct >= 90 ? 'bg-red-500' :
+      pct >= 75 ? 'bg-amber-500' :
+        'bg-green-500';
+  return (
+    <div>
+      <div className="flex items-baseline justify-between text-xs text-gray-500 dark:text-gray-400">
+        <span>{label}</span>
+        <span className="tabular-nums">
+          {hasData
+            ? `${formatValue(used)} / ${formatValue(capacity)} (${pct}%)`
+            : `— / ${formatValue(capacity ?? null)}`}
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        <div className={clsx('h-full transition-all', tone)} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function NodeDetails({ node }: { readonly node: ClusterNodeResponse }) {
   return (
-    <div className="grid grid-cols-1 gap-4 px-5 py-4 text-sm sm:grid-cols-3">
-      <div className="flex items-center gap-2">
-        <Cpu size={16} className="text-gray-400" />
-        <div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">CPU allocatable</div>
-          <div className="font-medium text-gray-900 dark:text-gray-100">{formatMillicores(node.cpuMillicores)}</div>
+    <div className="space-y-4 px-5 py-4 text-sm">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="flex items-center gap-2">
+          <Cpu size={16} className="text-gray-400" />
+          <div className="flex-1">
+            <UsageBar
+              label="CPU (requests / allocatable)"
+              used={node.cpuRequestsMillicores ?? null}
+              capacity={node.cpuMillicores}
+              formatValue={formatMillicores}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <HardDrive size={16} className="text-gray-400" />
+          <div className="flex-1">
+            <UsageBar
+              label="Memory (requests / allocatable)"
+              used={node.memoryRequestsBytes ?? null}
+              capacity={node.memoryBytes}
+              formatValue={formatBytes}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <HardDrive size={16} className="text-gray-400" />
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400">Scheduled pods</div>
+            <div className="font-medium text-gray-900 dark:text-gray-100">
+              {node.scheduledPods ?? '—'}
+            </div>
+          </div>
         </div>
       </div>
       <div className="flex items-center gap-2">
         <HardDrive size={16} className="text-gray-400" />
         <div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">Memory allocatable</div>
-          <div className="font-medium text-gray-900 dark:text-gray-100">{formatBytes(node.memoryBytes)}</div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <HardDrive size={16} className="text-gray-400" />
-        <div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">Ephemeral storage</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">Ephemeral storage allocatable</div>
           <div className="font-medium text-gray-900 dark:text-gray-100">{formatBytes(node.storageBytes)}</div>
         </div>
       </div>
       {node.notes && (
-        <div className="sm:col-span-3">
+        <div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Operator notes</div>
           <p className="whitespace-pre-wrap text-gray-700 dark:text-gray-200">{node.notes}</p>
         </div>
       )}
       {node.taints && node.taints.length > 0 && (
-        <div className="sm:col-span-3">
+        <div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Taints</div>
           <ul className="mt-1 space-y-0.5 text-xs">
             {node.taints.map((t, i) => (
