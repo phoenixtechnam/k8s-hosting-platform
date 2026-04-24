@@ -40,6 +40,11 @@ fi
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 NODE_ROLE="server"
+# M1: host-client-workloads. Controls whether this node accepts tenant
+# pods in addition to system ones. "" means "derive from role"
+# (server→false, worker→true) so existing single-node installs keep
+# working unchanged. Set explicitly via --host-client-workloads.
+HOST_CLIENT_WORKLOADS=""
 PLATFORM_ENV="production"
 PLATFORM_DOMAIN=""
 K3S_SERVER_IP=""
@@ -80,6 +85,13 @@ Server provisioning and platform installation for k8s-hosting-platform.
 OPTIONS:
   --domain <FQDN>       Base domain (required for server role)
   --role <server|worker> Node role (default: server)
+  --host-client-workloads <true|false>
+                         Whether this node accepts tenant pods. Default:
+                         false for servers, true for workers. When false
+                         on a server, applies the
+                         platform.phoenix-host.net/server-only:NoSchedule
+                         taint so only system pods (Flux, platform-api,
+                         etc.) land here. Not applicable to workers.
   --env <dev|staging|production> Environment (default: production)
   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
   --with-monitoring      Install Prometheus + Loki
@@ -132,6 +144,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --role)            NODE_ROLE="$2"; shift 2 ;;
+      --host-client-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
       --env)             PLATFORM_ENV="$2"; shift 2 ;;
       --domain)          PLATFORM_DOMAIN="$2"; shift 2 ;;
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
@@ -153,6 +166,20 @@ parse_args() {
 
   if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
     error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
+  fi
+
+  # Resolve HOST_CLIENT_WORKLOADS default: servers default to refusing
+  # client pods (NoSchedule taint); workers accept them. Keep in sync
+  # with the cluster_nodes column default (migration 0046).
+  if [[ -z "$HOST_CLIENT_WORKLOADS" ]]; then
+    if [[ "$NODE_ROLE" == "server" ]]; then
+      HOST_CLIENT_WORKLOADS="false"
+    else
+      HOST_CLIENT_WORKLOADS="true"
+    fi
+  fi
+  if [[ "$HOST_CLIENT_WORKLOADS" != "true" && "$HOST_CLIENT_WORKLOADS" != "false" ]]; then
+    error "Invalid --host-client-workloads: ${HOST_CLIENT_WORKLOADS}. Must be 'true' or 'false'."
   fi
 
   if [[ "$PLATFORM_ENV" != "dev" && "$PLATFORM_ENV" != "staging" && "$PLATFORM_ENV" != "production" ]]; then
@@ -350,6 +377,61 @@ install_vpn_tools() {
 }
 
 # ─── Phase 2: k3s + Calico ───────────────────────────────────────────────────
+
+# M1: apply the platform-managed role + host-client-workloads labels
+# (and the server-only taint when applicable) to this node. The backend
+# node-sync reconciler treats these labels as authoritative — changing
+# them via `kubectl label --overwrite` is the operator-supported path
+# to re-role a node after initial provisioning.
+#
+# Worker caveat: this runs locally with `kubectl` against
+# /etc/rancher/k3s/k3s.yaml, which only exists on server nodes. On
+# worker nodes we log an instruction for the operator to re-run from
+# the control plane; the default unlabeled convention (worker role,
+# canHostClientWorkloads=true) matches the migration defaults, so
+# most workers don't need this step.
+apply_node_labels_and_taints() {
+  local node_name
+  node_name="$(hostname)"
+
+  if [[ "$NODE_ROLE" == "worker" ]]; then
+    log "Worker node labelling must be applied from the control plane."
+    log "  After this script completes, run on the server:"
+    log "    kubectl label node ${node_name} platform.phoenix-host.net/node-role=worker --overwrite"
+    log "    kubectl label node ${node_name} platform.phoenix-host.net/host-client-workloads=${HOST_CLIENT_WORKLOADS} --overwrite"
+    log "  (Unlabeled nodes default to worker/true — skipping the above is fine for vanilla workers.)"
+    return 0
+  fi
+
+  # Server path: kubeconfig is local, kubectl works.
+  export KUBECONFIG
+  log "Labelling ${node_name}: role=${NODE_ROLE}, host-client-workloads=${HOST_CLIENT_WORKLOADS}"
+
+  # --overwrite makes this idempotent so re-bootstrap / upgrade runs
+  # silently no-op if the labels already match.
+  kubectl label node "${node_name}" \
+    "platform.phoenix-host.net/node-role=${NODE_ROLE}" \
+    --overwrite
+  kubectl label node "${node_name}" \
+    "platform.phoenix-host.net/host-client-workloads=${HOST_CLIENT_WORKLOADS}" \
+    --overwrite
+
+  # server + host-client-workloads=false → keep the NoSchedule taint so
+  # the scheduler refuses tenant pods. Any other combo → remove it
+  # (kubectl taint with a trailing - is the documented delete syntax,
+  # 0 status on deletion OR when the taint wasn't present).
+  if [[ "$HOST_CLIENT_WORKLOADS" == "false" ]]; then
+    log "Applying server-only taint (NoSchedule) — tenant pods will not schedule here."
+    kubectl taint node "${node_name}" \
+      "platform.phoenix-host.net/server-only=true:NoSchedule" \
+      --overwrite
+  else
+    log "Removing any server-only taint — this server will accept tenant pods."
+    kubectl taint node "${node_name}" \
+      "platform.phoenix-host.net/server-only:NoSchedule-" \
+      2>/dev/null || true
+  fi
+}
 
 install_k3s() {
   if command -v k3s &>/dev/null; then
@@ -1337,6 +1419,13 @@ main() {
   log ""
   log "── Phase 2: Kubernetes (k3s) ──"
   install_k3s
+
+  # M1: label + taint the node with platform-managed role state. Must
+  # run BEFORE apply_platform_manifests so that system-node-affinity
+  # Kustomize patches (landing in M1 C5) don't deadlock the scheduler
+  # on first apply. For workers this is a log-only step — the label
+  # has to be applied from the control plane.
+  apply_node_labels_and_taints
 
   if [[ "$NODE_ROLE" == "server" ]]; then
     # Calico + platform components only on the control plane
