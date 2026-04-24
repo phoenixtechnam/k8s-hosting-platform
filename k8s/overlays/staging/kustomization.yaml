@@ -31,6 +31,13 @@ resources:
 # UI picks up the oauth2 gate automatically.
 components:
   - ../../components/admin-auth-gate-cookie
+  # M1: pin all system workloads (admin-panel, platform-api, postgres,
+  # redis, oauth2-proxy, sftp-gateway, stalwart-mail, roundcube, …) to
+  # nodes labelled platform.phoenix-host.net/node-role=server. The
+  # component excludes dex because dex is overlay-only (not in base /
+  # not in production); its matching patch is wired inline below.
+  # See docs/07-reference/NODE_ROLE_TAXONOMY.md for apply-order notes.
+  - ../../components/system-node-affinity
 
 patches:
   - path: platform-version-patch.yaml
@@ -39,6 +46,35 @@ patches:
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml
   - path: longhorn-ui-patch.yaml
+  # M1: same affinity-patch as the system-node-affinity component,
+  # applied to dex which is overlay-only (so it can't live inside the
+  # shared component without breaking the production overlay, which
+  # doesn't include dex). Patch inlined rather than `path: ../../…`
+  # because Kustomize refuses to load patch files outside the overlay
+  # root (security constraint).
+  - target: { kind: Deployment, name: dex, namespace: platform }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dex
+        namespace: platform
+      spec:
+        template:
+          spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: platform.phoenix-host.net/node-role
+                          operator: In
+                          values: [server]
+            tolerations:
+              - key: platform.phoenix-host.net/server-only
+                operator: Equal
+                value: "true"
+                effect: NoSchedule
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

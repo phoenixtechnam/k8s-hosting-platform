@@ -15,6 +15,14 @@ resources:
   # backups-against-local-path would be noise.
   - ../../base/backup
 
+# M1: pin all system workloads to nodes labelled
+# platform.phoenix-host.net/node-role=server. Operators MUST have
+# relabeled every control-plane node before this overlay reconciles
+# or the scheduler evicts every platform pod. See
+# docs/07-reference/NODE_ROLE_TAXONOMY.md.
+components:
+  - ../../components/system-node-affinity
+
 patches:
   - path: platform-config-patch.yaml
   - path: ingress-patch.yaml

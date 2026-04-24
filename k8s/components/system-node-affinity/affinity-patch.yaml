@@ -1,0 +1,25 @@
+# Shared strategic-merge patch for every system workload. Adds the
+# role=server nodeAffinity and the server-only taint toleration.
+# Kind is intentionally omitted so the same patch applies to both
+# Deployments and StatefulSets (Kustomize targets them individually
+# via the kustomization.yaml `patches:` list).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: _ignored  # targeted by kustomization.yaml
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: platform.phoenix-host.net/node-role
+                    operator: In
+                    values: [server]
+      tolerations:
+        - key: platform.phoenix-host.net/server-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule

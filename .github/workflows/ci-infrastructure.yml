@@ -66,6 +66,22 @@ jobs:
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
 
+  system-affinity-check:
+    name: System node-affinity guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yq
+        run: |
+          # Same binary as admin-auth-gate-check — kept as a separate step
+          # so this job can fail independently when yq drifts.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      - name: Verify system workloads carry role=server nodeAffinity
+        run: ./scripts/ci-system-affinity-check.sh
+
   docker-build:
     name: Docker Build (no push)
     runs-on: ubuntu-latest

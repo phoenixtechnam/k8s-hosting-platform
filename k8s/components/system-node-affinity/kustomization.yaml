@@ -1,0 +1,61 @@
+# system-node-affinity — Kustomize Component
+#
+# Pins every platform-managed system workload (Deployment / StatefulSet
+# in the `platform`, `platform-system`, and `mail` namespaces) to nodes
+# labelled `platform.phoenix-host.net/node-role=server`, and adds a
+# toleration for the `platform.phoenix-host.net/server-only:NoSchedule`
+# taint so those pods still schedule on servers that refuse tenant
+# workloads (`--host-client-workloads=false`).
+#
+# Apply order (CRITICAL — see docs/07-reference/NODE_ROLE_TAXONOMY.md):
+# the staging / production node MUST already carry
+# `platform.phoenix-host.net/node-role=server` before this component is
+# included in the overlay's kustomization. Otherwise the scheduler
+# re-evaluates the affinity, finds no matching node, evicts every
+# platform pod, and the API becomes unreachable — including the admin
+# UI you'd use to fix it.
+#
+# Helm-installed components (flux, cert-manager, ingress-nginx,
+# longhorn) can't be patched through this Kustomize Component because
+# their Deployments are created directly by bootstrap.sh via `helm
+# install`. bootstrap.sh passes the matching nodeSelector +
+# toleration through `--set` on the server path.
+#
+# dev overlay intentionally excludes this component: the DinD/k3s
+# single-node dev stack has one unlabeled node, and applying affinity
+# would prevent anything from scheduling. dex in the dev + staging
+# overlays is patched alongside via the same strategy.
+#
+# CI guard: scripts/ci-system-affinity-check.sh enforces that every
+# entry on the system-workload allowlist carries the expected
+# nodeSelector after `kubectl kustomize` of the staging + production
+# overlays. Fails the Infrastructure CI job on drift.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  # ── platform namespace ────────────────────────────────────────────
+  - target: { kind: Deployment, name: admin-panel, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: platform-api, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: client-panel, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: platform-suspended, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: redis, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: Deployment, name: oauth2-proxy, namespace: platform }
+    path: affinity-patch.yaml
+  - target: { kind: StatefulSet, name: postgres, namespace: platform }
+    path: affinity-patch.yaml
+
+  # ── platform-system namespace ─────────────────────────────────────
+  - target: { kind: Deployment, name: sftp-gateway, namespace: platform-system }
+    path: affinity-patch.yaml
+
+  # ── mail namespace ────────────────────────────────────────────────
+  - target: { kind: Deployment, name: roundcube, namespace: mail }
+    path: affinity-patch.yaml
+  - target: { kind: StatefulSet, name: stalwart-mail, namespace: mail }
+    path: affinity-patch.yaml

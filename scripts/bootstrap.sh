@@ -378,6 +378,88 @@ install_vpn_tools() {
 
 # ─── Phase 2: k3s + Calico ───────────────────────────────────────────────────
 
+# M1 C5: pin Helm-managed system components to nodes labelled
+# platform.phoenix-host.net/node-role=server and add a toleration for
+# the server-only taint. The Kustomize system-node-affinity component
+# handles base/overlay manifests; this function covers the Helm
+# installs (flux-system, cert-manager, sealed-secrets) and adds the
+# server-only toleration to the DaemonSets that need to run on every
+# node (ingress-nginx, longhorn-system).
+#
+# Distinction:
+#   - Control-plane only (nodeSelector + toleration):
+#       flux-system/*, cert-manager/*, sealed-secrets-controller
+#   - Runs on every node, needs toleration only so it schedules onto
+#     tainted servers too:
+#       ingress-nginx (DaemonSet), longhorn-system/* (Manager DaemonSet,
+#       instance-manager DaemonSet, UI Deployment)
+#
+# Idempotent: strategic-merge patches against stable structure; re-runs
+# produce no churn. Safe to call on both fresh installs and upgrades.
+# No-op outside server mode.
+pin_system_components_to_servers() {
+  if [[ "$NODE_ROLE" != "server" ]]; then
+    return 0
+  fi
+  export KUBECONFIG
+
+  log "Pinning Helm-managed system components to server nodes..."
+
+  local server_patch
+  server_patch='{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"platform.phoenix-host.net/node-role","operator":"In","values":["server"]}]}]}}},"tolerations":[{"key":"platform.phoenix-host.net/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
+  local toleration_only_patch
+  toleration_only_patch='{"spec":{"template":{"spec":{"tolerations":[{"key":"platform.phoenix-host.net/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
+
+  # Control-plane-only (pin to server + tolerate server-only taint).
+  # `|| true` because not every combination is guaranteed to exist on
+  # every run (e.g. flux might be skipped via --skip-flux).
+  for ns_name in \
+      "flux-system:source-controller" \
+      "flux-system:kustomize-controller" \
+      "flux-system:helm-controller" \
+      "flux-system:notification-controller" \
+      "flux-system:image-reflector-controller" \
+      "flux-system:image-automation-controller" \
+      "cert-manager:cert-manager" \
+      "cert-manager:cert-manager-webhook" \
+      "cert-manager:cert-manager-cainjector" \
+      "kube-system:sealed-secrets-controller"; do
+    local ns="${ns_name%%:*}"
+    local name="${ns_name#*:}"
+    kubectl patch deployment "$name" -n "$ns" \
+      --type=strategic \
+      --patch="$server_patch" 2>/dev/null || true
+  done
+
+  # Runs on every node (DaemonSets) — needs toleration only so it
+  # schedules onto tainted servers. Without this, a server that opts
+  # into server-only (host-client-workloads=false) would lose
+  # ingress-nginx and break public traffic to tenants on other nodes.
+  for ns_name in \
+      "ingress-nginx:ingress-nginx-controller" \
+      "longhorn-system:longhorn-manager" \
+      "longhorn-system:longhorn-driver-deployer" \
+      "longhorn-system:longhorn-ui" \
+      "longhorn-system:csi-attacher" \
+      "longhorn-system:csi-provisioner" \
+      "longhorn-system:csi-resizer" \
+      "longhorn-system:csi-snapshotter"; do
+    local ns="${ns_name%%:*}"
+    local name="${ns_name#*:}"
+    # Try Deployment first, then DaemonSet — some are DaemonSets
+    # (ingress-nginx, longhorn-manager), others Deployments (csi-*, UI).
+    kubectl patch deployment "$name" -n "$ns" \
+      --type=strategic \
+      --patch="$toleration_only_patch" 2>/dev/null \
+    || kubectl patch daemonset "$name" -n "$ns" \
+      --type=strategic \
+      --patch="$toleration_only_patch" 2>/dev/null \
+    || true
+  done
+
+  log "Helm component pinning applied."
+}
+
 # M1: apply the platform-managed role + host-client-workloads labels
 # (and the server-only taint when applicable) to this node. The backend
 # node-sync reconciler treats these labels as authoritative — changing
@@ -1442,6 +1524,12 @@ main() {
     install_longhorn
     install_monitoring
     install_flux
+    # M1 C5: pin Helm-managed Deployments to server nodes + add
+    # server-only toleration. Runs AFTER all Helm installs so every
+    # target Deployment exists by the time we patch it. See function
+    # definition above for the split between nodeSelector+toleration
+    # (control-plane only) and toleration-only (data plane DaemonSets).
+    pin_system_components_to_servers
     generate_platform_secrets
     create_platform_configmap
     generate_operator_recipient
