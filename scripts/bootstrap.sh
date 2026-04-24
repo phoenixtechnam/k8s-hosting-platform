@@ -62,6 +62,8 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 INGRESS_NGINX_CHART_VERSION="4.15.1"     # controller v1.15.1, 2026-03-19
 CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
 SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
+CNPG_CHART_VERSION="0.23.2"              # CloudNative-PG operator v1.24.2
+SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 ENABLE_MONITORING=false
 SKIP_FLUX=false
@@ -99,6 +101,12 @@ OPTIONS:
   --skip-hardening       Skip SSH/firewall hardening
   --skip-vpn             Skip WireGuard + NetBird
   --skip-longhorn        Skip Longhorn storage (use local-path)
+  --skip-cnpg            Skip CloudNative-PG operator install (M10).
+                         The operator lands passive by default — no
+                         Cluster CR is applied, so Postgres keeps
+                         running as-is. Flip `--skip-cnpg` when the
+                         extra ~50MB operator footprint isn't wanted
+                         on a single-server install.
   --acme-email <email>   Email for Let's Encrypt (required for server role)
   --operator-age-recipient <age1...>
                          Public age recipient for operator-held backup
@@ -156,6 +164,7 @@ parse_args() {
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --skip-vpn)        SKIP_VPN=true; shift ;;
       --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
+      --skip-cnpg)       SKIP_CNPG=true; shift ;;
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
@@ -423,7 +432,8 @@ pin_system_components_to_servers() {
       "cert-manager:cert-manager" \
       "cert-manager:cert-manager-webhook" \
       "cert-manager:cert-manager-cainjector" \
-      "kube-system:sealed-secrets-controller"; do
+      "kube-system:sealed-secrets-controller" \
+      "cnpg-system:cnpg-controller-manager"; do
     local ns="${ns_name%%:*}"
     local name="${ns_name#*:}"
     kubectl patch deployment "$name" -n "$ns" \
@@ -860,6 +870,52 @@ install_longhorn() {
 
   marker_set "longhorn-installed"
   log "Longhorn installed (replicas=1, auto-balance=best-effort). Add nodes to increase replicas."
+}
+
+# M10: CloudNative-PG (CNPG) operator — passive install.
+#
+# The operator watches for `Cluster` CRs and orchestrates
+# active-passive Postgres replication. We install the operator
+# unconditionally on server nodes (unless --skip-cnpg) so flipping
+# the Postgres topology to replicated in the future is a single-CR
+# apply — no operator migration needed when the cluster crosses
+# the 3-server HA threshold (M8).
+#
+# No Cluster CR is applied here; the existing platform Postgres
+# StatefulSet keeps running unchanged. Activation is a manual
+# operator step with pre-reqs (existing-PVC import, failover plan,
+# monitoring review) — see
+# docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md.
+#
+# Installed in its own namespace (cnpg-system) so a later
+# `helm uninstall` reverts cleanly without touching other platform
+# state.
+install_cnpg() {
+  if [[ "$SKIP_CNPG" == true ]]; then
+    log "Skipping CloudNative-PG operator (--skip-cnpg)."
+    return 0
+  fi
+
+  if kctl get deployment -n cnpg-system cnpg-controller-manager &>/dev/null 2>&1; then
+    log "CloudNative-PG operator already installed, skipping."
+    return 0
+  fi
+
+  log "Installing CloudNative-PG operator (passive — no Cluster CR applied)..."
+  helm_cmd repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
+  helm_cmd repo update
+
+  helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
+    --namespace cnpg-system \
+    --create-namespace \
+    --version "${CNPG_CHART_VERSION}" \
+    --set monitoring.podMonitorEnabled=false \
+    --wait \
+    --timeout 300s
+
+  log "CloudNative-PG operator installed passively."
+  log "  To activate Postgres replication, see:"
+  log "  docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md"
 }
 
 install_monitoring() {
@@ -1522,6 +1578,11 @@ main() {
     install_cert_manager
     install_sealed_secrets
     install_longhorn
+    # M10: CNPG operator (passive — no Cluster CR applied). Installs
+    # alongside Longhorn so the Postgres replication activation flow
+    # in docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md is a single-CR
+    # step rather than a multi-phase upgrade when the time comes.
+    install_cnpg
     install_monitoring
     install_flux
     # M1 C5: pin Helm-managed Deployments to server nodes + add
