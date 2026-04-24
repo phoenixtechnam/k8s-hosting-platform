@@ -381,6 +381,12 @@ async function deployK8sDeployment(
   volumes: Array<{ container_path: string; local_path?: string }> = [],
   passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
   envVars?: Array<{ name: string; value: string }>,
+  // M3: optional worker pin. When set, the Deployment carries a
+  // `kubernetes.io/hostname=<workerNodeName>` nodeSelector so the
+  // scheduler places the pod on that specific worker. M5 wires this
+  // from the client row; current callers pass undefined and fall back
+  // to the default scheduler.
+  workerNodeName?: string | null,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
@@ -397,6 +403,15 @@ async function deployK8sDeployment(
   if (spec) initContainersList.push(spec.initDirsContainer);
   const initContainers = initContainersList.length > 0 ? initContainersList : undefined;
 
+  const podSpec: Record<string, unknown> = {
+    ...(initContainers ? { initContainers } : {}),
+    containers: [containerWithMounts],
+    ...(spec ? { volumes: spec.podVolumes } : {}),
+  };
+  if (workerNodeName) {
+    podSpec.nodeSelector = { 'kubernetes.io/hostname': workerNodeName };
+  }
+
   const body = {
     metadata: { name, namespace, labels },
     spec: {
@@ -404,11 +419,7 @@ async function deployK8sDeployment(
       selector: { matchLabels: selectorLabels },
       template: {
         metadata: { labels },
-        spec: {
-          ...(initContainers ? { initContainers } : {}),
-          containers: [containerWithMounts],
-          ...(spec ? { volumes: spec.podVolumes } : {}),
-        },
+        spec: podSpec,
       },
     },
   } as Record<string, unknown>;
