@@ -4,6 +4,7 @@ import { X, Loader2, Copy, CheckCircle, KeyRound } from 'lucide-react';
 import { useCreateClient, useDeleteClient } from '@/hooks/use-clients';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { usePlans, useRegions } from '@/hooks/use-plans';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import ProvisioningProgressModal from './ProvisioningProgressModal';
 
 interface CreateClientModalProps {
@@ -24,9 +25,11 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const [contactEmail, setContactEmail] = useState('');
   const [planId, setPlanId] = useState('');
   const [regionId, setRegionId] = useState('');
+  const [workerNodeName, setWorkerNodeName] = useState('');
 
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
+  const { data: nodesData } = useClusterNodes();
   const createClient = useCreateClient();
   const deleteClient = useDeleteClient();
   const triggerProvisioning = useTriggerProvisioning();
@@ -45,6 +48,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
     setContactEmail('');
     setPlanId('');
     setRegionId('');
+    setWorkerNodeName('');
     setCreatedClient(null);
     setView('form');
     setCopied(false);
@@ -65,6 +69,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
         contact_email: contactEmail || undefined,
         plan_id: planId,
         region_id: regionId,
+        worker_node_name: workerNodeName || undefined,
       });
       const data = (result as { data: Record<string, unknown> & { id?: string; clientUser?: { email: string; generatedPassword: string } } }).data;
       const id = typeof data?.id === 'string' ? data.id : '';
@@ -293,6 +298,33 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div>
+              <label htmlFor="worker" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Worker node
+              </label>
+              <select
+                id="worker"
+                value={workerNodeName}
+                onChange={(e) => setWorkerNodeName(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                data-testid="worker-select"
+              >
+                <option value="">Default scheduler (any tenant-capable node)</option>
+                {(nodesData?.data ?? [])
+                  .filter((n) => n.canHostClientWorkloads)
+                  .map((n) => (
+                    <option key={n.name} value={n.name}>
+                      {n.name} — {n.role}
+                      {n.cpuMillicores ? ` · ${(n.cpuMillicores / 1000).toFixed(1)} cores` : ''}
+                      {n.memoryBytes ? ` · ${(n.memoryBytes / 1024 ** 3).toFixed(0)}GiB` : ''}
+                    </option>
+                  ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Pin this client's pods to a specific node. Leave as default unless you need worker placement control.
+              </p>
             </div>
           </div>
 

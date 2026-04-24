@@ -80,6 +80,14 @@ export interface DeployCatalogEntryInput {
   readonly passwordEnvVar?: string;
   /** Client timezone — injected as TZ env var */
   readonly timezone?: string;
+  /**
+   * M5: worker pin from clients.worker_node_name. Null/undefined lets
+   * the default scheduler pick any node matching the implicit
+   * constraints (server-only taints prevent tenant pods from landing
+   * on tainted control-plane nodes). When set, the Deployment carries
+   * a `kubernetes.io/hostname=<workerNodeName>` nodeSelector.
+   */
+  readonly workerNodeName?: string | null;
 }
 
 export interface ComponentPodStatus {
@@ -339,7 +347,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName);
         break;
 
       case 'statefulset':
@@ -350,7 +358,7 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName);
         break;
 
       case 'cronjob':

@@ -42,6 +42,8 @@ interface CreateClientInput {
   readonly contact_email?: string;
   readonly plan_id: string;
   readonly region_id: string;
+  // M5: optional worker pin at provisioning time.
+  readonly worker_node_name?: string;
 }
 
 export function useCreateClient() {

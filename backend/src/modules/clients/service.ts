@@ -41,6 +41,9 @@ export async function createClient(db: Database, input: CreateClientInput, creat
     planId: input.plan_id,
     createdBy,
     timezone,
+    // M5: optional worker pin. When unset, the scheduler picks at
+    // first-deploy time; admins can still re-assign later via PATCH.
+    workerNodeName: input.worker_node_name ?? null,
     subscriptionExpiresAt: input.subscription_expires_at ? new Date(input.subscription_expires_at) : null,
   });
 
@@ -211,6 +214,11 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   if (input.max_mailboxes_override !== undefined) updateValues.maxMailboxesOverride = input.max_mailboxes_override;
   if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
   if (input.email_send_rate_limit !== undefined) updateValues.emailSendRateLimit = input.email_send_rate_limit;
+  // M5: re-pin a client to a different worker. M3 plumbing makes the
+  // next deploy apply the pin; existing pods keep running on their
+  // current node until a migration (M6) or scheduler-triggered
+  // eviction moves them.
+  if (input.worker_node_name !== undefined) updateValues.workerNodeName = input.worker_node_name;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));

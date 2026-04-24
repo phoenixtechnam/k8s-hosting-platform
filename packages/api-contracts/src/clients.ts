@@ -15,6 +15,9 @@ export const createClientSchema = z.object({
   // Any IANA zone. When absent, the service falls back to the system
   // default (SystemSettings.timezone, itself defaulting to UTC).
   timezone: z.string().min(1).max(50).optional(),
+  // M5: optional worker pin at provisioning time. The admin UI
+  // presents free-resource-ranked options; unset = default scheduler.
+  worker_node_name: z.string().min(1).max(253).optional(),
 });
 
 export const updateClientSchema = z.object({
@@ -37,6 +40,9 @@ export const updateClientSchema = z.object({
   // null = inherit the global default. 0 = blocked.
   email_send_rate_limit: z.number().int().min(0).max(1000000).nullable().optional(),
   timezone: z.string().min(1).max(50).nullable().optional(),
+  // M5: re-assign the client to a different worker. A subsequent
+  // deployment revision (M6 migration flow) actually moves the pods.
+  worker_node_name: z.string().min(1).max(253).nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -61,6 +67,8 @@ export const clientResponseSchema = z.object({
   maxMailboxesOverride: z.number().nullable().optional(),
   monthlyPriceOverride: z.string().nullable(),
   emailSendRateLimit: z.number().nullable().optional(),
+  // M5: current worker pin (k8s node name) or null for default scheduler.
+  workerNodeName: z.string().nullable().optional(),
   createdBy: z.string().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),

@@ -210,6 +210,13 @@ export const clients = pgTable('clients', {
   // rate=0 at the Stalwart level regardless of this value.
   emailSendRateLimit: integer('email_send_rate_limit'),
   timezone: varchar('timezone', { length: 50 }),
+  // M5: per-client worker pinning. NULL = default scheduler picks a
+  // node that matches the (implicit) worker constraints (anti-affinity
+  // with system pods via the server-only taint). When set, the
+  // k8s-deployer passes this through to deployK8sDeployment's
+  // workerNodeName parameter (M3), producing a
+  // kubernetes.io/hostname nodeSelector.
+  workerNodeName: varchar('worker_node_name', { length: 253 }),
   provisioningStatus: provisioningStatusEnum().notNull().default('unprovisioned'),
   // Active storage-lifecycle op (null when the client isn't being
   // resized/suspended/archived/restored). The storage_operations row

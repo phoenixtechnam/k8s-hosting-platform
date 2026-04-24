@@ -305,6 +305,9 @@ export async function createDeployment(
         catalogCode: entry.code,
         passwordEnvVar,
         timezone: client.timezone ?? undefined,
+        // M5: pin tenant pods to the client's assigned worker if one is
+        // set; undefined lets the default scheduler choose.
+        workerNodeName: client.workerNodeName ?? undefined,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
     } catch (err) {
