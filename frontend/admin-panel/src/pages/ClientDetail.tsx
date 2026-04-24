@@ -18,6 +18,8 @@ import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription
 import { useImpersonate } from '@/hooks/use-impersonate';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useMigrateClientToWorker } from '@/hooks/use-tenant-migration';
 import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type MailSubmitRotateResult, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
@@ -353,6 +355,8 @@ export default function ClientDetail() {
       <ResourceLimitsCard client={client} clientId={id!} />
 
       <StorageLifecycleCard clientId={id!} client={client} />
+
+      <PlacementCard clientId={id!} client={client} />
 
       {/* Resource tabs */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
@@ -1800,6 +1804,131 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
         operationId={trackedOpId}
         onClose={() => setTrackedOpId(null)}
       />
+    </div>
+  );
+}
+
+/**
+ * Placement card — tenant worker pin + storage tier + "migrate now"
+ * action. The pin change (via useUpdateClient) only records intent;
+ * the migrate action flips the pin AND triggers a rollout-restart on
+ * every Deployment in the client's namespace so pods actually move.
+ *
+ * Surfaces the ADR-031 distinction between "re-pin for future
+ * deploys" (cheap, immediate) and "rebalance running workloads"
+ * (intentional, has downtime).
+ */
+function PlacementCard({ clientId, client }: {
+  readonly clientId: string;
+  readonly client: { workerNodeName?: string | null; storageTier?: 'local' | 'ha' };
+}) {
+  const update = useUpdateClient(clientId);
+  const migrate = useMigrateClientToWorker(clientId);
+  const { data: nodesData } = useClusterNodes();
+  const nodes = (nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads);
+
+  const [pinTarget, setPinTarget] = useState<string>(client.workerNodeName ?? '');
+  const [tierTarget, setTierTarget] = useState<'local' | 'ha'>(client.storageTier ?? 'local');
+
+  const currentWorker = client.workerNodeName ?? '(scheduler picks)';
+  const hasChanges = (pinTarget || null) !== (client.workerNodeName ?? null) || tierTarget !== (client.storageTier ?? 'local');
+
+  const saveChanges = async () => {
+    await update.mutateAsync({
+      worker_node_name: pinTarget === '' ? null : pinTarget,
+      storage_tier: tierTarget,
+    });
+  };
+
+  const migrateNow = async () => {
+    if (!pinTarget) return;
+    await migrate.mutateAsync(pinTarget);
+  };
+
+  const migrateErr = migrate.error as { message?: string } | null;
+  const updateErr = update.error as { message?: string } | null;
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Placement</h2>
+        <span className="text-xs text-gray-500 dark:text-gray-400">Current worker: <span className="font-mono text-gray-700 dark:text-gray-300">{currentWorker}</span></span>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Worker pin</label>
+          <select
+            value={pinTarget}
+            onChange={(e) => setPinTarget(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            data-testid="placement-worker-select"
+          >
+            <option value="">Default scheduler (any tenant-capable node)</option>
+            {nodes.map((n) => (
+              <option key={n.name} value={n.name}>
+                {n.name} — {n.role}
+                {n.cpuMillicores ? ` · ${(n.cpuMillicores / 1000).toFixed(1)} cores` : ''}
+                {n.memoryBytes ? ` · ${(n.memoryBytes / 1024 ** 3).toFixed(0)}GiB` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage tier</label>
+          <select
+            value={tierTarget}
+            onChange={(e) => setTierTarget(e.target.value as 'local' | 'ha')}
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            data-testid="placement-tier-select"
+          >
+            <option value="local">Local (1 replica)</option>
+            <option value="ha">HA (2 replicas)</option>
+          </select>
+          {tierTarget !== (client.storageTier ?? 'local') && client.workerNodeName && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              Tier changes only affect new PVCs. Existing volume keeps its class until a storage migration runs.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {(updateErr || migrateErr) && (
+        <p className="mt-3 text-xs text-red-600 dark:text-red-400">
+          {(updateErr ?? migrateErr)?.message}
+        </p>
+      )}
+
+      <div className="mt-5 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={saveChanges}
+          disabled={!hasChanges || update.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+          data-testid="placement-save-button"
+        >
+          {update.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+          Save intent
+        </button>
+        <button
+          type="button"
+          onClick={migrateNow}
+          disabled={!pinTarget || migrate.isPending}
+          title={!pinTarget ? 'Pick a worker first' : 'Applies the pin AND restarts pods so they move now'}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="placement-migrate-button"
+        >
+          {migrate.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+          Migrate pods now
+        </button>
+      </div>
+
+      {migrate.isSuccess && migrate.data && (
+        <p className="mt-2 text-xs text-green-600 dark:text-green-400">
+          Migrated — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
+        </p>
+      )}
     </div>
   );
 }

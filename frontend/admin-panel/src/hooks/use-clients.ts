@@ -74,6 +74,8 @@ interface UpdateClientInput {
   readonly max_sub_users_override?: number | null;
   readonly max_mailboxes_override?: number | null;
   readonly monthly_price_override?: number | null;
+  readonly worker_node_name?: string | null;
+  readonly storage_tier?: 'local' | 'ha';
 }
 
 export function useUpdateClient(id: string) {

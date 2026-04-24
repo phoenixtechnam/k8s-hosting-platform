@@ -134,6 +134,8 @@ export default function Clients() {
                     <th className="hidden md:table-cell px-3 py-3 text-xs">CPU</th>
                     <th className="hidden md:table-cell px-3 py-3 text-xs">Memory</th>
                     <th className="hidden md:table-cell px-3 py-3 text-xs">Storage</th>
+                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Worker</th>
+                    <th className="hidden xl:table-cell px-3 py-3 text-xs">Tier</th>
                     <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
@@ -185,6 +187,20 @@ export default function Clients() {
                         loading={metricsLoading}
                         resource="storage"
                       />
+                      <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
+                        {client.workerNodeName ? (
+                          <span className="font-mono text-gray-700 dark:text-gray-300">{client.workerNodeName}</span>
+                        ) : (
+                          <span className="text-gray-400 dark:text-gray-500">—</span>
+                        )}
+                      </td>
+                      <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
+                        {client.storageTier === 'ha' ? (
+                          <span className="rounded-full bg-indigo-100 px-2 py-0.5 font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">HA</span>
+                        ) : (
+                          <span className="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">local</span>
+                        )}
+                      </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                         {client.createdAt ? new Date(client.createdAt).toLocaleDateString() : '—'}
                       </td>
