@@ -28,6 +28,15 @@ export default defineConfig({
     },
     exclude: ['**/*.integration.test.ts', '**/node_modules/**'],
     setupFiles: ['./src/test-setup.ts'],
+    // Vitest's 5s default is too tight for this suite's cold-start path.
+    // With 153 test files hitting the parallel import pool, the first
+    // `it` that registers fastify-jwt + a route plugin can take >5s on
+    // a cold worker — flaking routes.test.ts' "401 without auth" case
+    // while every subsequent file in the same worker runs in ms.
+    // 15s gives headroom for cold imports without masking real slow
+    // tests; any test that legitimately needs >15s should override it
+    // inline.
+    testTimeout: 15000,
   },
   resolve: {
     alias: {
