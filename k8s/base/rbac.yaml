@@ -66,6 +66,13 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "update", "patch"]
+  # DaemonSets — read-only, used by cluster-health to surface
+  # ingress-nginx + longhorn-manager readiness. Scoped to get/list/watch
+  # because we never create or mutate DaemonSets from the API (bootstrap
+  # + Helm own those).
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]

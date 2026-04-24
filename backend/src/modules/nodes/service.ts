@@ -5,6 +5,7 @@ import { clusterNodes, type ClusterNode } from '../../db/schema.js';
 import type { NodeRole, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -226,17 +227,18 @@ export async function updateNode(
       ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
       : withoutOurs;
 
-    // Single atomic patch. The typed param shape of
-    // @kubernetes/client-node v1.4 omits `contentType`; cast mirrors
-    // the idiom used elsewhere in this repo.
+    // Single atomic patch. The library's auto-generated client picks
+    // Content-Type = application/json-patch+json by default; pass a
+    // STRATEGIC_MERGE_PATCH middleware override so our object-shaped
+    // body is interpreted correctly.
     await k8s.core.patchNode({
       name,
       body: {
         metadata: { labels: nextLabels },
         spec: { taints: nextTaints },
       },
-      contentType: 'application/strategic-merge-patch+json',
-    } as unknown as Parameters<typeof k8s.core.patchNode>[0]);
+    } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+      STRATEGIC_MERGE_PATCH);
   }
 
   // notes is platform-only, no k8s equivalent — write directly.

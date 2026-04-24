@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clients, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // M6: minimal tenant migration between workers.
 //
@@ -59,8 +60,8 @@ async function repinAndRestart(k8s: K8sClients, namespace: string, workerNodeNam
           },
         },
       },
-      contentType: 'application/strategic-merge-patch+json',
-    } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
+    } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+      STRATEGIC_MERGE_PATCH);
     count += 1;
   }
   return count;

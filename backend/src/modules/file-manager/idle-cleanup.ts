@@ -1,4 +1,5 @@
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -44,8 +45,8 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
               name: 'file-manager',
               namespace: ns,
               body: { spec: { replicas: 0 } },
-              contentType: 'application/strategic-merge-patch+json',
-            } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0]);
+            } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+              STRATEGIC_MERGE_PATCH);
             lastAccessMap.delete(ns);
           }
         } catch {
