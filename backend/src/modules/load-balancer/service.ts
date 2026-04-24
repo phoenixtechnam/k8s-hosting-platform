@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { platformSettings, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
@@ -34,7 +34,15 @@ export async function getLoadBalancerSettings(db: Database): Promise<LoadBalance
     try {
       const parsed = JSON.parse(configJson);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        config = parsed as Record<string, unknown>;
+        // Strip prototype-pollution keys defensively. The zod schema
+        // at write time already rejects them, but a value predating
+        // that validation could still be in platform_settings.
+        const safe: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+          safe[k] = v;
+        }
+        config = safe;
       }
     } catch {
       // Bad JSON in settings — fall back to empty config. Admin UI
@@ -77,9 +85,10 @@ export async function enforceHaGate(db: Database): Promise<void> {
 }
 
 /**
- * Update the LB settings. Validates the HA gate on enable, validates
- * provider name, leaves config JSON opaque (provider-specific).
- * Writes are individual upserts per key for audit-log granularity.
+ * Update the LB settings. Validates the HA gate on enable; provider
+ * enum + config shape are already validated by the route-level zod
+ * schema. Writes are individual upserts per key for audit-log
+ * granularity.
  */
 export async function updateLoadBalancerSettings(
   db: Database,
@@ -87,9 +96,6 @@ export async function updateLoadBalancerSettings(
 ): Promise<LoadBalancerSettings> {
   if (patch.enabled === true) {
     await enforceHaGate(db);
-  }
-  if (patch.provider !== undefined && !['null', 'hetzner', 'aws', 'metallb'].includes(patch.provider)) {
-    throw new ApiError('INVALID_FIELD_VALUE', `Unknown provider '${patch.provider}'`, 400, { field: 'provider' });
   }
 
   const entries: Array<{ key: string; value: string }> = [];
@@ -105,12 +111,13 @@ export async function updateLoadBalancerSettings(
   return getLoadBalancerSettings(db);
 }
 
+import type { LoadBalancerProvider } from './provider.js';
+
 /**
- * Return a live provider instance ready to act. Callers typically
- * wrap this in a try/catch because stub providers throw "not
- * implemented" until someone wires them.
+ * Return a live provider instance ready to act. Stub providers throw
+ * NOT_IMPLEMENTED when their ensure/remove methods are called.
  */
-export async function getActiveProvider(db: Database) {
+export async function getActiveProvider(db: Database): Promise<LoadBalancerProvider> {
   const settings = await getLoadBalancerSettings(db);
   if (!settings.enabled) return pickProvider('null');
   return pickProvider(settings.provider);

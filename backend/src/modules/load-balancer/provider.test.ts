@@ -46,10 +46,13 @@ describe('stub providers', () => {
     ['Hetzner', new HetznerProvider()],
     ['AWS', new AWSProvider()],
     ['MetalLB', new MetalLBProvider()],
-  ])('%s throws not-implemented on ensure', async (_label, provider) => {
+  ])('%s throws PROVIDER_NOT_IMPLEMENTED (ApiError) on ensure', async (_label, provider) => {
     await expect(provider.ensure({
       name: 'x', hostname: 'h', ports: [], backendIps: [],
-    })).rejects.toThrow(/not yet implemented/i);
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_NOT_IMPLEMENTED',
+      status: 501,
+    });
   });
 
   it.each([

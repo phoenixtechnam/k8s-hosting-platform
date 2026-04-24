@@ -27,7 +27,14 @@ import { ApiError } from '../../shared/errors.js';
 //     triggered. For large tenants that's fine (Deployments don't
 //     wait for ready; kubectl just patches the annotation).
 
-async function rolloutRestart(k8s: K8sClients, namespace: string): Promise<number> {
+/**
+ * Re-pin every Deployment in the client's namespace to the new
+ * worker AND force a new ReplicaSet via a fresh restart annotation.
+ * Combined in one patch so pods that restart also pick up the new
+ * nodeSelector — pure rollout-restart alone would land pods on the
+ * SAME node because the pod template's nodeSelector is unchanged.
+ */
+async function repinAndRestart(k8s: K8sClients, namespace: string, workerNodeName: string): Promise<number> {
   let count = 0;
   const now = new Date().toISOString();
 
@@ -35,8 +42,6 @@ async function rolloutRestart(k8s: K8sClients, namespace: string): Promise<numbe
   for (const deploy of res.items ?? []) {
     const name = deploy.metadata?.name;
     if (!name) continue;
-    // kubectl rollout restart = patch the pod template with a fresh
-    // annotation, which forces a new ReplicaSet and rescheduling.
     await k8s.apps.patchNamespacedDeployment({
       name,
       namespace,
@@ -47,6 +52,9 @@ async function rolloutRestart(k8s: K8sClients, namespace: string): Promise<numbe
               annotations: {
                 'platform.phoenix-host.net/restarted-at': now,
               },
+            },
+            spec: {
+              nodeSelector: { 'kubernetes.io/hostname': workerNodeName },
             },
           },
         },
@@ -98,11 +106,16 @@ export async function migrateClientToWorker(
 
   const previousWorker = client.workerNodeName ?? null;
 
+  // Roll the Deployments first. If the k8s patch fails, the DB stays
+  // consistent with the old state and the operator sees the error.
+  // Only after every Deployment is successfully re-patched do we
+  // commit the new pin to the DB — avoids the DB pointing at a
+  // worker where no pods actually live.
+  const deploymentsRestarted = await repinAndRestart(k8s, client.kubernetesNamespace, input.workerNodeName);
+
   await db.update(clients)
     .set({ workerNodeName: input.workerNodeName, updatedAt: sql`NOW()` })
     .where(eq(clients.id, clientId));
-
-  const deploymentsRestarted = await rolloutRestart(k8s, client.kubernetesNamespace);
 
   return {
     clientId,

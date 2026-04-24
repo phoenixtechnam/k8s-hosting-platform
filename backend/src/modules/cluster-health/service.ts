@@ -26,39 +26,41 @@ const TRACKED: ReadonlyArray<{ ns: string; name: string; kind: 'Deployment' | 'D
 ];
 
 export async function collectClusterHealth(k8s: K8sClients): Promise<ComponentReadiness[]> {
-  const out: ComponentReadiness[] = [];
-
-  for (const t of TRACKED) {
+  // Fan out all reads in parallel — the original sequential loop
+  // added ~100-300 ms × 7 of latency per request. Logging the
+  // underlying error server-side keeps debuggability while the
+  // response only carries a generic message so we don't leak
+  // cluster-internal details to the admin UI.
+  const results = await Promise.all(TRACKED.map(async (t): Promise<ComponentReadiness> => {
     try {
       if (t.kind === 'Deployment') {
         const res = await k8s.apps.readNamespacedDeployment({ namespace: t.ns, name: t.name });
         const desired = res.spec?.replicas ?? 0;
         const ready = res.status?.readyReplicas ?? 0;
-        out.push({
+        return {
           name: t.name,
           namespace: t.ns,
           kind: 'Deployment',
           desired,
           ready,
           healthy: desired > 0 && ready === desired,
-        });
-      } else {
-        const res = await k8s.apps.readNamespacedDaemonSet({ namespace: t.ns, name: t.name });
-        const desired = res.status?.desiredNumberScheduled ?? 0;
-        const ready = res.status?.numberReady ?? 0;
-        out.push({
-          name: t.name,
-          namespace: t.ns,
-          kind: 'DaemonSet',
-          desired,
-          ready,
-          healthy: desired > 0 && ready === desired,
-        });
+        };
       }
+      const res = await k8s.apps.readNamespacedDaemonSet({ namespace: t.ns, name: t.name });
+      const desired = res.status?.desiredNumberScheduled ?? 0;
+      const ready = res.status?.numberReady ?? 0;
+      return {
+        name: t.name,
+        namespace: t.ns,
+        kind: 'DaemonSet',
+        desired,
+        ready,
+        healthy: desired > 0 && ready === desired,
+      };
     } catch (err) {
       const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
       if (status === 404 && t.optional) {
-        out.push({
+        return {
           name: t.name,
           namespace: t.ns,
           kind: t.kind,
@@ -66,20 +68,20 @@ export async function collectClusterHealth(k8s: K8sClients): Promise<ComponentRe
           ready: 0,
           healthy: false,
           message: 'not installed',
-        });
-        continue;
+        };
       }
-      out.push({
+      console.error(`[cluster-health] ${t.ns}/${t.name} read failed:`, (err as Error).message ?? err);
+      return {
         name: t.name,
         namespace: t.ns,
         kind: t.kind,
         desired: 0,
         ready: 0,
         healthy: false,
-        message: (err as Error).message ?? 'read failed',
-      });
+        message: 'read failed',
+      };
     }
-  }
+  }));
 
-  return out;
+  return results;
 }

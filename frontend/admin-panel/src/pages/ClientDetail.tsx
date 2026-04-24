@@ -1834,15 +1834,23 @@ function PlacementCard({ clientId, client }: {
   const hasChanges = (pinTarget || null) !== (client.workerNodeName ?? null) || tierTarget !== (client.storageTier ?? 'local');
 
   const saveChanges = async () => {
-    await update.mutateAsync({
-      worker_node_name: pinTarget === '' ? null : pinTarget,
-      storage_tier: tierTarget,
-    });
+    try {
+      await update.mutateAsync({
+        worker_node_name: pinTarget === '' ? null : pinTarget,
+        storage_tier: tierTarget,
+      });
+    } catch {
+      // error surfaced via update.error below
+    }
   };
 
   const migrateNow = async () => {
     if (!pinTarget) return;
-    await migrate.mutateAsync(pinTarget);
+    try {
+      await migrate.mutateAsync(pinTarget);
+    } catch {
+      // error surfaced via migrate.error below
+    }
   };
 
   const migrateErr = migrate.error as { message?: string } | null;

@@ -1,15 +1,16 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
+import { updateLoadBalancerSchema } from '@k8s-hosting/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import {
   getLoadBalancerStatus,
   updateLoadBalancerSettings,
-  type LoadBalancerSettings,
 } from './service.js';
 
 export async function loadBalancerRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/load-balancer — current settings + HA gate.
@@ -26,10 +27,9 @@ export async function loadBalancerRoutes(app: FastifyInstance): Promise<void> {
 
   // PATCH /api/v1/admin/load-balancer — flip enabled, change provider, update config.
   //
-  // Body: { enabled?, provider?, config? }
-  // Backend validates the HA gate when enabled=true is requested; a
-  // stale UI toggle that doesn't know a server just went offline
-  // gets a 409 here instead of a silently-broken LB.
+  // Body validated by updateLoadBalancerSchema — rejects any
+  // provider outside the enum, caps config JSON at 32 KB serialised,
+  // blocks __proto__ / constructor / prototype keys.
   app.patch('/admin/load-balancer', {
     schema: {
       tags: ['LoadBalancer'],
@@ -37,17 +37,17 @@ export async function loadBalancerRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const body = (request.body ?? {}) as Partial<LoadBalancerSettings>;
-    if (typeof body.enabled !== 'undefined' && typeof body.enabled !== 'boolean') {
-      throw new ApiError('INVALID_FIELD_VALUE', 'enabled must be boolean', 400, { field: 'enabled' });
+    const parsed = updateLoadBalancerSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
     }
-    if (typeof body.provider !== 'undefined' && typeof body.provider !== 'string') {
-      throw new ApiError('INVALID_FIELD_VALUE', 'provider must be string', 400, { field: 'provider' });
-    }
-    if (typeof body.config !== 'undefined' && (typeof body.config !== 'object' || body.config === null || Array.isArray(body.config))) {
-      throw new ApiError('INVALID_FIELD_VALUE', 'config must be an object', 400, { field: 'config' });
-    }
-    await updateLoadBalancerSettings(app.db, body);
+    await updateLoadBalancerSettings(app.db, parsed.data);
     const status = await getLoadBalancerStatus(app.db);
     return success(status);
   });

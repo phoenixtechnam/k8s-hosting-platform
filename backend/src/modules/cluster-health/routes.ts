@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectClusterHealth } from './service.js';
 
 export async function clusterHealthRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/cluster-health

@@ -74,22 +74,20 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
         worker_node_name: workerNodeName || undefined,
         storage_tier: storageTier,
       });
-      const data = (result as { data: Record<string, unknown> & { id?: string; clientUser?: { email: string; generatedPassword: string } } }).data;
-      const id = typeof data?.id === 'string' ? data.id : '';
-      const clientUser = data?.clientUser;
-      if (!id) {
+      const data = result.data;
+      if (!data.id) {
         // Missing id in response — cannot proceed to provisioning view.
         handleClose();
         return;
       }
       setCreatedClient({
-        id,
+        id: data.id,
         name: companyName,
-        credentials: clientUser?.generatedPassword
-          ? { email: clientUser.email, password: clientUser.generatedPassword }
+        credentials: data.clientUser?.generatedPassword
+          ? { email: data.clientUser.email, password: data.clientUser.generatedPassword }
           : null,
       });
-      setView(clientUser?.generatedPassword ? 'credentials' : 'provisioning');
+      setView(data.clientUser?.generatedPassword ? 'credentials' : 'provisioning');
     } catch {
       // error displayed in modal
     }

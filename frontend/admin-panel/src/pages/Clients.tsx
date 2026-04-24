@@ -208,7 +208,7 @@ export default function Clients() {
                   ))}
                   {clients.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                      <td colSpan={9} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                         {debouncedSearch
                           ? 'No clients found matching your search.'
                           : 'No clients yet. Click "Add Client" to create one.'}

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Client, PaginatedResponse } from '@/types/api';
+import type { CreateClientInput, UpdateClientInput, CreateClientResponse } from '@k8s-hosting/api-contracts';
 
 interface ListClientsParams {
   readonly search?: string;
@@ -36,23 +37,12 @@ export function useClient(id: string | undefined) {
   });
 }
 
-interface CreateClientInput {
-  readonly company_name: string;
-  readonly company_email: string;
-  readonly contact_email?: string;
-  readonly plan_id: string;
-  readonly region_id: string;
-  // M5: optional worker pin at provisioning time.
-  readonly worker_node_name?: string;
-  readonly storage_tier?: 'local' | 'ha';
-}
-
 export function useCreateClient() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: CreateClientInput) =>
-      apiFetch<{ data: Client }>('/api/v1/clients', {
+      apiFetch<{ data: CreateClientResponse }>('/api/v1/clients', {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -60,22 +50,6 @@ export function useCreateClient() {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
     },
   });
-}
-
-interface UpdateClientInput {
-  readonly company_name?: string;
-  readonly company_email?: string;
-  readonly contact_email?: string;
-  readonly status?: 'active' | 'suspended' | 'pending' | 'archived';
-  readonly subscription_expires_at?: string;
-  readonly cpu_limit_override?: number | null;
-  readonly memory_limit_override?: number | null;
-  readonly storage_limit_override?: number | null;
-  readonly max_sub_users_override?: number | null;
-  readonly max_mailboxes_override?: number | null;
-  readonly monthly_price_override?: number | null;
-  readonly worker_node_name?: string | null;
-  readonly storage_tier?: 'local' | 'ha';
 }
 
 export function useUpdateClient(id: string) {

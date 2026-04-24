@@ -1,7 +1,8 @@
 import { eq, like, and, sql, desc, asc, lt, gt } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
-import { clients, domains, deployments, cronJobs, users, hostingPlans } from '../../db/schema.js';
+import { clients, domains, deployments, cronJobs, users, hostingPlans, clusterNodes } from '../../db/schema.js';
 import { clientNotFound } from '../../shared/errors.js';
+import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import type { Database } from '../../db/index.js';
 import type { CreateClientInput, UpdateClientInput } from './schema.js';
@@ -12,9 +13,38 @@ function generateNamespace(companyName: string): string {
   return `client-${companyName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 50)}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+/**
+ * M5: validate that a worker pin request references a real,
+ * tenant-capable node. Used by both createClient and updateClient to
+ * match the safety already enforced by the tenant-migration
+ * endpoint. Returns the value unchanged on success; throws
+ * INVALID_FIELD_VALUE otherwise. null / undefined pass through
+ * untouched (means "default scheduler").
+ */
+async function validateWorkerPin(db: Database, value: string | null | undefined): Promise<string | null | undefined> {
+  if (value == null || value === '') return value;
+  const [node] = await db.select().from(clusterNodes).where(eq(clusterNodes.name, value)).limit(1);
+  if (!node) {
+    throw new ApiError('INVALID_FIELD_VALUE', `Unknown worker node '${value}'`, 400, { field: 'worker_node_name' });
+  }
+  if (!node.canHostClientWorkloads) {
+    throw new ApiError(
+      'INVALID_FIELD_VALUE',
+      `Node '${value}' does not host client workloads (canHostClientWorkloads=false)`,
+      400,
+      { field: 'worker_node_name' },
+    );
+  }
+  return value;
+}
+
 export async function createClient(db: Database, input: CreateClientInput, createdBy: string) {
   const id = crypto.randomUUID();
   const namespace = generateNamespace(input.company_name);
+
+  // Validate worker pin early so the error surfaces before we touch
+  // k8s or write the client row.
+  await validateWorkerPin(db, input.worker_node_name);
 
   // Resolve the default timezone: explicit input wins, otherwise fall back
   // to the platform default configured in System Settings. Lazy import to
@@ -223,7 +253,10 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
   // next deploy apply the pin; existing pods keep running on their
   // current node until a migration (M6) or scheduler-triggered
   // eviction moves them.
-  if (input.worker_node_name !== undefined) updateValues.workerNodeName = input.worker_node_name;
+  if (input.worker_node_name !== undefined) {
+    await validateWorkerPin(db, input.worker_node_name);
+    updateValues.workerNodeName = input.worker_node_name;
+  }
   // M7: storage-tier flip. Field only — PVC migration is a separate
   // orchestrated flow (to be added alongside M6 migration work).
   if (input.storage_tier !== undefined) updateValues.storageTier = input.storage_tier;

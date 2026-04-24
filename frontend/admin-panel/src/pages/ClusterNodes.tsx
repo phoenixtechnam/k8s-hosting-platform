@@ -250,8 +250,12 @@ function NodeDetails({ node }: { readonly node: ClusterNodeResponse }) {
         <div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Taints</div>
           <ul className="mt-1 space-y-0.5 text-xs">
-            {node.taints.map((t, i) => (
-              <li key={`${t.key}-${i}`} className="font-mono text-gray-700 dark:text-gray-300">
+            {node.taints.map((t) => (
+              // (key, effect) is unique within a valid taint set;
+              // using both as the React key avoids the index-based
+              // collision when two taints share the same key but
+              // different effects.
+              <li key={`${t.key}:${t.effect}`} className="font-mono text-gray-700 dark:text-gray-300">
                 {t.key}
                 {t.value ? `=${t.value}` : ''}:{t.effect}
               </li>

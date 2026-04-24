@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Scale, Loader2, AlertCircle, CheckCircle, ShieldAlert, Info, Save } from 'lucide-react';
 import clsx from 'clsx';
 import { useLoadBalancer, useUpdateLoadBalancer, type LoadBalancerProvider } from '@/hooks/use-load-balancer';
@@ -12,13 +12,16 @@ export default function LoadBalancerSettings() {
   const [enabled, setEnabled] = useState(false);
   const [provider, setProvider] = useState<LoadBalancerProvider>('null');
 
-  // Seed local state when the query resolves.
+  // Seed local state ONCE when the query first resolves. Watching the
+  // resolved fields in deps would clobber unsaved edits whenever a
+  // background refetch finishes.
+  const seeded = useRef(false);
   useEffect(() => {
-    if (status) {
-      setEnabled(status.enabled);
-      setProvider(status.provider);
-    }
-  }, [status?.enabled, status?.provider]);
+    if (!status || seeded.current) return;
+    setEnabled(status.enabled);
+    setProvider(status.provider);
+    seeded.current = true;
+  }, [status]);
 
   if (isLoading) {
     return (
@@ -44,7 +47,8 @@ export default function LoadBalancerSettings() {
     try {
       await update.mutateAsync({ enabled, provider });
     } catch {
-      // surfaced below
+      // Error is surfaced via update.error below; swallow so the
+      // onClick handler doesn't emit an unhandled promise rejection.
     }
   };
 

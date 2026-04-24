@@ -1417,13 +1417,15 @@ export const clusterNodes = pgTable('cluster_nodes', {
   cpuRequestsMillicores: integer('cpu_requests_millicores'),
   memoryRequestsBytes: bigint('memory_requests_bytes', { mode: 'number' }),
   statusConditions: jsonb('status_conditions').$type<NodeCondition[] | null>(),
-  joinedAt: timestamp('joined_at').notNull().defaultNow(),
-  lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),
+  // Migration 0050 — TIMESTAMPTZ so freshServerCount's NOW()-interval
+  // comparison isn't sensitive to the session TimeZone GUC.
+  joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   notes: text('notes'),
   labels: jsonb('labels').$type<Record<string, string> | null>(),
   taints: jsonb('taints').$type<Array<{ key: string; value?: string; effect: string }> | null>(),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('cluster_nodes_role_idx').on(table.role),
   index('cluster_nodes_last_seen_idx').on(table.lastSeenAt),

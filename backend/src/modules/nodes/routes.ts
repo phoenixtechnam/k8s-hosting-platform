@@ -1,15 +1,28 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { updateClusterNodeSchema } from '@k8s-hosting/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listNodes, getNode, updateNode } from './service.js';
 
+// RFC-1123 DNS subdomain label with dots — matches k8s' own node-name
+// validation. We reject anything else at the route boundary so a path
+// like "../../etc/passwd" never reaches the k8s client or DB.
+const NODE_NAME_REGEX = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
+
+function validateNodeName(name: string): void {
+  if (!NODE_NAME_REGEX.test(name)) {
+    throw new ApiError('INVALID_FIELD_VALUE', 'Invalid node name', 400, { field: 'name' });
+  }
+}
+
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
-  // Admin-only — node management is infra-level. Client-panel tokens
-  // don't need visibility into the cluster topology.
+  // Admin-only — node management is infra-level. Defence in depth:
+  // authenticate → requirePanel (refuse client-panel tokens even if
+  // they somehow carry an admin role claim) → requireRole.
   app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/nodes
@@ -38,6 +51,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { name } = request.params as { name: string };
+    validateNodeName(name);
     const row = await getNode(app.db, name);
     if (!row) throw new ApiError('NODE_NOT_FOUND', `Node '${name}' not found`, 404, { node_name: name });
     return success(row);
@@ -64,6 +78,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { name } = request.params as { name: string };
+    validateNodeName(name);
     const parsed = updateClusterNodeSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       const firstError = parsed.error.issues[0];
@@ -77,7 +92,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const updated = await updateNode(app.db, k8s, name, parsed.data);
+    const user = request.user;
+    const updated = await updateNode(app.db, k8s, name, parsed.data, user
+      ? { userId: user.sub, role: user.role }
+      : undefined);
     return success(updated);
   });
 }

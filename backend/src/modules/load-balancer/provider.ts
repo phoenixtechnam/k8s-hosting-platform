@@ -18,6 +18,8 @@
  *   - a cluster_nodes count check: server count ≥ 3 (see enforceHaGate)
  */
 
+import { ApiError } from '../../shared/errors.js';
+
 export type LoadBalancerProviderName = 'null' | 'hetzner' | 'aws' | 'metallb';
 
 export interface LoadBalancerTarget {
@@ -83,11 +85,11 @@ export class HetznerProvider implements LoadBalancerProvider {
   readonly name = 'hetzner' as const;
 
   async ensure(_target: LoadBalancerTarget): Promise<LoadBalancerHandle> {
-    throw new Error('HetznerProvider is not yet implemented. Set load_balancer.provider back to "null" or pick a different provider.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'HetznerProvider is not yet implemented. Set provider back to "null" or pick a different provider.', 501);
   }
 
   async remove(_providerId: string): Promise<void> {
-    throw new Error('HetznerProvider is not yet implemented.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'HetznerProvider is not yet implemented.', 501);
   }
 
   async status(_providerId: string): Promise<{ readonly healthy: boolean; readonly message?: string }> {
@@ -105,11 +107,11 @@ export class AWSProvider implements LoadBalancerProvider {
   readonly name = 'aws' as const;
 
   async ensure(_target: LoadBalancerTarget): Promise<LoadBalancerHandle> {
-    throw new Error('AWSProvider is not yet implemented.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'AWSProvider is not yet implemented.', 501);
   }
 
   async remove(_providerId: string): Promise<void> {
-    throw new Error('AWSProvider is not yet implemented.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'AWSProvider is not yet implemented.', 501);
   }
 
   async status(_providerId: string): Promise<{ readonly healthy: boolean; readonly message?: string }> {
@@ -128,11 +130,11 @@ export class MetalLBProvider implements LoadBalancerProvider {
   readonly name = 'metallb' as const;
 
   async ensure(_target: LoadBalancerTarget): Promise<LoadBalancerHandle> {
-    throw new Error('MetalLBProvider is not yet implemented.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'MetalLBProvider is not yet implemented.', 501);
   }
 
   async remove(_providerId: string): Promise<void> {
-    throw new Error('MetalLBProvider is not yet implemented.');
+    throw new ApiError('PROVIDER_NOT_IMPLEMENTED', 'MetalLBProvider is not yet implemented.', 501);
   }
 
   async status(_providerId: string): Promise<{ readonly healthy: boolean; readonly message?: string }> {

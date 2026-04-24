@@ -87,6 +87,18 @@ export const clientResponseSchema = z.object({
 
 export const clientListResponseSchema = paginatedResponseSchema(clientResponseSchema);
 
+// POST /api/v1/clients returns the created client enriched with the
+// auto-created client_admin user's one-shot generated password. This
+// extra `clientUser` block is only present on the create response.
+export const createClientResponseSchema = clientResponseSchema.extend({
+  clientUser: z.object({
+    id: z.string(),
+    email: z.string(),
+    generatedPassword: z.string(),
+  }),
+});
+export type CreateClientResponse = z.infer<typeof createClientResponseSchema>;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CreateClientInput = z.infer<typeof createClientSchema>;

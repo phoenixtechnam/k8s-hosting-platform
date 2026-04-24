@@ -26,7 +26,13 @@ export function useClusterNodes() {
 export function useClusterNode(name: string | undefined) {
   return useQuery({
     queryKey: ['cluster-nodes', name],
-    queryFn: () => apiFetch<SingleNodeEnvelope>(`/api/v1/admin/nodes/${encodeURIComponent(name!)}`),
+    queryFn: () => {
+      // `enabled` stops TanStack from running queryFn when name is
+      // falsy, but the TS signature doesn't narrow here — do it at
+      // runtime so a regression can't silently query "/nodes/".
+      if (!name) throw new Error('useClusterNode called without a name');
+      return apiFetch<SingleNodeEnvelope>(`/api/v1/admin/nodes/${encodeURIComponent(name)}`);
+    },
     enabled: Boolean(name),
   });
 }

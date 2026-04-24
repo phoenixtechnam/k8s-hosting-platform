@@ -26,14 +26,17 @@ if [[ -n "$REMOTE_HOST" ]]; then
   echo "════════════════════════════════════════════════"
   echo "  Remote Bootstrap — $REMOTE_HOST"
   echo "════════════════════════════════════════════════"
-  SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-  [[ -n "$SSH_KEY" ]] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
+  # Build SSH options as an array so spaces or special chars in the
+  # --ssh-key path don't split into separate words. Unquoted expansion
+  # of a single string would break on `id_rsa with spaces`.
+  SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+  [[ -n "$SSH_KEY" ]] && SSH_OPTS+=(-i "$SSH_KEY")
 
   echo "Copying bootstrap script to $REMOTE_HOST..."
-  scp $SSH_OPTS "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
+  scp "${SSH_OPTS[@]}" "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
 
   echo "Executing bootstrap on $REMOTE_HOST..."
-  ssh $SSH_OPTS "${SSH_USER}@${REMOTE_HOST}" "chmod +x /tmp/bootstrap.sh && /tmp/bootstrap.sh $*"
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" "chmod +x /tmp/bootstrap.sh && /tmp/bootstrap.sh $*"
   exit $?
 fi
 

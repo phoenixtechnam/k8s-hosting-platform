@@ -4,6 +4,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clusterNodes, type ClusterNode } from '../../db/schema.js';
 import type { NodeRole, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
 import { ApiError } from '../../shared/errors.js';
+import { projectNode } from './k8s-sync.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -62,6 +63,16 @@ export interface ObservedNode {
  * /api/v1/admin/nodes/:name does, via service.updateNode below.
  */
 export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): Promise<void> {
+  // Refuse phantom rows: k8s should always return a name, but the
+  // defensive '<unknown>' fallback in projectNode would have inserted
+  // a row with that literal primary key on malformed input.
+  if (!observed.name || observed.name === '<unknown>') {
+    console.warn('[node-sync] refusing to upsert nameless node');
+    return;
+  }
+  // INSERT timestamps come from Drizzle's defaultNow() (DB clock);
+  // UPDATE uses NOW() — both are DB-side so there's no process-vs-DB
+  // skew between paths.
   await db.insert(clusterNodes).values({
     name: observed.name,
     role: observed.role,
@@ -78,8 +89,8 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     scheduledPods: observed.scheduledPods,
     cpuRequestsMillicores: observed.cpuRequestsMillicores,
     memoryRequestsBytes: observed.memoryRequestsBytes,
-    lastSeenAt: new Date(),
-    updatedAt: new Date(),
+    // lastSeenAt + updatedAt default to NOW() via defaultNow() on the
+    // schema; omitting them here keeps every timestamp DB-side.
   }).onConflictDoUpdate({
     target: clusterNodes.name,
     set: {
@@ -129,19 +140,22 @@ export async function listSystemPodsOnNode(k8s: K8sClients, nodeName: string): P
 }
 
 /**
- * k8s-label-first update. PATCH flow:
- *   1. patchNode to set new labels (authoritative)
- *   2. tainting: apply/remove server-only taint based on target state
- *   3. upsertNodeFromK8s to refresh DB immediately
+ * k8s-first update. The previous version issued two separate
+ * `patchNode` calls (labels, then taints), which could leave k8s in
+ * a half-applied state if the second failed. This version combines
+ * labels + taints into a single strategic-merge patch, so the whole
+ * update lands atomically from the k8s API's perspective.
  *
- * If step 1 or 2 fails the DB stays consistent with k8s — the next
- * reconciler tick would overwrite anyway.
+ * After the patch, DB state is refreshed from k8s via the sync
+ * projection (instead of trusting the existing DB row, which would
+ * still show the pre-patch role until the next 60 s reconciler tick).
  */
 export async function updateNode(
   db: Database,
   k8s: K8sClients,
   name: string,
   patch: UpdateClusterNodeInput,
+  actor?: { userId: string; role: string },
 ): Promise<ClusterNode> {
   const existing = await getNode(db, name);
   if (!existing) {
@@ -166,6 +180,32 @@ export async function updateNode(
     }
   }
 
+  // force=true bypassed the safety check — record the decision in the
+  // audit log before touching k8s, so even a subsequent failure is
+  // attributable. Non-fatal if the audit write itself fails (would
+  // mask the real action), so wrap and swallow.
+  if (patch.force && existing.role === 'server' && targetRole === 'worker') {
+    try {
+      const { auditLogs } = await import('../../db/schema.js');
+      await db.insert(auditLogs).values({
+        id: crypto.randomUUID(),
+        actorId: actor?.userId ?? 'system',
+        actorType: 'user',
+        actionType: 'node.force_demote',
+        resourceType: 'cluster_node',
+        resourceId: name,
+        changes: {
+          from_role: existing.role,
+          to_role: targetRole,
+          actor_role: actor?.role ?? 'unknown',
+          force: true,
+        },
+      });
+    } catch (err) {
+      console.error('[nodes] force-demote audit write failed (continuing):', (err as Error).message);
+    }
+  }
+
   // Build the labels object we want on the node. Merge with observed
   // labels so operator-set labels (kubernetes.io/*, custom team tags)
   // aren't wiped. Drizzle returns JSONB as already-parsed objects.
@@ -176,33 +216,25 @@ export async function updateNode(
     [HOST_CLIENT_WORKLOADS_LABEL]: String(targetCanHost),
   };
 
-  // k8s merge-patch on labels (null = remove). Using a strategic-merge
-  // JSON body on /api/v1/nodes/:name — the client-node library maps
-  // raw dicts via the `body` parameter.
+  // Compose labels + taints in a single strategic-merge patch to
+  // avoid the old "labels succeeded, taints failed" orphan state.
   if (patch.role !== undefined || patch.canHostClientWorkloads !== undefined) {
-    // The typed param shape of the @kubernetes/client-node v1.4
-    // generator omits `contentType` even though the runtime supports
-    // it — the cast mirrors the idiom used elsewhere in this repo
-    // (see file-manager/idle-cleanup.ts).
-    await k8s.core.patchNode({
-      name,
-      body: { metadata: { labels: nextLabels } },
-      contentType: 'application/strategic-merge-patch+json',
-    } as unknown as Parameters<typeof k8s.core.patchNode>[0]);
-
-    // Server-only taint only applies when role=server AND
-    // canHostClientWorkloads=false. We set/remove it via a second
-    // patch rather than overloading the first — keeps the rollback
-    // story clear.
     const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
     const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
     const shouldTaint = targetRole === 'server' && !targetCanHost;
     const nextTaints = shouldTaint
       ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
       : withoutOurs;
+
+    // Single atomic patch. The typed param shape of
+    // @kubernetes/client-node v1.4 omits `contentType`; cast mirrors
+    // the idiom used elsewhere in this repo.
     await k8s.core.patchNode({
       name,
-      body: { spec: { taints: nextTaints } },
+      body: {
+        metadata: { labels: nextLabels },
+        spec: { taints: nextTaints },
+      },
       contentType: 'application/strategic-merge-patch+json',
     } as unknown as Parameters<typeof k8s.core.patchNode>[0]);
   }
@@ -214,7 +246,21 @@ export async function updateNode(
       .where(eq(clusterNodes.name, name));
   }
 
-  // Refresh from k8s to reflect the labels we just wrote.
+  // Re-read the node from k8s and upsert the DB so the response
+  // reflects the labels we just wrote, not the stale pre-patch row.
+  // The reconciler will repeat this work on its next tick — harmless
+  // redundancy, much better UX than "saved but still shows old role
+  // for 60 s."
+  try {
+    const liveRes = await k8s.core.readNode({ name });
+    const observed = projectNode(liveRes as Parameters<typeof projectNode>[0]);
+    await upsertNodeFromK8s(db, observed);
+  } catch (err) {
+    // Refresh is best-effort; if it fails the reconciler catches up
+    // within 60 s. Don't mask a successful patch with a refresh error.
+    console.warn('[nodes] post-patch refresh failed:', (err as Error).message);
+  }
+
   const updated = await getNode(db, name);
   if (!updated) {
     throw new ApiError('NODE_NOT_FOUND', `Node '${name}' disappeared after patch`, 500, { node_name: name });

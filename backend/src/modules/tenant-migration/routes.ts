@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -7,6 +7,7 @@ import { migrateClientToWorker } from './service.js';
 
 export async function tenantMigrationRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
+  app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // POST /api/v1/admin/clients/:id/migrate-to-worker
