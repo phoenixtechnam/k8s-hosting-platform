@@ -30,6 +30,7 @@ import AuditLogs from '@/pages/AuditLogs';
 import AiSettings from '@/pages/AiSettings';
 import Placeholder from '@/pages/Placeholder';
 import ClusterNodes from '@/pages/ClusterNodes';
+import LoadBalancerSettings from '@/pages/LoadBalancerSettings';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
@@ -77,6 +78,7 @@ export default function App() {
             <Route path="settings/users" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AdminUsers /></ProtectedRoute>} />
             <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
             <Route path="settings/nodes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><ClusterNodes /></ProtectedRoute>} />
+            <Route path="settings/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerSettings /></ProtectedRoute>} />
             <Route path="monitoring/health" element={<HealthDashboard />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
             <Route path="settings/email" element={<EmailManagement />} />
