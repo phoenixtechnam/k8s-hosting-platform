@@ -198,14 +198,24 @@ parse_args() {
     error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev', 'staging', or 'production'."
   fi
 
-  if [[ "$NODE_ROLE" == "server" ]]; then
-    [[ -z "$PLATFORM_DOMAIN" ]] && error "--domain is required. Example: --domain phoenix-host.net"
+  # Use `if` instead of `[[ ]] && error` here: with `set -e`, a `[[ ]] && cmd`
+  # whose LHS evaluates false returns 1, and if it's the last expression of
+  # this function the caller's `set -e` aborts the script silently right
+  # after parse_args. (Reproduced 2026-04-25 on the admin worker rejoin.)
+  if [[ "$NODE_ROLE" == "server" ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
+    error "--domain is required. Example: --domain phoenix-host.net"
   fi
 
   if [[ "$NODE_ROLE" == "worker" ]]; then
-    [[ -z "$K3S_SERVER_IP" ]] && error "Worker mode requires --server <CONTROL_PLANE_IP>"
-    [[ -z "$K3S_TOKEN" ]]     && error "Worker mode requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
+    if [[ -z "$K3S_SERVER_IP" ]]; then
+      error "Worker mode requires --server <CONTROL_PLANE_IP>"
+    fi
+    if [[ -z "$K3S_TOKEN" ]]; then
+      error "Worker mode requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
+    fi
   fi
+
+  return 0
 }
 
 check_root() {
