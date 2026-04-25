@@ -18,3 +18,22 @@ export function useClusterHealth() {
     refetchInterval: 30_000,
   });
 }
+
+export type NodeSubsystemStatus = 'healthy' | 'degraded' | 'missing';
+
+export interface NodeSubsystemReport {
+  readonly nodeName: string;
+  readonly calico: NodeSubsystemStatus;
+  readonly calicoMessage?: string;
+  readonly longhornCsi: NodeSubsystemStatus;
+  readonly longhornCsiMessage?: string;
+  readonly csiDriverRegistered: boolean;
+}
+
+export function useNodeSubsystemHealth() {
+  return useQuery({
+    queryKey: ['cluster-health', 'nodes'],
+    queryFn: () => apiFetch<{ data: { nodes: readonly NodeSubsystemReport[] } }>('/api/v1/admin/cluster-health/nodes'),
+    refetchInterval: 60_000,
+  });
+}

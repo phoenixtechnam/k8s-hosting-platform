@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
@@ -20,6 +20,7 @@ import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useMigrateClientToWorker } from '@/hooks/use-tenant-migration';
+import { useClientNamespaceIntegrity, useRepairClientNamespace, type IntegrityFinding } from '@/hooks/use-namespace-integrity';
 import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type MailSubmitRotateResult, type ImapSyncJob } from '@/hooks/use-email';
 import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
@@ -353,6 +354,8 @@ export default function ClientDetail() {
       <SubscriptionCard clientId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
 
       <ResourceLimitsCard client={client} clientId={id!} />
+
+      <NamespaceIntegrityBanner clientId={id!} />
 
       <StorageLifecycleCard clientId={id!} client={client} />
 
@@ -1937,6 +1940,87 @@ function PlacementCard({ clientId, client }: {
           Migrated — restarted {migrate.data.data.deploymentsRestarted} deployment(s).
         </p>
       )}
+    </div>
+  );
+}
+
+const FINDING_LABEL: Record<IntegrityFinding, string> = {
+  namespace_missing: 'Namespace missing',
+  pvc_missing: 'Tenant PVC missing',
+  resource_quota_missing: 'ResourceQuota missing',
+  network_policy_missing: 'NetworkPolicies missing',
+};
+
+function NamespaceIntegrityBanner({ clientId }: { readonly clientId: string }) {
+  const { data, isLoading } = useClientNamespaceIntegrity(clientId);
+  const repair = useRepairClientNamespace(clientId);
+  const report = data?.data;
+
+  if (isLoading || !report) return null;
+  if (report.findings.length === 0 && repair.data?.data.repaired.length === 0 && !repair.error) {
+    // Healthy + nothing repaired this session — render nothing to keep the page tight.
+    return null;
+  }
+
+  const stillBroken = report.findings;
+  const justRepaired = repair.data?.data.repaired ?? [];
+  const repairErrors = repair.data?.data.errors ?? [];
+  const tone = stillBroken.length > 0
+    ? 'border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-900/20'
+    : 'border-green-300 bg-green-50 dark:border-green-700 dark:bg-green-900/20';
+
+  return (
+    <div className={`rounded-xl border p-4 text-sm ${tone}`} data-testid="namespace-integrity-banner">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2">
+          {stillBroken.length > 0 ? (
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
+          ) : (
+            <CheckCircle size={18} className="mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
+          )}
+          <div>
+            <div className="font-semibold text-gray-900 dark:text-gray-100">
+              {stillBroken.length > 0 ? 'Namespace integrity issues detected' : 'Namespace integrity restored'}
+            </div>
+            {stillBroken.length > 0 && (
+              <p className="mt-0.5 text-xs text-red-800 dark:text-red-300">
+                The reconciler will retry every 30 minutes. You can also run it now.
+              </p>
+            )}
+            {stillBroken.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-xs">
+                {stillBroken.map((f) => (
+                  <li key={f} className="text-red-800 dark:text-red-300">• {FINDING_LABEL[f]}</li>
+                ))}
+              </ul>
+            )}
+            {justRepaired.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-xs">
+                {justRepaired.map((f) => (
+                  <li key={`r-${f}`} className="text-green-800 dark:text-green-300">✓ Repaired: {FINDING_LABEL[f]}</li>
+                ))}
+              </ul>
+            )}
+            {repairErrors.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-xs">
+                {repairErrors.map((e, i) => (
+                  <li key={`e-${i}`} className="font-mono text-red-700 dark:text-red-400">{e}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => repair.mutate()}
+          disabled={repair.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="namespace-integrity-repair-button"
+        >
+          {repair.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Run reconciler
+        </button>
+      </div>
     </div>
   );
 }

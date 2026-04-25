@@ -60,6 +60,7 @@ import { nodeRoutes } from './modules/nodes/routes.js';
 import { loadBalancerRoutes } from './modules/load-balancer/routes.js';
 import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
+import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -277,6 +278,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(loadBalancerRoutes, { prefix: '/api/v1' });
   await app.register(tenantMigrationRoutes, { prefix: '/api/v1' });
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });
+  await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
@@ -428,6 +430,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // close.
         const nodeSyncHandle = startNodeSyncReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeSyncHandle.stop());
+
+        // Issue 3 fix: per-node Calico + Longhorn CSI health watcher.
+        // Emits an admin notification on regression / recovery so a
+        // worker that joined but never reached Ready surfaces in the
+        // bell icon, not just on the Cluster Nodes page.
+        const { startNodeHealthReconciler } = await import('./modules/cluster-health/scheduler.js');
+        const nodeHealthHandle = startNodeHealthReconciler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => nodeHealthHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }

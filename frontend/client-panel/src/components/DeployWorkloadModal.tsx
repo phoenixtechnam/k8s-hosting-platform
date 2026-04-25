@@ -305,8 +305,12 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
 
   // Error state
   if (deployState === 'error') {
-    const errorMessage = createDeployment.error instanceof Error
-      ? createDeployment.error.message
+    const err = createDeployment.error;
+    const errorCode = (err as { code?: string } | null)?.code;
+    const isSoftDeleteCollision = errorCode === 'DEPLOYMENT_NAME_RESERVED_BY_DELETED';
+    const isDuplicate = errorCode === 'DUPLICATE_NAME' || isSoftDeleteCollision;
+    const errorMessage = err instanceof Error
+      ? err.message
       : 'Deployment failed. Please try again.';
 
     return (
@@ -323,13 +327,19 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
           </div>
           <div className="flex flex-col items-center justify-center py-16 px-6">
-            <AlertCircle size={48} className="text-red-500 mb-4" />
+            <AlertCircle size={48} className={isDuplicate ? 'text-amber-500 mb-4' : 'text-red-500 mb-4'} />
             <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-              Deployment Failed
+              {isDuplicate ? 'Name already in use' : 'Deployment Failed'}
             </p>
-            <p className="text-sm text-red-600 dark:text-red-400 mb-8 text-center max-w-md">
+            <p className="text-sm text-red-600 dark:text-red-400 mb-2 text-center max-w-md">
               {errorMessage}
             </p>
+            {isSoftDeleteCollision && (
+              <p className="text-xs text-amber-700 dark:text-amber-300 mb-8 text-center max-w-md">
+                A previous deployment with this name was deleted but is preserved for restore.
+                Pick a different name, or ask an admin to permanently remove the old one if you don't need it.
+              </p>
+            )}
             <div className="flex items-center gap-3">
               <button
                 type="button"
@@ -339,7 +349,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                 }}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                Retry
+                {isDuplicate ? 'Change name' : 'Retry'}
               </button>
               <button
                 type="button"

@@ -24,6 +24,12 @@ import { applyDeleted } from '../client-lifecycle/cascades.js';
 const EXPIRY_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const AUDIT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const LIFECYCLE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+// Issue 1 fix: every 30 minutes, sweep all provisioned clients for missing
+// PVC / RQ / NetPol and auto-repair. Cluster rebootstraps and DR restores
+// can leave the namespace as a husk that the lifecycle module never fully
+// rehydrated. 30 min is a reasonable detection bound — operators can also
+// trigger a manual repair from the admin UI.
+const INTEGRITY_INTERVAL_MS = 30 * 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
 
 /**
@@ -70,6 +76,7 @@ export function startStorageLifecycleScheduler(
   let expiryTimer: NodeJS.Timeout | null = null;
   let auditTimer: NodeJS.Timeout | null = null;
   let lifecycleTimer: NodeJS.Timeout | null = null;
+  let integrityTimer: NodeJS.Timeout | null = null;
   let stopped = false;
 
   const runExpiry = async () => {
@@ -149,9 +156,28 @@ export function startStorageLifecycleScheduler(
     if (!stopped) lifecycleTimer = setTimeout(runLifecycle, LIFECYCLE_INTERVAL_MS);
   };
 
+  // Issue 1 fix: namespace integrity sweep. Repairs missing PVC / RQ /
+  // NetPol on provisioned clients (post-rebootstrap drift). Self-heals
+  // without operator action; emits notifications when something is
+  // repaired or fails.
+  const runIntegrity = async () => {
+    if (stopped) return;
+    try {
+      const { sweepFleetIntegrity } = await import('../namespace-integrity/service.js');
+      const result = await sweepFleetIntegrity(db, k8s);
+      if (result.repaired > 0 || result.errored > 0) {
+        console.log(`[namespace-integrity] sweep: checked=${result.checked} repaired=${result.repaired} errored=${result.errored}`);
+      }
+    } catch (err) {
+      console.error('[namespace-integrity] sweep failed:', (err as Error).message);
+    }
+    if (!stopped) integrityTimer = setTimeout(runIntegrity, INTEGRITY_INTERVAL_MS);
+  };
+
   expiryTimer = setTimeout(runExpiry, INITIAL_DELAY_MS);
   auditTimer = setTimeout(runAudit, INITIAL_DELAY_MS + 30_000);
   lifecycleTimer = setTimeout(runLifecycle, INITIAL_DELAY_MS + 60_000);
+  integrityTimer = setTimeout(runIntegrity, INITIAL_DELAY_MS + 90_000);
 
   return {
     stop: () => {
@@ -159,6 +185,7 @@ export function startStorageLifecycleScheduler(
       if (expiryTimer) clearTimeout(expiryTimer);
       if (auditTimer) clearTimeout(auditTimer);
       if (lifecycleTimer) clearTimeout(lifecycleTimer);
+      if (integrityTimer) clearTimeout(integrityTimer);
     },
   };
 }

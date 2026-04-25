@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle } from 'lucide-react';
+import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
+import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
 
 /**
  * Storage Configuration
@@ -39,6 +40,8 @@ export default function StorageSettings() {
 
       {/* ─── Live inventory ─── */}
       <StorageInventoryCard />
+
+      <NamespaceIntegrityCard />
 
       {/* ─── Longhorn dashboard ─── */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4">
@@ -226,6 +229,57 @@ function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => voi
           // Domain=.<apex> attribute includes the longhorn subdomain and
           // SameSite=None (set when SESSION_COOKIE_DOMAIN is configured).
         />
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Issue 1 fix: surfaces the namespace-integrity reconciler. Auto-runs every
+ * 30 min via the storage-lifecycle scheduler; this card lets an operator
+ * trigger a fleet-wide sweep on demand. Per-client repair lives on the
+ * Client Detail page banner.
+ */
+function NamespaceIntegrityCard() {
+  const sweep = useSweepNamespaceIntegrity();
+  const result = sweep.data?.data;
+  const err = sweep.error as { message?: string } | null;
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4">
+      <div className="flex items-center gap-3">
+        <RefreshCw size={20} className="text-gray-700 dark:text-gray-300" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Namespace integrity</h2>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        After a cluster rebootstrap or DR restore, a tenant namespace can lose its PVC,
+        ResourceQuota, or NetworkPolicies while still appearing provisioned. The reconciler
+        sweeps every provisioned client every 30 minutes and re-creates the missing pieces.
+        Run it now from here when you suspect drift after an incident.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => sweep.mutate()}
+          disabled={sweep.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="namespace-integrity-sweep-button"
+        >
+          {sweep.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Run fleet sweep
+        </button>
+        {result && (
+          <span className="inline-flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300">
+            <CheckCircle size={14} className="text-green-600 dark:text-green-400" />
+            checked {result.checked} · repaired {result.repaired} · errored {result.errored}
+          </span>
+        )}
+        {err && (
+          <span className="inline-flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400">
+            <AlertCircle size={14} />
+            {err.message}
+          </span>
+        )}
       </div>
     </div>
   );

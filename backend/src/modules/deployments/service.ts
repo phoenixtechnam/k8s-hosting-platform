@@ -252,6 +252,32 @@ export async function createDeployment(
     ? input.storage_path
     : `${entry.type}/${entry.code}/${input.name}`;
 
+  // Pre-flight: distinguish "active duplicate" from "soft-deleted with same name".
+  // Soft-deleted rows still hold the (client_id, name) slot deliberately so a
+  // future restore flow can recover them. The UI needs to tell the user which
+  // case they're hitting; otherwise both look like a generic 23505.
+  const [existing] = await db
+    .select({ id: deployments.id, status: deployments.status, deletedAt: deployments.deletedAt })
+    .from(deployments)
+    .where(and(eq(deployments.clientId, clientId), eq(deployments.name, input.name)))
+    .limit(1);
+  if (existing) {
+    if (existing.status === 'deleted' || existing.deletedAt) {
+      throw new ApiError(
+        'DEPLOYMENT_NAME_RESERVED_BY_DELETED',
+        `Name '${input.name}' belongs to a soft-deleted deployment. Restore it or pick a new name.`,
+        409,
+        { name: input.name, conflicting_deployment_id: existing.id, conflict_kind: 'soft_deleted' },
+      );
+    }
+    throw new ApiError(
+      'DUPLICATE_NAME',
+      `A deployment named '${input.name}' already exists for this client`,
+      409,
+      { name: input.name, conflicting_deployment_id: existing.id, conflict_kind: 'active' },
+    );
+  }
+
   try {
     await db.insert(deployments).values({
       id,
@@ -269,12 +295,15 @@ export async function createDeployment(
       status: 'pending',
     });
   } catch (err) {
+    // Race-condition fallback — pre-flight passed but a concurrent insert
+    // landed between the SELECT and INSERT. Translate the raw Postgres
+    // unique violation back into the structured DUPLICATE_NAME error.
     if ((err as { code?: string }).code === '23505') {
       throw new ApiError(
         'DUPLICATE_NAME',
         `A deployment named '${input.name}' already exists for this client`,
         409,
-        { name: input.name },
+        { name: input.name, conflict_kind: 'race' },
       );
     }
     throw err;

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Server, Loader2, AlertCircle, Edit, X, Save, ShieldAlert, CheckCircle, HardDrive, Cpu } from 'lucide-react';
 import clsx from 'clsx';
 import { useClusterNodes, useUpdateClusterNode } from '@/hooks/use-cluster-nodes';
+import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import type { ClusterNodeResponse } from '@k8s-hosting/api-contracts';
 
 const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -39,7 +40,11 @@ function readyCondition(node: ClusterNodeResponse): 'Ready' | 'NotReady' | 'Unkn
 
 export default function ClusterNodes() {
   const { data, isLoading, error } = useClusterNodes();
+  const { data: subsystemData } = useNodeSubsystemHealth();
   const nodes = (data?.data ?? []) as readonly ClusterNodeResponse[];
+  const subsystemByName = new Map<string, NodeSubsystemReport>(
+    (subsystemData?.data.nodes ?? []).map((s) => [s.nodeName, s]),
+  );
 
   if (isLoading) {
     return (
@@ -77,7 +82,7 @@ export default function ClusterNodes() {
       ) : (
         <div className="space-y-4">
           {nodes.map((node) => (
-            <NodeCard key={node.name} node={node} />
+            <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} />
           ))}
         </div>
       )}
@@ -85,7 +90,7 @@ export default function ClusterNodes() {
   );
 }
 
-function NodeCard({ node }: { readonly node: ClusterNodeResponse }) {
+function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport }) {
   const [editing, setEditing] = useState(false);
   const ready = readyCondition(node);
   const stale = staleness(node.lastSeenAt);
@@ -138,11 +143,57 @@ function NodeCard({ node }: { readonly node: ClusterNodeResponse }) {
         </div>
       </div>
 
+      {subsystem && (
+        <SubsystemHealthRow subsystem={subsystem} />
+      )}
+
       {editing ? (
         <NodeEditForm node={node} onDone={() => setEditing(false)} />
       ) : (
         <NodeDetails node={node} />
       )}
+    </div>
+  );
+}
+
+function SubsystemHealthRow({ subsystem }: { readonly subsystem: NodeSubsystemReport }) {
+  const allHealthy = subsystem.calico === 'healthy' && subsystem.longhornCsi === 'healthy' && subsystem.csiDriverRegistered;
+  if (allHealthy) return null;
+
+  const stateClass = (s: NodeSubsystemStatus): string => clsx(
+    'rounded-full px-2 py-0.5 text-xs font-medium',
+    s === 'healthy' && 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    s === 'degraded' && 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+    s === 'missing' && 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  );
+
+  return (
+    <div className="border-y border-amber-200 bg-amber-50 px-5 py-3 text-xs dark:border-amber-800 dark:bg-amber-900/20" data-testid={`node-subsystem-${subsystem.nodeName}`}>
+      <div className="flex items-center gap-2 mb-1">
+        <ShieldAlert size={14} className="text-amber-700 dark:text-amber-400" />
+        <span className="font-semibold text-amber-900 dark:text-amber-200">Worker subsystem issues</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-amber-900 dark:text-amber-200">
+        <span className="inline-flex items-center gap-1.5">
+          Calico CNI: <span className={stateClass(subsystem.calico)}>{subsystem.calico}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          Longhorn CSI: <span className={stateClass(subsystem.longhornCsi)}>{subsystem.longhornCsi}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          CSI driver registered: {subsystem.csiDriverRegistered ? '✓' : '✗'}
+        </span>
+      </div>
+      {(subsystem.calicoMessage || subsystem.longhornCsiMessage) && (
+        <ul className="mt-2 space-y-0.5 font-mono text-amber-900 dark:text-amber-300">
+          {subsystem.calicoMessage && <li>calico: {subsystem.calicoMessage}</li>}
+          {subsystem.longhornCsiMessage && <li>longhorn-csi: {subsystem.longhornCsiMessage}</li>}
+        </ul>
+      )}
+      <p className="mt-2 text-amber-800 dark:text-amber-300">
+        Tenant pods pinned to this node will fail to attach PVCs. Drain + re-bootstrap the worker via{' '}
+        <code className="font-mono">./scripts/bootstrap.sh --remote &lt;ip&gt; --role worker --server &lt;cp&gt; --token &lt;t&gt;</code>.
+      </p>
     </div>
   );
 }
