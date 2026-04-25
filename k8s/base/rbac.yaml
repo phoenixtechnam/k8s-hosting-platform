@@ -96,6 +96,14 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+  # CSINode resources surface which CSI drivers each node has registered
+  # (cluster-health/service.ts uses listCSINode to flag nodes whose
+  # Longhorn CSI plugin never finished registration). Built-in
+  # storage.k8s.io/v1 — must be granted explicitly because the wildcard
+  # on core "" group does not cover the storage API group.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
   # Phase 2c: the backend `certificates` module creates and manages
   # cert-manager Certificate CRs in customer namespaces. Issuers and
   # ClusterIssuers are read-only (operators provision them via

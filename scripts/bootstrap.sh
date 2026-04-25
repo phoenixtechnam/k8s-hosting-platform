@@ -296,6 +296,20 @@ table inet filter {
     udp dport 51820 accept   # WireGuard (NetBird)
     udp dport 29899 accept   # NetBird direct connection
 
+    # Calico VXLAN (UDP/4789) — pod-to-pod traffic between cluster nodes.
+    # VXLAN itself has NO authentication, so we never expose it to the
+    # public internet. The expected paths are:
+    #   * 100.64.0.0/10 — NetBird CGNAT mesh (cross-subnet production)
+    #   * 10/8, 172.16/12, 192.168/16 — Hetzner Cloud private networks
+    # If you need VXLAN over a public underlay, layer Calico WireGuard
+    # encryption (UDP/51821) on top OR add a Hetzner Cloud Firewall rule
+    # restricting 4789 to peer node public IPs — do NOT widen this rule.
+    ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 4789 accept
+
+    # Calico WireGuard (UDP/51821) — authenticated by public-key crypto,
+    # safe to expose like NetBird's 51820.
+    udp dport 51821 accept
+
     # Stalwart mail server ports — required for a node carrying the
     # mail StatefulSet's pod (the staging + production overlays pin
     # stalwart-mail Service with externalIPs to the node). Closed-by-
@@ -674,6 +688,15 @@ install_calico() {
     }
   done
 
+  # Calico networking config (2026-04-25):
+  #   * encapsulation: VXLAN (always-on, not VXLANCrossSubnet) — production
+  #     workers may live in different subnets than the server; "CrossSubnet"
+  #     mode falls back to BGP between same-subnet peers, which then needs
+  #     a working BIRD daemon. Always-on VXLAN removes BGP from the path
+  #     entirely and works identically same-subnet vs cross-subnet.
+  #   * bgp: Disabled — no BIRD process, one less failure surface.
+  #   * mtu: 1450 — 1500 underlay − 50 VXLAN overhead.
+  # Workers join over UDP/4789 (VXLAN); see configure_firewall().
   cat <<'EOF' | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
@@ -681,10 +704,12 @@ metadata:
   name: default
 spec:
   calicoNetwork:
+    bgp: Disabled
+    mtu: 1450
     ipPools:
     - blockSize: 26
       cidr: 10.42.0.0/16
-      encapsulation: VXLANCrossSubnet
+      encapsulation: VXLAN
       natOutgoing: Enabled
       nodeSelector: all()
     - blockSize: 122

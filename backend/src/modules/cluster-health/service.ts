@@ -1,3 +1,4 @@
+import type { V1CSINode } from '@kubernetes/client-node';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // Surface the readiness of key infrastructure Deployments without
@@ -75,7 +76,7 @@ export async function collectClusterHealth(k8s: K8sClients): Promise<ComponentRe
           message: 'not installed',
         };
       }
-      console.error(`[cluster-health] ${t.ns}/${t.name} read failed:`, (err as Error).message ?? err);
+      console.error(`[cluster-health] ${t.ns}/${t.name} read failed:`, err instanceof Error ? err.message : err);
       return {
         name: t.name,
         namespace: t.ns,
@@ -118,18 +119,17 @@ export async function collectNodeSubsystemHealth(k8s: K8sClients): Promise<NodeS
   const longhornPods = await k8s.core.listNamespacedPod({ namespace: 'longhorn-system' }).catch(() => ({ items: [] as unknown[] }));
 
   // CSINode resources tell us which CSI drivers are registered on each node.
-  // Use the storage v1 list. The k8s client typings don't expose storage v1
-  // by default, so use customObjects for the same effect.
-  let csiNodes: { metadata: { name?: string }; spec?: { drivers?: { name: string }[] } }[] = [];
+  // CSINode lives in storage.k8s.io/v1 — a built-in API, NOT a CRD — so the
+  // CustomObjects client returns empty lists for it. Use the typed
+  // StorageV1Api directly. (Bug fix 2026-04-25: customObjects path silently
+  // reported every node as "csiDriverRegistered: false" even on healthy
+  // nodes, scaring operators on the Cluster Nodes page.)
+  let csiNodes: V1CSINode[] = [];
   try {
-    const res = await k8s.custom.listClusterCustomObject({
-      group: 'storage.k8s.io',
-      version: 'v1',
-      plural: 'csinodes',
-    }) as { items?: typeof csiNodes };
-    csiNodes = res.items ?? [];
-  } catch {
-    csiNodes = [];
+    const res = await k8s.storage.listCSINode();
+    csiNodes = res.items;
+  } catch (err) {
+    console.error('[cluster-health] listCSINode failed:', err instanceof Error ? err.message : err);
   }
 
   type Pod = { metadata?: { labels?: Record<string, string>; name?: string }; spec?: { nodeName?: string }; status?: { phase?: string; containerStatuses?: { ready?: boolean; name?: string }[] } };
