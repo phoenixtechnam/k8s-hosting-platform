@@ -7,7 +7,8 @@ metadata:
     app: admin-panel
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  replicas: 1
+  # M12: 2 replicas + topology spread for HA across control-plane.
+  replicas: 2
   selector:
     matchLabels:
       app: admin-panel
@@ -16,6 +17,13 @@ spec:
       labels:
         app: admin-panel
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: admin-panel
       containers:
         - name: admin
           image: ghcr.io/phoenixtechnam/hosting-platform/admin-panel:latest

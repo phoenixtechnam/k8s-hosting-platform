@@ -6,7 +6,8 @@ metadata:
   labels:
     app: dex
 spec:
-  replicas: 1
+  # M12: 2 replicas + topology spread for HA across control-plane.
+  replicas: 2
   selector:
     matchLabels:
       app: dex
@@ -15,6 +16,13 @@ spec:
       labels:
         app: dex
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: dex
       containers:
         - name: dex
           image: ghcr.io/dexidp/dex:v2.45.1

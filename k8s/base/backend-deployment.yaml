@@ -7,7 +7,12 @@ metadata:
     app: platform-api
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  replicas: 1
+  # M12 (2026-04-25): scaled to 2 for HA + topology spread across
+  # control-plane hosts. With 3 servers the operator can scale to 3
+  # via `kubectl scale deployment/platform-api -n platform --replicas=3`
+  # (bootstrap.sh's pin_system_components_to_servers does this on
+  # first-server install when 3+ servers are detected).
+  replicas: 2
   selector:
     matchLabels:
       app: platform-api
@@ -17,6 +22,13 @@ spec:
         app: platform-api
     spec:
       serviceAccountName: platform-api
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: platform-api
       containers:
         - name: api
           image: ghcr.io/phoenixtechnam/hosting-platform/backend:latest

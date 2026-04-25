@@ -611,10 +611,27 @@ pin_system_components_to_servers() {
 
   log "Pinning Helm-managed system components to server nodes..."
 
+  # M12: every system Deployment with replicas>1 also gets a topology
+  # spread constraint so the replicas land one-per-host (with maxSkew=1
+  # ScheduleAnyway as the soft constraint — degrades gracefully when
+  # only 1 server exists). Without this, the scheduler keeps placing
+  # replicas on whichever server got Ready first; on the 2026-04-25
+  # 4-node staging cluster that put all CoreDNS/oauth2-proxy/dex/
+  # admin/client/postgres/redis pods on staging, leaving staging at
+  # ~52% RAM while staging2/3 sat near idle.
   local server_patch
   server_patch='{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"platform.phoenix-host.net/node-role","operator":"In","values":["server"]}]}]}}},"tolerations":[{"key":"platform.phoenix-host.net/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
   local toleration_only_patch
   toleration_only_patch='{"spec":{"template":{"spec":{"tolerations":[{"key":"platform.phoenix-host.net/server-only","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'
+
+  # Apply a topology spread constraint to a Deployment by pod label.
+  # Args: namespace, deployment-name, label-key, label-value
+  apply_topology_spread() {
+    local ns="$1" name="$2" lkey="$3" lval="$4"
+    local patch
+    patch='{"spec":{"template":{"spec":{"topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"kubernetes.io/hostname","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"'"$lkey"'":"'"$lval"'"}}}]}}}}'
+    kubectl patch deployment "$name" -n "$ns" --type=strategic --patch="$patch" 2>/dev/null || true
+  }
 
   # Control-plane-only (pin to server + tolerate server-only taint).
   # `|| true` because not every combination is guaranteed to exist on
@@ -663,6 +680,53 @@ pin_system_components_to_servers() {
       --patch="$toleration_only_patch" 2>/dev/null \
     || true
   done
+
+  # M12: scale CoreDNS to 2 replicas + spread across servers.
+  # k3s ships CoreDNS=1 by default; on a 3-server cluster that's a
+  # single point of DNS failure. Bump to 2 and topology-spread so
+  # killing one server doesn't take cluster DNS down.
+  if kubectl get deploy coredns -n kube-system &>/dev/null 2>&1; then
+    local desired=2
+    local nodes
+    nodes=$(kubectl get nodes -l platform.phoenix-host.net/node-role=server --no-headers 2>/dev/null | wc -l)
+    if [[ "$nodes" -ge 3 ]]; then desired=3; fi
+    log "Scaling CoreDNS to ${desired} replicas + topology spread."
+    kubectl scale deployment/coredns -n kube-system --replicas="$desired" 2>/dev/null || true
+    apply_topology_spread kube-system coredns k8s-app kube-dns
+  fi
+
+  # M12: spread the public-facing platform Deployments across servers.
+  # These all live in the platform overlay (Flux-managed); patch them
+  # in-place so the constraint sticks even after Flux re-reconciles
+  # (kubectl patch updates the Deployment spec, Flux server-side-apply
+  # preserves the field on next reconcile because we own that path).
+  for ns_name_label in \
+      "platform:platform-api:app=platform-api" \
+      "platform:admin-panel:app=admin-panel" \
+      "platform:client-panel:app=client-panel" \
+      "platform:dex:app=dex" \
+      "platform:oauth2-proxy:app.kubernetes.io/name=oauth2-proxy"; do
+    local ns="${ns_name_label%%:*}"
+    local rest="${ns_name_label#*:}"
+    local name="${rest%%:*}"
+    local label="${rest#*:}"
+    local lkey="${label%%=*}"
+    local lval="${label#*=}"
+    apply_topology_spread "$ns" "$name" "$lkey" "$lval"
+  done
+
+  # M12: scale platform-api to N replicas (one per server). HA + halves
+  # the load on the original first-server host. Only do this on the
+  # FIRST bootstrap (NODE_ROLE==server, no --server flag); subsequent
+  # server-joins skip — they'd just thrash the existing replica count.
+  if [[ -z "$K3S_SERVER_IP" ]] && kubectl get deploy platform-api -n platform &>/dev/null 2>&1; then
+    local api_desired=2
+    local server_count
+    server_count=$(kubectl get nodes -l platform.phoenix-host.net/node-role=server --no-headers 2>/dev/null | wc -l)
+    if [[ "$server_count" -ge 3 ]]; then api_desired=3; fi
+    log "Scaling platform-api to ${api_desired} replicas across servers."
+    kubectl scale deployment/platform-api -n platform --replicas="$api_desired" 2>/dev/null || true
+  fi
 
   log "Helm component pinning applied."
 }

@@ -7,7 +7,8 @@ metadata:
     app: client-panel
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  replicas: 1
+  # M12: 2 replicas + topology spread for HA across control-plane.
+  replicas: 2
   selector:
     matchLabels:
       app: client-panel
@@ -16,6 +17,13 @@ spec:
       labels:
         app: client-panel
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: client-panel
       containers:
         - name: client
           image: ghcr.io/phoenixtechnam/hosting-platform/client-panel:latest
