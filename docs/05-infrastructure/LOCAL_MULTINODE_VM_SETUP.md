@@ -115,8 +115,8 @@ scripts/
   local-vm.sh                      # Entry point
   local-vm/
     cloud-init/
-      control-plane.yaml           # Runs bootstrap.sh as --role=server
-      worker.yaml                  # Runs bootstrap.sh as --role=worker with join token
+      control-plane.yaml           # Runs bootstrap.sh as --join-as server
+      worker.yaml                  # Runs bootstrap.sh as --join-as worker with join token
     libvirt/
       control-plane.xml.tmpl       # VM definition templates
       worker.xml.tmpl

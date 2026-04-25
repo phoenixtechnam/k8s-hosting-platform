@@ -1,8 +1,8 @@
 # High Availability Migration Runbook
 
-**Document Version:** 1.0  
-**Last Updated:** 2026-03-06  
-**Status:** DRAFT — Ready for implementation  
+**Document Version:** 2.0
+**Last Updated:** 2026-04-25
+**Status:** Active — `bootstrap.sh` is HA-ready by default since `d9f2754`
 **Audience:** DevOps engineers, platform operators, system administrators
 
 ---
@@ -11,9 +11,11 @@
 
 This runbook provides step-by-step procedures for scaling the platform from a single-node deployment to full high availability. Each stage is independent — you can stop at any stage and remain at that level indefinitely.
 
-**Key principle:** Every stage transition has **zero customer downtime** when performed correctly. All stages are additive (no rebuilds, no data migration).
+**Key principle:** Every stage transition has **zero customer downtime** when performed correctly. All stages are additive (no rebuilds, no data migration) **provided the first server was bootstrapped with a private-network underlay** — see [PRIVATE_NETWORK_BOOTSTRAP.md](./PRIVATE_NETWORK_BOOTSTRAP.md). Going from public-only single-server → HA requires a full rebuild.
 
 > **Note:** All `ssh admin@<node>` commands are executed via the **NetBird WireGuard mesh** (ADR-013). SSH is not exposed on the public internet.
+
+> **Scaling threshold:** add a 2nd/3rd server when (a) ≥50 paying clients, (b) the Load Balancer module enters scope, or (c) operator headcount ≥2.
 
 ### Stage Summary
 

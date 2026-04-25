@@ -187,7 +187,7 @@ Rotate the password by repeating steps 1–4.
 ### 3.2 Production (Hetzner k3s)
 
 1. Complete §2 (Hetzner prerequisites) first
-2. Bootstrap the cluster: `./scripts/bootstrap.sh --role=server …` (this does NOT deploy Stalwart — only the shared k3s + cert-manager + Flux layer).
+2. Bootstrap the cluster: `./scripts/bootstrap.sh --join-as server …` (this does NOT deploy Stalwart — only the shared k3s + cert-manager + Flux layer).
 3. Decide the Postgres `stalwart_reader` password (§3.1b steps 1-2 above) and keep it at hand.
 4. Generate Stalwart's admin + master credentials and the `stalwart-secrets` k8s Secret:
 

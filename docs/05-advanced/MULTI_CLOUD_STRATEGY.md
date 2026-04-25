@@ -592,7 +592,7 @@ Supports 300+ clients globally with 0 min automated failover (Phase 3). Real-tim
 #   - Note the server IP
 
 # Bootstrap k3s on the provisioned server
-./scripts/bootstrap.sh --role=server --ip=<server-ip>
+./scripts/bootstrap.sh --join-as server --domain phoenix-host.net
 
 # Verify cluster
 kubectl get nodes
@@ -603,10 +603,9 @@ kubectl get nodes
 ```bash
 # Provision OVH standby node manually via OVH manager
 # Bootstrap k3s agent — joins Frankfurt cluster
-./scripts/bootstrap.sh --role=agent \
-  --ip=<ovh-server-ip> \
-  --server=<hetzner-control-plane-ip> \
-  --label="region=eu-strasbourg,role=standby"
+./scripts/bootstrap.sh --join-as worker \
+  --server <hetzner-control-plane-ip> \
+  --token <K10...:server:...>
 
 # Set up nightly backup sync: Frankfurt SFTP → Strasbourg SFTP
 kubectl apply -f k8s/base/cronjobs/cross-region-backup-sync.yaml
@@ -622,9 +621,8 @@ kubectl exec -n platform deploy/powerdns -- \
 # Provision Linode server manually via Linode dashboard
 
 # Bootstrap as independent k3s cluster (separate US region — not joined to EU)
-./scripts/bootstrap.sh --role=server \
-  --ip=<linode-server-ip> \
-  --region=us-ashburn
+./scripts/bootstrap.sh --join-as server \
+  --domain phoenix-host.us
 
 # Deploy platform services to US cluster via Flux
 kubectl config use-context linode-us-ashburn

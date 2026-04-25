@@ -42,7 +42,7 @@ fi
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-NODE_ROLE="server"
+NODE_ROLE=""
 # M1: host-client-workloads. Controls whether this node accepts tenant
 # pods in addition to system ones. "" means "derive from role"
 # (server→false, worker→true) so existing single-node installs keep
@@ -54,6 +54,16 @@ K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.33.10+k3s1"
 CALICO_VERSION="v3.31.5"
+
+# Private-network underlay (M12). When --cluster-network-cidr is set,
+# every cross-node K8s flow (etcd peer, apiserver, kubelet, Calico
+# Typha + VXLAN) is pinned to the IP picked from that CIDR on the host.
+# Public TCP/2379-2380, TCP/5473, TCP/10250, UDP/4789 stay closed —
+# the CIDR-restricted nft allow IS the allowlist. See doc examples
+# below (NetBird / Tailscale / generic).
+CLUSTER_NETWORK_CIDR=""
+NETBIRD_MANAGEMENT_URL=""
+NETBIRD_SETUP_KEY=""
 
 # ─── Pinned component versions ────────────────────────────────────────────────
 # Updated 2026-04-21. When bumping, verify:
@@ -83,13 +93,20 @@ REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
 
 usage() {
   cat <<'HELPTEXT'
-Usage: bootstrap.sh [OPTIONS]
+Usage: bootstrap.sh --join-as <server|worker> [OPTIONS]
 
 Server provisioning and platform installation for k8s-hosting-platform.
 
+REQUIRED:
+  --join-as <server|worker>
+                         What this node joins as. server = control plane
+                         (etcd member); worker = kubelet only. The first
+                         control-plane invocation is `--join-as server`
+                         WITHOUT --server/--token; subsequent control-
+                         plane joins pass --server + --token.
+
 OPTIONS:
-  --domain <FQDN>       Base domain (required for server role)
-  --role <server|worker> Node role (default: server)
+  --domain <FQDN>        Base domain (required for first server)
   --host-client-workloads <true|false>
                          Whether this node accepts tenant pods. Default:
                          false for servers, true for workers. When false
@@ -105,41 +122,96 @@ OPTIONS:
   --skip-vpn             Skip WireGuard + NetBird
   --skip-longhorn        Skip Longhorn storage (use local-path)
   --skip-cnpg            Skip CloudNative-PG operator install (M10).
-                         The operator lands passive by default — no
-                         Cluster CR is applied, so Postgres keeps
-                         running as-is. Flip `--skip-cnpg` when the
-                         extra ~50MB operator footprint isn't wanted
-                         on a single-server install.
-  --acme-email <email>   Email for Let's Encrypt (required for server role)
+  --acme-email <email>   Email for Let's Encrypt (required for first server)
   --operator-age-recipient <age1...>
                          Public age recipient for operator-held backup
                          encryption. If omitted, a fresh keypair is
                          generated and the PRIVATE KEY is printed to
                          stderr ONCE — save it, it's the only way to
-                         decrypt backups. Accepts comma-separated list
-                         for team-held multi-recipient setups.
+                         decrypt backups. Accepts comma-separated list.
   --force-rotate-operator-key
                          Regenerate the operator keypair even if the
                          ConfigMap already exists (rotation drill).
+
+JOINING (server #2+ or worker):
+  --server <ip>          Existing control-plane IP. When --cluster-network-
+                         cidr is set on the existing cluster, this MUST
+                         be the control-plane's IP within that CIDR
+                         (e.g. its NetBird wt0 IP), NOT its public IP.
+  --token <token>        k3s join token from /var/lib/rancher/k3s/server/
+                         node-token on an existing control-plane.
+
+PRIVATE-NETWORK UNDERLAY (recommended for HA):
+  --cluster-network-cidr <cidr>
+                         Pin every cross-node k8s flow (etcd peer,
+                         apiserver, kubelet, Calico Typha + VXLAN) to
+                         the host IP in this CIDR. Public 2379-2380/
+                         5473/10250/4789 stay closed; only TCP/22, 80,
+                         443, 6443 face the internet. Choose this once
+                         at first-server bootstrap — switching later
+                         requires a full cluster rebuild.
+
+NETBIRD CONVENIENCE (optional, brings up wt0 before k3s):
+  --netbird-management-url <url>
+                         e.g. https://vpn.phoenix-host.net
+  --netbird-setup-key <uuid>
+                         Setup key from the NetBird admin console.
+                         When both are set, bootstrap runs `netbird up`
+                         and waits for wt0 in 100.64.0.0/10 before
+                         installing k3s. If --cluster-network-cidr is
+                         not given, defaults to 100.64.0.0/10.
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
   --ssh-key <path>       SSH private key for remote mode
   --ssh-user <user>      SSH user (default: root)
 
-WORKER MODE:
-  --server <ip>          Control plane IP (required for worker role)
-  --token <token>        k3s join token (required for worker role)
-
 EXAMPLES:
-  # Direct on server:
-  ./bootstrap.sh --domain phoenix-host.net --env production
 
-  # Remote from workstation:
-  ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/.ssh/id_rsa --domain phoenix-host.net
+  # ─ NetBird-private 3-server HA cluster ─────────────────────────────
+  # First server (creates the cluster):
+  ./bootstrap.sh --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --netbird-management-url https://vpn.phoenix-host.net \
+    --netbird-setup-key <UUID>
 
-  # Add worker node:
-  ./bootstrap.sh --remote 1.2.3.5 --ssh-key ~/.ssh/id_rsa --role worker --server 1.2.3.4 --token K10abc...
+  # Second & third servers (join over NetBird wt0 IP, NOT public IP):
+  ./bootstrap.sh --join-as server \
+    --server 100.64.1.5 --token K10abc...:server:def... \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --netbird-management-url https://vpn.phoenix-host.net \
+    --netbird-setup-key <UUID>
+
+  # Worker (over NetBird):
+  ./bootstrap.sh --join-as worker \
+    --server 100.64.1.5 --token K10abc...:server:def... \
+    --netbird-management-url https://vpn.phoenix-host.net \
+    --netbird-setup-key <UUID>
+
+  # ─ Tailscale-private cluster (operator brings tailscale up first) ──
+  # Tailscale's tailnet IP becomes the cluster underlay. tailscale also
+  # uses 100.64.0.0/10 by default; the operator runs `tailscale up
+  # --auth-key tskey-...` before bootstrap.
+  ./bootstrap.sh --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --cluster-network-cidr 100.64.0.0/10
+
+  # ─ Generic private network (Hetzner Cloud private net, VLAN, ZeroTier) ─
+  ./bootstrap.sh --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --cluster-network-cidr 10.0.0.0/16
+
+  # ─ Public underlay (single server, no HA) ──────────────────────────
+  # No --cluster-network-cidr. Cross-node k8s flows would be blocked
+  # by the firewall — only single-server installs should use this.
+  ./bootstrap.sh --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net
+
+  # ─ Remote bootstrap from workstation ───────────────────────────────
+  ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/hosting-platform.key \
+    --join-as server \
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
+    --cluster-network-cidr 100.64.0.0/10
 HELPTEXT
   exit 0
 }
@@ -154,13 +226,16 @@ marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --role)            NODE_ROLE="$2"; shift 2 ;;
+      --join-as)         NODE_ROLE="$2"; shift 2 ;;
       --host-client-workloads) HOST_CLIENT_WORKLOADS="$2"; shift 2 ;;
       --env)             PLATFORM_ENV="$2"; shift 2 ;;
       --domain)          PLATFORM_DOMAIN="$2"; shift 2 ;;
       --server)          K3S_SERVER_IP="$2"; shift 2 ;;
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
+      --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
+      --netbird-management-url) NETBIRD_MANAGEMENT_URL="$2"; shift 2 ;;
+      --netbird-setup-key) NETBIRD_SETUP_KEY="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
@@ -177,7 +252,7 @@ parse_args() {
   done
 
   if [[ "$NODE_ROLE" != "server" && "$NODE_ROLE" != "worker" ]]; then
-    error "Invalid --role: ${NODE_ROLE}. Must be 'server' or 'worker'."
+    error "Missing or invalid --join-as: '${NODE_ROLE}'. Must be 'server' or 'worker'. Run with --help for examples."
   fi
 
   # Resolve HOST_CLIENT_WORKLOADS default: servers default to refusing
@@ -198,21 +273,58 @@ parse_args() {
     error "Invalid --env: ${PLATFORM_ENV}. Must be 'dev', 'staging', or 'production'."
   fi
 
-  # Use `if` instead of `[[ ]] && error` here: with `set -e`, a `[[ ]] && cmd`
-  # whose LHS evaluates false returns 1, and if it's the last expression of
-  # this function the caller's `set -e` aborts the script silently right
-  # after parse_args. (Reproduced 2026-04-25 on the admin worker rejoin.)
-  if [[ "$NODE_ROLE" == "server" ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
-    error "--domain is required. Example: --domain phoenix-host.net"
+  # First-server bootstrap (--join-as server, no --server/--token) requires
+  # --domain. Subsequent control-plane joins inherit the domain from the
+  # existing cluster's etcd state.
+  local is_first_server=false
+  if [[ "$NODE_ROLE" == "server" && -z "$K3S_SERVER_IP" && -z "$K3S_TOKEN" ]]; then
+    is_first_server=true
+  fi
+  if [[ "$is_first_server" == true ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
+    error "First-server bootstrap requires --domain. Example: --domain phoenix-host.net"
   fi
 
+  # Worker join — both --server and --token required.
   if [[ "$NODE_ROLE" == "worker" ]]; then
     if [[ -z "$K3S_SERVER_IP" ]]; then
-      error "Worker mode requires --server <CONTROL_PLANE_IP>"
+      error "--join-as worker requires --server <CONTROL_PLANE_IP>"
     fi
     if [[ -z "$K3S_TOKEN" ]]; then
-      error "Worker mode requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
+      error "--join-as worker requires --token <TOKEN> (from control plane: cat /var/lib/rancher/k3s/server/node-token)"
     fi
+  fi
+
+  # HA control-plane join requires both --server and --token. (First-server
+  # bootstrap with neither was already handled above.)
+  if [[ "$NODE_ROLE" == "server" && -n "$K3S_SERVER_IP" && -z "$K3S_TOKEN" ]]; then
+    error "--join-as server with --server requires --token (joining existing cluster)"
+  fi
+  if [[ "$NODE_ROLE" == "server" && -z "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
+    error "--join-as server with --token requires --server (joining existing cluster)"
+  fi
+
+  # NetBird convenience flags must be paired.
+  if [[ -n "$NETBIRD_MANAGEMENT_URL" && -z "$NETBIRD_SETUP_KEY" ]]; then
+    error "--netbird-management-url requires --netbird-setup-key"
+  fi
+  if [[ -z "$NETBIRD_MANAGEMENT_URL" && -n "$NETBIRD_SETUP_KEY" ]]; then
+    error "--netbird-setup-key requires --netbird-management-url"
+  fi
+
+  # Validate CLUSTER_NETWORK_CIDR shape if set. Tight regex: 4 octets +
+  # /0–32 prefix. Also defends the python3 / nft heredocs downstream
+  # against shell-interpolated content.
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]] \
+     && [[ ! "$CLUSTER_NETWORK_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+    error "Invalid --cluster-network-cidr: '${CLUSTER_NETWORK_CIDR}'. Must be IPv4 CIDR (e.g. 100.64.0.0/10)."
+  fi
+
+  # Validate K3S_SERVER_IP shape if set. Same defence-in-depth — the
+  # python pre-flight uses this value via env-var (not interpolation),
+  # but tighter validation keeps error messages clear.
+  if [[ -n "$K3S_SERVER_IP" ]] \
+     && [[ ! "$K3S_SERVER_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    error "Invalid --server: '${K3S_SERVER_IP}'. Must be a bare IPv4 address (no scheme, no port)."
   fi
 
   return 0
@@ -284,7 +396,29 @@ configure_firewall() {
   fi
 
   log "Configuring nftables firewall..."
-  cat > /etc/nftables.conf <<'NFT'
+
+  # M12: when --cluster-network-cidr is set, every cross-node k8s flow
+  # (etcd peer 2379-2380, Calico Typha 5473, kubelet 10250, Calico
+  # VXLAN 4789) is allowed ONLY from peers inside that CIDR. Public
+  # interfaces never see those ports — closed by `policy drop`.
+  # Without the flag, we keep the legacy "private RFC1918+CGNAT" allow
+  # for UDP/4789 (single-server installs only — HA is not supported on
+  # public underlay; document recovery via `nft insert` if you need it).
+  local cluster_allow=""
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    cluster_allow="    # Cluster-internal k8s flows — restricted to private CIDR ${CLUSTER_NETWORK_CIDR}
+    ip saddr ${CLUSTER_NETWORK_CIDR} udp dport 4789 accept   # Calico VXLAN
+    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 5473 accept   # Calico Typha
+    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 2379 accept   # etcd client
+    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 2380 accept   # etcd peer
+    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 10250 accept  # kubelet"
+  else
+    cluster_allow="    # Calico VXLAN (UDP/4789) — single-server fallback. HA over public
+    # underlay is NOT supported — set --cluster-network-cidr for HA.
+    ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 4789 accept"
+  fi
+
+  cat > /etc/nftables.conf <<NFT
 #!/usr/sbin/nft -f
 
 flush ruleset
@@ -306,15 +440,7 @@ table inet filter {
     udp dport 51820 accept   # WireGuard (NetBird)
     udp dport 29899 accept   # NetBird direct connection
 
-    # Calico VXLAN (UDP/4789) — pod-to-pod traffic between cluster nodes.
-    # VXLAN itself has NO authentication, so we never expose it to the
-    # public internet. The expected paths are:
-    #   * 100.64.0.0/10 — NetBird CGNAT mesh (cross-subnet production)
-    #   * 10/8, 172.16/12, 192.168/16 — Hetzner Cloud private networks
-    # If you need VXLAN over a public underlay, layer Calico WireGuard
-    # encryption (UDP/51821) on top OR add a Hetzner Cloud Firewall rule
-    # restricting 4789 to peer node public IPs — do NOT widen this rule.
-    ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 4789 accept
+${cluster_allow}
 
     # Calico WireGuard (UDP/51821) — authenticated by public-key crypto,
     # safe to expose like NetBird's 51820.
@@ -401,14 +527,51 @@ install_vpn_tools() {
     log "WireGuard installed (not configured — run 'wg-quick up <iface>' when ready)."
   fi
 
-  # NetBird
+  # NetBird — install client if missing.
   if command -v netbird &>/dev/null; then
     log "NetBird already installed."
   else
     log "Installing NetBird client..."
     curl -fsSL https://pkgs.netbird.io/install.sh | sh >/dev/null 2>&1
     systemctl enable netbird 2>/dev/null || true
-    log "NetBird installed (not configured — run 'netbird up --setup-key <KEY>' when ready)."
+  fi
+
+  # M12: when --netbird-management-url + --netbird-setup-key are set,
+  # bring NetBird up + wait for wt0 to come online BEFORE install_k3s
+  # runs. Default-inject CLUSTER_NETWORK_CIDR=100.64.0.0/10 if the
+  # operator didn't override it (NetBird CGNAT default).
+  if [[ -n "$NETBIRD_MANAGEMENT_URL" && -n "$NETBIRD_SETUP_KEY" ]]; then
+    log "Bringing NetBird up (mgmt: ${NETBIRD_MANAGEMENT_URL})..."
+    # `netbird up` is idempotent — re-running with --setup-key on an
+    # already-connected node is a no-op.
+    netbird up \
+      --management-url "$NETBIRD_MANAGEMENT_URL" \
+      --setup-key "$NETBIRD_SETUP_KEY" \
+      >/dev/null 2>&1 \
+      || error "netbird up failed — check management URL + setup key."
+
+    log "Waiting for NetBird interface (wt0) to acquire an IP..."
+    local _attempt
+    for _attempt in $(seq 1 30); do
+      if ip -4 -o addr show wt0 2>/dev/null | grep -q 'inet '; then
+        local wt0_ip
+        wt0_ip=$(ip -4 -o addr show wt0 | awk '{print $4}' | head -1)
+        log "NetBird up: wt0 = ${wt0_ip}"
+        break
+      fi
+      sleep 2
+    done
+    if ! ip -4 -o addr show wt0 2>/dev/null | grep -q 'inet '; then
+      error "NetBird interface wt0 did not come up within 60 seconds."
+    fi
+
+    # Default-inject CIDR if operator didn't override.
+    if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+      CLUSTER_NETWORK_CIDR="100.64.0.0/10"
+      log "Defaulting --cluster-network-cidr to ${CLUSTER_NETWORK_CIDR} (NetBird CGNAT)."
+    fi
+  else
+    log "NetBird installed but not configured. Run 'netbird up --setup-key <KEY>' when ready, or pass --netbird-management-url + --netbird-setup-key to bootstrap.sh."
   fi
 }
 
@@ -583,6 +746,65 @@ install_k3s() {
   fi
 }
 
+# Resolve the host's IP that falls inside CLUSTER_NETWORK_CIDR. Used to
+# pin every cross-node k8s flow onto the private underlay (NetBird wt0,
+# Hetzner private net, ZeroTier, etc.). Empty CIDR → empty result and
+# the caller falls back to public-IP autodetect. Inputs are passed via
+# env-vars rather than string-interpolated into the Python source so the
+# helper can't be tricked by exotic CIDR values.
+resolve_cluster_network_ip() {
+  if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+    echo ""
+    return 0
+  fi
+  if ! command -v ip &>/dev/null; then
+    error "resolve_cluster_network_ip: 'ip' command missing — install iproute2 first."
+  fi
+  # `ip -4 -o addr show` returns "iface inet a.b.c.d/n …" lines. Filter
+  # to those whose subnet (a.b.c.d/n) matches CLUSTER_NETWORK_CIDR via
+  # python's ipaddress for portability across nft/awk/bash CIDR math.
+  local ip_output
+  ip_output=$(ip -4 -o addr show | awk '{print $4}')
+  CLUSTER_NETWORK_CIDR="$CLUSTER_NETWORK_CIDR" python3 - "$ip_output" <<'PYEOF'
+import ipaddress, os, sys
+target = ipaddress.ip_network(os.environ['CLUSTER_NETWORK_CIDR'], strict=False)
+for line in sys.argv[1].splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        addr = ipaddress.ip_interface(line).ip
+        if addr in target:
+            print(addr)
+            sys.exit(0)
+    except ValueError:
+        pass
+PYEOF
+}
+
+# Pre-flight: when joining an existing cluster, refuse if the chosen
+# advertise-IP isn't in the same CIDR as the existing cluster's peers.
+# Catches "server-2 forgot the flag" → mixed public/private etcd.
+validate_cluster_network_membership() {
+  if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+    return 0
+  fi
+  if [[ -z "$K3S_SERVER_IP" ]]; then
+    return 0  # First-server bootstrap; nothing to validate against.
+  fi
+  CLUSTER_NETWORK_CIDR="$CLUSTER_NETWORK_CIDR" K3S_SERVER_IP="$K3S_SERVER_IP" python3 - <<'PYEOF'
+import ipaddress, os, sys
+cidr_s = os.environ['CLUSTER_NETWORK_CIDR']
+peer_s = os.environ['K3S_SERVER_IP']
+cidr = ipaddress.ip_network(cidr_s, strict=False)
+peer = ipaddress.ip_address(peer_s)
+if peer not in cidr:
+    print(f"--server {peer_s} is not inside --cluster-network-cidr {cidr_s}.", file=sys.stderr)
+    print("  When the existing cluster is private-network-pinned, --server must be the control-plane's IP within that CIDR (e.g. its NetBird wt0 IP), not its public IP.", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
 install_k3s_server() {
   log "Installing k3s ${K3S_VERSION} (server)..."
   # Collect all host IPs for TLS SAN (IPv4 + IPv6)
@@ -620,12 +842,33 @@ install_k3s_server() {
     init_or_join="--cluster-init"
   fi
 
+  # M12: private-network underlay. When --cluster-network-cidr is set,
+  # pin etcd peer / apiserver / kubelet onto the host's IP from that
+  # CIDR. The public IP becomes --node-external-ip (announced to peers
+  # but not used for bind). Refuses asymmetric joins via the pre-flight
+  # check above.
+  local node_pin=""
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    local private_ip public_ip
+    private_ip=$(resolve_cluster_network_ip)
+    if [[ -z "$private_ip" ]]; then
+      error "No host IP found inside --cluster-network-cidr ${CLUSTER_NETWORK_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
+    fi
+    public_ip=$(hostname -I | awk '{print $1}')
+    log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip}"
+    node_pin="--node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
+    # Add private IP to TLS SANs too, otherwise apiserver cert won't
+    # match when peers (and operators) connect via the private IP.
+    tls_sans="${tls_sans} --tls-san=${private_ip}"
+  fi
+
   # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="server" \
     sh -s - \
       ${init_or_join} \
+      ${node_pin} \
       --flannel-backend=none \
       --disable-network-policy \
       --disable=traefik \
@@ -649,11 +892,28 @@ install_k3s_server() {
 
 install_k3s_worker() {
   log "Installing k3s ${K3S_VERSION} (worker — joining ${K3S_SERVER_IP})..."
+
+  # M12: private-network underlay (see install_k3s_server for context).
+  # k3s agent picks up node IP via env vars rather than CLI flags.
+  local node_ip_env=""
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    local private_ip public_ip
+    private_ip=$(resolve_cluster_network_ip)
+    if [[ -z "$private_ip" ]]; then
+      error "No host IP found inside --cluster-network-cidr ${CLUSTER_NETWORK_CIDR}. If using NetBird/Tailscale/etc, bring the overlay up first (or pass --netbird-management-url + --netbird-setup-key)."
+    fi
+    public_ip=$(hostname -I | awk '{print $1}')
+    log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
+    node_ip_env="K3S_NODE_IP=${private_ip} K3S_NODE_EXTERNAL_IP=${public_ip}"
+  fi
+
+  # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
-    INSTALL_K3S_VERSION="$K3S_VERSION" \
-    K3S_URL="https://${K3S_SERVER_IP}:6443" \
-    K3S_TOKEN="$K3S_TOKEN" \
-    sh -
+    env ${node_ip_env} \
+      INSTALL_K3S_VERSION="$K3S_VERSION" \
+      K3S_URL="https://${K3S_SERVER_IP}:6443" \
+      K3S_TOKEN="$K3S_TOKEN" \
+      sh -
 
   log "Waiting for k3s agent to register..."
   local _attempt
@@ -706,8 +966,22 @@ install_calico() {
   #     entirely and works identically same-subnet vs cross-subnet.
   #   * bgp: Disabled — no BIRD process, one less failure surface.
   #   * mtu: 1450 — 1500 underlay − 50 VXLAN overhead.
+  #   * BOTH ipPools must share encapsulation when bgp:Disabled — the
+  #     operator rejects mixed VXLAN/None with "unencapsulated IP pools
+  #     require that BGP is enabled".
+  #   * nodeAddressAutodetectionV4.cidrs (M12) — pin Calico's VXLAN
+  #     tunnel endpoint onto the private network (NetBird/Tailscale/
+  #     etc.) when --cluster-network-cidr is set. Without this, Calico
+  #     picks the first-found interface (typically the public eth0).
   # Workers join over UDP/4789 (VXLAN); see configure_firewall().
-  cat <<'EOF' | kubectl apply -f -
+  local autodetect_block=""
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    autodetect_block="    nodeAddressAutodetectionV4:
+      cidrs:
+      - ${CLUSTER_NETWORK_CIDR}"
+  fi
+
+  cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
@@ -716,6 +990,7 @@ spec:
   calicoNetwork:
     bgp: Disabled
     mtu: 1450
+${autodetect_block}
     ipPools:
     - blockSize: 26
       cidr: 10.42.0.0/16
@@ -724,7 +999,7 @@ spec:
       nodeSelector: all()
     - blockSize: 122
       cidr: fd42::/48
-      encapsulation: None
+      encapsulation: VXLAN
       natOutgoing: Disabled
       nodeSelector: all()
 ---
@@ -1600,13 +1875,24 @@ main() {
   log "════════════════════════════════════════════════"
   log ""
 
-  # Phase 1: Server hardening (both roles)
+  # Phase 1: Server hardening (both roles).
+  # Order matters: install_vpn_tools may default-inject CLUSTER_NETWORK_CIDR
+  # (NetBird convenience), so it must run BEFORE configure_firewall, which
+  # embeds the CIDR into nft rules. configure_fail2ban runs LAST so that an
+  # error inside install_vpn_tools (failed `netbird up`) leaves the node
+  # with the firewall already locked down by `policy drop` rather than
+  # half-hardened.
   log "── Phase 1: Server Hardening ──"
   harden_ssh
   install_packages
+  install_vpn_tools
   configure_firewall
   configure_fail2ban
-  install_vpn_tools
+
+  # M12: refuse asymmetric joins (e.g. server-2 forgot --cluster-network-cidr
+  # while joining a private-network cluster). Only meaningful when both
+  # CLUSTER_NETWORK_CIDR and K3S_SERVER_IP are set.
+  validate_cluster_network_membership
 
   # Phase 2: k3s (server or agent depending on role)
   log ""

@@ -192,7 +192,7 @@ function SubsystemHealthRow({ subsystem }: { readonly subsystem: NodeSubsystemRe
       )}
       <p className="mt-2 text-amber-800 dark:text-amber-300">
         Tenant pods pinned to this node will fail to attach PVCs. Drain + re-bootstrap the worker via{' '}
-        <code className="font-mono">./scripts/bootstrap.sh --remote &lt;ip&gt; --role worker --server &lt;cp&gt; --token &lt;t&gt;</code>.
+        <code className="font-mono">./scripts/bootstrap.sh --remote &lt;ip&gt; --join-as worker --server &lt;cp&gt; --token &lt;t&gt;</code>.
       </p>
     </div>
   );

@@ -147,7 +147,7 @@ ETCDCTL_API=3 etcdctl member remove <unhealthy-member-id>
 ```
 
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
-replace the VPS, and re-run `bootstrap.sh --role server --server …
+replace the VPS, and re-run `bootstrap.sh --join-as server --server …
 --token …` to join a fresh etcd member.
 
 ## Monitoring

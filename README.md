@@ -112,7 +112,7 @@ cat /var/lib/rancher/k3s/server/node-token
 On the worker node:
 
 ```bash
-./scripts/bootstrap.sh --role worker --server <CONTROL_PLANE_IP> --token <TOKEN>
+./scripts/bootstrap.sh --join-as worker --server <CONTROL_PLANE_IP> --token <TOKEN>
 ```
 
 Workers get the same security hardening but only install k3s as an agent. Platform components run on the control plane only.
