@@ -847,7 +847,14 @@ install_k3s_server() {
   # CIDR. The public IP becomes --node-external-ip (announced to peers
   # but not used for bind). Refuses asymmetric joins via the pre-flight
   # check above.
+  #
+  # k3s requires --node-ip and --cluster-cidr share IP versions: an
+  # IPv4-only --node-ip with dual-stack --cluster-cidr is fatal. So
+  # when the underlay is IPv4-only (NetBird CGNAT, Tailscale, most
+  # provider private nets), we drop IPv6 from cluster/service CIDRs.
   local node_pin=""
+  local cluster_cidr_arg="10.42.0.0/16,fd42::/48"
+  local service_cidr_arg="10.43.0.0/16,fd43::/112"
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
@@ -856,7 +863,10 @@ install_k3s_server() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip}"
+    log "  IPv4-only cluster/service CIDR (private underlay is IPv4-only)"
     node_pin="--node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
+    cluster_cidr_arg="10.42.0.0/16"
+    service_cidr_arg="10.43.0.0/16"
     # Add private IP to TLS SANs too, otherwise apiserver cert won't
     # match when peers (and operators) connect via the private IP.
     tls_sans="${tls_sans} --tls-san=${private_ip}"
@@ -874,8 +884,8 @@ install_k3s_server() {
       --disable=traefik \
       --disable=servicelb \
       --write-kubeconfig-mode=644 \
-      --cluster-cidr=10.42.0.0/16,fd42::/48 \
-      --service-cidr=10.43.0.0/16,fd43::/112 \
+      --cluster-cidr=${cluster_cidr_arg} \
+      --service-cidr=${service_cidr_arg} \
       ${tls_sans}
 
   log "Waiting for k3s API server..."
@@ -975,10 +985,20 @@ install_calico() {
   #     picks the first-found interface (typically the public eth0).
   # Workers join over UDP/4789 (VXLAN); see configure_firewall().
   local autodetect_block=""
+  local ipv6_pool=""
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     autodetect_block="    nodeAddressAutodetectionV4:
       cidrs:
       - ${CLUSTER_NETWORK_CIDR}"
+    # IPv4-only underlay → drop the IPv6 ipPool. Mixed v4/v6 with
+    # bgp:Disabled is rejected anyway, and k3s was launched with
+    # IPv4-only cluster-cidr in install_k3s_server.
+  else
+    ipv6_pool="    - blockSize: 122
+      cidr: fd42::/48
+      encapsulation: VXLAN
+      natOutgoing: Disabled
+      nodeSelector: all()"
   fi
 
   cat <<EOF | kubectl apply -f -
@@ -997,11 +1017,7 @@ ${autodetect_block}
       encapsulation: VXLAN
       natOutgoing: Enabled
       nodeSelector: all()
-    - blockSize: 122
-      cidr: fd42::/48
-      encapsulation: VXLAN
-      natOutgoing: Disabled
-      nodeSelector: all()
+${ipv6_pool}
 ---
 apiVersion: operator.tigera.io/v1
 kind: APIServer
@@ -1583,15 +1599,26 @@ generate_operator_recipient() {
     # Write to tmpfs so the private key never lands on the root
     # filesystem's journal. Best-effort — /dev/shm is world-writable but
     # this process is already root and only we read it immediately below.
+    # mktemp creates the file, but age-keygen -o refuses to overwrite an
+    # existing file, so we delete it immediately and rely on age-keygen
+    # to recreate. The window is tiny and we're root in this process.
     local tmpkey
     tmpkey="$(mktemp --tmpdir=/dev/shm bootstrap-age.XXXXXX 2>/dev/null || mktemp)"
-    chmod 600 "$tmpkey"
+    rm -f "$tmpkey"
     # age-keygen emits the private key AND a comment line with the public
     # recipient. Capture both, then shred the file.
-    age-keygen -o "$tmpkey" 2>/dev/null
+    if ! age-keygen -o "$tmpkey" 2>/dev/null; then
+      rm -f "$tmpkey"
+      error "age-keygen failed to write key to ${tmpkey}."
+    fi
+    chmod 600 "$tmpkey"
     recipient="$(grep -E '^# public key:' "$tmpkey" | awk '{print $NF}')"
     local private_key
     private_key="$(grep -v '^#' "$tmpkey")"
+    if [[ -z "$recipient" || -z "$private_key" ]]; then
+      rm -f "$tmpkey"
+      error "age-keygen produced empty key material — refusing to continue."
+    fi
 
     # Shred + remove. `shred` isn't in base Debian installs via coreutils'
     # /usr/bin; the alternative is overwrite-then-unlink which works on
@@ -1904,10 +1931,13 @@ main() {
   # Kustomize patches (landing in M1 C5) don't deadlock the scheduler
   # on first apply. For workers this is a log-only step — the label
   # has to be applied from the control plane.
-  apply_node_labels_and_taints
-
   if [[ "$NODE_ROLE" == "server" ]]; then
-    # Calico + platform components only on the control plane
+    # Calico + platform components only on the control plane.
+    # NOTE: apply_node_labels_and_taints (and the server-only NoSchedule
+    # taint it carries when host-client-workloads=false) is intentionally
+    # deferred to AFTER pin_system_components_to_servers — applying the
+    # taint earlier blocks the Helm pre-install hooks (ingress-nginx,
+    # cert-manager) from scheduling on a single-server install.
     install_calico
 
     # Phase 3: Platform components
@@ -1932,6 +1962,12 @@ main() {
     # definition above for the split between nodeSelector+toleration
     # (control-plane only) and toleration-only (data plane DaemonSets).
     pin_system_components_to_servers
+    # Apply the server-only taint AFTER all Helm components have their
+    # tolerations patched in by pin_system_components_to_servers — order
+    # matters so that ingress-nginx admission webhook, cert-manager
+    # webhook, etc. can complete their initial install on a single-node
+    # cluster without being evicted by the taint.
+    apply_node_labels_and_taints
     generate_platform_secrets
     create_platform_configmap
     generate_operator_recipient
@@ -1943,6 +1979,7 @@ main() {
     verify
     print_summary
   else
+    apply_node_labels_and_taints
     # Worker — just confirm agent is running
     log ""
     log "════════════════════════════════════════════════"
