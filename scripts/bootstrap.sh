@@ -904,8 +904,14 @@ install_k3s_worker() {
   log "Installing k3s ${K3S_VERSION} (worker — joining ${K3S_SERVER_IP})..."
 
   # M12: private-network underlay (see install_k3s_server for context).
-  # k3s agent picks up node IP via env vars rather than CLI flags.
-  local node_ip_env=""
+  # K3S_NODE_IP env var alone is not enough — k3s install.sh writes the
+  # env file but the agent's ExecStart line is just `/usr/local/bin/k3s
+  # agent` with no flags, and kubelet then auto-detects (picks public
+  # eth0 + IPv6). We bake --node-ip / --node-external-ip into the
+  # ExecStart via INSTALL_K3S_EXEC, which install.sh translates into
+  # the systemd unit's command line. (Tested 2026-04-25 — env-var alone
+  # left INTERNAL-IP=public on the Node object.)
+  local exec_args="agent"
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
@@ -914,16 +920,15 @@ install_k3s_worker() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
-    node_ip_env="K3S_NODE_IP=${private_ip} K3S_NODE_EXTERNAL_IP=${public_ip}"
+    exec_args="agent --node-ip=${private_ip} --node-external-ip=${public_ip}"
   fi
 
-  # shellcheck disable=SC2086
   curl -sfL https://get.k3s.io | \
-    env ${node_ip_env} \
-      INSTALL_K3S_VERSION="$K3S_VERSION" \
-      K3S_URL="https://${K3S_SERVER_IP}:6443" \
-      K3S_TOKEN="$K3S_TOKEN" \
-      sh -
+    INSTALL_K3S_VERSION="$K3S_VERSION" \
+    INSTALL_K3S_EXEC="$exec_args" \
+    K3S_URL="https://${K3S_SERVER_IP}:6443" \
+    K3S_TOKEN="$K3S_TOKEN" \
+    sh -
 
   log "Waiting for k3s agent to register..."
   local _attempt
