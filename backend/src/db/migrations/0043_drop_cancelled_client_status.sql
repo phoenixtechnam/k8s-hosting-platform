@@ -15,15 +15,12 @@ DO $$
 DECLARE
   stuck_count int;
 BEGIN
-  -- Refuse to run if any client row still has status='cancelled' —
-  -- data migration needed first. This should never trip because no
-  -- production code writes the value, but defense-in-depth.
-  SELECT COUNT(*) INTO stuck_count FROM clients WHERE status = 'cancelled';
-  IF stuck_count > 0 THEN
-    RAISE EXCEPTION 'Cannot drop cancelled status: % client(s) still have status=cancelled. Migrate them first.', stuck_count;
-  END IF;
-
-  -- Skip if the enum no longer contains 'cancelled'.
+  -- Order matters: the existence check MUST come BEFORE any
+  -- comparison against `status = 'cancelled'`. On an already-migrated
+  -- database the enum no longer has the 'cancelled' label, so the
+  -- comparison itself raises 22P02 (invalid_text_representation)
+  -- before any RETURN/skip can fire — leading to a permanent
+  -- migrate.js CrashLoopBackOff. Reproduced 2026-04-25 staging.
   IF NOT EXISTS (
     SELECT 1 FROM pg_enum e
     JOIN pg_type t ON e.enumtypid = t.oid
@@ -31,6 +28,14 @@ BEGIN
   ) THEN
     RAISE NOTICE 'client_status already lacks cancelled; skipping';
     RETURN;
+  END IF;
+
+  -- Refuse to run if any client row still has status='cancelled' —
+  -- data migration needed first. This should never trip because no
+  -- production code writes the value, but defense-in-depth.
+  SELECT COUNT(*) INTO stuck_count FROM clients WHERE status = 'cancelled';
+  IF stuck_count > 0 THEN
+    RAISE EXCEPTION 'Cannot drop cancelled status: % client(s) still have status=cancelled. Migrate them first.', stuck_count;
   END IF;
 
   -- Four stalwart.* views reference client_status via `c.status`. Drop
