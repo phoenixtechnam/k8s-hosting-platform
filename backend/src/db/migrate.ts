@@ -33,15 +33,28 @@ for (const file of files) {
     try {
       await db.execute(sql.raw(stmt));
     } catch (err: unknown) {
-      const pgErr = err as { code?: string; message?: string };
+      // Drizzle ≥0.34 wraps the underlying pg error in DrizzleQueryError
+      // and only the wrapper's .cause has the SQLSTATE code field. The
+      // older code check at err.code was never matching, so duplicate-
+      // object errors became fatal. Walk the cause chain.
+      type PgLike = { code?: string; message?: string; cause?: unknown };
+      function findPgCode(e: unknown): string | undefined {
+        let cur: PgLike | undefined = e as PgLike;
+        for (let i = 0; i < 5 && cur; i++) {
+          if (cur.code) return cur.code;
+          cur = cur.cause as PgLike | undefined;
+        }
+        return undefined;
+      }
+      const code = findPgCode(err) ?? '';
       // Tolerate "already exists" errors for idempotent migrations:
       // 42P07 = duplicate_table, 42701 = duplicate_column,
       // 42P16 = invalid_table_definition (duplicate constraint),
       // 42710 = duplicate_object (type/enum already exists),
       // 42P04 = duplicate_database (CREATE DATABASE re-run)
       const toleratedCodes = ['42P07', '42701', '42P16', '42710', '42P04'];
-      if (toleratedCodes.includes(pgErr.code ?? '')) {
-        console.log(`    (skipped: ${pgErr.code} — already exists)`);
+      if (toleratedCodes.includes(code)) {
+        console.log(`    (skipped: ${code} — already exists)`);
       } else {
         throw err;
       }
