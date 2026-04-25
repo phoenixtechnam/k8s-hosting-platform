@@ -406,12 +406,19 @@ configure_firewall() {
   # public underlay; document recovery via `nft insert` if you need it).
   local cluster_allow=""
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
-    cluster_allow="    # Cluster-internal k8s flows — restricted to private CIDR ${CLUSTER_NETWORK_CIDR}
-    ip saddr ${CLUSTER_NETWORK_CIDR} udp dport 4789 accept   # Calico VXLAN
-    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 5473 accept   # Calico Typha
-    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 2379 accept   # etcd client
-    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 2380 accept   # etcd peer
-    ip saddr ${CLUSTER_NETWORK_CIDR} tcp dport 10250 accept  # kubelet"
+    # Trust the entire private CIDR for ALL cluster-internal flows.
+    # Enumerating well-known ports (4789/5473/2379-2380/10250) misses
+    # admission-webhook ports — ingress-nginx uses TCP/8443, cert-manager
+    # uses TCP/9443, and any future Helm chart can pick its own. Since
+    # CLUSTER_NETWORK_CIDR is operator-trusted by definition (it's the
+    # private mesh you bootstrapped the cluster onto), allowing all TCP
+    # + UDP from peers in that CIDR is the right default.
+    cluster_allow="    # Cluster-internal k8s flows — trusted private CIDR ${CLUSTER_NETWORK_CIDR}
+    # (covers etcd peer 2379-2380, Calico Typha 5473, kubelet 10250,
+    # Calico VXLAN 4789, ingress-nginx admission 8443, cert-manager
+    # webhook 9443, and any future webhook port we don't pre-enumerate)
+    ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol tcp accept
+    ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol udp accept"
   else
     cluster_allow="    # Calico VXLAN (UDP/4789) — single-server fallback. HA over public
     # underlay is NOT supported — set --cluster-network-cidr for HA.
