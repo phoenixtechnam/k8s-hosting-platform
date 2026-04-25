@@ -23,6 +23,12 @@ resources:
   - oauth2-proxy/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml
+  # CronJob that mirrors live Node ExternalIPs into ingress-nginx
+  # Service.spec.externalIPs every 5 min. Without it the Service has
+  # no externalIPs and tenant traffic only works against whichever IP
+  # public DNS happens to point to. This makes the platform survive
+  # any single node outage at the IP layer (paired with multi-A DNS).
+  - ingress-external-ips/
   # longhorn/ is NOT included in base — Longhorn itself is installed per-
   # environment via the bootstrap script, and the dashboard Ingress
   # depends on a TLS cert-manager issuer that varies by overlay. Each

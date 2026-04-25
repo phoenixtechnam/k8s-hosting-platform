@@ -1,0 +1,119 @@
+# Reconcile ingress-nginx-controller .spec.externalIPs from live Node
+# .status.addresses[type=ExternalIP]. Runs every 5 min on the control
+# plane via Flux. Re-runs are idempotent (kubectl patch with the same
+# value is a no-op on Service).
+#
+# Why this exists: ingress-nginx is configured with hostNetwork=true so
+# every node's controller pod binds 0.0.0.0:80/443 directly. Routing
+# tenant Ingress traffic to a particular pod still requires the Service
+# to advertise externalIPs — kube-proxy then steers cluster-local
+# traffic to whichever node is up. Without this list, only the IP that
+# DNS happens to point at can serve traffic; if that node is down, the
+# whole platform is unreachable until DNS is updated.
+#
+# Hard-coding IPs in YAML would fail when nodes get re-imaged (Hetzner
+# changes the public IP). The Node objects already carry the canonical
+# `--node-external-ip` value bootstrap.sh sets, so we read from there.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingress-external-ips-reconciler
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: ingress-external-ips
+spec:
+  # Every 5 min — fast enough that a node-add/remove window doesn't
+  # leave traffic broken for long, slow enough that the kube-API isn't
+  # spammed.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: hosting-platform
+            app.kubernetes.io/component: ingress-external-ips
+        spec:
+          serviceAccountName: ingress-external-ips-reconciler
+          restartPolicy: OnFailure
+          # Pin to control-plane (kubectl is just an apiserver client,
+          # no special host requirements; the affinity matches the rest
+          # of the system-component placement and avoids consuming a
+          # tenant scheduling slot on workers).
+          tolerations:
+            - key: platform.phoenix-host.net/server-only
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 1
+                  preference:
+                    matchExpressions:
+                      - key: platform.phoenix-host.net/node-role
+                        operator: In
+                        values: ["server"]
+          containers:
+            - name: reconciler
+              # alpine/k8s ships kubectl on Alpine — provides /bin/sh
+              # (rancher/kubectl is distroless, has no shell, broke our
+              # entrypoint script). bitnami/kubectl was removed from
+              # Docker Hub in 2026 so we can't use it either. Pinned to
+              # 1.33.4 to match the cluster's k3s v1.33.x.
+              image: alpine/k8s:1.33.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  # Read every Ready Node's ExternalIP. kubectl jsonpath
+                  # can't nest filters, so list all nodes and pair-up
+                  # the ExternalIP with the Ready-condition status via
+                  # custom-columns + post-filter. NotReady nodes (Ready
+                  # condition False/Unknown) are dropped so we never
+                  # advertise an IP that won't accept connections.
+                  IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address' --no-headers \
+                    | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' \
+                    | sort -u)
+                  if [ -z "$IPS" ]; then
+                    echo "no Ready nodes with ExternalIP — leaving Service untouched" >&2
+                    exit 0
+                  fi
+                  # Build a JSON array of IPs without depending on jq.
+                  IP_LIST=$(echo "$IPS" | awk 'BEGIN{ORS=""} {if(NR>1) printf ","; printf "\""$0"\""}')
+                  echo "Ready ExternalIPs: $(echo "$IPS" | tr '\n' ' ')"
+                  PATCH="{\"spec\":{\"externalIPs\":[${IP_LIST}]}}"
+                  CURRENT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
+                    -o jsonpath='{.spec.externalIPs}')
+                  echo "current: ${CURRENT}"
+                  echo "desired: [${IP_LIST}]"
+                  kubectl patch svc -n ingress-nginx ingress-nginx-controller \
+                    --type=merge --patch "$PATCH"
+                  echo "ok"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 1001
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+                seccompProfile:
+                  type: RuntimeDefault
