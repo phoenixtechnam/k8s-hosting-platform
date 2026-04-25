@@ -1957,14 +1957,17 @@ function NamespaceIntegrityBanner({ clientId }: { readonly clientId: string }) {
   const report = data?.data;
 
   if (isLoading || !report) return null;
-  if (report.findings.length === 0 && repair.data?.data.repaired.length === 0 && !repair.error) {
+  // Defensive — when the test harness or an in-flight rollout supplies a
+  // partial payload, treat missing arrays as empty so the banner never
+  // blows up the whole detail page.
+  const stillBroken = report.findings ?? [];
+  const justRepaired = repair.data?.data.repaired ?? [];
+  const repairErrors = repair.data?.data.errors ?? [];
+
+  if (stillBroken.length === 0 && justRepaired.length === 0 && repairErrors.length === 0 && !repair.error) {
     // Healthy + nothing repaired this session — render nothing to keep the page tight.
     return null;
   }
-
-  const stillBroken = report.findings;
-  const justRepaired = repair.data?.data.repaired ?? [];
-  const repairErrors = repair.data?.data.errors ?? [];
   const tone = stillBroken.length > 0
     ? 'border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-900/20'
     : 'border-green-300 bg-green-50 dark:border-green-700 dark:bg-green-900/20';
