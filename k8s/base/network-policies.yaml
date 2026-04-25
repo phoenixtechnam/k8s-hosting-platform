@@ -99,6 +99,25 @@ spec:
     - Ingress
   ingress:
     - from:
+        # ingress-nginx runs as hostNetwork=true (DaemonSet binding host
+        # :80/443 directly). On the LOCAL node, traffic to platform pods
+        # works because kernel routing bypasses NetworkPolicy enforcement
+        # for same-node hostNetwork → pod paths. CROSS-NODE, however,
+        # the packet egresses via vxlan.calico, arrives at the
+        # destination node's wt0, and Felix sees source = peer wt0
+        # IP (e.g. 100.120.21.104 on staging2) — NOT the pod IP. The
+        # namespaceSelector below doesn't match because hostNetwork
+        # pods aren't pod-network endpoints. Without an explicit
+        # ipBlock allowing the cluster underlay, cross-node admin
+        # traffic gets DROPped at the destination node and ingress-
+        # nginx logs `upstream timed out`.
+        #
+        # 100.64.0.0/10 is the NetBird CGNAT range (M12 underlay). For
+        # public-underlay clusters use Calico HostEndpoints or switch
+        # ingress-nginx off hostNetwork — but the in-CIDR allow is the
+        # right pattern when the underlay IS the trust boundary.
+        - ipBlock:
+            cidr: 100.64.0.0/10
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
