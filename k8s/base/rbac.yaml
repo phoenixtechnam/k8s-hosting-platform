@@ -127,6 +127,14 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
     verbs: ["update", "patch"]
+  # M13: platform-storage-policy patches volume.spec.numberOfReplicas
+  # live on Longhorn Volume CRs to switch the platform's StatefulSets
+  # (postgres, stalwart) between local (1×) and HA (3×) replication.
+  # Narrow to patch only — no create/delete; Longhorn manages the
+  # underlying replica scheduling.
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes"]
+    verbs: ["patch"]
   # The Backup-Now admin action creates Backup CRs directly; Longhorn's
   # controller then snapshots the volume and uploads to the active
   # BackupTarget. Snapshot CRs are needed for the two-step create-

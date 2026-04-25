@@ -4,6 +4,7 @@ import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, Refres
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
+import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
 import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
 
 /**
@@ -40,6 +41,9 @@ export default function StorageSettings() {
 
       {/* ─── Live inventory ─── */}
       <StorageInventoryCard />
+
+      {/* ─── Platform-storage replication policy (M13) ─── */}
+      <PlatformStoragePolicyCard />
 
       <NamespaceIntegrityCard />
 

@@ -60,6 +60,7 @@ import { nodeRoutes } from './modules/nodes/routes.js';
 import { loadBalancerRoutes } from './modules/load-balancer/routes.js';
 import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
+import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
@@ -278,6 +279,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(loadBalancerRoutes, { prefix: '/api/v1' });
   await app.register(tenantMigrationRoutes, { prefix: '/api/v1' });
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });
+  await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
@@ -438,6 +440,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startNodeHealthReconciler } = await import('./modules/cluster-health/scheduler.js');
         const nodeHealthHandle = startNodeHealthReconciler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeHealthHandle.stop());
+
+        // M13: storage-policy advisor — emit a one-time admin
+        // notification when the cluster reaches >=3 Ready servers
+        // and policy is still on 'local'. Idempotent across restarts
+        // via platform_storage_policy.ha_recommendation_notified_at.
+        const { startStoragePolicyAdvisor } = await import('./modules/platform-storage-policy/scheduler.js');
+        const storageAdvisorHandle = startStoragePolicyAdvisor(app.db, k8sForImapsync);
+        app.addHook('onClose', () => storageAdvisorHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }

@@ -1183,6 +1183,22 @@ export const platformSettings = pgTable('platform_settings', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// M13: platform-level storage replication policy. Controls the Longhorn
+// replica count for the platform's own StatefulSets (postgres,
+// stalwart-mail) — distinct from client_storage_tier (M7) which only
+// touches tenant PVCs. Single-row table (id='singleton'). Reconciler
+// patches longhorn.io Volume CRs' .spec.numberOfReplicas to match.
+export const platformStorageTierEnum = pgEnum('platform_storage_tier', ['local', 'ha']);
+export const platformStoragePolicy = pgTable('platform_storage_policy', {
+  id: varchar('id', { length: 16 }).primaryKey().default('singleton'),
+  systemTier: platformStorageTierEnum('system_tier').notNull().default('local'),
+  pinnedByAdmin: boolean('pinned_by_admin').notNull().default(false),
+  lastAppliedAt: timestamp('last_applied_at', { withTimezone: true }),
+  lastAppliedBy: varchar('last_applied_by', { length: 36 }),
+  haRecommendationNotifiedAt: timestamp('ha_recommendation_notified_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
