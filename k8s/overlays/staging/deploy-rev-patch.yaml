@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-d9f2754"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-ff0591b"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-d9f2754"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-ff0591b"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,4 +34,4 @@ spec:
   template:
     metadata:
       annotations:
-        platform.phoenix-host.net/deploy-rev: "0.0.0-d9f2754"
+        platform.phoenix-host.net/deploy-rev: "0.0.0-ff0591b"
