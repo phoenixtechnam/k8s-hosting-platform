@@ -306,10 +306,24 @@ phase_postgres_restore() {
   fi
   log "  Dump: $dump"
 
-  # platform-postgres-0 is the pod name in both dev + staging + production
-  # (StatefulSet named 'postgres' → pod 'postgres-0' in the 'platform' ns).
-  # Earlier version assumed 'platform-postgres-0' which is a different name.
-  local POD=postgres-0
+  # Resolve the current Postgres primary. CNPG cluster pods carry
+  # `cnpg.io/cluster=postgres,role=primary`. Pre-CNPG StatefulSet
+  # pods carry `app=postgres` (single instance, postgres-0). Try
+  # CNPG first; fall back to the legacy label.
+  local POD
+  POD=$(kubectl -n platform get pods \
+    -l cnpg.io/cluster=postgres,role=primary \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$POD" ]]; then
+    POD=$(kubectl -n platform get pods -l app=postgres \
+      --field-selector=status.phase=Running \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  fi
+  if [[ -z "$POD" ]]; then
+    error "No Running postgres pod found in platform namespace."
+  fi
+  log "  Restoring into pod: $POD"
   run kubectl -n platform cp "$dump" "${POD}:/tmp/restore.dump"
   run kubectl -n platform exec "$POD" -- \
     bash -c 'pg_restore --clean --if-exists --no-owner --no-privileges \

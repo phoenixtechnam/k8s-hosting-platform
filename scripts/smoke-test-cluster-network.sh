@@ -174,12 +174,26 @@ test_3_pod_to_pod() {
   api_pods=$(kubectl -n platform get pods -l app=platform-api \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test3.pod_to_pod" FAIL "list platform-api failed"; return; }
-  pg_ip=$(kubectl -n platform get pod postgres-0 -o jsonpath='{.status.podIP}' 2>/dev/null) \
-    || { emit "test3.pod_to_pod" FAIL "no postgres-0"; return; }
+  # Postgres pod naming: CNPG cluster (postgres-1, postgres-2) or
+  # legacy StatefulSet (postgres-0). Resolve via primary label.
+  local pg_pod
+  pg_pod=$(kubectl -n platform get pods \
+    -l cnpg.io/cluster=postgres,role=primary \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$pg_pod" ]]; then
+    pg_pod=$(kubectl -n platform get pods -l app=postgres \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  fi
+  if [[ -z "$pg_pod" ]]; then
+    emit "test3.pod_to_pod" FAIL "no postgres primary pod found"
+    return
+  fi
+  pg_ip=$(kubectl -n platform get pod "$pg_pod" -o jsonpath='{.status.podIP}' 2>/dev/null)
+  [[ -z "$pg_ip" ]] && { emit "test3.pod_to_pod" FAIL "no IP on $pg_pod"; return; }
   [[ -z "$api_pods" ]] && { emit "test3.pod_to_pod" FAIL "no platform-api pods"; return; }
 
   local pg_node
-  pg_node=$(kubectl -n platform get pod postgres-0 -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+  pg_node=$(kubectl -n platform get pod "$pg_pod" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
 
   local total=0 ok=0
   while IFS= read -r ap; do
@@ -201,9 +215,9 @@ test_3_pod_to_pod() {
     " 2>/dev/null | tail -1)
     if [[ "$res" == "CONNECTED" ]]; then
       ok=$((ok+1))
-      emit "test3.${apod}@${anode}->postgres-0@${pg_node}[${same}]" PASS "TCP/5432 connected"
+      emit "test3.${apod}@${anode}->${pg_pod}@${pg_node}[${same}]" PASS "TCP/5432 connected"
     else
-      emit "test3.${apod}@${anode}->postgres-0@${pg_node}[${same}]" FAIL "TCP/5432 $res"
+      emit "test3.${apod}@${anode}->${pg_pod}@${pg_node}[${same}]" FAIL "TCP/5432 $res"
     fi
   done <<< "$api_pods"
 

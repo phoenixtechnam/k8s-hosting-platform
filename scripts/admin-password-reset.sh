@@ -114,22 +114,32 @@ if [[ -z "$API_POD" ]]; then
   exit 1
 fi
 
-# Pick the first Ready postgres pod for the UPDATE
-PG_POD=$(kubectl -n "$PLATFORM_NS" get pods -l app=postgres \
+# Pick the CNPG primary pod (post-M14 cluster). Falls back to
+# label app=postgres for any pre-CNPG StatefulSet still around.
+PG_POD=$(kubectl -n "$PLATFORM_NS" get pods \
+  -l cnpg.io/cluster=postgres,role=primary \
   --field-selector=status.phase=Running \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 if [[ -z "$PG_POD" ]]; then
-  echo "ERROR: no Running postgres pod in $PLATFORM_NS" >&2
+  PG_POD=$(kubectl -n "$PLATFORM_NS" get pods -l app=postgres \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+fi
+if [[ -z "$PG_POD" ]]; then
+  echo "ERROR: no Running postgres pod in $PLATFORM_NS (looked for cnpg.io/cluster=postgres,role=primary then app=postgres)" >&2
   exit 1
 fi
 
-# Read DB credentials from the same Secret bootstrap created
-PG_USER=$(kubectl -n "$PLATFORM_NS" get statefulset postgres \
-  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="POSTGRES_USER")].value}' 2>/dev/null)
-PG_DB=$(kubectl -n "$PLATFORM_NS" get statefulset postgres \
-  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="POSTGRES_DB")].value}' 2>/dev/null)
-if [[ -z "$PG_USER" || -z "$PG_DB" ]]; then
-  echo "ERROR: failed to read POSTGRES_USER/POSTGRES_DB from postgres StatefulSet" >&2
+# DB user/db name conventions are stable: hardcoded in
+# k8s/base/database.yaml (CNPG initdb owner=platform, db=hosting_platform)
+# and in pre-CNPG StatefulSet env. Read from the secret as the
+# single source of truth instead of inspecting the workload.
+PG_USER=$(kubectl -n "$PLATFORM_NS" get secret platform-db-credentials \
+  -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)
+PG_USER="${PG_USER:-platform}"
+PG_DB="${PLATFORM_DB:-hosting_platform}"
+if [[ -z "$PG_USER" ]]; then
+  echo "ERROR: could not derive postgres username (Secret platform-db-credentials.username missing)" >&2
   exit 1
 fi
 

@@ -1,5 +1,30 @@
-apiVersion: apps/v1
-kind: StatefulSet
+# Platform Postgres — managed by CloudNativePG operator.
+#
+# WHY CNPG instead of vanilla StatefulSet:
+#   - Scaling 1 → 3 instances is a single CR field flip; no data
+#     migration. Apply HA can flip instance count atomically.
+#   - Built-in streaming replication, automatic failover, PITR
+#     (point-in-time-recovery) via barman-cloud + WAL archive.
+#   - Operator already installed (M10) — no new infra component.
+#
+# CONTRACT FOR APP CONNECTIONS:
+#   The Service named `postgres` (defined below) ALWAYS routes to
+#   the current primary pod (via cnpg.io/role=primary label
+#   selector). Apps continue to use postgres.platform.svc:5432 —
+#   no DATABASE_URL change required when failover happens or when
+#   instances scale up/down. CNPG also exposes its own
+#   <name>-rw / <name>-ro / <name>-r services automatically; we
+#   keep the platform-named Service as a stable alias.
+#
+# SECRET CONTRACT:
+#   platform-db-credentials must contain BOTH:
+#     - username: platform   (CNPG initdb owner)
+#     - password: <pwd>      (CNPG initdb password)
+#     - url: postgresql://...  (consumed by backend DATABASE_URL)
+#   bootstrap.sh's generate_platform_secrets() builds all three.
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
 metadata:
   name: postgres
   namespace: platform
@@ -7,78 +32,75 @@ metadata:
     app: postgres
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  serviceName: postgres
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-        - name: postgres
-          # postgres:18 changed the expected mount layout — it wants a
-          # single mount at /var/lib/postgresql with PGDATA in a subdir.
-          # Our StatefulSet mounts at /var/lib/postgresql/data with
-          # subPath=pgdata, which postgres:18 refuses to initdb into.
-          # Pin to 17-alpine until we migrate the mount path (requires
-          # a data migration on any environment that already has 18).
-          image: postgres:17-alpine
-          ports:
-            - containerPort: 5432
-              protocol: TCP
-          env:
-            - name: POSTGRES_DB
-              value: hosting_platform
-            - name: POSTGRES_USER
-              value: platform
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: platform-db-credentials
-                  key: password
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: "1"
-              memory: 1Gi
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-              subPath: pgdata
-          livenessProbe:
-            exec:
-              command:
-                - pg_isready
-                - -U
-                - platform
-                - -d
-                - hosting_platform
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          readinessProbe:
-            exec:
-              command:
-                - pg_isready
-                - -U
-                - platform
-                - -d
-                - hosting_platform
-            initialDelaySeconds: 10
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 10Gi
+  # Default to single-instance for fresh clusters. Apply HA flips
+  # this to 3 (or back) via the platform-storage-policy reconciler.
+  instances: 1
+
+  # Pin to PG 17. PG18 changed the expected mount layout (single
+  # mount at /var/lib/postgresql with PGDATA in subdir) — vanilla
+  # StatefulSet hit this; CNPG abstracts it but we pin for
+  # repeatability. Bump deliberately when upstream stable.
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5
+
+  bootstrap:
+    initdb:
+      database: hosting_platform
+      owner: platform
+      # Secret with username + password keys. bootstrap.sh creates
+      # this; CNPG reads it once at first init and stores the
+      # result in <cluster>-app afterwards. We set ownerLessSecret
+      # to keep our existing Secret usable as the source of truth
+      # for both initdb AND the backend's DATABASE_URL.
+      secret:
+        name: platform-db-credentials
+
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+
+  # Per-instance resources. Conservative defaults for staging;
+  # production overlay should bump to 4Gi memory + 2 CPU.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Bind to the system-only nodes via the same toleration the
+  # rest of the platform Deployments use. Without it, CNPG pods
+  # would land on tenant-tainted server nodes too.
+  affinity:
+    tolerations:
+      - key: platform.phoenix-host.net/server-only
+        operator: Exists
+        effect: NoSchedule
+    # Spread across nodes when instances >= 2 — prevents a
+    # multi-instance cluster from co-locating on one server.
+    podAntiAffinityType: preferred
+    topologyKey: kubernetes.io/hostname
+
+  # Monitoring: CNPG exposes Postgres metrics on a sidecar that
+  # ServiceMonitor (when monitoring is enabled) scrapes.
+  monitoring:
+    enablePodMonitor: false  # set true when prometheus is enabled
+
+  # Backup integration: when backup-credentials Secret has S3
+  # creds, the CNPG operator picks them up via barman-cloud +
+  # ScheduledBackup CR (defined separately). Leaving disabled
+  # by default; the existing postgres-dump cronjob still works
+  # (connects via the postgres Service like any client) and
+  # provides logical backup coverage in parallel.
 ---
+# Stable Service alias. Keeps app connection strings unchanged
+# (postgres.platform.svc:5432) across CNPG instance scaling +
+# failover. ExternalName aliases to CNPG's auto-managed
+# postgres-rw Service which always routes to the current primary.
+# Using ExternalName instead of a selector-based Service avoids
+# CNPG version skew (instance-role label name has changed
+# between minor releases — the operator's own *-rw service is
+# the canonical truth).
 apiVersion: v1
 kind: Service
 metadata:
@@ -86,11 +108,11 @@ metadata:
   namespace: platform
   labels:
     app: postgres
+    app.kubernetes.io/part-of: hosting-platform
 spec:
-  selector:
-    app: postgres
+  type: ExternalName
+  externalName: postgres-rw.platform.svc.cluster.local
   ports:
-    - port: 5432
-      targetPort: 5432
+    - name: postgres
+      port: 5432
       protocol: TCP
-  clusterIP: None

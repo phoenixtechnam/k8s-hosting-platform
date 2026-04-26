@@ -323,12 +323,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // Start background schedulers (skip in test environment)
   if (deps.config.NODE_ENV !== 'test') {
     app.addHook('onReady', async () => {
-      // Connect Redis eagerly on startup
-      try {
-        await getRedis().connect();
-      } catch (err) {
-        console.warn('[redis] Failed to connect on startup:', err instanceof Error ? err.message : String(err));
-      }
+      // In-memory cache replaces Redis (M14). getRedis() now returns
+      // a per-process LRU; no connect() call needed. Initialize it
+      // here for parity with the previous startup-warm pattern.
+      getRedis();
 
       // Reconcile platform-ingress hosts from the DB-configured panel URLs.
       // Kustomize overlays no longer hardcode spec.rules/tls — platform-api

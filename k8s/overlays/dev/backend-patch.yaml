@@ -84,8 +84,7 @@ spec:
                 secretKeyRef:
                   name: platform-jwt-secret
                   key: secret
-            - name: REDIS_URL
-              value: redis://redis.platform.svc.cluster.local:6379
+            # REDIS_URL removed M14 (in-memory LRU replaces Redis).
             - name: OIDC_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:

@@ -1499,11 +1499,15 @@ generate_platform_secrets() {
     local db_password
     db_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
 
+    # CNPG initdb requires username + password keys; backend reads url.
+    # All three are populated here so the same Secret serves both the
+    # CNPG Cluster bootstrap and the platform-api DATABASE_URL.
     kctl create secret generic platform-db-credentials \
       --namespace=platform \
+      --from-literal=username="platform" \
       --from-literal=password="$db_password" \
       --from-literal=url="postgresql://platform:${db_password}@postgres.platform.svc.cluster.local:5432/hosting_platform"
-    log "DB credentials secret created."
+    log "DB credentials secret created (username + password + url)."
   fi
 
   if kctl get secret -n platform platform-jwt-secret &>/dev/null 2>&1; then

@@ -68,8 +68,10 @@ spec:
                   name: platform-admin-seed
                   key: ADMIN_PASSWORD
                   optional: true
-            - name: REDIS_URL
-              value: redis://redis.platform.svc.cluster.local:6379
+            # REDIS_URL removed M14 — Redis replaced by in-memory LRU
+            # in backend/src/shared/redis.ts. Config still accepts the
+            # var (zod default) to remain backward-compatible during
+            # rolling deploys but it is no longer consumed.
             - name: OIDC_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:

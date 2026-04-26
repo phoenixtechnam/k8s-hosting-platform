@@ -12,7 +12,6 @@ resources:
   # imperatively by bootstrap.sh with the correct ACME email address.
   # See scripts/bootstrap.sh install_cert_manager() function.
   - database.yaml
-  - redis.yaml
   - backend-deployment.yaml
   - admin-deployment.yaml
   - client-deployment.yaml
