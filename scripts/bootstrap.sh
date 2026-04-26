@@ -1123,20 +1123,6 @@ kind: APIServer
 metadata:
   name: default
 spec: {}
----
-# WireGuard encryption for ALL pod-to-pod traffic. Always-on, regardless
-# of underlay (public / cloud private net / operator VPN). Port 51821
-# chosen to avoid NetBird's default 51820 — both can run side-by-side
-# on the same hosts when an operator VPN is in use.
-# FelixConfiguration is a separate CRD; the operator picks up the
-# wireguardEnabled flag and rolls calico-node accordingly.
-apiVersion: projectcalico.org/v3
-kind: FelixConfiguration
-metadata:
-  name: default
-spec:
-  wireguardEnabled: true
-  wireguardListeningPort: 51821
 EOF
 
   log "Waiting for Calico pods..."
@@ -1160,8 +1146,31 @@ EOF
       || warn "calico-node rollout did not converge in 180s — verify cross-node routes manually with 'ip route show dev vxlan.calico'"
   fi
 
+  # Enable Calico WireGuard now that the FelixConfiguration CRD has
+  # been registered by the Tigera operator. WireGuard is always-on,
+  # regardless of underlay (public / cloud private net / operator VPN),
+  # giving uniform pod-to-pod encryption + a single encap layer (vs
+  # the brittle VXLAN-over-NetBird-WireGuard double-encap we had).
+  # Port 51821 chosen to avoid NetBird's default 51820 — both can run
+  # side-by-side on the same hosts.
+  log "Enabling Calico WireGuard (port 51821)..."
+  # Wait up to 60s for the FelixConfiguration CRD to register.
+  for _ in $(seq 1 30); do
+    if kubectl get crd felixconfigurations.crd.projectcalico.org >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+  cat <<EOF | kubectl apply -f -
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  wireguardEnabled: true
+  wireguardListeningPort: 51821
+EOF
+
   marker_set "calico-installed"
-  log "Calico CNI installed."
+  log "Calico CNI installed (WireGuard enabled, port 51821)."
 }
 
 # ─── Phase 3: Platform Components ────────────────────────────────────────────
