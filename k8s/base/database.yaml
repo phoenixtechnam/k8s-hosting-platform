@@ -32,6 +32,15 @@ metadata:
     app: postgres
     app.kubernetes.io/part-of: hosting-platform
 spec:
+  # Apply our `app: postgres` label to every Pod CNPG creates so
+  # existing K8s NetworkPolicies (allow-platform-internal selects
+  # by app=postgres) match. Without this, platform-api can't reach
+  # the DB through the cluster's deny-by-default ingress posture.
+  inheritedMetadata:
+    labels:
+      app: postgres
+      app.kubernetes.io/part-of: hosting-platform
+
   # Default to single-instance for fresh clusters. Apply HA flips
   # this to 3 (or back) via the platform-storage-policy reconciler.
   instances: 1
