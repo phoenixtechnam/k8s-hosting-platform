@@ -135,6 +135,11 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["volumes"]
     verbs: ["patch"]
+  # M14: Apply HA also scales the CNPG Cluster CR. apps/deployments
+  # is already covered by the broader apps verbs:["*"] rule above.
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "patch"]
   # The Backup-Now admin action creates Backup CRs directly; Longhorn's
   # controller then snapshots the volume and uploads to the active
   # BackupTarget. Snapshot CRs are needed for the two-step create-

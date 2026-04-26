@@ -289,30 +289,24 @@ async function patchStatelessDeployments(
         });
         continue;
       }
-      // Build the topologySpread block with this deployment's
-      // app=<name> selector inserted; idempotent re-apply.
-      const tsc = HA_TOPOLOGY_SPREAD.map((c) => ({
-        ...c,
-        labelSelector: { matchLabels: { app: d.name } },
-      }));
-      // Strategic-merge patch on Deployment lets us update both
-      // .spec.replicas and .spec.template.spec.topologySpreadConstraints
-      // atomically. Setting topologySpread under template.spec
-      // triggers a rolling restart, so we do it only when scaling
-      // up to HA (when replicas were already < desired). Scaling
-      // down to local skips the topologySpread patch — the rule
-      // is harmless at lower replica counts.
-      const patchBody: Record<string, unknown> = {
-        spec: { replicas: desired },
-      };
-      if (tier === 'ha') {
-        (patchBody.spec as Record<string, unknown>).template = {
-          spec: { topologySpreadConstraints: tsc },
-        };
-      }
-      await k8s.apps.patchNamespacedDeployment({
-        namespace: d.namespace, name: d.name, body: patchBody,
-      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0], MERGE_PATCH);
+      // Use the /scale subresource — same path HPAs use. Flux's
+      // server-side apply tracks .spec.replicas as a managed field,
+      // and a normal MERGE_PATCH from us would lose the war on
+      // every reconcile. The /scale subresource has its own field
+      // manager rules and reconcile-friendly semantics: setting
+      // replicas via /scale doesn't conflict with Flux's SSA on
+      // the parent Deployment object.
+      await k8s.apps.replaceNamespacedDeploymentScale({
+        namespace: d.namespace, name: d.name,
+        body: {
+          metadata: { name: d.name, namespace: d.namespace },
+          spec: { replicas: desired },
+        },
+      } as unknown as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
+      // topologySpread lives in .spec.template.spec.topologySpread-
+      // Constraints — that IS managed by Flux SSA. We don't try to
+      // patch it imperatively (would get reverted). Operators who
+      // want HA topology spread should set it in the manifest.
       results.push({
         namespace: d.namespace, name: d.name,
         previousReplicas, newReplicas: desired,
