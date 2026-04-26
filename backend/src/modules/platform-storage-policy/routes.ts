@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import crypto from 'node:crypto';
-import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
+import { authenticate, requireRole, requirePanel, type JwtPayload } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
@@ -57,8 +57,12 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     const input = updatePlatformStoragePolicySchema.parse(req.body);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const user = req.user as { id?: string } | undefined;
-    const actorId = user?.id ?? null;
+    // JWT payload exposes the subject (user UUID) on `sub`, not `id` —
+    // earlier code read `id` and silently fell through to null, so
+    // `last_applied_by` was always NULL. The audit_logs row has its own
+    // actor_id column populated below; this fixes the row-level field.
+    const user = req.user as JwtPayload | undefined;
+    const actorId = user?.sub ?? null;
     const before = await getPolicy(app.db);
     const updated = await setPolicy(app.db, input.systemTier, input.pinnedByAdmin ?? true, actorId);
     const patches = await applyPolicy(k8s, app.db);
