@@ -43,8 +43,14 @@ metadata:
   namespace: platform
 spec:
   hard:
-    requests.cpu: "4"
-    requests.memory: 4Gi
-    limits.cpu: "8"
-    limits.memory: 8Gi
+    # HA tier headroom on a 3-server cluster:
+    #   5 stateless deploys × 3 replicas × ~500m limit ≈ 7.5 CPU
+    #   3 CNPG postgres instances × 1 CPU limit          = 3.0 CPU
+    #   stalwart-mail, platform-suspended, sftp-gateway,
+    #   dex (where it lives), various sidecars            ≈ 2.5 CPU
+    # Old 8-CPU ceiling blocked postgres-3 join during Apply HA.
+    requests.cpu: "8"
+    requests.memory: 8Gi
+    limits.cpu: "16"
+    limits.memory: 16Gi
     pods: "30"

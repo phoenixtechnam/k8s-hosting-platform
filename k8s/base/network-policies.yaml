@@ -182,6 +182,55 @@ spec:
         - protocol: TCP
           port: 3000  # platform-api (admin/client-panel nginx → backend)
 ---
+# Allow CNPG operator (cnpg-system ns) → postgres instance pods.
+#
+# CNPG's reconciler probes each instance at https://<podIP>:8000/pg/status
+# every ~12s to extract role/ready state. Without this rule, default-
+# deny-ingress sinks the probe → cluster stays in
+# "Instance Status Extraction Error" → operator never reconciles
+# spec.instances bumps, so Apply HA can't actually scale postgres
+# from 1 → 3 instances.
+#
+# Observed live 2026-04-26: spec.instances=3 ignored, only postgres-1
+# ever existed; PDB event "NoPods" because operator couldn't tell
+# whether existing instances were ready before creating new ones.
+# 9187 is the metrics-exporter sidecar (PodMonitor scrape source);
+# 5432 is replication for streaming standbys to follow the primary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cnpg-operator-to-postgres
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+      ports:
+        - protocol: TCP
+          port: 8000   # instance manager status (HTTPS)
+        - protocol: TCP
+          port: 9187   # postgres-exporter metrics
+    # Streaming replication: standby instances connect to the
+    # primary on 5432. Both are in the platform namespace, both
+    # carry cnpg.io/cluster=postgres, so this peer rule allows
+    # postgres-{2,3} → postgres-1 once the operator creates them.
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
 # Allow ingress-nginx → cm-acme-http-solver pods on port 8089.
 #
 # cert-manager dynamically creates short-lived solver pods (and a
