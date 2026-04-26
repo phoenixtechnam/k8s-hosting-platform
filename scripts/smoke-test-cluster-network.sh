@@ -16,6 +16,11 @@
 #      ingress-nginx in the mix).
 #   5) Longhorn replica health on platform StatefulSets.
 #   6) Calico Felix log scrape — fail on MTU/XDP/fatal patterns.
+#   7) cert-manager Certificate readiness — every Certificate in
+#      platform/mail/longhorn-system must report Ready=True. LE
+#      issuance failures often cascade from cross-node host→pod
+#      breakage (the ingress→solver-pod hop is host-source) so
+#      this is the canary for the same class of bug as Test 4.
 #
 # Usage:
 #   ./scripts/smoke-test-cluster-network.sh                        # human output
@@ -330,6 +335,117 @@ test_6_felix_logs() {
   fi
 }
 
+# ─ test 7: cert-manager Certificates Ready ─────────────────────────
+# A Ready=False Certificate means the LE order failed (HTTP-01
+# challenge couldn't reach the cert-manager solver pod). This is
+# the same failure-class as Test 4: the ingress→solver hop is a
+# host-source-to-pod cross-node forward when DNS lands on a node
+# without the solver. If Test 4 is GREEN and Test 7 is RED, the
+# issue is downstream of the netpol — likely DNS, rate-limit, or
+# a stale Order needing manual reissue. If both RED, fix Test 4
+# first; Test 7 will heal automatically on the next reconcile.
+test_7_cert_ready() {
+  if skipped 7; then emit "test7.cert_ready" SKIP "skipped"; return; fi
+
+  # Stuck-Issuing threshold: cert-manager normally completes an LE
+  # HTTP-01 issuance in <90s. After this many seconds, an Issuing
+  # cert is considered FAILED (likely a rate-limit, stale Order, or
+  # solver unreachable). Configurable via env for slow underlays.
+  local stuck_threshold_seconds="${SMOKE_CERT_ISSUING_THRESHOLD:-300}"
+
+  # Namespaces we expect to host TLS-issuing Ingresses. Add to this
+  # list when a new admin-only or platform UI ships a Cert.
+  local namespaces=("platform" "mail" "longhorn-system")
+
+  # Pre-reconcile detection: if NONE of the expected namespaces
+  # exist yet, the cluster is brand-new and Flux hasn't run; skip
+  # cleanly. If ANY namespace exists, expect certs there — empty =
+  # genuine regression (cert-manager CRDs deleted, etc.).
+  local existing_ns=0
+  for ns in "${namespaces[@]}"; do
+    if kubectl get namespace "$ns" &>/dev/null; then
+      existing_ns=$((existing_ns+1))
+    fi
+  done
+  if [[ $existing_ns -eq 0 ]]; then
+    emit "test7.cert_ready" PASS "no expected namespaces yet (cluster pre-reconcile)"
+    return
+  fi
+
+  local certs=""
+  for ns in "${namespaces[@]}"; do
+    local out
+    # creationTimestamp is included so we can age-check stuck Issuing.
+    out=$(kubectl -n "$ns" get certificates.cert-manager.io \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.namespace}={.status.conditions[?(@.type=="Ready")].status}={.status.conditions[?(@.type=="Ready")].reason}={.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null) || true
+    [[ -n "$out" ]] && certs+="$out"
+  done
+  if [[ -z "$certs" ]]; then
+    emit "test7.cert_ready" FAIL "namespaces exist but no Certificates found (cert-manager CRDs missing or Flux didn't apply Ingresses)"
+    return
+  fi
+
+  local now_epoch
+  now_epoch=$(date -u +%s)
+
+  local total=0 ok=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local name ns status reason created
+    name=$(echo "$line" | cut -d= -f1)
+    ns=$(echo "$line" | cut -d= -f2)
+    status=$(echo "$line" | cut -d= -f3)
+    reason=$(echo "$line" | cut -d= -f4)
+    created=$(echo "$line" | cut -d= -f5)
+    total=$((total+1))
+
+    if [[ "$status" == "True" ]]; then
+      ok=$((ok+1))
+      emit "test7.${ns}/${name}" PASS "Ready=True"
+      continue
+    fi
+
+    # Cert age in seconds. `date -d` is GNU; on BSD/macOS the
+    # parser differs but we run smoke on Linux nodes only.
+    local age=0
+    if [[ -n "$created" ]]; then
+      local created_epoch
+      created_epoch=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+      [[ $created_epoch -gt 0 ]] && age=$((now_epoch - created_epoch))
+    fi
+
+    if [[ -z "$status" ]]; then
+      # No Ready condition yet — only acceptable on a freshly-created cert
+      if [[ $age -lt $stuck_threshold_seconds ]]; then
+        ok=$((ok+1))
+        emit "test7.${ns}/${name}" PASS "no Ready condition yet (age=${age}s, threshold=${stuck_threshold_seconds}s)"
+      else
+        emit "test7.${ns}/${name}" FAIL "no Ready condition after ${age}s (cert-manager not reconciling — check controller logs)"
+      fi
+      continue
+    fi
+
+    if [[ "$reason" == "Issuing" || "$reason" == "DoesNotExist" ]]; then
+      if [[ $age -lt $stuck_threshold_seconds ]]; then
+        ok=$((ok+1))
+        emit "test7.${ns}/${name}" PASS "Issuing (transient, age=${age}s)"
+      else
+        emit "test7.${ns}/${name}" FAIL "STUCK in $reason for ${age}s — likely LE order failed or solver unreachable; check Test 4"
+      fi
+      continue
+    fi
+
+    # Anything else (Failed, etc.) is a real failure regardless of age.
+    emit "test7.${ns}/${name}" FAIL "Ready=$status reason=$reason (LE order failed — check cross-node host→pod via Test 4)"
+  done <<< "$certs"
+
+  if [[ $ok -eq $total ]]; then
+    emit "test7.summary" PASS "$ok/$total OK"
+  else
+    emit "test7.summary" FAIL "$ok/$total OK"
+  fi
+}
+
 # ─ run ──────────────────────────────────────────────────────────────
 emit "run.start" INFO "run_id=$RUN_ID hostnames=$HOSTNAMES skip=${SKIP:-none}"
 test_1_external_ips
@@ -338,6 +454,7 @@ test_3_pod_to_pod
 test_4_hostnetwork_to_pod
 test_5_longhorn_replicas
 test_6_felix_logs
+test_7_cert_ready
 
 emit "run.summary" INFO "PASS=$PASS FAIL=$FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

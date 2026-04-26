@@ -38,8 +38,31 @@ KUBECONFIG=... make failover
 | 4 | hostNetwork→pod cross-node | Direct probe of the host-source-via-vxlan-tunnel-IP class of bug. Spawns a hostNetwork=true pod on each node, curls pod-network targets cross-node. |
 | 5 | Longhorn replica health | Catches the "node up but Longhorn replicas degraded/unattached" silent failure mode |
 | 6 | Calico Felix log scrape | Greps the last 200 log lines per `calico-node` for `Failed to set tunnel device MTU`, `XDP`, `fatal`, `panic`. Catches Felix in a partial-reconcile loop. |
+| 7 | cert-manager Certificates Ready | Asserts every Certificate in `platform`/`mail`/`longhorn-system` reports `Ready=True`. **Catches the same failure-class as Test 4 in disguise** — see "LE issuance failures" below. |
 
 Pass criteria: every cell of every matrix succeeds. A FAIL on any single cell = the suite fails.
+
+### LE issuance failures cascade from Test 4
+
+When Test 7 (Certificate Ready) fails, **check Test 4 first**. The HTTP-01 ACME flow that cert-manager uses for Let's Encrypt is a host-source-to-pod cross-node forward in disguise:
+
+1. LE probes `http://<host>/.well-known/acme-challenge/<token>` from the public internet.
+2. DNS lands the request on one of the cluster's external IPs.
+3. `ingress-nginx` (hostNetwork=true) on that node receives the request and forwards it to a **cert-manager solver pod**.
+4. The solver pod is a single-replica Deployment scheduled by the K8s scheduler — usually on a different node than the ingress-nginx that received the LE probe.
+5. **That cross-node forward is exactly the path Test 4 exercises**.
+
+If host→pod cross-node is broken (the bug fixed in `k8s/base/network-policies.yaml` 2026-04-26 with `ipBlock: 10.42.0.0/16`), the solver is unreachable and LE marks the challenge invalid. Multi-SAN certs (e.g. one cert covering `admin/client/dex`) compound the risk: any single failed challenge invalidates the whole order.
+
+When you see Test 7 FAIL:
+- Test 4 also FAIL → fix Test 4 first; Test 7 will heal automatically on the next cert-manager retry.
+- Test 4 is GREEN → Test 7 failure is downstream (DNS, LE rate-limit, stale Order). Inspect with:
+  ```bash
+  kubectl get certificate -A
+  kubectl describe certificate -n <ns> <name>
+  kubectl get challenges.acme.cert-manager.io -A
+  ```
+  To force a fresh issuance attempt: `kubectl delete certificate -n <ns> <name>` (the owning Ingress will recreate it).
 
 ## The 5 failover drills
 
@@ -71,6 +94,8 @@ The drills are sequential and stateful — D3 leaves the node briefly NotReady, 
 | Test 3 FAIL but Test 4 PASS | Calico VXLAN data plane is broken (rare) | tcpdump on `vxlan.calico` of source + dest |
 | Test 5 (Longhorn) FAIL with "degraded" | Replica out of sync after a node restart | `kubectl get volumes.longhorn.io -n longhorn-system` |
 | Test 6 (Felix logs) recurring FAIL | Felix is in a partial-reconcile loop (often: MTU mismatch with the underlay) | `kubectl logs -n calico-system -l k8s-app=calico-node` |
+| Test 7 (cert Ready) FAIL alongside Test 4 FAIL | Same root cause: LE solver is unreachable cross-node | Fix Test 4 first; cert-manager retries automatically |
+| Test 7 FAIL while Test 4 PASS | Downstream: DNS, LE rate-limit, stale Order | `kubectl describe certificate ...`; `kubectl delete certificate ...` to retry |
 | Every test except Test 6 FAIL | Cluster API not reachable from `kubectl` | Check kubeconfig + NetBird mesh state |
 
 ## Forensic record
