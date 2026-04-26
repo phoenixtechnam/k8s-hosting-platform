@@ -1,0 +1,404 @@
+Defaulted container "calico-node" out of: calico-node, flexvol-driver (init), ebpf-bootstrap (init), install-cni (init)
+Defaulted container "calico-node" out of: calico-node, flexvol-driver (init), ebpf-bootstrap (init), install-cni (init)
+Defaulted container "calico-node" out of: calico-node, flexvol-driver (init), ebpf-bootstrap (init), install-cni (init)
+Defaulted container "calico-node" out of: calico-node, flexvol-driver (init), ebpf-bootstrap (init), install-cni (init)
+]
+2026-04-26 11:05:55.934 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:55.939 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:55.939 [INFO][1182364] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.135 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.140 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.140 [INFO][1182364] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.351 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.356 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.356 [INFO][1182364] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.356 [INFO][1182364] felix/int_dataplane.go 2581: Applying XDP actions did not succeed, disabling XDP error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.568 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.572 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.572 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=0
+2026-04-26 11:05:56.880 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.885 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.885 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=1
+2026-04-26 11:05:57.188 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:57.193 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:57.193 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=2
+2026-04-26 11:05:57.504 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:57.509 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:57.509 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=3
+2026-04-26 11:05:57.806 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:57.810 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:57.810 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=4
+2026-04-26 11:05:58.131 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:58.140 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:58.140 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=5
+2026-04-26 11:05:58.444 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:58.449 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:58.449 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=6
+2026-04-26 11:05:58.776 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:58.780 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:58.780 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=7
+2026-04-26 11:05:59.080 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:59.085 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:59.085 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=8
+2026-04-26 11:05:59.385 [INFO][1182364] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:59.392 [INFO][1182364] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:59.393 [WARNING][1182364] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=9
+2026-04-26 11:05:59.493 [WARNING][1182364] felix/int_dataplane.go 2583: failed to disable XDP: failed to wipe the XDP state after 10 tries over 100ms seconds: error failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+], will proceed anyway.
+2026-04-26 11:06:01.963 [INFO][1182364] felix/route_mgr.go 618: Tunnel device MTU needs to be updated ipVersion=0x4 new=1450 old=1230 tunnelDevice="vxlan.calico"
+2026-04-26 11:06:01.963 [WARNING][1182364] felix/route_mgr.go 620: Failed to set tunnel device MTU error=invalid argument ipVersion=0x4 tunnelDevice="vxlan.calico"
+2026-04-26 11:05:53.680 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:53.692 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:53.692 [INFO][54] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.029 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.044 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.044 [INFO][54] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.044 [INFO][54] felix/int_dataplane.go 2581: Applying XDP actions did not succeed, disabling XDP error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.411 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.425 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.425 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=0
+2026-04-26 11:05:54.855 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.877 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.877 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=1
+2026-04-26 11:05:55.340 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:55.356 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:55.356 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=2
+2026-04-26 11:05:55.789 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:55.805 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:55.805 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=3
+2026-04-26 11:05:56.179 [INFO][54] felix/route_mgr.go 618: Tunnel device MTU needs to be updated ipVersion=0x4 new=1450 old=1230 tunnelDevice="vxlan.calico"
+2026-04-26 11:05:56.179 [WARNING][54] felix/route_mgr.go 620: Failed to set tunnel device MTU error=invalid argument ipVersion=0x4 tunnelDevice="vxlan.calico"
+2026-04-26 11:05:56.278 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.294 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.294 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=4
+2026-04-26 11:05:56.766 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:56.779 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:56.779 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=5
+2026-04-26 11:05:57.302 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:57.313 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:57.314 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=6
+2026-04-26 11:05:57.730 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:57.745 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:57.745 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=7
+2026-04-26 11:05:58.219 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:58.240 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:58.240 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=8
+2026-04-26 11:05:58.684 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:58.693 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:58.693 [WARNING][54] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=9
+2026-04-26 11:05:58.794 [WARNING][54] felix/int_dataplane.go 2583: failed to disable XDP: failed to wipe the XDP state after 10 tries over 100ms seconds: error failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+], will proceed anyway.
+2026-04-26 11:05:58.883 [INFO][54] felix/status_combiner.go 100: Reporting endpoint removed. id=types.WorkloadEndpointID{OrchestratorId:"k8s", WorkloadId:"ingress-nginx/ingress-external-ips-reconciler-29620025-wqzkb", EndpointId:"eth0"}
+2026-04-26 11:06:04.311 [INFO][54] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:04.329 [INFO][54] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:04.329 [INFO][54] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+]
+2026-04-26 11:05:50.665 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:50.673 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:50.673 [INFO][80] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:50.902 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:50.911 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:50.911 [INFO][80] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.170 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:51.179 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.180 [INFO][80] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.180 [INFO][80] felix/int_dataplane.go 2581: Applying XDP actions did not succeed, disabling XDP error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.424 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:51.432 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.432 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=0
+2026-04-26 11:05:51.809 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:51.818 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:51.818 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=1
+2026-04-26 11:05:52.210 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:52.217 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:52.217 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=2
+2026-04-26 11:05:52.615 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:52.624 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:52.624 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=3
+2026-04-26 11:05:53.006 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:53.014 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:53.015 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=4
+2026-04-26 11:05:53.382 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:53.390 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:53.390 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=5
+2026-04-26 11:05:53.748 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:53.754 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:53.754 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=6
+2026-04-26 11:05:54.111 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.119 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.119 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=7
+2026-04-26 11:05:54.495 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.503 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.503 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=8
+2026-04-26 11:05:54.903 [INFO][80] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:05:54.911 [INFO][80] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:05:54.911 [WARNING][80] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=9
+2026-04-26 11:05:55.012 [WARNING][80] felix/int_dataplane.go 2583: failed to disable XDP: failed to wipe the XDP state after 10 tries over 100ms seconds: error failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+], will proceed anyway.
+2026-04-26 11:05:55.661 [INFO][80] felix/route_mgr.go 618: Tunnel device MTU needs to be updated ipVersion=0x4 new=1450 old=1230 tunnelDevice="vxlan.calico"
+2026-04-26 11:05:55.661 [WARNING][80] felix/route_mgr.go 620: Failed to set tunnel device MTU error=invalid argument ipVersion=0x4 tunnelDevice="vxlan.calico"
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:00.866 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:00.872 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:00.872 [INFO][68] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.147 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:01.155 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.155 [INFO][68] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.359 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:01.365 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.365 [INFO][68] felix/int_dataplane.go 2773: Applying XDP BPF actions did not succeed, will retry with resync... error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.365 [INFO][68] felix/int_dataplane.go 2581: Applying XDP actions did not succeed, disabling XDP error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.575 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:01.580 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.580 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=0
+2026-04-26 11:06:01.873 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:01.879 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:01.879 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=1
+2026-04-26 11:06:02.176 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:02.181 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:02.181 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=2
+2026-04-26 11:06:02.490 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:02.496 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:02.496 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=3
+2026-04-26 11:06:02.804 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:02.809 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:02.809 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=4
+2026-04-26 11:06:03.119 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:03.125 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:03.125 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=5
+2026-04-26 11:06:03.414 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:03.420 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:03.420 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=6
+2026-04-26 11:06:03.714 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:03.720 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:03.720 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=7
+2026-04-26 11:06:04.014 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:04.019 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:04.019 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=8
+2026-04-26 11:06:04.311 [INFO][68] felix/xdp_state.go 485: Program on interface is bogus in some way.  Will need to reapply it. iface="lo" reasons=[]string{"error getting tag: failed to show XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): exit status 255\n{\n    \"error\": \"bpf obj get (/sys/fs/bpf/calico/xdp/prefilter_v1_lo): No such file or directory\"\n}\n", "installed program uses disallowed mode: xdpgeneric"}
+2026-04-26 11:06:04.315 [INFO][68] felix/xdp_state.go 226: Applying BPF actions did not succeed. Queueing XDP resync. error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+]
+2026-04-26 11:06:04.315 [WARNING][68] felix/int_dataplane.go 2209: failed to wipe the XDP state error=failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+] try=9
+2026-04-26 11:06:04.416 [WARNING][68] felix/int_dataplane.go 2583: failed to disable XDP: failed to wipe the XDP state after 10 tries over 100ms seconds: error failed to remove XDP program from lo: [remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory remove /sys/fs/bpf/calico/xdp/prefilter_v1_lo: no such file or directory failed to detach XDP program (/sys/fs/bpf/calico/xdp/prefilter_v1_lo) from lo: exit status 2
+Error: Can't replace active BPF XDP link.
+], will proceed anyway.
+2026-04-26 11:06:04.416 [INFO][68] felix/summary.go 100: Summarising 6 dataplane reconciliation loops over 1m8.3s: avg=5.178s longest=5.258s ()

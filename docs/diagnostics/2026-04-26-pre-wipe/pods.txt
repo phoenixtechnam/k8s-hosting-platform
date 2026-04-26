@@ -1,0 +1,118 @@
+NAMESPACE         NAME                                                READY   STATUS                       RESTARTS          AGE     IP                NODE       NOMINATED NODE   READINESS GATES
+calico-system     calico-apiserver-cdb95b7bf-pjfqq                    1/1     Running                      0                 132m    10.42.171.93      worker     <none>           <none>
+calico-system     calico-apiserver-cdb95b7bf-sj5gp                    1/1     Running                      0                 132m    10.42.171.86      worker     <none>           <none>
+calico-system     calico-kube-controllers-5b7888f9cb-ksczr            1/1     Running                      0                 132m    10.42.171.89      worker     <none>           <none>
+calico-system     calico-node-4dck2                                   1/1     Running                      0                 12h     100.120.13.164    worker     <none>           <none>
+calico-system     calico-node-9gxlq                                   1/1     Running                      0                 12h     100.120.95.182    staging    <none>           <none>
+calico-system     calico-node-brv7t                                   1/1     Running                      0                 12h     100.120.184.126   staging3   <none>           <none>
+calico-system     calico-node-v8rvq                                   1/1     Running                      0                 12h     100.120.21.104    staging2   <none>           <none>
+calico-system     calico-typha-74f88f54cc-8v9lg                       1/1     Running                      0                 12h     100.120.21.104    staging2   <none>           <none>
+calico-system     calico-typha-74f88f54cc-d9phc                       1/1     Running                      0                 19h     100.120.184.126   staging3   <none>           <none>
+calico-system     csi-node-driver-fxrmx                               2/2     Running                      0                 19h     10.42.44.129      staging3   <none>           <none>
+calico-system     csi-node-driver-mk48p                               2/2     Running                      0                 19h     10.42.171.68      worker     <none>           <none>
+calico-system     csi-node-driver-rrsd9                               2/2     Running                      0                 19h     10.42.173.129     staging2   <none>           <none>
+calico-system     csi-node-driver-t9xzp                               2/2     Running                      2 (13h ago)       19h     10.42.16.209      staging    <none>           <none>
+cert-manager      cert-manager-64d4848f5-zvmkw                        1/1     Running                      0                 14h     10.42.173.166     staging2   <none>           <none>
+cert-manager      cert-manager-cainjector-57db9c77c6-ccblh            1/1     Running                      0                 14h     10.42.173.169     staging2   <none>           <none>
+cert-manager      cert-manager-webhook-799b9c8765-hdd7k               1/1     Running                      0                 14h     10.42.173.162     staging2   <none>           <none>
+cnpg-system       cnpg-cloudnative-pg-764c4f6887-qvz9h                1/1     Running                      0                 132m    10.42.171.87      worker     <none>           <none>
+default           node-debugger-staging-9j9jm                         0/1     Completed                    0                 84m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging-clrw9                         0/1     Completed                    0                 80m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging-kkr8z                         0/1     Completed                    0                 79m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging-npgq9                         0/1     Completed                    0                 79m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging-sw2x2                         0/1     Completed                    0                 80m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging-w2nk9                         0/1     Completed                    0                 78m     100.120.95.182    staging    <none>           <none>
+default           node-debugger-staging2-5rlxh                        0/1     Completed                    0                 80m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-8t6tm                        0/1     Completed                    0                 78m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-d6ljq                        0/1     Completed                    0                 77m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-lbzjc                        0/1     Completed                    0                 80m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-mj7ck                        0/1     Completed                    0                 79m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-ngppt                        0/1     Completed                    0                 84m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-vcxm4                        0/1     Completed                    0                 77m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging2-zvtx9                        0/1     Completed                    0                 79m     100.120.21.104    staging2   <none>           <none>
+default           node-debugger-staging3-2sm7t                        0/1     Completed                    0                 80m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-staging3-cjw6v                        0/1     Completed                    0                 80m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-staging3-dzz9q                        0/1     Completed                    0                 79m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-staging3-fcc6g                        0/1     Completed                    0                 78m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-staging3-nsw7k                        0/1     Completed                    0                 84m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-staging3-ntlnd                        0/1     Completed                    0                 79m     100.120.184.126   staging3   <none>           <none>
+default           node-debugger-worker-5hmfk                          0/1     Completed                    0                 79m     100.120.13.164    worker     <none>           <none>
+default           node-debugger-worker-lvv8w                          0/1     Completed                    0                 78m     100.120.13.164    worker     <none>           <none>
+default           node-debugger-worker-pnlxf                          0/1     Completed                    0                 80m     100.120.13.164    worker     <none>           <none>
+default           node-debugger-worker-r44wk                          0/1     Completed                    0                 80m     100.120.13.164    worker     <none>           <none>
+default           node-debugger-worker-srsq9                          0/1     Completed                    0                 84m     100.120.13.164    worker     <none>           <none>
+default           node-debugger-worker-t7m2k                          0/1     Completed                    0                 79m     100.120.13.164    worker     <none>           <none>
+e2e-ingress       app2-74f85bb9cd-ct5dp                               1/1     Running                      0                 132m    10.42.171.82      worker     <none>           <none>
+e2e-ingress       app2-74f85bb9cd-h7p6c                               1/1     Running                      0                 132m    10.42.171.84      worker     <none>           <none>
+e2e-ingress       app2-74f85bb9cd-hkrx9                               1/1     Running                      0                 132m    10.42.171.88      worker     <none>           <none>
+e2e-ingress       hello-7dbc68f77c-gtjwl                              1/1     Running                      0                 132m    10.42.171.79      worker     <none>           <none>
+e2e-ingress       hello-7dbc68f77c-mqckd                              1/1     Running                      0                 132m    10.42.171.90      worker     <none>           <none>
+flux-system       helm-controller-7bc94d464-ghxqj                     1/1     Running                      1 (13h ago)       14h     10.42.44.148      staging3   <none>           <none>
+flux-system       image-automation-controller-7cbd769c98-c8cjq        1/1     Running                      0                 14h     10.42.173.168     staging2   <none>           <none>
+flux-system       image-reflector-controller-77cc5c6557-6xg7s         1/1     Running                      0                 14h     10.42.173.167     staging2   <none>           <none>
+flux-system       kustomize-controller-789449b5cd-s2g5x               1/1     Running                      1 (13h ago)       14h     10.42.44.151      staging3   <none>           <none>
+flux-system       notification-controller-6875b94c58-n97jb            1/1     Running                      1 (13h ago)       14h     10.42.44.152      staging3   <none>           <none>
+flux-system       source-controller-b5b5ff975-2ls7c                   1/1     Running                      1 (13h ago)       14h     10.42.44.150      staging3   <none>           <none>
+ingress-nginx     ingress-external-ips-reconciler-29620025-wqzkb      0/1     Completed                    0                 61s     10.42.16.236      staging    <none>           <none>
+ingress-nginx     ingress-nginx-controller-9sfk2                      1/1     Running                      0                 19h     100.120.13.164    worker     <none>           <none>
+ingress-nginx     ingress-nginx-controller-gpkzn                      1/1     Running                      0                 19h     100.120.184.126   staging3   <none>           <none>
+ingress-nginx     ingress-nginx-controller-lh7dx                      1/1     Running                      1 (13h ago)       19h     100.120.95.182    staging    <none>           <none>
+ingress-nginx     ingress-nginx-controller-xf624                      1/1     Running                      0                 19h     100.120.21.104    staging2   <none>           <none>
+kube-system       coredns-67698959d7-hwhlt                            0/1     Pending                      0                 13h     <none>            <none>     <none>           <none>
+kube-system       coredns-67698959d7-p7ls2                            0/1     Pending                      0                 13h     <none>            <none>     <none>           <none>
+kube-system       coredns-867794c999-5fx7z                            1/1     Running                      0                 15h     10.42.173.157     staging2   <none>           <none>
+kube-system       coredns-867794c999-bjxh7                            1/1     Running                      0                 15h     10.42.44.144      staging3   <none>           <none>
+kube-system       local-path-provisioner-7d78d7c5d7-h8l7m             1/1     Running                      0                 132m    10.42.171.85      worker     <none>           <none>
+kube-system       metrics-server-65ddb7d4b5-dvxk4                     1/1     Running                      0                 132m    10.42.171.81      worker     <none>           <none>
+kube-system       sealed-secrets-controller-769c867c6b-7zvgk          1/1     Running                      0                 14h     10.42.44.157      staging3   <none>           <none>
+longhorn-system   csi-attacher-7bc5d6d8c9-2vbwb                       1/1     Running                      28 (5m10s ago)    132m    10.42.16.221      staging    <none>           <none>
+longhorn-system   csi-attacher-7bc5d6d8c9-58kg6                       1/1     Running                      0                 14h     10.42.173.159     staging2   <none>           <none>
+longhorn-system   csi-attacher-7bc5d6d8c9-9mcwc                       1/1     Running                      0                 14h     10.42.44.154      staging3   <none>           <none>
+longhorn-system   csi-provisioner-d4b5d654-5lftl                      1/1     Running                      0                 14h     10.42.44.153      staging3   <none>           <none>
+longhorn-system   csi-provisioner-d4b5d654-d4cwz                      1/1     Running                      28 (5m28s ago)    132m    10.42.16.212      staging    <none>           <none>
+longhorn-system   csi-provisioner-d4b5d654-nsz6q                      1/1     Running                      1 (13h ago)       14h     10.42.173.164     staging2   <none>           <none>
+longhorn-system   csi-resizer-65bfd847d6-6flss                        1/1     Running                      0                 14h     10.42.44.149      staging3   <none>           <none>
+longhorn-system   csi-resizer-65bfd847d6-jfk84                        1/1     Running                      0                 14h     10.42.173.161     staging2   <none>           <none>
+longhorn-system   csi-resizer-65bfd847d6-ngz67                        0/1     CrashLoopBackOff             27 (4m16s ago)    132m    10.42.16.240      staging    <none>           <none>
+longhorn-system   csi-snapshotter-7c9b75dd45-6k4tz                    0/1     CrashLoopBackOff             27 (4m51s ago)    132m    10.42.16.250      staging    <none>           <none>
+longhorn-system   csi-snapshotter-7c9b75dd45-7pzpm                    1/1     Running                      0                 14h     10.42.173.160     staging2   <none>           <none>
+longhorn-system   csi-snapshotter-7c9b75dd45-ftq9j                    1/1     Running                      0                 14h     10.42.44.147      staging3   <none>           <none>
+longhorn-system   engine-image-ei-75a03ec3-dp6bx                      1/1     Running                      0                 19h     10.42.171.67      worker     <none>           <none>
+longhorn-system   engine-image-ei-75a03ec3-tjf66                      1/1     Running                      1 (13h ago)       19h     10.42.16.204      staging    <none>           <none>
+longhorn-system   engine-image-ei-75a03ec3-xh6cq                      1/1     Running                      0                 19h     10.42.173.130     staging2   <none>           <none>
+longhorn-system   engine-image-ei-75a03ec3-ztf7m                      1/1     Running                      0                 19h     10.42.44.131      staging3   <none>           <none>
+longhorn-system   hourly-snap-29620025-hmpm6                          0/1     Completed                    0                 61s     10.42.171.98      worker     <none>           <none>
+longhorn-system   instance-manager-5d2f8f7b40e0ff2391b380c047f8fbb1   1/1     Running                      0                 99m     10.42.171.94      worker     <none>           <none>
+longhorn-system   instance-manager-941a1b845626bcd774784c3f514bd9b2   1/1     Running                      0                 19h     10.42.44.135      staging3   <none>           <none>
+longhorn-system   instance-manager-ceaf4b1f97e39200f80f6ec16ccf714a   1/1     Running                      0                 19h     10.42.173.136     staging2   <none>           <none>
+longhorn-system   longhorn-csi-plugin-24wm5                           2/3     Running                      157 (5m25s ago)   19h     10.42.16.208      staging    <none>           <none>
+longhorn-system   longhorn-csi-plugin-2xnf2                           3/3     Running                      0                 19h     10.42.44.132      staging3   <none>           <none>
+longhorn-system   longhorn-csi-plugin-dtfkg                           3/3     Running                      0                 19h     10.42.173.131     staging2   <none>           <none>
+longhorn-system   longhorn-csi-plugin-ztmrt                           3/3     Running                      0                 19h     10.42.171.66      worker     <none>           <none>
+longhorn-system   longhorn-driver-deployer-5cb9dc5bc-qm2wh            1/1     Running                      0                 14h     10.42.44.158      staging3   <none>           <none>
+longhorn-system   longhorn-manager-6t6b6                              2/2     Running                      1 (19h ago)       19h     10.42.173.132     staging2   <none>           <none>
+longhorn-system   longhorn-manager-hb2hd                              2/2     Running                      1 (19h ago)       19h     10.42.44.130      staging3   <none>           <none>
+longhorn-system   longhorn-manager-j2fjg                              2/2     Running                      0                 19h     10.42.171.65      worker     <none>           <none>
+longhorn-system   longhorn-manager-nktzv                              1/2     Running                      2 (13h ago)       19h     10.42.16.210      staging    <none>           <none>
+longhorn-system   longhorn-ui-f55f76989-czjxp                         1/1     Running                      0                 14h     10.42.173.158     staging2   <none>           <none>
+longhorn-system   longhorn-ui-f55f76989-k6htw                         1/1     Running                      1 (14h ago)       14h     10.42.44.156      staging3   <none>           <none>
+mail              stalwart-mail-0                                     1/1     Running                      0                 12h     10.42.44.180      staging3   <none>           <none>
+platform-system   sftp-gateway-5b46b6bcdd-6t7js                       1/1     Running                      0                 14h     10.42.44.146      staging3   <none>           <none>
+platform          admin-panel-559b7768c6-2zhb8                        1/1     Running                      0                 97m     10.42.173.180     staging2   <none>           <none>
+platform          admin-panel-559b7768c6-qx94b                        1/1     Running                      0                 97m     10.42.16.228      staging    <none>           <none>
+platform          client-panel-6f4bc5b5c-6x5jb                        1/1     Running                      0                 97m     10.42.173.182     staging2   <none>           <none>
+platform          client-panel-6f4bc5b5c-rr55z                        1/1     Running                      0                 97m     10.42.44.185      staging3   <none>           <none>
+platform          dex-6bcb4cb6d7-7pfn8                                1/1     Running                      0                 13h     10.42.173.170     staging2   <none>           <none>
+platform          dex-6bcb4cb6d7-zf2k7                                1/1     Running                      0                 12h     10.42.44.178      staging3   <none>           <none>
+platform          oauth2-proxy-6f7884bc5b-5s5jj                       1/1     Running                      4 (13h ago)       13h     10.42.173.171     staging2   <none>           <none>
+platform          oauth2-proxy-6f7884bc5b-v4cdv                       1/1     Running                      0                 12h     10.42.44.179      staging3   <none>           <none>
+platform          platform-api-d5757bdd7-6h9bv                        1/1     Running                      0                 96m     10.42.16.194      staging    <none>           <none>
+platform          platform-api-d5757bdd7-pvlcw                        1/1     Running                      0                 97m     10.42.173.181     staging2   <none>           <none>
+platform          platform-cluster-state-backup-29619540-xsw86        0/1     CreateContainerConfigError   0                 132m    10.42.171.80      worker     <none>           <none>
+platform          platform-etcd-snapshot-upload-29619510-w7bkw        0/1     Pending                      0                 8h      <none>            <none>     <none>           <none>
+platform          platform-hostpath-snapshot-upload-29619570-gjdq6    0/1     Pending                      0                 7h36m   <none>            <none>     <none>           <none>
+platform          platform-pg-backup-29619525-n9mnp                   0/1     CreateContainerConfigError   0                 132m    10.42.171.92      worker     <none>           <none>
+platform          platform-suspended-7f9ffd94-99vmk                   1/1     Running                      0                 14h     10.42.173.165     staging2   <none>           <none>
+platform          postgres-0                                          1/1     Running                      0                 12h     10.42.173.175     staging2   <none>           <none>
+platform          redis-55f8cb74dd-hwtwj                              1/1     Running                      0                 14h     10.42.173.163     staging2   <none>           <none>
+tigera-operator   tigera-operator-8458958b4d-25qw4                    1/1     Running                      1 (138m ago)      12h     100.120.95.182    staging    <none>           <none>

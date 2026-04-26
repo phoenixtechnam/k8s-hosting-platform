@@ -1,0 +1,5 @@
+NAME       STATUS   ROLES                       AGE   VERSION         INTERNAL-IP       EXTERNAL-IP       OS-IMAGE                       KERNEL-VERSION              CONTAINER-RUNTIME
+staging    Ready    control-plane,etcd,master   19h   v1.33.10+k3s1   100.120.95.182    46.224.122.58     Debian GNU/Linux 13 (trixie)   6.12.57+deb13-cloud-amd64   containerd://2.2.2-k3s1.33
+staging2   Ready    control-plane,etcd,master   19h   v1.33.10+k3s1   100.120.21.104    167.235.237.116   Debian GNU/Linux 13 (trixie)   6.12.57+deb13-cloud-amd64   containerd://2.2.2-k3s1.33
+staging3   Ready    control-plane,etcd,master   19h   v1.33.10+k3s1   100.120.184.126   89.167.3.56       Debian GNU/Linux 13 (trixie)   6.12.73+deb13-cloud-amd64   containerd://2.2.2-k3s1.33
+worker     Ready    <none>                      19h   v1.33.10+k3s1   100.120.13.164    178.104.232.31    Debian GNU/Linux 13 (trixie)   6.12.57+deb13-cloud-amd64   containerd://2.2.2-k3s1.33
