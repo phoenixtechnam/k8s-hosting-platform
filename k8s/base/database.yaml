@@ -31,6 +31,12 @@ metadata:
   labels:
     app: postgres
     app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    # Flux Kustomization-controller honors this on individual
+    # resources: "merge" means 3-way strategic merge instead of
+    # forced SSA. Lets the platform-storage-policy reconciler own
+    # spec.instances without Flux reverting it on each sync.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Apply our `app: postgres` label to every Pod CNPG creates so
   # existing K8s NetworkPolicies (allow-platform-internal selects
@@ -41,8 +47,9 @@ spec:
       app: postgres
       app.kubernetes.io/part-of: hosting-platform
 
-  # Default to single-instance for fresh clusters. Apply HA flips
-  # this to 3 (or back) via the platform-storage-policy reconciler.
+  # Floor for fresh clusters. The kustomize.toolkit.fluxcd.io/ssa
+  # annotation above tells Flux to NOT force this field — Apply HA
+  # patches it to 3 imperatively via the reconciler and that wins.
   instances: 1
 
   # Pin to PG 17. PG18 changed the expected mount layout (single
