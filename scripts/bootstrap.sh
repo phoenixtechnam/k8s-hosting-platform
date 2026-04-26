@@ -1203,16 +1203,14 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
-    # Public-underlay autodetect: combine canReach (handles cloud
-    # VMs where the default route src IP IS the public IP) with an
-    # explicit skipInterface regex matching common VPN tunnel names.
-    # The skipInterface regex is the safety net for hosts where the
-    # operator VPN ALSO carries a route to canReach's target — in
-    # which case Calico would pick the VPN's local IP without the
-    # interface filter. Order: skipInterface filters first, then
-    # canReach picks among what's left.
+    # Public-underlay autodetect: skipInterface excludes known VPN
+    # tunnel names. Tigera rejects more than one autodetection method
+    # per family, so we pick this one (instead of canReach) because
+    # it doesn't depend on routing — even when an operator VPN
+    # carries a default-route to public IPs, Calico still picks the
+    # native cloud NIC. Calico iterates remaining interfaces in
+    # numeric order and takes the first global IPv4.
     autodetect_block="    nodeAddressAutodetectionV4:
-      canReach: \"1.1.1.1\"
       skipInterface: \"^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|cali[0-9a-f]+|vxlan\\\\.calico|wireguard\\\\.cali)\$\""
     # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
@@ -1270,9 +1268,18 @@ EOF
   # Port 51821 chosen to avoid NetBird's default 51820 — both can run
   # side-by-side on the same hosts.
   log "Enabling Calico WireGuard (port 51821)..."
-  # Wait up to 60s for the FelixConfiguration CRD to register.
-  for _ in $(seq 1 30); do
-    if kubectl get crd felixconfigurations.crd.projectcalico.org >/dev/null 2>&1; then break; fi
+  # Wait up to 60s for the FelixConfiguration CRD to be FULLY
+  # registered — the CRD object existing isn't enough; kubectl's
+  # API discovery has to refresh too. We probe with `api-resources`
+  # which forces a fresh discovery.
+  local _attempts=0
+  while ! kubectl api-resources --api-group=projectcalico.org 2>/dev/null \
+        | grep -q "^felixconfigurations"; do
+    _attempts=$((_attempts+1))
+    if [[ $_attempts -ge 30 ]]; then
+      warn "FelixConfiguration CRD not API-registered within 60s — applying anyway."
+      break
+    fi
     sleep 2
   done
   cat <<EOF | kubectl apply -f -
