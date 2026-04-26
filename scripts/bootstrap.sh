@@ -1132,13 +1132,17 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
+    # Public-underlay autodetect: pick the IP that can reach the
+    # public internet. On standard cloud VMs this is the eth0
+    # primary IP (default route). Bypasses any operator VPN
+    # (NetBird wt0, Tailscale tailscale0, etc) which only routes
+    # inside its own mesh — Calico WireGuard endpoints land on
+    # public IPs and pod traffic flows directly node-to-node.
+    # canReach is more robust than skipInterface (which depends on
+    # interface naming) and firstFound (which is order-sensitive).
     autodetect_block="    nodeAddressAutodetectionV4:
-      firstFound: true"
-    ipv6_pool="    - blockSize: 122
-      cidr: fd42::/48
-      encapsulation: VXLAN
-      natOutgoing: Disabled
-      nodeSelector: all()"
+      canReach: \"1.1.1.1\""
+    # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
 
   cat <<EOF | kubectl apply -f -
@@ -1157,7 +1161,6 @@ ${autodetect_block}
       encapsulation: VXLAN
       natOutgoing: Enabled
       nodeSelector: all()
-${ipv6_pool}
 ---
 apiVersion: operator.tigera.io/v1
 kind: APIServer
