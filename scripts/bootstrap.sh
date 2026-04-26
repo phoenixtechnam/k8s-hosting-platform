@@ -1199,6 +1199,7 @@ install_nginx_ingress() {
     --set controller.dnsPolicy=ClusterFirstWithHostNet \
     --set controller.config.ssl-redirect=false \
     --set controller.config.force-ssl-redirect=false \
+    --set controller.config.hsts=false \
     --set controller.metrics.enabled=true \
     --set controller.allowSnippetAnnotations=false \
     --set controller.config.use-gzip=true \
