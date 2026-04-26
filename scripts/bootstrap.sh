@@ -437,9 +437,23 @@ configure_firewall() {
     ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol tcp accept
     ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol udp accept"
   else
-    cluster_allow="    # Calico VXLAN (UDP/4789) — single-server fallback. HA over public
-    # underlay is NOT supported — set --cluster-network-cidr for HA.
-    ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 4789 accept"
+    # Public-underlay HA: every cluster-internal flow is mutually-
+    # TLS-authenticated (etcd peers, k8s API, kubelet, Typha) OR
+    # public-key-authenticated (Calico WireGuard). Opening these
+    # ports to the world is safe — auth happens at the application
+    # layer. Pod-to-pod traffic itself is encrypted by Calico WG
+    # (port 51821) so the VXLAN-on-the-wire path is encrypted by
+    # WireGuard before it leaves the host.
+    cluster_allow="    # etcd peer (mTLS)
+    tcp dport 2379-2380 accept
+    # Calico Typha (mTLS) + kubelet (mTLS)
+    tcp dport 5473 accept
+    tcp dport 10250 accept
+    # Calico WG handles encryption of pod traffic; VXLAN on UDP/4789
+    # only ever flows INSIDE the WG tunnel, never on the public wire.
+    # Still leave 4789 open for in-cluster Service VIPs that may
+    # bypass WG (none today, but harmless to allow).
+    udp dport 4789 accept"
   fi
 
   cat > /etc/nftables.conf <<NFT
@@ -940,10 +954,20 @@ install_k3s_server() {
   # IPv4-only --node-ip with dual-stack --cluster-cidr is fatal. So
   # when the underlay is IPv4-only (NetBird CGNAT, Tailscale, most
   # provider private nets), we drop IPv6 from cluster/service CIDRs.
+  # Pin --node-ip explicitly. k3s's auto-detect picks the first IP
+  # it finds — that may be a NetBird/Tailscale/etc wt0 IP if such a
+  # mesh is up at install time, which is wrong for the cluster
+  # underlay if we want pod traffic to flow over public/private
+  # network rather than nested in a third-party VPN.
+  # Cluster CIDRs are IPv4-only — we don't expose IPv6 anywhere in
+  # the platform, and dual-stack creates the v4-only/v6-only node
+  # mismatch that fails worker join (k3s rejects --node-ip IPv4 with
+  # dual-stack --cluster-cidr).
   local node_pin=""
-  local cluster_cidr_arg="10.42.0.0/16,fd42::/48"
-  local service_cidr_arg="10.43.0.0/16,fd43::/112"
+  local cluster_cidr_arg="10.42.0.0/16"
+  local service_cidr_arg="10.43.0.0/16"
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    # Private-underlay mode: pin to the host's IP inside the CIDR.
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
     if [[ -z "$private_ip" ]]; then
@@ -951,13 +975,21 @@ install_k3s_server() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip}"
-    log "  IPv4-only cluster/service CIDR (private underlay is IPv4-only)"
     node_pin="--node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
-    cluster_cidr_arg="10.42.0.0/16"
-    service_cidr_arg="10.43.0.0/16"
-    # Add private IP to TLS SANs too, otherwise apiserver cert won't
-    # match when peers (and operators) connect via the private IP.
     tls_sans="${tls_sans} --tls-san=${private_ip}"
+  else
+    # Public-underlay mode: pin to the host's primary public IPv4.
+    # `hostname -I` lists all addresses; take the first non-link-
+    # local non-loopback IPv4 — this is the eth0 default-route IP on
+    # standard cloud VMs.
+    local public_ip
+    public_ip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    if [[ -z "$public_ip" ]]; then
+      error "Could not resolve a default-route IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
+    fi
+    log "  public-underlay mode: --node-ip=${public_ip}"
+    node_pin="--node-ip=${public_ip} --advertise-address=${public_ip}"
+    tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
 
   # shellcheck disable=SC2086
@@ -999,7 +1031,8 @@ install_k3s_worker() {
   # ExecStart via INSTALL_K3S_EXEC, which install.sh translates into
   # the systemd unit's command line. (Tested 2026-04-25 — env-var alone
   # left INTERNAL-IP=public on the Node object.)
-  local exec_args="agent"
+  # Pin --node-ip explicitly (see install_k3s_server for rationale).
+  local exec_args=""
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
@@ -1009,6 +1042,14 @@ install_k3s_worker() {
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
     exec_args="agent --node-ip=${private_ip} --node-external-ip=${public_ip}"
+  else
+    local public_ip
+    public_ip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    if [[ -z "$public_ip" ]]; then
+      error "Could not resolve a default-route IPv4 address."
+    fi
+    log "  public-underlay mode: --node-ip=${public_ip}"
+    exec_args="agent --node-ip=${public_ip}"
   fi
 
   curl -sfL https://get.k3s.io | \
