@@ -15,7 +15,6 @@ resources:
   # Dev-only services
   - dev-secrets.yaml
   - nodeport-services.yaml
-  - postgres-initdb-configmap.yaml
   - allow-intra-platform-netpol.yaml
   - allow-mail-to-postgres-netpol.yaml
   # Dedicated Ingress for the File Manager upload-raw endpoint (WAF off
@@ -33,7 +32,6 @@ patches:
   - path: ingress-patch.yaml
   - path: backend-patch.yaml
   - path: frontends-grace-patch.yaml
-  - path: postgres-initdb-patch.yaml
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

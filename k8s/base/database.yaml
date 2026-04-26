@@ -97,7 +97,16 @@ spec:
   # Bind to the system-only nodes via the same toleration the
   # rest of the platform Deployments use. Without it, CNPG pods
   # would land on tenant-tainted server nodes too.
+  #
+  # nodeSelector pins CNPG pods to nodes labelled
+  # `platform.phoenix-host.net/node-role=server` — same shape that
+  # the system-node-affinity Kustomize Component applies to every
+  # other system Deployment. CNPG `Cluster.spec.affinity` has its
+  # own schema (no nodeAffinity sub-field through 1.21), so we set
+  # nodeSelector here instead of patching via the component.
   affinity:
+    nodeSelector:
+      platform.phoenix-host.net/node-role: server
     tolerations:
       - key: platform.phoenix-host.net/server-only
         operator: Exists

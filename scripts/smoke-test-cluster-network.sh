@@ -98,7 +98,7 @@ test_1_external_ips() {
   while IFS= read -r ip; do
     for host in "${HNARR[@]}"; do
       local n_ok=0 n_fail=0 t_total=0 t_max=0
-      for i in 1 2 3 4 5; do
+      for _ in 1 2 3 4 5; do
         local res
         res=$(curl -sk -o /dev/null -w '%{http_code} %{time_total}' \
           --resolve "$host:443:$ip" -m 12 "https://$host/" 2>/dev/null || echo "000 12.000")
@@ -475,15 +475,10 @@ test_7_cert_ready() {
 test_8_ha_deployments() {
   if skipped 8; then emit "test8.ha_deployments" SKIP "skipped"; return; fi
 
-  # Read tier from the live policy ConfigMap (fallback to local).
-  # We exec into platform-api to read the DB rather than hitting
-  # the API — keeps the smoke test self-contained.
-  local tier
-  tier=$(kubectl -n platform exec deploy/platform-api -- node -e '
-    import("./node_modules/postgres/index.js").catch(() => null);
-    process.exit(0);
-  ' 2>/dev/null && echo "local") || tier="local"
-  # Simpler: just check expected count >= 3 if any deploy already has 3 replicas
+  # Tier is implied by the live replica count: any of the stateless
+  # Deployments at >=3 replicas means HA is in effect. Reading the
+  # ConfigMap directly added no information beyond the live spec, so
+  # we just look at .spec.replicas across the system Deployments.
   local expected=2
   for d in admin-panel client-panel platform-api oauth2-proxy dex; do
     local r

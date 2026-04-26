@@ -43,12 +43,13 @@ patches:
     path: affinity-patch.yaml
   - target: { kind: Deployment, name: platform-suspended, namespace: platform }
     path: affinity-patch.yaml
-  - target: { kind: Deployment, name: redis, namespace: platform }
-    path: affinity-patch.yaml
   - target: { kind: Deployment, name: oauth2-proxy, namespace: platform }
     path: affinity-patch.yaml
-  - target: { kind: StatefulSet, name: postgres, namespace: platform }
-    path: affinity-patch.yaml
+  # postgres is a CNPG Cluster CR (postgresql.cnpg.io/v1) — not a
+  # StatefulSet. CNPG's spec.affinity has its own schema so we set
+  # nodeSelector + tolerations directly in k8s/base/database.yaml,
+  # not via this component.
+  # redis was removed in M14 (replaced by per-pod lru-cache).
 
   # ── platform-system namespace ─────────────────────────────────────
   - target: { kind: Deployment, name: sftp-gateway, namespace: platform-system }

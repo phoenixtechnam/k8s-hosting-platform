@@ -1194,6 +1194,11 @@ install_calico() {
   #     picks the public IP of eth0. Calico's WireGuard mesh terminates
   #     on whichever IP is autodetected.
   local autodetect_block=""
+  # ipv6_pool: kept here as a documented placeholder for the future
+  # dual-stack v2 mode (see ROADMAP.md). When enabled, this string
+  # would carry the sibling IPv6 ipPool block. Until then the
+  # IPv4-only path doesn't emit it.
+  # shellcheck disable=SC2034
   local ipv6_pool=""
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
     autodetect_block="    nodeAddressAutodetectionV4:

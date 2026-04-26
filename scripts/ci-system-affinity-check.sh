@@ -32,13 +32,17 @@ WORKLOADS=(
   "platform|Deployment|platform-api|0"
   "platform|Deployment|client-panel|0"
   "platform|Deployment|platform-suspended|0"
-  "platform|Deployment|redis|0"
   "platform|Deployment|oauth2-proxy|0"
-  "platform|StatefulSet|postgres|0"
   "platform-system|Deployment|sftp-gateway|0"
   # stalwart-mail + dex are overlay-specific — only in staging for now.
   "mail|StatefulSet|stalwart-mail|1"
   "platform|Deployment|dex|1"
+)
+# postgres is a CNPG Cluster (postgresql.cnpg.io/v1). Its spec.affinity
+# has its own schema (no .spec.template.spec.* path) so it is verified
+# separately below. redis was removed in M14.
+CNPG_CLUSTERS=(
+  "platform|postgres|0"
 )
 
 OVERLAYS=(staging production)
@@ -89,6 +93,36 @@ for overlay in "${OVERLAYS[@]}"; do
       echo "ok  [$overlay] $ns/$kind/$name → node-role=server"
     else
       echo "FAIL [$overlay] $ns/$kind/$name missing role=server nodeAffinity (value: '${value:-<none>}')"
+      failures=$((failures + 1))
+    fi
+  done
+
+  # CNPG Cluster CRs — schema is .spec.affinity.nodeSelector (flat
+  # map), not .spec.template.spec.affinity.nodeAffinity.matchExpressions.
+  for spec in "${CNPG_CLUSTERS[@]}"; do
+    ns="${spec%%|*}"
+    rest="${spec#*|}"
+    name="${rest%%|*}"
+    staging_only="${rest#*|}"
+
+    if [[ "$overlay" == "production" && "$staging_only" == "1" ]]; then
+      continue
+    fi
+
+    value=$(echo "$built" | yq eval-all --no-doc "
+      select(
+        .kind == \"Cluster\"
+        and .apiVersion == \"postgresql.cnpg.io/v1\"
+        and .metadata.name == \"$name\"
+        and (.metadata.namespace // \"default\") == \"$ns\"
+      )
+      | .spec.affinity.nodeSelector[\"platform.phoenix-host.net/node-role\"]
+    " - | head -n1)
+
+    if [[ "$value" == "server" ]]; then
+      echo "ok  [$overlay] $ns/Cluster(cnpg)/$name → node-role=server"
+    else
+      echo "FAIL [$overlay] $ns/Cluster(cnpg)/$name missing role=server nodeSelector (value: '${value:-<none>}')"
       failures=$((failures + 1))
     fi
   done

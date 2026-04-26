@@ -204,12 +204,14 @@ drill_5_rolling_deploy() {
   local before_rev after_rev start_ts end_ts dur
   before_rev=$(kubectl -n platform get deploy admin-panel -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null)
   start_ts=$(date +%s)
+  local stamp
+  stamp=$(date +%s)
   kubectl -n platform patch deploy admin-panel --type=json \
-    -p='[{"op":"add","path":"/spec/template/metadata/annotations/smoke-rollout-test","value":"'$(date +%s)'"}]' >/dev/null 2>&1
+    -p="[{\"op\":\"add\",\"path\":\"/spec/template/metadata/annotations/smoke-rollout-test\",\"value\":\"${stamp}\"}]" >/dev/null 2>&1
 
   # poll smoke during rollout, count failures
   local fails=0
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     local code
     code=$(curl -sk -o /dev/null -w '%{http_code}' \
       -m 5 "https://admin.staging.phoenix-host.net/" 2>/dev/null || echo "000")
