@@ -111,6 +111,8 @@ packages/api-contracts/src/
 
 **Cluster-level network smoke** (different from API smoke): `make smoke` exercises external-IP routing, ingress→pod cross-node, hostNetwork→pod, Longhorn replica health, Felix log scrape. Run after any infra change (k3s/Calico/network-policies). Bootstrap.sh runs it advisory on first-server install. See [docs/04-deployment/CLUSTER_NETWORK_SMOKE.md](docs/04-deployment/CLUSTER_NETWORK_SMOKE.md).
 
+**Secrets lifecycle**: bootstrap.sh writes a Tier-1 secrets bundle to `/var/lib/hosting-platform/bundles/` (age-encrypted). Retrieve with `make secrets-fetch HOST=root@<server>`. Restore with `make secrets-restore BUNDLE=... KEY=...`. Emergency admin password reset: `scripts/admin-password-reset.sh --email <addr> --random`. Full 3-tier model + flows in [docs/04-deployment/SECRETS_LIFECYCLE.md](docs/04-deployment/SECRETS_LIFECYCLE.md).
+
 ## Conventions
 
 - **API prefix:** `/api/v1/`

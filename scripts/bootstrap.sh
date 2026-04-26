@@ -1750,60 +1750,51 @@ generate_operator_recipient() {
     if ! command -v age-keygen >/dev/null 2>&1; then
       error "age-keygen not found on PATH. Run install_packages first, or install the 'age' package."
     fi
-    # Write to tmpfs so the private key never lands on the root
-    # filesystem's journal. Best-effort — /dev/shm is world-writable but
-    # this process is already root and only we read it immediately below.
-    # mktemp creates the file, but age-keygen -o refuses to overwrite an
-    # existing file, so we delete it immediately and rely on age-keygen
-    # to recreate. The window is tiny and we're root in this process.
-    local tmpkey
-    tmpkey="$(mktemp --tmpdir=/dev/shm bootstrap-age.XXXXXX 2>/dev/null || mktemp)"
-    rm -f "$tmpkey"
-    # age-keygen emits the private key AND a comment line with the public
-    # recipient. Capture both, then shred the file.
-    if ! age-keygen -o "$tmpkey" 2>/dev/null; then
-      rm -f "$tmpkey"
-      error "age-keygen failed to write key to ${tmpkey}."
+    # Capture age-keygen output directly from stdout — no tmpfile in
+    # /dev/shm. Avoids the rm-then-recreate TOCTOU window where another
+    # local process could win the race on a world-writable /dev/shm
+    # (mode 1777). age-keygen writes both the private key and a
+    # `# public key:` comment line to stdout when invoked without -o.
+    local keygen_out=""
+    if ! keygen_out="$(age-keygen 2>/dev/null)"; then
+      error "age-keygen failed."
     fi
-    chmod 600 "$tmpkey"
-    recipient="$(grep -E '^# public key:' "$tmpkey" | awk '{print $NF}')"
-    local private_key
-    private_key="$(grep -v '^#' "$tmpkey")"
+    recipient="$(printf '%s\n' "$keygen_out" | grep -E '^# public key:' | awk '{print $NF}')"
+    local private_key=""
+    private_key="$(printf '%s\n' "$keygen_out" | grep -v '^#')"
+    keygen_out=""  # release intermediate copy
     if [[ -z "$recipient" || -z "$private_key" ]]; then
-      rm -f "$tmpkey"
+      private_key=""
       error "age-keygen produced empty key material — refusing to continue."
     fi
 
-    # Shred + remove. `shred` isn't in base Debian installs via coreutils'
-    # /usr/bin; the alternative is overwrite-then-unlink which works on
-    # any filesystem (including tmpfs where shred is a no-op anyway).
-    : > "$tmpkey"
-    rm -f "$tmpkey"
-
-    # Loud banner to stderr. Operator MUST save this — it is the only
-    # copy that will ever exist, and backup decryption depends on it.
+    # Persist the generated private key to a 0600 file — operator
+    # retrieves it via `make secrets-fetch` (or scp directly) and is
+    # responsible for deleting it from the host once stored offline.
+    # NEVER printed to stdout/stderr/log to keep secrets out of
+    # journald, terminal scrollback, CI logs, etc.
+    local key_dir="${MARKER_DIR}/operator-key"
+    mkdir -p "$key_dir"
+    chmod 700 "$key_dir"
+    local key_path="${key_dir}/operator-private.key"
+    local recipient_path="${key_dir}/operator-recipient.pub"
     {
-      echo ""
-      echo "╔════════════════════════════════════════════════════════════════╗"
-      echo "║  OPERATOR AGE PRIVATE KEY — SAVE THIS NOW                      ║"
-      echo "║                                                                ║"
-      echo "║  This key decrypts every backup bundle this cluster produces.  ║"
-      echo "║  Losing it = backups unrecoverable.                            ║"
-      echo "║  Leaking it = anyone can decrypt the backups.                  ║"
-      echo "║                                                                ║"
-      echo "║  Store in: password manager (1Password/Bitwarden) AND an       ║"
-      echo "║            offline paper/metal backup. Do not commit to git.   ║"
-      echo "║                                                                ║"
-      echo "║  Public recipient (safe to share):                             ║"
-      echo "║    ${recipient}"
-      echo "║                                                                ║"
-      echo "║  Private key (SECRET — save and delete from terminal scroll):  ║"
-      echo "║    ${private_key}"
-      echo "║                                                                ║"
-      echo "║  See docs/02-operations/OPERATOR_KEY_SETUP.md for more.        ║"
-      echo "╚════════════════════════════════════════════════════════════════╝"
-      echo ""
-    } >&2
+      echo "# created: $(date -u +%FT%TZ) (bootstrap-generated on $(hostname))"
+      echo "# public key: ${recipient}"
+      echo "${private_key}"
+    } > "$key_path"
+    chmod 600 "$key_path"
+    printf '%s\n' "$recipient" > "$recipient_path"
+    chmod 644 "$recipient_path"
+
+    # Stash unset to avoid lingering in the bash variable space.
+    private_key=""
+
+    # File-only notification — values are NOT echoed.
+    log "Operator age key generated."
+    log "  private key:  ${key_path}        (mode 0600 — copy offline + delete)"
+    log "  recipient:    ${recipient_path}  (mode 0644 — safe to share)"
+    log "  See docs/04-deployment/SECRETS_LIFECYCLE.md for retrieval steps."
   fi
 
   # ConfigMap is intentionally simple — a single `recipient` key the
@@ -1815,6 +1806,122 @@ generate_operator_recipient() {
     --from-literal=recipient="$recipient" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-operator-recipient ConfigMap applied."
+}
+
+# Tier-1 bootstrap secrets bundle. Tars all platform-namespace
+# Secrets that bootstrap created, age-encrypts to the operator
+# recipient, and writes to /var/lib/hosting-platform/. This is the
+# offline-recovery artifact the operator scp's after install.
+#
+# Idempotent: re-running creates a NEW timestamped bundle alongside
+# any existing ones. Old bundles are left in place — the operator
+# can prune after confirming offline storage.
+#
+# Outputs ONLY file paths to the log. Never echoes secret content.
+bundle_bootstrap_secrets() {
+  if ! command -v age >/dev/null 2>&1; then
+    warn "age binary not found — skipping bootstrap secrets bundle. Run install_packages."
+    return 0
+  fi
+
+  local recipient
+  recipient=$(kctl get configmap -n platform platform-operator-recipient \
+    -o jsonpath='{.data.recipient}' 2>/dev/null || true)
+  if [[ -z "$recipient" ]]; then
+    warn "platform-operator-recipient ConfigMap missing — skipping bootstrap secrets bundle."
+    return 0
+  fi
+
+  local bundle_dir="${MARKER_DIR}/bundles"
+  mkdir -p "$bundle_dir"
+  chmod 700 "$bundle_dir"
+
+  local stamp
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  local out="${bundle_dir}/bootstrap-secrets-${stamp}.tar.age"
+
+  # Stage to /dev/shm so cleartext doesn't hit the root filesystem.
+  # Trap-based cleanup ensures we wipe the staging dir even if a
+  # later step calls error() (which exit 1's mid-function).
+  local stage=""
+  _bundle_cleanup() {
+    if [[ -n "$stage" && -d "$stage" ]]; then
+      find "$stage" -type f -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
+      rm -rf "$stage"
+    fi
+  }
+  trap _bundle_cleanup RETURN EXIT
+  stage=$(mktemp -d --tmpdir=/dev/shm bootstrap-bundle.XXXXXX 2>/dev/null \
+    || mktemp -d)
+  chmod 700 "$stage"
+
+  # Bundled secret list. Each entry: <namespace> <name>. Append here
+  # when bootstrap adds a new platform-level secret.
+  local items=(
+    "platform platform-admin-seed"
+    "platform platform-db-credentials"
+    "platform platform-jwt-secret"
+    "platform platform-secrets"
+    "platform oauth2-proxy-config"
+    "platform sftp-host-keys"
+    "platform stalwart-secrets"
+  )
+
+  local manifest="${stage}/MANIFEST.txt"
+  {
+    echo "bootstrap-secrets bundle"
+    echo "cluster:    $(hostname)"
+    echo "created:    $(date -u +%FT%TZ)"
+    echo "kubectl-rev: $(kctl version --short 2>/dev/null | head -1 || true)"
+    echo "recipient:  ${recipient}"
+    echo ""
+    echo "contents:"
+  } > "$manifest"
+
+  local item ns name out_file count=0
+  for item in "${items[@]}"; do
+    ns="${item% *}"
+    name="${item#* }"
+    out_file="${stage}/${ns}__${name}.yaml"
+    if kctl get secret -n "$ns" "$name" -o yaml >"$out_file" 2>/dev/null; then
+      echo "  ${ns}/${name}" >> "$manifest"
+      count=$((count+1))
+    fi
+  done
+
+  # Bundle the operator key files too if present (so a fresh bundle
+  # rebuild after the operator already retrieved the on-host key
+  # files still has them captured for the next retrieval cycle).
+  local key_dir="${MARKER_DIR}/operator-key"
+  if [[ -f "${key_dir}/operator-private.key" ]]; then
+    cp -p "${key_dir}/operator-private.key" "${stage}/operator-private.key"
+    echo "  operator-private.key" >> "$manifest"
+    count=$((count+1))
+  fi
+  if [[ -f "${key_dir}/operator-recipient.pub" ]]; then
+    cp -p "${key_dir}/operator-recipient.pub" "${stage}/operator-recipient.pub"
+    echo "  operator-recipient.pub" >> "$manifest"
+  fi
+
+  if [[ $count -eq 0 ]]; then
+    rm -rf "$stage"
+    warn "No secrets to bundle — skipping."
+    return 0
+  fi
+
+  # tar + age in a pipeline (no intermediate plaintext tar on disk).
+  # Use bash's pipefail-set elsewhere isn't enabled in this script's
+  # parent set -e; explicitly capture pipe status.
+  if ! ( set -o pipefail; tar -C "$stage" -cf - . | age -r "$recipient" -o "$out" 2>/dev/null ); then
+    error "Failed to create bootstrap secrets bundle at ${out}."
+  fi
+  chmod 600 "$out"
+  # Trap _bundle_cleanup wipes $stage on RETURN/EXIT — no manual rm needed here.
+
+  log "Bootstrap secrets bundle written:"
+  log "  ${out}  (${count} item(s), age-encrypted to operator recipient)"
+  log "  Retrieve via: make secrets-fetch HOST=root@<this-server>"
+  log "  See docs/04-deployment/SECRETS_LIFECYCLE.md"
 }
 
 apply_platform_manifests() {
@@ -2209,6 +2316,10 @@ main() {
     create_platform_configmap
     generate_operator_recipient
     apply_platform_manifests
+    # Tier-1 secrets bundle for offline retrieval. Runs after
+    # generate_platform_secrets + generate_operator_recipient so all
+    # bundled material exists. See docs/04-deployment/SECRETS_LIFECYCLE.md.
+    bundle_bootstrap_secrets
 
     # Phase 4: Verify
     log ""
