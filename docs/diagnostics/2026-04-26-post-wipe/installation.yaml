@@ -1,0 +1,130 @@
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"operator.tigera.io/v1","kind":"Installation","metadata":{"annotations":{},"name":"default"},"spec":{"calicoNetwork":{"bgp":"Disabled","ipPools":[{"blockSize":26,"cidr":"10.42.0.0/16","encapsulation":"VXLAN","natOutgoing":"Enabled","nodeSelector":"all()"}],"mtu":1450,"nodeAddressAutodetectionV4":{"cidrs":["100.64.0.0/10"]}}}}
+  creationTimestamp: "2026-04-26T11:16:00Z"
+  finalizers:
+  - operator.tigera.io/installation-controller
+  - tigera.io/operator-cleanup
+  - operator.tigera.io/apiserver-controller
+  generation: 3
+  name: default
+  resourceVersion: "10074"
+  uid: c000e5f7-a251-44f5-99c9-5671574493c5
+spec:
+  calicoNetwork:
+    bgp: Disabled
+    hostPorts: Enabled
+    ipPools:
+    - allowedUses:
+      - Workload
+      - Tunnel
+      assignmentMode: Automatic
+      blockSize: 26
+      cidr: 10.42.0.0/16
+      disableBGPExport: false
+      disableNewAllocations: false
+      encapsulation: VXLAN
+      name: default-ipv4-ippool
+      natOutgoing: Enabled
+      nodeSelector: all()
+    linuxDataplane: Iptables
+    linuxPolicySetupTimeoutSeconds: 0
+    mtu: 1450
+    multiInterfaceMode: None
+    nodeAddressAutodetectionV4:
+      cidrs:
+      - 100.64.0.0/10
+    windowsDataplane: Disabled
+  cni:
+    binDir: /opt/cni/bin
+    confDir: /etc/cni/net.d
+    ipam:
+      type: Calico
+    type: Calico
+  controlPlaneReplicas: 2
+  flexVolumePath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+  kubeletVolumePluginPath: /var/lib/kubelet
+  logging:
+    cni:
+      logFileMaxAgeDays: 30
+      logFileMaxCount: 10
+      logFileMaxSize: 100Mi
+      logSeverity: Info
+  nodeUpdateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  nonPrivileged: Disabled
+  variant: Calico
+status:
+  calicoVersion: v3.31.5
+  computed:
+    calicoNetwork:
+      bgp: Disabled
+      hostPorts: Enabled
+      ipPools:
+      - allowedUses:
+        - Workload
+        - Tunnel
+        assignmentMode: Automatic
+        blockSize: 26
+        cidr: 10.42.0.0/16
+        disableBGPExport: false
+        disableNewAllocations: false
+        encapsulation: VXLAN
+        name: default-ipv4-ippool
+        natOutgoing: Enabled
+        nodeSelector: all()
+      linuxDataplane: Iptables
+      linuxPolicySetupTimeoutSeconds: 0
+      mtu: 1450
+      multiInterfaceMode: None
+      nodeAddressAutodetectionV4:
+        cidrs:
+        - 100.64.0.0/10
+      windowsDataplane: Disabled
+    cni:
+      binDir: /opt/cni/bin
+      confDir: /etc/cni/net.d
+      ipam:
+        type: Calico
+      type: Calico
+    controlPlaneReplicas: 2
+    flexVolumePath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+    kubeletVolumePluginPath: /var/lib/kubelet
+    logging:
+      cni:
+        logFileMaxAgeDays: 30
+        logFileMaxCount: 10
+        logFileMaxSize: 100Mi
+        logSeverity: Info
+    nodeUpdateStrategy:
+      rollingUpdate:
+        maxUnavailable: 1
+      type: RollingUpdate
+    nonPrivileged: Disabled
+    variant: Calico
+  conditions:
+  - lastTransitionTime: "2026-04-26T11:26:28Z"
+    message: All objects available
+    observedGeneration: 3
+    reason: AllObjectsAvailable
+    status: "False"
+    type: Degraded
+  - lastTransitionTime: "2026-04-26T11:26:28Z"
+    message: All objects available
+    observedGeneration: 3
+    reason: AllObjectsAvailable
+    status: "True"
+    type: Ready
+  - lastTransitionTime: "2026-04-26T11:26:28Z"
+    message: All objects available
+    observedGeneration: 3
+    reason: AllObjectsAvailable
+    status: "False"
+    type: Progressing
+  mtu: 1450
+  variant: Calico

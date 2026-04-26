@@ -100,24 +100,27 @@ spec:
   ingress:
     - from:
         # ingress-nginx runs as hostNetwork=true (DaemonSet binding host
-        # :80/443 directly). On the LOCAL node, traffic to platform pods
-        # works because kernel routing bypasses NetworkPolicy enforcement
-        # for same-node hostNetwork → pod paths. CROSS-NODE, however,
-        # the packet egresses via vxlan.calico, arrives at the
-        # destination node's wt0, and Felix sees source = peer wt0
-        # IP (e.g. 100.120.21.104 on staging2) — NOT the pod IP. The
-        # namespaceSelector below doesn't match because hostNetwork
-        # pods aren't pod-network endpoints. Without an explicit
-        # ipBlock allowing the cluster underlay, cross-node admin
-        # traffic gets DROPped at the destination node and ingress-
-        # nginx logs `upstream timed out`.
+        # :80/443 directly). When it forwards to a pod IP cross-node,
+        # the kernel routes via vxlan.calico — and rewrites the source
+        # IP from the host's wt0 IP (e.g. 100.120.x.x in the NetBird
+        # CGNAT) to vxlan.calico's tunnel IP (in the cluster pod CIDR
+        # 10.42.0.0/16). By the time Felix on the destination node
+        # evaluates this NetworkPolicy, the source is 10.42.x.x — NOT
+        # 100.120.x.x. So an `ipBlock: 100.64.0.0/10` alone never
+        # matches; the packet falls through to default-deny.
         #
-        # 100.64.0.0/10 is the NetBird CGNAT range (M12 underlay). For
-        # public-underlay clusters use Calico HostEndpoints or switch
-        # ingress-nginx off hostNetwork — but the in-CIDR allow is the
-        # right pattern when the underlay IS the trust boundary.
+        # The ipBlock 10.42.0.0/16 below catches host-source packets
+        # *after* the vxlan.calico re-source. It's also redundant with
+        # the namespaceSelector (which only matches non-hostNetwork
+        # pods anyway), so it's the only thing keeping cross-node
+        # admin traffic working when ingress-nginx is hostNetwork=true.
+        #
+        # Verified live on the 4-node staging cluster 2026-04-26 by
+        # bisect: removing this rule reproduces 5s/15s nginx upstream
+        # timeouts on every cross-node combination; adding it brings
+        # TTFB to <1s across all 4 external IPs.
         - ipBlock:
-            cidr: 100.64.0.0/10
+            cidr: 10.42.0.0/16
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
