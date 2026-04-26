@@ -177,9 +177,11 @@ export default function PlatformStoragePolicyCard() {
               Confirm: switch platform storage to <code>{confirming}</code>?
             </h3>
             <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-4 list-disc pl-5">
-              <li>{confirming === 'ha' ? 'Each volume will gain replicas — Longhorn rebuilds in the background.' : 'Each volume will drop to 1 replica — extra copies are deleted permanently.'}</li>
-              <li>No StatefulSet restart, no pod downtime.</li>
-              <li>{confirming === 'ha' ? 'Disk usage approximately triples for affected volumes.' : 'Single-node failure will leave platform postgres / stalwart unrecoverable.'}</li>
+              <li><strong>Longhorn volumes:</strong> {confirming === 'ha' ? '1 → 3 replicas (Longhorn rebuilds in background)' : '3 → 1 replica (extra copies deleted permanently)'}</li>
+              <li><strong>Postgres (CNPG):</strong> {confirming === 'ha' ? '1 → 3 instances (streaming replication, primary stays primary)' : '3 → 1 instance (replicas removed; primary keeps data)'}</li>
+              <li><strong>Stateless deployments:</strong> {confirming === 'ha' ? '2 → 3 replicas (admin-panel, client-panel, platform-api, oauth2-proxy, dex) + topology spread to one pod per server' : '3 → 2 replicas (topology spread retained, harmless at 2)'}</li>
+              <li>No data migration. No downtime.</li>
+              <li>{confirming === 'ha' ? 'Disk + CPU usage roughly triples for the affected components.' : 'Cluster reverts to "single-node failure = platform outage" risk profile.'}</li>
             </ul>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirming(null)} className="px-3 py-2 rounded-lg text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100">Cancel</button>

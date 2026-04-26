@@ -113,6 +113,8 @@ packages/api-contracts/src/
 
 **Secrets lifecycle**: bootstrap.sh writes a Tier-1 secrets bundle to `/var/lib/hosting-platform/bundles/` (age-encrypted). Retrieve with `make secrets-fetch HOST=root@<server>`. Restore with `make secrets-restore BUNDLE=... KEY=...`. Emergency admin password reset: `scripts/admin-password-reset.sh --email <addr> --random`. Full 3-tier model + flows in [docs/04-deployment/SECRETS_LIFECYCLE.md](docs/04-deployment/SECRETS_LIFECYCLE.md).
 
+**HA mode**: Postgres is CNPG-managed from the first install (`Cluster` CR, default `instances: 1`). Apply HA scales CNPG instances 1↔3 + Longhorn volumes 1↔3 replicas + stateless Deployments 2↔3 with topologySpread — single-button, reversible. Redis was removed M14 (in-memory LRU). See [docs/05-storage/HA_MODE.md](docs/05-storage/HA_MODE.md).
+
 ## Conventions
 
 - **API prefix:** `/api/v1/`

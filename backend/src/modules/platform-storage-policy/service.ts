@@ -23,8 +23,42 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
 // reliability budget justifies the extra replica.
 const REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
 
+// Stateless platform Deployments that scale 2↔3 with the tier.
+// Adding topologySpreadConstraints on each scale-up so a 3-replica
+// rollout lands one pod per server. List is exhaustive — these are
+// every platform-namespace Deployment whose loss would degrade
+// admin/client panel function.
+const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> = [
+  { namespace: 'platform', name: 'admin-panel' },
+  { namespace: 'platform', name: 'client-panel' },
+  { namespace: 'platform', name: 'platform-api' },
+  { namespace: 'platform', name: 'oauth2-proxy' },
+  { namespace: 'platform', name: 'dex' },
+];
+const DEPLOYMENT_REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 2, ha: 3 };
+
+// CNPG cluster (Postgres). Apply HA flips spec.instances 1↔3 — CNPG
+// streams replication from primary, no manual data migration needed.
+const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
+  { namespace: 'platform', name: 'postgres' },
+];
+const CNPG_INSTANCES_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
+
 const SINGLETON_ID = 'singleton';
 const HA_SERVER_THRESHOLD = 3;
+
+// topologySpreadConstraints applied to the stateless Deployments
+// when scaling to HA. ScheduleAnyway (not DoNotSchedule) so a
+// drained node doesn't wedge a pod Pending — small skew during
+// recovery is acceptable.
+const HA_TOPOLOGY_SPREAD = [
+  {
+    maxSkew: 1,
+    topologyKey: 'kubernetes.io/hostname',
+    whenUnsatisfiable: 'ScheduleAnyway',
+    labelSelector: { matchLabels: {} as Record<string, string> }, // filled per-deployment
+  },
+];
 
 export type LonghornVolume = {
   metadata?: { name?: string; namespace?: string };
@@ -149,60 +183,206 @@ export type ApplyPatchResult = {
   error: string | null;
 };
 
-// Walk the per-PVC volumes from readClusterState and patch each
-// longhorn.io Volume's .spec.numberOfReplicas to match the policy.
-// Idempotent: if currentReplicas already matches desiredReplicas the
-// patch is skipped (no-op API call avoided).
+export type DeploymentPatchResult = {
+  namespace: string;
+  name: string;
+  previousReplicas: number;
+  newReplicas: number;
+  patched: boolean;
+  error: string | null;
+};
+
+export type CnpgClusterPatchResult = {
+  namespace: string;
+  name: string;
+  previousInstances: number;
+  newInstances: number;
+  patched: boolean;
+  error: string | null;
+};
+
+export type ApplyPolicyOutcome = {
+  volumes: ApplyPatchResult[];
+  deployments: DeploymentPatchResult[];
+  cnpgClusters: CnpgClusterPatchResult[];
+};
+
+// Apply the desired tier to:
+//   1) Longhorn volumes (replicas per PVC)
+//   2) Stateless platform Deployments (replicas + topologySpread)
+//   3) CNPG Cluster (instances)
+// Each step is idempotent and returns its result (whether patched
+// or skipped, with any error). Steps run sequentially — failure
+// in one does not stop the others (so a partial Apply is reported
+// transparently rather than silently halting).
 export async function applyPolicy(
   k8s: K8sClients,
   db: Database,
-): Promise<ApplyPatchResult[]> {
+): Promise<ApplyPolicyOutcome> {
+  const policy = await getPolicy(db);
   const state = await readClusterState(k8s, db);
-  const results: ApplyPatchResult[] = [];
+  const tier: 'local' | 'ha' = policy.systemTier;
 
-  for (const v of state.volumes) {
+  return {
+    volumes: await patchLonghornVolumes(k8s, state.volumes),
+    deployments: await patchStatelessDeployments(k8s, tier),
+    cnpgClusters: await patchCnpgClusters(k8s, tier),
+  };
+}
+
+async function patchLonghornVolumes(
+  k8s: K8sClients,
+  volumes: VolumeFact[],
+): Promise<ApplyPatchResult[]> {
+  const results: ApplyPatchResult[] = [];
+  for (const v of volumes) {
     if (v.currentReplicas === v.desiredReplicas) {
       results.push({
-        namespace: v.namespace,
-        volumeName: v.volumeName,
-        previousReplicas: v.currentReplicas,
-        newReplicas: v.desiredReplicas,
-        patched: false,
-        error: null,
+        namespace: v.namespace, volumeName: v.volumeName,
+        previousReplicas: v.currentReplicas, newReplicas: v.desiredReplicas,
+        patched: false, error: null,
       });
       continue;
     }
     const patch = { spec: { numberOfReplicas: v.desiredReplicas } };
     try {
-      // Match the `as unknown as Parameters<...>[0]` double-cast used in
-      // longhorn-reconciler.ts — the @kubernetes/client-node v1.4 typing
-      // for patchNamespacedCustomObject doesn't accept a plain object
-      // literal here. Single-cast compiles by accident and silently
-      // narrows; double-cast is the documented escape hatch.
+      // Double-cast — see longhorn-reconciler.ts; @kubernetes/client-
+      // node v1.4 typings reject the plain literal here.
       await k8s.custom.patchNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
         namespace: 'longhorn-system', plural: 'volumes',
         name: v.volumeName, body: patch,
       } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0], MERGE_PATCH);
       results.push({
-        namespace: v.namespace,
-        volumeName: v.volumeName,
-        previousReplicas: v.currentReplicas,
-        newReplicas: v.desiredReplicas,
-        patched: true,
-        error: null,
+        namespace: v.namespace, volumeName: v.volumeName,
+        previousReplicas: v.currentReplicas, newReplicas: v.desiredReplicas,
+        patched: true, error: null,
       });
     } catch (err) {
       results.push({
-        namespace: v.namespace,
-        volumeName: v.volumeName,
-        previousReplicas: v.currentReplicas,
-        newReplicas: v.desiredReplicas,
+        namespace: v.namespace, volumeName: v.volumeName,
+        previousReplicas: v.currentReplicas, newReplicas: v.desiredReplicas,
         patched: false,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
+  return results;
+}
 
+async function patchStatelessDeployments(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+): Promise<DeploymentPatchResult[]> {
+  const desired = DEPLOYMENT_REPLICAS_FOR[tier];
+  const results: DeploymentPatchResult[] = [];
+  for (const d of STATELESS_DEPLOYMENTS) {
+    let previousReplicas = 0;
+    try {
+      const live = await k8s.apps.readNamespacedDeployment({ namespace: d.namespace, name: d.name });
+      previousReplicas = live.spec?.replicas ?? 0;
+      if (previousReplicas === desired) {
+        results.push({
+          namespace: d.namespace, name: d.name,
+          previousReplicas, newReplicas: desired,
+          patched: false, error: null,
+        });
+        continue;
+      }
+      // Build the topologySpread block with this deployment's
+      // app=<name> selector inserted; idempotent re-apply.
+      const tsc = HA_TOPOLOGY_SPREAD.map((c) => ({
+        ...c,
+        labelSelector: { matchLabels: { app: d.name } },
+      }));
+      // Strategic-merge patch on Deployment lets us update both
+      // .spec.replicas and .spec.template.spec.topologySpreadConstraints
+      // atomically. Setting topologySpread under template.spec
+      // triggers a rolling restart, so we do it only when scaling
+      // up to HA (when replicas were already < desired). Scaling
+      // down to local skips the topologySpread patch — the rule
+      // is harmless at lower replica counts.
+      const patchBody: Record<string, unknown> = {
+        spec: { replicas: desired },
+      };
+      if (tier === 'ha') {
+        (patchBody.spec as Record<string, unknown>).template = {
+          spec: { topologySpreadConstraints: tsc },
+        };
+      }
+      await k8s.apps.patchNamespacedDeployment({
+        namespace: d.namespace, name: d.name, body: patchBody,
+      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0], MERGE_PATCH);
+      results.push({
+        namespace: d.namespace, name: d.name,
+        previousReplicas, newReplicas: desired,
+        patched: true, error: null,
+      });
+    } catch (err) {
+      results.push({
+        namespace: d.namespace, name: d.name,
+        previousReplicas, newReplicas: desired,
+        patched: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
+}
+
+async function patchCnpgClusters(
+  k8s: K8sClients,
+  tier: 'local' | 'ha',
+): Promise<CnpgClusterPatchResult[]> {
+  const desired = CNPG_INSTANCES_FOR[tier];
+  const results: CnpgClusterPatchResult[] = [];
+  for (const c of CNPG_CLUSTERS) {
+    let previousInstances = 0;
+    try {
+      const live = await k8s.custom.getNamespacedCustomObject({
+        group: 'postgresql.cnpg.io', version: 'v1',
+        namespace: c.namespace, plural: 'clusters', name: c.name,
+      }).catch(() => null) as { spec?: { instances?: number } } | null;
+      if (!live) {
+        // CNPG cluster not yet created (manifest still reconciling).
+        // Don't fail Apply HA — Flux will reconcile to the correct
+        // instance count once the Cluster CR exists.
+        results.push({
+          namespace: c.namespace, name: c.name,
+          previousInstances: 0, newInstances: desired,
+          patched: false,
+          error: 'cluster CR not found (Flux still reconciling?)',
+        });
+        continue;
+      }
+      previousInstances = live.spec?.instances ?? 0;
+      if (previousInstances === desired) {
+        results.push({
+          namespace: c.namespace, name: c.name,
+          previousInstances, newInstances: desired,
+          patched: false, error: null,
+        });
+        continue;
+      }
+      const patch = { spec: { instances: desired } };
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'postgresql.cnpg.io', version: 'v1',
+        namespace: c.namespace, plural: 'clusters',
+        name: c.name, body: patch,
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0], MERGE_PATCH);
+      results.push({
+        namespace: c.namespace, name: c.name,
+        previousInstances, newInstances: desired,
+        patched: true, error: null,
+      });
+    } catch (err) {
+      results.push({
+        namespace: c.namespace, name: c.name,
+        previousInstances, newInstances: desired,
+        patched: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   return results;
 }

@@ -65,11 +65,11 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     const actorId = user?.sub ?? null;
     const before = await getPolicy(app.db);
     const updated = await setPolicy(app.db, input.systemTier, input.pinnedByAdmin ?? true, actorId);
-    const patches = await applyPolicy(k8s, app.db);
+    const outcome = await applyPolicy(k8s, app.db);
 
     // Audit trail: lastAppliedBy on the row is reset on every change,
     // so push a permanent record into audit_logs that includes the
-    // before/after tiers and the per-volume patch outcome.
+    // before/after tiers and the per-resource patch outcomes.
     await app.db.insert(auditLogs).values({
       id: crypto.randomUUID(),
       actorId,
@@ -80,7 +80,9 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
       changes: {
         before: { systemTier: before.systemTier, pinnedByAdmin: before.pinnedByAdmin },
         after: { systemTier: updated.systemTier, pinnedByAdmin: updated.pinnedByAdmin },
-        patches: patches.map((p) => ({ volume: p.volumeName, prev: p.previousReplicas, next: p.newReplicas, ok: p.patched })),
+        volumes: outcome.volumes.map((p) => ({ volume: p.volumeName, prev: p.previousReplicas, next: p.newReplicas, ok: p.patched })),
+        deployments: outcome.deployments.map((d) => ({ name: d.name, prev: d.previousReplicas, next: d.newReplicas, ok: d.patched })),
+        cnpgClusters: outcome.cnpgClusters.map((c) => ({ name: c.name, prev: c.previousInstances, next: c.newInstances, ok: c.patched })),
       },
       httpMethod: 'PATCH',
       httpPath: '/api/v1/admin/platform-storage-policy',
@@ -99,7 +101,13 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
         lastAppliedBy: updated.lastAppliedBy ?? null,
         updatedAt: updated.updatedAt.toISOString(),
       },
-      patches,
+      // Field name preserved (frontend expects "patches") — contains
+      // Longhorn volume patch results. New sibling fields surface
+      // the additional patch outcomes for stateless Deployments and
+      // the CNPG Cluster.
+      patches: outcome.volumes,
+      deployments: outcome.deployments,
+      cnpgClusters: outcome.cnpgClusters,
     });
   });
 }

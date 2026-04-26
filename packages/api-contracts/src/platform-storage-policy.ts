@@ -52,12 +52,29 @@ export type UpdatePlatformStoragePolicyInput = z.infer<typeof updatePlatformStor
 
 export const applyPlatformStoragePolicyResponseSchema = z.object({
   policy: platformStoragePolicySchema,
-  // Per-volume patch result so the UI can show success/failure detail.
+  // Per-volume patch result (Longhorn replicas).
   patches: z.array(z.object({
     namespace: z.string(),
     volumeName: z.string(),
     previousReplicas: z.number().int().nonnegative(),
     newReplicas: z.number().int().nonnegative(),
+    patched: z.boolean(),
+    error: z.string().nullable(),
+  })),
+  // M14: Apply HA also scales stateless Deployments + CNPG cluster.
+  deployments: z.array(z.object({
+    namespace: z.string(),
+    name: z.string(),
+    previousReplicas: z.number().int().nonnegative(),
+    newReplicas: z.number().int().nonnegative(),
+    patched: z.boolean(),
+    error: z.string().nullable(),
+  })),
+  cnpgClusters: z.array(z.object({
+    namespace: z.string(),
+    name: z.string(),
+    previousInstances: z.number().int().nonnegative(),
+    newInstances: z.number().int().nonnegative(),
     patched: z.boolean(),
     error: z.string().nullable(),
   })),
