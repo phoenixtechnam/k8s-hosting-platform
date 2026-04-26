@@ -7,12 +7,9 @@ metadata:
     app: platform-api
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  # M12 (2026-04-25): scaled to 2 for HA + topology spread across
-  # control-plane hosts. With 3 servers the operator can scale to 3
-  # via `kubectl scale deployment/platform-api -n platform --replicas=3`
-  # (bootstrap.sh's pin_system_components_to_servers does this on
-  # first-server install when 3+ servers are detected).
-  replicas: 2
+  # M14: replicas removed — owned by platform-storage-policy
+  # reconciler (Apply HA / Apply Local). Flux SSA would otherwise
+  # revert our imperative scale within ~30s.
   selector:
     matchLabels:
       app: platform-api

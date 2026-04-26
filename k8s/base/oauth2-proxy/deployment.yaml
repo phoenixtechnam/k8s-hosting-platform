@@ -6,8 +6,7 @@ metadata:
   labels:
     app: oauth2-proxy
 spec:
-  # M12: 2 replicas + topology spread for HA across control-plane.
-  replicas: 2
+  # M14: replicas owned by platform-storage-policy reconciler.
   selector:
     matchLabels:
       app: oauth2-proxy

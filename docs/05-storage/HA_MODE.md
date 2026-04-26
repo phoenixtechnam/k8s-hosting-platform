@@ -72,26 +72,20 @@ Reverting does NOT lose data anywhere. CNPG drops the standby pods cleanly; Long
 | CNPG instance scale-up fails (insufficient resources) | `cnpgClusters[0].error="..."`, primary unaffected | Operator must address resource issue |
 | `kubectl patch deploy admin-panel` fails (RBAC) | `deployments[i].error="forbidden"` | Check ServiceAccount permissions |
 
-## Known limitation: Flux ↔ replicas conflict
+## Replica field ownership
 
-Apply HA's imperative PATCH to a stateless Deployment's `spec.replicas`
-succeeds at the K8s API level — but Flux's server-side-apply
-reconcile (with kustomize-controller as field manager) reverts it
-back to the manifest value (2) on the next sync interval (30s by
-default). Fix paths (any one):
+Stateless Deployments (admin-panel, client-panel, platform-api,
+oauth2-proxy, dex) intentionally have NO `replicas:` field in
+their base manifests. The field is owned by the platform-storage-
+policy reconciler — Apply HA / Apply Local writes it via the
+`/scale` subresource and Flux's SSA leaves it untouched (because
+the manifest doesn't claim it).
 
-1. **Remove `replicas:` from base Deployment manifests** so Flux
-   doesn't claim ownership of the field. The platform-storage-policy
-   reconciler then has uncontested ownership. Tradeoff: fresh
-   cluster starts at K8s default = 1 replica until first Apply HA / Apply Local.
-2. **Use HPA for replica management** — Flux understands HPA-owned
-   fields and won't reconcile them. Heaviest change.
-3. **Use Kustomization's `--prune-no-update`** + `kustomize.toolkit.fluxcd.io/ssa: ignore`
-   on the Deployment metadata. Per-resource Flux opt-out.
-
-Until one of these lands, the tier=ha → 3 replicas state is
-**transient** (~30s) before Flux reverts. Tier=local works because
-both the manifest and the policy agree on 2.
+Consequence for fresh installs: every Deployment starts at K8s
+default = 1 replica. The HA recommendation banner appears once
+the cluster has ≥3 ready servers. Operator clicks Apply HA → 3
+replicas. Or clicks Apply Local explicitly → 2 replicas. Never
+auto-applied.
 
 ## Smoke tests covering this
 

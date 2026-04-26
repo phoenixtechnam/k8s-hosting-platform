@@ -7,8 +7,11 @@ metadata:
     app: admin-panel
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  # M12: 2 replicas + topology spread for HA across control-plane.
-  replicas: 2
+  # M14: replicas removed from manifest — owned by the platform-
+  # storage-policy reconciler (Apply HA / Apply Local). Without
+  # this removal, Flux's SSA would revert imperative scale changes
+  # back to the manifest value within ~30s. Fresh clusters land at
+  # k8s default = 1 until the policy fires for the first time.
   selector:
     matchLabels:
       app: admin-panel

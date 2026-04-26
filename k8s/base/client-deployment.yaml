@@ -7,8 +7,7 @@ metadata:
     app: client-panel
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  # M12: 2 replicas + topology spread for HA across control-plane.
-  replicas: 2
+  # M14: replicas owned by platform-storage-policy reconciler.
   selector:
     matchLabels:
       app: client-panel
