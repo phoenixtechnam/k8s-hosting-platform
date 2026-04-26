@@ -109,6 +109,8 @@ packages/api-contracts/src/
 
 **After deploy, run `./scripts/smoke-test.sh` to verify API compatibility.**
 
+**Cluster-level network smoke** (different from API smoke): `make smoke` exercises external-IP routing, ingress→pod cross-node, hostNetwork→pod, Longhorn replica health, Felix log scrape. Run after any infra change (k3s/Calico/network-policies). Bootstrap.sh runs it advisory on first-server install. See [docs/04-deployment/CLUSTER_NETWORK_SMOKE.md](docs/04-deployment/CLUSTER_NETWORK_SMOKE.md).
+
 ## Conventions
 
 - **API prefix:** `/api/v1/`

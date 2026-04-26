@@ -83,6 +83,9 @@ SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_VPN=false
 SKIP_LONGHORN=false
+SKIP_SMOKE=false               # --skip-smoke disables the post-install smoke run
+REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI use)
+SMOKE_WAIT_SECONDS=300         # max wait for Flux Kustomizations to reach Ready
 OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
 FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
 MARKER_DIR="/var/lib/hosting-platform"
@@ -122,6 +125,17 @@ OPTIONS:
   --skip-vpn             Skip WireGuard + NetBird
   --skip-longhorn        Skip Longhorn storage (use local-path)
   --skip-cnpg            Skip CloudNative-PG operator install (M10).
+  --skip-smoke           Skip the post-install cluster-network smoke run.
+                         Default: smoke runs as advisory (warn-only) at
+                         the end of bootstrap on the first server.
+  --require-smoke-pass   Make smoke failures FATAL (non-zero exit). Use
+                         in CI/automated bootstrap. Without this flag,
+                         smoke FAILs are reported but bootstrap exits 0.
+  --smoke-wait <sec>     Max seconds to wait for Flux Kustomizations to
+                         reach Ready=True before smoke (default: 300).
+                         Smoke runs even if the timeout is hit; on a
+                         cold first-bootstrap, raise to 600 if you see
+                         spurious FAILs from still-reconciling pods.
   --acme-email <email>   Email for Let's Encrypt (required for first server)
   --operator-age-recipient <age1...>
                          Public age recipient for operator-held backup
@@ -243,6 +257,9 @@ parse_args() {
       --skip-vpn)        SKIP_VPN=true; shift ;;
       --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
       --skip-cnpg)       SKIP_CNPG=true; shift ;;
+      --skip-smoke)      SKIP_SMOKE=true; shift ;;
+      --require-smoke-pass) REQUIRE_SMOKE_PASS=true; shift ;;
+      --smoke-wait)      SMOKE_WAIT_SECONDS="$2"; shift 2 ;;
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
@@ -2032,6 +2049,82 @@ print_summary() {
   log "════════════════════════════════════════════════"
 }
 
+# ─── Phase 5: Post-install smoke (advisory) ──────────────────────────────────
+
+# Run the cluster-network smoke suite at the very end of bootstrap and emit
+# a clear PASS/FAIL summary. Advisory by default — first-bootstrap timing
+# varies (oauth2-proxy + dex CrashLoopBackOff during reconcile is normal),
+# so we don't fail bootstrap on smoke FAIL unless the operator opts in via
+# --require-smoke-pass. The smoke script lives in the same scripts/ dir as
+# this bootstrap (same repo); we resolve its path relative to BASH_SOURCE
+# so the function works whether bootstrap was run locally or via --remote.
+run_post_install_smoke() {
+  if [[ "$SKIP_SMOKE" == "true" ]]; then
+    log "Skipping post-install smoke (--skip-smoke)."
+    return 0
+  fi
+  # Resolve smoke script location. In --remote mode the parent
+  # bootstrap.sh is scp'd to /tmp/bootstrap.sh ALONE — the smoke script
+  # is NOT included. But apply_platform_manifests git-clones the whole
+  # repo to /opt/k8s-hosting-platform/, so the smoke script is available
+  # there by the time this function runs. Prefer the cloned-repo path
+  # over BASH_SOURCE-relative (which resolves to /tmp on remote runs).
+  local smoke_script=""
+  for candidate in \
+      "/opt/k8s-hosting-platform/scripts/smoke-test-cluster-network.sh" \
+      "${BASH_SOURCE[0]%/*}/smoke-test-cluster-network.sh"; do
+    if [[ -f "$candidate" ]]; then
+      smoke_script="$candidate"
+      chmod +x "$smoke_script" 2>/dev/null || true
+      break
+    fi
+  done
+  if [[ -z "$smoke_script" || ! -x "$smoke_script" ]]; then
+    warn "smoke script not found in the expected paths — skipping post-install smoke."
+    warn "  Looked in: /opt/k8s-hosting-platform/scripts/, ${BASH_SOURCE[0]%/*}/"
+    return 0
+  fi
+
+  log ""
+  log "── Phase 5: Post-install smoke (advisory) ──"
+  log "Smoke script: $smoke_script"
+
+  # Wait for cluster-settle by checking actual readiness conditions
+  # rather than a fixed sleep. Flux Kustomizations are the slowest
+  # reconcile path (cert-manager + ingress-nginx admission webhooks
+  # + sealed-secrets + platform), so when they're all Ready=True we
+  # know the cluster is in a steady state. SMOKE_WAIT_SECONDS becomes
+  # the timeout for that wait, not a blind sleep.
+  log "Waiting up to ${SMOKE_WAIT_SECONDS}s for Flux Kustomizations to reconcile..."
+  if ! KUBECONFIG="$KUBECONFIG" kubectl wait kustomization --all -n flux-system \
+      --for=condition=Ready --timeout="${SMOKE_WAIT_SECONDS}s" >/dev/null 2>&1; then
+    warn "Not all Kustomizations reached Ready within ${SMOKE_WAIT_SECONDS}s — running smoke anyway (some FAILs may be transient)"
+  else
+    log "All Flux Kustomizations Ready — running smoke."
+  fi
+
+  local smoke_log="/var/log/hosting-platform-bootstrap-smoke.log"
+  log "Running smoke suite — log: $smoke_log"
+  # Capture rc without tripping the parent `set -e` (we explicitly
+  # decide whether to fatal based on REQUIRE_SMOKE_PASS).
+  local rc=0
+  KUBECONFIG="$KUBECONFIG" bash "$smoke_script" >"$smoke_log" 2>&1 || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    log "Smoke result: PASS (full log at $smoke_log)"
+    return 0
+  fi
+  local summary
+  summary=$(grep '^\[INFO\] run.summary' "$smoke_log" 2>/dev/null | tail -1 || true)
+  if [[ "$REQUIRE_SMOKE_PASS" == "true" ]]; then
+    # error() exits 1; this never returns.
+    error "Smoke FAILED (rc=$rc) and --require-smoke-pass is set. ${summary:-see $smoke_log}"
+  fi
+  warn "Smoke FAILED (rc=$rc) — advisory only. ${summary:-see $smoke_log}"
+  warn "Bootstrap exits 0 because --require-smoke-pass was not set. Investigate via:"
+  warn "  scripts/smoke-test-cluster-network.sh   (full output)"
+  warn "  make diagnose                           (forensic snapshot)"
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
@@ -2121,6 +2214,14 @@ main() {
     log "── Phase 4: Verification ──"
     verify
     print_summary
+
+    # Phase 5: post-install cluster-network smoke. Advisory by default;
+    # the operator can wire it into CI with --require-smoke-pass. Only
+    # runs on the first server (the only role that has KUBECONFIG +
+    # cluster-wide reachability for the matrix probes).
+    if [[ -z "$K3S_SERVER_IP" ]]; then
+      run_post_install_smoke
+    fi
   else
     apply_node_labels_and_taints
     # Worker — just confirm agent is running
