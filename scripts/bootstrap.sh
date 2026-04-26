@@ -854,6 +854,75 @@ install_k3s() {
 # the caller falls back to public-IP autodetect. Inputs are passed via
 # env-vars rather than string-interpolated into the Python source so the
 # helper can't be tricked by exotic CIDR values.
+# Detect the host's primary public IPv4 — robustly, even when an
+# operator VPN (NetBird, Tailscale, Headscale, raw WireGuard,
+# OpenVPN, IPsec) is up and may carry a default-route to public
+# internet. Returns the first IP that satisfies BOTH:
+#   1) Routes to a public address (`ip route get` returns it as src)
+#   2) Is NOT bound to a known VPN interface
+#
+# Excluded interface names cover common mesh/VPN tunnels:
+#   wt0           — NetBird
+#   tailscale*    — Tailscale (rare to drop their interface but covered)
+#   wg*           — wg-quick / Headscale / userspace WireGuard
+#   tun*          — OpenVPN tun mode + many corporate VPN clients
+#   tap*          — OpenVPN tap mode
+#   ipsec*, ppp*, gre*  — legacy VPN options
+#   cali*, vxlan.calico, wireguard.cali  — Calico's own interfaces
+#                  (defensive — Calico won't be up at the time we
+#                  call this in install_k3s_*, but pre-existing
+#                  state from a previous install might linger)
+#
+# Falls back to "first global IPv4 not on a VPN-named interface" if
+# `ip route get 1.1.1.1` fails (some hosts block ICMP-style probes).
+detect_public_ipv4() {
+  local probe_ips=("1.1.1.1" "8.8.8.8" "9.9.9.9")  # tried in order
+  local vpn_re='^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|ppp[0-9]*|gre[0-9]*|cali[0-9a-f]+|vxlan\.calico|wireguard\.calico|wireguard\.cali)$'
+
+  # Path A: ask the kernel which IP+iface it would use for a public probe.
+  local probe ip_route iface src_ip
+  for probe in "${probe_ips[@]}"; do
+    ip_route=$(ip -4 -o route get "$probe" 2>/dev/null | head -1) || continue
+    [[ -z "$ip_route" ]] && continue
+    iface=$(echo "$ip_route" | awk '{
+      for (i = 1; i < NF; i++) if ($i == "dev") { print $(i+1); exit }
+    }')
+    src_ip=$(echo "$ip_route" | awk '{
+      for (i = 1; i < NF; i++) if ($i == "src") { print $(i+1); exit }
+    }')
+    [[ -z "$iface" || -z "$src_ip" ]] && continue
+    # Reject if the chosen interface is a known VPN tunnel.
+    if [[ "$iface" =~ $vpn_re ]]; then
+      continue
+    fi
+    echo "$src_ip"
+    return 0
+  done
+
+  # Path B: walk `ip -4 -o addr show` and pick the first GLOBAL-scope
+  # IP whose interface ISN'T a known VPN. Filter out RFC1918/CGNAT/
+  # link-local — those are cluster-internal/VPN underlays, not public.
+  local line addr ifname
+  while IFS= read -r line; do
+    ifname=$(echo "$line" | awk '{print $2}')
+    addr=$(echo "$line" | awk '{print $4}' | cut -d/ -f1)
+    [[ -z "$ifname" || -z "$addr" ]] && continue
+    if [[ "$ifname" =~ $vpn_re ]]; then continue; fi
+    # Skip loopback, link-local 169.254/16, RFC1918, CGNAT 100.64/10.
+    case "$addr" in
+      127.*|169.254.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) continue ;;
+      100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) continue ;;
+    esac
+    # Confirm scope global (not host/link).
+    if echo "$line" | grep -q "scope global"; then
+      echo "$addr"
+      return 0
+    fi
+  done < <(ip -4 -o addr show 2>/dev/null)
+
+  return 1
+}
+
 resolve_cluster_network_ip() {
   if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
     echo ""
@@ -979,13 +1048,14 @@ install_k3s_server() {
     tls_sans="${tls_sans} --tls-san=${private_ip}"
   else
     # Public-underlay mode: pin to the host's primary public IPv4.
-    # `hostname -I` lists all addresses; take the first non-link-
-    # local non-loopback IPv4 — this is the eth0 default-route IP on
-    # standard cloud VMs.
+    # detect_public_ipv4() filters out known VPN tunnel interfaces
+    # (wt0, tailscale*, wg*, tun*, etc) so an operator's VPN doesn't
+    # accidentally end up as the cluster underlay even if it carries
+    # a route to public IPs.
     local public_ip
-    public_ip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    public_ip=$(detect_public_ipv4)
     if [[ -z "$public_ip" ]]; then
-      error "Could not resolve a default-route IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
+      error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
     log "  public-underlay mode: --node-ip=${public_ip}"
     node_pin="--node-ip=${public_ip} --advertise-address=${public_ip}"
@@ -1043,10 +1113,11 @@ install_k3s_worker() {
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
     exec_args="agent --node-ip=${private_ip} --node-external-ip=${public_ip}"
   else
+    # Public-underlay mode (workers) — see detect_public_ipv4() comment.
     local public_ip
-    public_ip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    public_ip=$(detect_public_ipv4)
     if [[ -z "$public_ip" ]]; then
-      error "Could not resolve a default-route IPv4 address."
+      error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
     log "  public-underlay mode: --node-ip=${public_ip}"
     exec_args="agent --node-ip=${public_ip}"
@@ -1132,16 +1203,17 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
-    # Public-underlay autodetect: pick the IP that can reach the
-    # public internet. On standard cloud VMs this is the eth0
-    # primary IP (default route). Bypasses any operator VPN
-    # (NetBird wt0, Tailscale tailscale0, etc) which only routes
-    # inside its own mesh — Calico WireGuard endpoints land on
-    # public IPs and pod traffic flows directly node-to-node.
-    # canReach is more robust than skipInterface (which depends on
-    # interface naming) and firstFound (which is order-sensitive).
+    # Public-underlay autodetect: combine canReach (handles cloud
+    # VMs where the default route src IP IS the public IP) with an
+    # explicit skipInterface regex matching common VPN tunnel names.
+    # The skipInterface regex is the safety net for hosts where the
+    # operator VPN ALSO carries a route to canReach's target — in
+    # which case Calico would pick the VPN's local IP without the
+    # interface filter. Order: skipInterface filters first, then
+    # canReach picks among what's left.
     autodetect_block="    nodeAddressAutodetectionV4:
-      canReach: \"1.1.1.1\""
+      canReach: \"1.1.1.1\"
+      skipInterface: \"^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|cali[0-9a-f]+|vxlan\\\\.calico|wireguard\\\\.cali)\$\""
     # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
 

@@ -76,3 +76,26 @@
 - FileBrowser file manager integration
 - Plesk migration service
 - Geographic sharding / multi-region
+
+### IPv6 / dual-stack networking
+- [ ] **v1 ships IPv4-only** — `--cluster-cidr` and `--node-ip` are IPv4 only;
+      most cloud providers and OSS adopters will be on IPv4-friendly networks.
+      Adding dual-stack later is non-breaking (additive flag, additive ipPools).
+- [ ] **v2: `--ipv6` opt-in flag** — enables dual-stack:
+  - k3s gets `--cluster-cidr=10.42.0.0/16,fd42::/48`,
+    `--service-cidr=10.43.0.0/16,fd43::/112`, `--node-ip=<v4>,<v6>`
+  - Tigera Installation gets a sibling IPv6 ipPool +
+    `nodeAddressAutodetectionV6: { canReach: "2606:4700:4700::1111" }`
+  - nftables config opens IPv6 equivalents of every cluster-internal port
+  - NetworkPolicy `ipBlock` entries get v6 siblings (the `10.42.0.0/16`
+    ipBlock for cross-node host→pod becomes `10.42.0.0/16` + `fd42::/48`)
+  - Backend audit: every `request.ip` / IP-parsing call must handle
+    IPv6-mapped IPv4 (`::ffff:1.2.3.4`) and pure v6
+  - Smoke + failover suite: A and AAAA per hostname, v6 pod-IP cells
+- [ ] **v3 (deferred): IPv6-only mode** — for cheaper IPv6-only cloud VMs.
+      Niche; out of scope until a deployment actually needs it.
+
+Estimated implementation effort for dual-stack v2: 8-10 hours of focused work.
+The platform's data model + most code already tolerates v6 strings (audit_logs
+accepts varchar(45) which is RFC v6 max); the work is mostly bootstrap
+templating + NetworkPolicy duplication + a backend code audit.
