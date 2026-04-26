@@ -143,6 +143,17 @@ if [[ -z "$PG_USER" ]]; then
   exit 1
 fi
 
+# CNPG postgres pods only allow peer auth for the `postgres` superuser
+# on the local socket. Application user (e.g. `platform`) must connect
+# via TCP with password auth. Pull the password from the Secret and
+# pin PGHOST=127.0.0.1 so libpq picks the TCP path inside the pod.
+PG_PWD=$(kubectl -n "$PLATFORM_NS" get secret platform-db-credentials \
+  -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
+if [[ -z "$PG_PWD" ]]; then
+  echo "ERROR: could not derive postgres password (Secret platform-db-credentials.password missing)" >&2
+  exit 1
+fi
+
 # Step 1: hash inside the platform-api pod (which has bcrypt installed).
 # Pass the cleartext via stdin so it never appears in `ps`, `bash -x`,
 # or kubectl event logs. The cost (12) matches SALT_ROUNDS in
@@ -199,6 +210,7 @@ EOF
 ROWS=$(printf '%s' "$SQL" \
   | kubectl -n "$PLATFORM_NS" exec -i "$PG_POD" -- env \
     PGUSER="$PG_USER" PGDATABASE="$PG_DB" \
+    PGHOST=127.0.0.1 PGPASSWORD="$PG_PWD" \
     psql -v ON_ERROR_STOP=1 -tAq -f - 2>&1)
 
 if [[ -z "$ROWS" ]] || ! echo "$ROWS" | grep -q '^[0-9a-f-]\{36\}$'; then
