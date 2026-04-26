@@ -1061,22 +1061,26 @@ install_calico() {
     }
   done
 
-  # Calico networking config (2026-04-25):
-  #   * encapsulation: VXLAN (always-on, not VXLANCrossSubnet) — production
-  #     workers may live in different subnets than the server; "CrossSubnet"
-  #     mode falls back to BGP between same-subnet peers, which then needs
-  #     a working BIRD daemon. Always-on VXLAN removes BGP from the path
-  #     entirely and works identically same-subnet vs cross-subnet.
+  # Calico networking config (M14, 2026-04-26):
+  #   * encapsulation: VXLAN — Calico's pod-network packet format. Stays
+  #     even though we now ALSO encrypt with Calico-managed WireGuard;
+  #     pod packets ride VXLAN (interoperable with all CNI tooling) inside
+  #     the WireGuard tunnel between nodes.
+  #   * wireguard.enabled: true — Calico encrypts ALL pod-to-pod traffic
+  #     between nodes. Single uniform mechanism whether the underlay is
+  #     a public network, a private cloud network, or an operator VPN.
+  #     Prevents the double-encap MTU+reconcile bugs we hit running
+  #     VXLAN-over-NetBird-WireGuard.
+  #   * wireguard.port: 51821 — non-standard port to avoid collisions
+  #     with NetBird (51820) on the same hosts.
   #   * bgp: Disabled — no BIRD process, one less failure surface.
-  #   * mtu: 1450 — 1500 underlay − 50 VXLAN overhead.
-  #   * BOTH ipPools must share encapsulation when bgp:Disabled — the
-  #     operator rejects mixed VXLAN/None with "unencapsulated IP pools
-  #     require that BGP is enabled".
-  #   * nodeAddressAutodetectionV4.cidrs (M12) — pin Calico's VXLAN
-  #     tunnel endpoint onto the private network (NetBird/Tailscale/
-  #     etc.) when --cluster-network-cidr is set. Without this, Calico
-  #     picks the first-found interface (typically the public eth0).
-  # Workers join over UDP/4789 (VXLAN); see configure_firewall().
+  #   * mtu: 1380 — 1500 underlay − 60 WireGuard overhead − 50 VXLAN
+  #     overhead − some headroom. Auto-discovery used in plain Calico
+  #     can pick wrong values; explicit pin avoids the Felix MTU loop.
+  #   * nodeAddressAutodetectionV4: when --cluster-network-cidr is set,
+  #     pin to that CIDR (private underlay). Otherwise firstFound: true
+  #     picks the public IP of eth0. Calico's WireGuard mesh terminates
+  #     on whichever IP is autodetected.
   local autodetect_block=""
   local ipv6_pool=""
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
@@ -1087,6 +1091,8 @@ install_calico() {
     # bgp:Disabled is rejected anyway, and k3s was launched with
     # IPv4-only cluster-cidr in install_k3s_server.
   else
+    autodetect_block="    nodeAddressAutodetectionV4:
+      firstFound: true"
     ipv6_pool="    - blockSize: 122
       cidr: fd42::/48
       encapsulation: VXLAN
@@ -1102,7 +1108,7 @@ metadata:
 spec:
   calicoNetwork:
     bgp: Disabled
-    mtu: 1450
+    mtu: 1380
 ${autodetect_block}
     ipPools:
     - blockSize: 26
@@ -1117,6 +1123,20 @@ kind: APIServer
 metadata:
   name: default
 spec: {}
+---
+# WireGuard encryption for ALL pod-to-pod traffic. Always-on, regardless
+# of underlay (public / cloud private net / operator VPN). Port 51821
+# chosen to avoid NetBird's default 51820 — both can run side-by-side
+# on the same hosts when an operator VPN is in use.
+# FelixConfiguration is a separate CRD; the operator picks up the
+# wireguardEnabled flag and rolls calico-node accordingly.
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  wireguardEnabled: true
+  wireguardListeningPort: 51821
 EOF
 
   log "Waiting for Calico pods..."
