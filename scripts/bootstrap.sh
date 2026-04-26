@@ -1463,12 +1463,35 @@ install_flux() {
     --interval=1m \
     --kubeconfig="$KUBECONFIG"
 
-  flux create kustomization platform \
-    --source="$source_name" \
-    --path="./k8s/overlays/${PLATFORM_ENV}" \
-    --prune=true \
-    --interval=1m \
-    --kubeconfig="$KUBECONFIG"
+  # Apply via YAML so we can include spec.patches: strip
+  # spec.instances from the CNPG Cluster manifest before Flux SSA-
+  # applies it. Otherwise Flux owns the field and reverts the
+  # platform-storage-policy reconciler's imperative HA scale within
+  # ~30s. CNPG operator defaults instances=1 when absent — the
+  # right floor for fresh clusters. Apply HA flips to 3 imperatively.
+  cat <<KUSTYAML | kctl apply -f -
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform
+  namespace: flux-system
+spec:
+  interval: 1m
+  path: ./k8s/overlays/${PLATFORM_ENV}
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: ${source_name}
+  patches:
+    - patch: |
+        - op: remove
+          path: /spec/instances
+      target:
+        group: postgresql.cnpg.io
+        version: v1
+        kind: Cluster
+        name: postgres
+KUSTYAML
 
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
     warn "Image automation requires GitHub push credentials for the staging branch."

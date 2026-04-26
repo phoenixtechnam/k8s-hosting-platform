@@ -31,12 +31,6 @@ metadata:
   labels:
     app: postgres
     app.kubernetes.io/part-of: hosting-platform
-  annotations:
-    # Flux Kustomization-controller honors this on individual
-    # resources: "merge" means 3-way strategic merge instead of
-    # forced SSA. Lets the platform-storage-policy reconciler own
-    # spec.instances without Flux reverting it on each sync.
-    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Apply our `app: postgres` label to every Pod CNPG creates so
   # existing K8s NetworkPolicies (allow-platform-internal selects

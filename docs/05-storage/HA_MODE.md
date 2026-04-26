@@ -72,20 +72,29 @@ Reverting does NOT lose data anywhere. CNPG drops the standby pods cleanly; Long
 | CNPG instance scale-up fails (insufficient resources) | `cnpgClusters[0].error="..."`, primary unaffected | Operator must address resource issue |
 | `kubectl patch deploy admin-panel` fails (RBAC) | `deployments[i].error="forbidden"` | Check ServiceAccount permissions |
 
-## Replica field ownership
+## Replica/instance field ownership
 
-Stateless Deployments (admin-panel, client-panel, platform-api,
-oauth2-proxy, dex) intentionally have NO `replicas:` field in
-their base manifests. The field is owned by the platform-storage-
-policy reconciler — Apply HA / Apply Local writes it via the
-`/scale` subresource and Flux's SSA leaves it untouched (because
-the manifest doesn't claim it).
+Two cooperating mechanisms keep Apply HA's imperative scale
+operations from being reverted by Flux SSA:
 
-Consequence for fresh installs: every Deployment starts at K8s
-default = 1 replica. The HA recommendation banner appears once
-the cluster has ≥3 ready servers. Operator clicks Apply HA → 3
-replicas. Or clicks Apply Local explicitly → 2 replicas. Never
-auto-applied.
+1. **Stateless Deployments** (admin-panel, client-panel, platform-
+   api, oauth2-proxy, dex) have NO `replicas:` field in their
+   manifests. Flux doesn't claim ownership of the field. The
+   platform-storage-policy reconciler writes it via the `/scale`
+   subresource and SSA leaves it alone.
+   - Fresh clusters land at K8s default = 1 replica per Deployment.
+2. **CNPG `Cluster.spec.instances`** is required by the CRD so
+   it can't be omitted. Instead, the Flux Kustomization for
+   `./k8s/overlays/${env}` includes a `spec.patches` block that
+   strips `spec.instances` from the manifest before SSA. CNPG
+   operator defaults the field to 1 on apply. The reconciler
+   then patches to 3 (or back to 1) without conflict.
+   - Bootstrap.sh applies this Kustomization shape on first install.
+
+Consequence: HA recommendation banner appears once the cluster
+has ≥3 ready servers. Operator clicks Apply HA → 3 replicas + 3
+CNPG instances, persists indefinitely. Apply Local → 2 replicas
++ 1 CNPG instance, persists.
 
 ## Smoke tests covering this
 
