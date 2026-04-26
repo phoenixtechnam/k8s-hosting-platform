@@ -62,6 +62,22 @@ spec:
       # for both initdb AND the backend's DATABASE_URL.
       secret:
         name: platform-db-credentials
+      # Grant CREATEROLE to the application user so the existing
+      # Drizzle migrations can `CREATE ROLE stalwart_reader` etc.
+      # CNPG's initdb-created app user is unprivileged by default
+      # (the cluster's `postgres` superuser handles ops). Without
+      # this grant, platform-api's migrate step fails with
+      # "permission denied to create role".
+      postInitApplicationSQL:
+        # Match vanilla-postgres initdb behaviour: the application
+        # user is SUPERUSER. Existing migrations (0024_…sql etc.)
+        # `CREATE DATABASE roundcube OWNER roundcube` and similar
+        # require: CREATEROLE + CREATEDB + ability to SET ROLE
+        # to the new owner. Granting SUPERUSER is the simplest
+        # match. Trade-off: anyone with platform-db-credentials
+        # can do anything in the cluster — same surface as the
+        # previous StatefulSet-managed `platform` user.
+        - "ALTER USER platform WITH SUPERUSER"
 
   storage:
     size: 10Gi
