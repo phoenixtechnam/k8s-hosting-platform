@@ -78,7 +78,7 @@ export default function PlatformStoragePolicyCard() {
           <div className="text-sm text-amber-900 dark:text-amber-200">
             <strong>Cluster reached HA size.</strong> {cluster.readyServerCount} of {cluster.totalNodeCount} nodes
             are Ready servers. Switch to <code>ha</code> to replicate platform volumes 3× and survive a single
-            node outage.
+            node outage. Reversible — switch back to <code>local</code> anytime.
           </div>
         </div>
       )}

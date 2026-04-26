@@ -5,6 +5,7 @@ import Header from './Header';
 import Footer from './Footer';
 import UpdateBanner from '../UpdateBanner';
 import SystemHealthBanner from '../SystemHealthBanner';
+import PlatformStorageHaBanner from '../PlatformStorageHaBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
 
@@ -25,6 +26,7 @@ export default function Layout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onMenuClick={openSidebar} />
         <SystemHealthBanner />
+        <PlatformStorageHaBanner />
         <UpdateBanner />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
