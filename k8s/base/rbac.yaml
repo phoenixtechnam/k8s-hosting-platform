@@ -36,6 +36,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "resourcequotas"]
     verbs: ["*"]
+  # Cluster-scoped PV access — listing is needed for storage inventory,
+  # delete for the deprovision flow's Released-PV cleanup
+  # (tenant SC reclaimPolicy=Retain leaves PVs around after PVC delete;
+  # the deprovision step purges them so re-provisioning doesn't conflict).
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "delete"]
   # Subresource: pod logs (used by deployments/routes.ts and waf-log-scraper)
   - apiGroups: [""]
     resources: ["pods/log"]

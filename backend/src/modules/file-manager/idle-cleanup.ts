@@ -75,12 +75,26 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
 
           // Cross-pod truth: annotation set by recordFileManagerAccess()
           // in any platform-api replica. Falls back to in-memory cache
-          // if the annotation is missing (older Deployment from before
-          // this change, or a race where /start hasn't yet annotated).
-          const annotations = (deploy as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations ?? {};
+          // if the annotation is missing (older Deployment, or a race
+          // where /start hasn't yet annotated).
+          //
+          // CRITICAL: a Deployment that was JUST created by /start
+          // has neither annotation nor cache entry on replicas other
+          // than the one that handled the request. Treating that as
+          // "idle since epoch" would scale it to 0 immediately —
+          // racing /start. Use the Deployment's own creationTimestamp
+          // as the floor so a brand-new FM gets a full IDLE_TIMEOUT_MS
+          // grace window even before any /status poll lands.
+          const annotations = (deploy as { metadata?: { annotations?: Record<string, string>; creationTimestamp?: string } }).metadata?.annotations ?? {};
           const annotated = Number(annotations[LAST_ACCESS_ANNOTATION] ?? '');
           const cached = lastAccessMap.get(ns) ?? 0;
-          const lastAccess = Math.max(Number.isFinite(annotated) ? annotated : 0, cached);
+          const created = Date.parse((deploy as { metadata?: { creationTimestamp?: string } }).metadata?.creationTimestamp ?? '');
+          const createdMs = Number.isFinite(created) ? created : 0;
+          const lastAccess = Math.max(
+            Number.isFinite(annotated) ? annotated : 0,
+            cached,
+            createdMs, // NEW: floor at creation time so fresh FMs aren't insta-killed
+          );
 
           if (now - lastAccess > IDLE_TIMEOUT_MS) {
             console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns} (idle for ${Math.round((now - lastAccess) / 60_000)}m)`);
