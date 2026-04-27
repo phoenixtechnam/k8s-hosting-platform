@@ -41,7 +41,10 @@ SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nul
 
 # Test fixtures: known catalog entry IDs on staging. If these change,
 # resolve via `GET /api/v1/catalog?limit=200` and look up the `code`.
-CATALOG_STATIC_NGINX="${CATALOG_STATIC_NGINX:-d6f4fe15-9fce-48d2-b458-726ccbb6d8b7}"
+# Use nginx-php (docker.io/serversideup/php — publicly pullable)
+# rather than static-nginx (ghcr.io/phoenixtechnam/k8s-application-catalog/...
+# which requires GHCR auth that the cluster doesn't have).
+CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
 
 # Domain template — uses the success.com.na wildcard so DNS just works.
 HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.success.com.na}"
@@ -162,10 +165,25 @@ scenario_fm() {
 
   # Scale FM back to 0 so subsequent scenarios (https) don't lose
   # their RWO PVC race against an already-running FM. The /files/stop
-  # endpoint is the operator-visible mirror of the idle-cleanup loop;
-  # use it explicitly instead of waiting 10 min for idle-scale.
+  # endpoint deletes the FM Deployment; we wait for the pod to fully
+  # terminate AND for Longhorn to detach the volume so the workload
+  # we're about to create doesn't hit Multi-Attach.
   api POST "/clients/$cid/files/stop" "" >/dev/null
-  ok "FM scaled back to 0 between scenarios"
+  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+  # Wait up to 120s for the FM pod to terminate AND its volume to
+  # detach. Pods take ~30s to gracefully shut down; Longhorn detach
+  # takes another 10-30s on top.
+  local i=0 fmpods=999
+  while (( i < 120 )); do
+    fmpods=$(ssh_cp "kubectl -n $ns get pods -l app=file-manager --no-headers 2>/dev/null | wc -l" | tr -d '[:space:]')
+    [[ "${fmpods:-0}" -eq 0 ]] && break
+    sleep 4; i=$((i+4))
+  done
+  if [[ "${fmpods:-0}" -gt 0 ]]; then
+    fail "FM pod still around after 120s (count=$fmpods)"
+    return 1
+  fi
+  ok "FM pod fully gone (after ${i}s)"
 }
 
 # ─── scenario 3: HTTPS end-to-end (the actual SSL test) ────────────
@@ -195,15 +213,23 @@ scenario_https() {
 
   # 1. Deployment
   local depl_resp; depl_resp=$(api POST "/clients/$cid/deployments" \
-    "{\"catalog_entry_id\":\"$CATALOG_STATIC_NGINX\",\"name\":\"$depl_name\",\"replica_count\":1}")
+    "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}")
   local depl_id; depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$depl_id" ]] || { fail "deployment create failed: $(echo "$depl_resp" | head -c 300)"; return 1; }
   ok "deployment created depl_id=$depl_id name=$depl_name"
 
-  # Wait for deployment to be running (k8s pod Ready). 180s — first
-  # pod pull from GHCR is the slow case.
-  wait_for 180 "deployment running" '"status":"running"' \
-    "api GET '/clients/$cid/deployments/$depl_id'" || return 1
+  # Wait for deployment to be running (k8s pod Ready). 240s — first
+  # pod pull from GHCR + Longhorn volume re-attach if FM held it.
+  if ! wait_for 240 "deployment running" '"status":"running"' \
+    "api GET '/clients/$cid/deployments/$depl_id'"; then
+    # Surface the deployment's lastError envelope so the operator
+    # sees WHY (PVC Multi-Attach, ImagePull, OOM, etc.) instead of
+    # only "timeout".
+    local diag; diag=$(api GET "/clients/$cid/deployments/$depl_id" \
+      | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print('status=',d.get('status'),'lastError=',d.get('lastError','')[:300])" 2>/dev/null)
+    fail "deployment diagnostic: $diag"
+    return 1
+  fi
 
   # 2. Domain bound to deployment in one call (atomic — closes the
   #    bug where adding domain first and deployment after left no
@@ -220,8 +246,11 @@ scenario_https() {
   wait_for 60 "Ingress exists in $ns with host=$domain" "$domain" \
     "ssh_cp 'kubectl -n $ns get ingress -o jsonpath={.items[*].spec.rules[*].host}'" || return 1
 
-  # 4. Cert ready
-  wait_for 180 "cert-manager Certificate Ready=True" "True" \
+  # 4. Cert ready. Let's Encrypt HTTP-01 issuance + DNS propagation
+  # delay can take 2-4 minutes on a fresh staging cluster. Anything
+  # under 360s is normal; longer means there's a real problem
+  # (rate-limit, ACME endpoint reachability, etc).
+  wait_for 360 "cert-manager Certificate Ready=True" "True" \
     "ssh_cp 'kubectl -n $ns get cert -o jsonpath={.items[?(@.spec.dnsNames[0]==\"$domain\")].status.conditions[?(@.type==\"Ready\")].status}'" || return 1
 
   # 5. DNS — should already resolve thanks to the wildcard, but
