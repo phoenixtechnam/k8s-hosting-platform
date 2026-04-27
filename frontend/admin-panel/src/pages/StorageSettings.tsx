@@ -19,7 +19,12 @@ import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
  * Storage inventory (node health, volume count, capacity) will live
  * here too once Phase D's /admin/platform/storage endpoint lands.
  */
-export default function StorageSettings() {
+interface StorageSettingsProps {
+  /** When true, omit the page-level <h1> header so the panel can be embedded inside a tabbed layout (e.g. NodesAndStorage). */
+  readonly embedded?: boolean;
+}
+
+export default function StorageSettings({ embedded = false }: StorageSettingsProps = {}) {
   const [showIframe, setShowIframe] = useState(false);
   const { data: configsResp, isLoading } = useBackupConfigs();
   const { data: urls } = usePlatformUrls();
@@ -32,12 +37,14 @@ export default function StorageSettings() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <HardDrive size={28} className="text-gray-700 dark:text-gray-300" />
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="storage-settings-heading">
-          Storage Configuration
-        </h1>
-      </div>
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <HardDrive size={28} className="text-gray-700 dark:text-gray-300" />
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="storage-settings-heading">
+            Storage Configuration
+          </h1>
+        </div>
+      )}
 
       {/* ─── Live inventory ─── */}
       <StorageInventoryCard />

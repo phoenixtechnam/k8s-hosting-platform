@@ -38,7 +38,12 @@ function readyCondition(node: ClusterNodeResponse): 'Ready' | 'NotReady' | 'Unkn
   return ready.status === 'True' ? 'Ready' : 'NotReady';
 }
 
-export default function ClusterNodes() {
+interface ClusterNodesProps {
+  /** When true, omit the page-level <h1> header so the panel can be embedded inside a tabbed layout (e.g. NodesAndStorage). */
+  readonly embedded?: boolean;
+}
+
+export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {}) {
   const { data, isLoading, error } = useClusterNodes();
   const { data: subsystemData } = useNodeSubsystemHealth();
   const nodes = (data?.data ?? []) as readonly ClusterNodeResponse[];
@@ -56,16 +61,18 @@ export default function ClusterNodes() {
 
   return (
     <div className="space-y-6" data-testid="cluster-nodes-page">
-      <div className="flex items-center gap-3">
-        <Server size={28} className="text-brand-500" />
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Cluster Nodes</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Every node in the k3s cluster, with platform-managed role + host-client-workloads state.
-            Labels on the k8s node are authoritative; edits here write the label first then refresh.
-          </p>
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <Server size={28} className="text-brand-500" />
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Cluster Nodes</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Every node in the k3s cluster, with platform-managed role + host-client-workloads state.
+              Labels on the k8s node are authoritative; edits here write the label first then refresh.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 dark:border-red-700 dark:bg-red-900/30">

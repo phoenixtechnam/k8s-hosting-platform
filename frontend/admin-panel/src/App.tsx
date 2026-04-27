@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
@@ -19,7 +19,6 @@ import OidcSettings from '@/pages/OidcSettings';
 import DnsServers from '@/pages/DnsServers';
 import PlanManagement from '@/pages/PlanManagement';
 import BackupSettings from '@/pages/BackupSettings';
-import StorageSettings from '@/pages/StorageSettings';
 import AdminUsers from '@/pages/AdminUsers';
 import HealthDashboard from '@/pages/HealthDashboard';
 import ExportImport from '@/pages/ExportImport';
@@ -29,7 +28,7 @@ import SystemSettingsPage from '@/pages/SystemSettings';
 import AuditLogs from '@/pages/AuditLogs';
 import AiSettings from '@/pages/AiSettings';
 import Placeholder from '@/pages/Placeholder';
-import ClusterNodes from '@/pages/ClusterNodes';
+import NodesAndStorage from '@/pages/NodesAndStorage';
 import LoadBalancerSettings from '@/pages/LoadBalancerSettings';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -74,10 +73,12 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
-            <Route path="settings/storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><StorageSettings /></ProtectedRoute>} />
+            <Route path="settings/nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
+            {/* Legacy direct-link compatibility: redirect to the combined page with the matching tab pre-selected. */}
+            <Route path="settings/storage" element={<Navigate to="/settings/nodes-and-storage?tab=storage" replace />} />
+            <Route path="settings/nodes" element={<Navigate to="/settings/nodes-and-storage?tab=nodes" replace />} />
             <Route path="settings/users" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AdminUsers /></ProtectedRoute>} />
             <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
-            <Route path="settings/nodes" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><ClusterNodes /></ProtectedRoute>} />
             <Route path="settings/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerSettings /></ProtectedRoute>} />
             <Route path="monitoring/health" element={<HealthDashboard />} />
             <Route path="monitoring/audit-logs" element={<AuditLogs />} />
