@@ -13,6 +13,20 @@ import { getSnapshotStore, type SnapshotStore } from './snapshot-store.js';
 import { snapshotTenantPVC } from './snapshot.js';
 import { restoreTenantPVC } from './restore.js';
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
+import { translateOperatorError } from '../../shared/operator-error.js';
+
+/**
+ * Render a raw exception message into the operator-error envelope JSON
+ * (so the UI's ErrorPanel can show structured remediation), or fall
+ * back to the raw string if translation produced UNKNOWN. Stored in
+ * `lastError` on storage_operations / storage_snapshots.
+ */
+function formatLifecycleError(err: unknown, kind: 'pvc' | 'workload' | 'fm' = 'pvc'): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const envelope = translateOperatorError(raw, { kind });
+  if (envelope.code === 'UNKNOWN') return raw;
+  return JSON.stringify(envelope);
+}
 
 /**
  * Storage-lifecycle service: the high-level API for admin operations
@@ -166,8 +180,9 @@ export async function snapshotClient(
     return row;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: msg }).where(eq(storageSnapshots.id, snapId));
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    const persisted = formatLifecycleError(err, 'pvc');
+    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: persisted }).where(eq(storageSnapshots.id, snapId));
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     if (quiesceSnap) {
       // Best-effort unquiesce so we don't leave the tenant broken.
       await unquiesce(ctx.k8s, client.kubernetesNamespace, quiesceSnap).catch(() => {});
@@ -439,8 +454,9 @@ async function runResize(
     if (cId) await markClientState(ctx.db, cId, 'idle', null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, {
-      state: 'failed', lastError: msg, completedAt: new Date(),
+      state: 'failed', lastError: persisted, completedAt: new Date(),
     });
     // Best-effort unquiesce so the old workloads come back up.
     if (quiesceSnap) {
@@ -592,7 +608,8 @@ export async function suspendClient(
     return { operationId: opId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    const persisted = formatLifecycleError(err, 'workload');
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     await markClientState(ctx.db, clientId, 'idle', null);
     throw new ApiError('SUSPEND_FAILED', msg, 502);
   }
@@ -649,7 +666,8 @@ export async function resumeClient(
     return { operationId: opId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    const persisted = formatLifecycleError(err, 'workload');
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     await markClientState(ctx.db, clientId, 'idle', null);
     throw new ApiError('RESUME_FAILED', msg, 502);
   }
@@ -746,8 +764,9 @@ async function runArchive(
     }).where(eq(clients.id, clientId));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
-    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: msg }).where(eq(storageSnapshots.id, snapId));
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: persisted }).where(eq(storageSnapshots.id, snapId));
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
     const cId = await currentClientId(ctx.db, opId);
     if (cId) await markClientState(ctx.db, cId, 'failed', null);
@@ -857,7 +876,8 @@ async function runRestoreArchive(
     }).where(eq(clients.id, clientId));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: msg, completedAt: new Date() });
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
     const cId = await currentClientId(ctx.db, opId);
     if (cId) await markClientState(ctx.db, cId, 'failed', null);
   }
