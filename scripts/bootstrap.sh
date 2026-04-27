@@ -1516,6 +1516,23 @@ install_longhorn() {
   # overhead with no fault-tolerance benefit (no SLO on Longhorn UI
   # uptime). Production overlays can override if dashboard HA is
   # actually needed.
+  #
+  # guaranteedInstanceManagerCPU=8 (default 12) — each instance-manager
+  # *reserves* this % of node CPU regardless of actual usage. At 12%,
+  # a 4-CPU server reserves 480m per node (240m on a 2-CPU worker)
+  # while real-world steady-state usage on small-tenant hosting is
+  # 5-45m. Lowering to 8% reclaims ~480m of schedulable CPU across a
+  # 3-server cluster while leaving 6-10× headroom over observed peaks.
+  # Deployments with heavy IO (tenants doing high-IOPS DB workloads)
+  # should override back to 12 via:
+  #   kubectl -n longhorn-system patch setting/guaranteed-instance-manager-cpu \
+  #     --type=merge -p '{"value":"12"}'
+  #
+  # concurrentReplicaRebuildPerNodeLimit=2 (default 5) — caps how many
+  # replica rebuilds run in parallel per node. 5 is tuned for clusters
+  # with 100+ volumes; for 3-4 server clusters with <50 volumes the
+  # extra concurrency just produces CPU spikes during recovery without
+  # meaningful rebuild-time benefit.
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -1524,6 +1541,8 @@ install_longhorn() {
     --set defaultSettings.replicaAutoBalance=best-effort \
     --set defaultSettings.storageMinimalAvailablePercentage=15 \
     --set defaultSettings.defaultDataLocality=best-effort \
+    --set defaultSettings.guaranteedInstanceManagerCPU=8 \
+    --set defaultSettings.concurrentReplicaRebuildPerNodeLimit=2 \
     --set longhornUI.replicaCount=1 \
     --wait \
     --timeout 600s
