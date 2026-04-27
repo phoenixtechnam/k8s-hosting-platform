@@ -576,9 +576,27 @@ export async function runDeprovision(
         } catch (err) {
           console.warn(`[deprovision] failed to delete Released PV ${pvName}:`, (err as Error).message);
         }
+        // Cascade to Longhorn volume — PV deletion alone does NOT
+        // delete the volume.longhorn.io CR (Longhorn Retain semantics
+        // keep it as a "detached" orphan). Without this, every
+        // re-provision accumulates ghost volumes that count against
+        // storageScheduled until Longhorn refuses new replicas with
+        // "precheck new replica failed: insufficient storage".
+        // Volume name == PV name (CSI convention). 404 is OK — the
+        // volume may already be gone if reclaimPolicy was Delete.
+        try {
+          await k8s.custom.deleteNamespacedCustomObject({
+            group: 'longhorn.io', version: 'v1beta2',
+            namespace: 'longhorn-system', plural: 'volumes', name: pvName,
+          } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
+        } catch (err) {
+          if (!isK8s404(err)) {
+            console.warn(`[deprovision] failed to delete Longhorn volume ${pvName}:`, (err as Error).message);
+          }
+        }
       }
       if (released.length > 0) {
-        console.log(`[deprovision] cleaned up ${released.length} Released PV(s) for namespace ${namespace}`);
+        console.log(`[deprovision] cleaned up ${released.length} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
       }
     } catch (err) {
       console.warn('[deprovision] Released PV cleanup failed:', (err as Error).message);

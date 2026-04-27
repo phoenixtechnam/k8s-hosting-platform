@@ -133,9 +133,15 @@ scenario_reprovision() {
   ok "client deleted"
   rm -f /tmp/integration.cid
 
-  # Verify no Released PVs remain
-  local stranded; stranded=$(ssh_cp "kubectl get pv 2>&1 | grep -c Released" || echo 0)
-  if [[ "$stranded" -gt 0 ]]; then
+  # Verify no Released PVs remain. `grep -c` returns >0 exit code
+  # when there are zero matches — the `|| echo 0` fallback prevents
+  # set -e from killing us, but it can produce "0\n0" if the grep
+  # also printed 0 itself. Strip trailing whitespace / coerce to a
+  # single integer with `head -n1` so [[ -gt ]] doesn't choke.
+  local stranded
+  stranded=$(ssh_cp "kubectl get pv 2>&1 | grep -c Released" 2>/dev/null || echo 0)
+  stranded=$(echo "$stranded" | head -n1 | tr -d '[:space:]')
+  if [[ "${stranded:-0}" -gt 0 ]]; then
     fail "$stranded Released PVs remain after delete — re-provisioning would conflict"
     ssh_cp "kubectl get pv | grep Released" | head -3
     return 1
@@ -180,7 +186,10 @@ scenario_fm() {
   [[ -n "$cid" ]] || { fail "lifecycle must run first"; return 1; }
 
   api POST "/clients/$cid/files/start" "" >/dev/null
-  wait_for 60 "FM ready=true" '"ready":true' \
+  # First-time FM start needs time for: image pull (~80MB), Longhorn
+  # PVC attach, and pod readiness. 180s gives a comfortable margin even
+  # on a freshly-rolled platform-api with cold caches.
+  wait_for 180 "FM ready=true" '"ready":true' \
     "api GET '/clients/$cid/files/status'" || return 1
   local list; list=$(api GET "/clients/$cid/files?path=/" -H "Authorization: Bearer $TOKEN")
   echo "$list" | python3 -c "import json,sys;d=json.load(sys.stdin);assert 'data' in d" 2>/dev/null \
