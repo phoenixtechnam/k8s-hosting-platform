@@ -203,13 +203,15 @@ grep -q "platform_refresh" "$COOKIE_JAR" \
   && ok "platform_refresh cookie set" \
   || fail "platform_refresh cookie missing"
 
-# Refresh via cookie (no body) — need to use the cookie jar directly.
-COOKIE_REFRESH=$(curl -sk -b "$COOKIE_JAR" -X POST "$ADMIN_HOST/api/v1/auth/refresh" \
-  -H "Content-Type: application/json")
-COOKIE_NEW_TOKEN=$(echo "$COOKIE_REFRESH" | j "['data']['token']")
-[[ -n "$COOKIE_NEW_TOKEN" ]] \
-  && ok "cookie-only refresh works (no body)" \
-  || fail "cookie-only refresh failed: $COOKIE_REFRESH"
+# Refresh via cookie (no body) — Fastify rejects an empty body when
+# Content-Type: application/json is sent, so explicitly drop it.
+COOKIE_REFRESH=$(curl -sk -b "$COOKIE_JAR" -X POST "$ADMIN_HOST/api/v1/auth/refresh")
+COOKIE_NEW_TOKEN=$(echo "$COOKIE_REFRESH" | j "['data']['token']" || echo "")
+if [[ -n "$COOKIE_NEW_TOKEN" ]]; then
+  ok "cookie-only refresh works (no body)"
+else
+  fail "cookie-only refresh failed: $COOKIE_REFRESH"
+fi
 
 # ─── results ────────────────────────────────────────────────────────
 

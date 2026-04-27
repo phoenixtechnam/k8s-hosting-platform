@@ -38,6 +38,25 @@ export function errorHandler(
     return;
   }
 
+  // FastifyError with a 4xx statusCode — these are client-fault errors
+  // raised by the framework itself (empty JSON body, payload too large,
+  // missing content-type, etc). Preserve the 4xx code AND the framework
+  // error code so clients get an actionable response instead of being
+  // told "An unexpected error occurred" with a 500.
+  const fastifyStatus = (error as FastifyError & { statusCode?: number }).statusCode;
+  const fastifyCode = (error as FastifyError & { code?: string }).code;
+  if (typeof fastifyStatus === 'number' && fastifyStatus >= 400 && fastifyStatus < 500) {
+    reply.status(fastifyStatus).send(
+      errorResponse(
+        fastifyCode ?? 'BAD_REQUEST',
+        error.message,
+        fastifyStatus,
+        requestId,
+      ),
+    );
+    return;
+  }
+
   // Unexpected errors — try to translate using the operator-error
   // catalog before falling back to the generic INTERNAL_SERVER_ERROR.
   // This catches k8s API errors (FailedAttachVolume, exceeded quota,
