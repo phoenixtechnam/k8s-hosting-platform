@@ -1345,6 +1345,12 @@ install_nginx_ingress() {
   helm_cmd repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
   helm_cmd repo update
 
+  # M-NS-1: nodeAffinity excludes nodes carrying
+  # platform.phoenix-host.net/ingress-mode=none. Operators set that
+  # label via the Nodes & Storage admin UI when a node should host
+  # workloads but defer all public-traffic ingress to system servers.
+  # Nodes without the label (the common case) match because the
+  # NotIn expression is true for any value other than "none".
   helm_cmd upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
     --namespace ingress-nginx \
     --create-namespace \
@@ -1365,6 +1371,9 @@ install_nginx_ingress() {
     --set controller.config.enable-brotli=true \
     --set controller.config.brotli-level=6 \
     --set controller.config.brotli-min-length=256 \
+    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=platform.phoenix-host.net/ingress-mode' \
+    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=NotIn' \
+    --set 'controller.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].values[0]=none' \
     --wait \
     --timeout 300s
 

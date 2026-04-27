@@ -9,6 +9,7 @@ import {
   Shield,
   Activity,
   ScrollText,
+  Server,
   Settings,
   X,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/security', icon: Shield, label: 'Security' },
   { to: '/monitoring', icon: Activity, label: 'Monitoring' },
   { to: '/monitoring/audit-logs', icon: ScrollText, label: 'Audit Logs' },
+  { to: '/nodes-and-storage', icon: Server, label: 'Nodes & Storage' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
 

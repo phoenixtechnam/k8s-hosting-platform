@@ -4,7 +4,6 @@ import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, Refres
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
-import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
 import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
 
 /**
@@ -49,8 +48,10 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
       {/* ─── Live inventory ─── */}
       <StorageInventoryCard />
 
-      {/* ─── Platform-storage replication policy (M13) ─── */}
-      <PlatformStoragePolicyCard />
+      {/* Platform-storage replication policy lives on the dedicated
+          "HA Settings" tab in the Nodes & Storage page (M13/M14).
+          Keeping it on the storage tab too would duplicate the
+          interactive Apply/Revert button. */}
 
       <NamespaceIntegrityCard />
 

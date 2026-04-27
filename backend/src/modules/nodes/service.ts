@@ -2,7 +2,7 @@ import { eq, sql, desc } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { clusterNodes, type ClusterNode } from '../../db/schema.js';
-import type { NodeRole, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
+import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -27,6 +27,9 @@ export const SYSTEM_NAMESPACES = Object.freeze([
 export const NODE_ROLE_LABEL = 'platform.phoenix-host.net/node-role';
 export const HOST_CLIENT_WORKLOADS_LABEL = 'platform.phoenix-host.net/host-client-workloads';
 export const SERVER_ONLY_TAINT_KEY = 'platform.phoenix-host.net/server-only';
+// M-NS-1: ingress-mode label. The ingress-nginx DaemonSet's
+// nodeSelector excludes nodes carrying `ingress-mode=none`.
+export const INGRESS_MODE_LABEL = 'platform.phoenix-host.net/ingress-mode';
 
 export async function listNodes(db: Database): Promise<ClusterNode[]> {
   return db.select().from(clusterNodes).orderBy(desc(clusterNodes.role), clusterNodes.name);
@@ -41,6 +44,7 @@ export interface ObservedNode {
   name: string;
   role: NodeRole;
   canHostClientWorkloads: boolean;
+  ingressMode: NodeIngressMode;
   publicIp: string | null;
   kubeletVersion: string | null;
   k3sVersion: string | null;
@@ -78,6 +82,7 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     name: observed.name,
     role: observed.role,
     canHostClientWorkloads: observed.canHostClientWorkloads,
+    ingressMode: observed.ingressMode,
     publicIp: observed.publicIp,
     kubeletVersion: observed.kubeletVersion,
     k3sVersion: observed.k3sVersion,
@@ -92,11 +97,15 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     memoryRequestsBytes: observed.memoryRequestsBytes,
     // lastSeenAt + updatedAt default to NOW() via defaultNow() on the
     // schema; omitting them here keeps every timestamp DB-side.
+    // displayName is operator-managed only (not derived from k8s) so
+    // it's intentionally absent here — first INSERT leaves it null,
+    // and the UPDATE branch below preserves whatever the operator set.
   }).onConflictDoUpdate({
     target: clusterNodes.name,
     set: {
       role: observed.role,
       canHostClientWorkloads: observed.canHostClientWorkloads,
+      ingressMode: observed.ingressMode,
       publicIp: observed.publicIp,
       kubeletVersion: observed.kubeletVersion,
       k3sVersion: observed.k3sVersion,
@@ -165,6 +174,7 @@ export async function updateNode(
 
   const targetRole: NodeRole = patch.role ?? existing.role;
   const targetCanHost = patch.canHostClientWorkloads ?? existing.canHostClientWorkloads;
+  const targetIngressMode: NodeIngressMode = patch.ingressMode ?? existing.ingressMode;
 
   // Safety check: block server→worker demotion if system pods would be
   // evicted. `force: true` bypasses (admin accepts responsibility).
@@ -215,11 +225,18 @@ export async function updateNode(
     ...observedLabels,
     [NODE_ROLE_LABEL]: targetRole,
     [HOST_CLIENT_WORKLOADS_LABEL]: String(targetCanHost),
+    [INGRESS_MODE_LABEL]: targetIngressMode,
   };
 
   // Compose labels + taints in a single strategic-merge patch to
   // avoid the old "labels succeeded, taints failed" orphan state.
-  if (patch.role !== undefined || patch.canHostClientWorkloads !== undefined) {
+  // We always patch when any k8s-projected field changes (role,
+  // canHost, or ingressMode), since each maps to a label.
+  const k8sFieldsChanged =
+    patch.role !== undefined
+    || patch.canHostClientWorkloads !== undefined
+    || patch.ingressMode !== undefined;
+  if (k8sFieldsChanged) {
     const existingTaints = Array.isArray(existing.taints) ? existing.taints : [];
     const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
     const shouldTaint = targetRole === 'server' && !targetCanHost;
@@ -241,10 +258,19 @@ export async function updateNode(
       STRATEGIC_MERGE_PATCH);
   }
 
-  // notes is platform-only, no k8s equivalent — write directly.
-  if (patch.notes !== undefined) {
+  // displayName + notes are platform-only (no k8s equivalent) — write
+  // directly to the DB. Empty string is treated as null so the UI's
+  // "clear alias" UX (a textbox cleared to empty) round-trips correctly.
+  if (patch.displayName !== undefined || patch.notes !== undefined) {
+    const dbPatch: Record<string, unknown> = { updatedAt: sql`NOW()` };
+    if (patch.displayName !== undefined) {
+      dbPatch.displayName = patch.displayName === '' ? null : patch.displayName;
+    }
+    if (patch.notes !== undefined) {
+      dbPatch.notes = patch.notes;
+    }
     await db.update(clusterNodes)
-      .set({ notes: patch.notes, updatedAt: sql`NOW()` })
+      .set(dbPatch)
       .where(eq(clusterNodes.name, name));
   }
 
@@ -268,4 +294,341 @@ export async function updateNode(
     throw new ApiError('NODE_NOT_FOUND', `Node '${name}' disappeared after patch`, 500, { node_name: name });
   }
   return updated;
+}
+
+// ─── Phase C: drain + delete ─────────────────────────────────────────
+
+interface PodLite {
+  readonly namespace: string;
+  readonly name: string;
+  readonly nodeName: string | undefined;
+  readonly ownerKind: string | undefined;
+  readonly clientId: string | null;
+  readonly hasNodeAffinityToThisNode: boolean;
+}
+
+/** Pod refs we never evict during a drain — same shape kubectl uses. */
+function isUnevictable(pod: PodLite, thisNode: string): { skip: boolean; reason: string } {
+  if (pod.nodeName !== thisNode) return { skip: true, reason: 'not on this node' };
+  // Mirror pods (k8s static pod sentinels): owner kind 'Node' or annotation kubernetes.io/config.mirror
+  if (pod.ownerKind === 'Node') return { skip: true, reason: 'mirror pod (static)' };
+  // DaemonSet pods: never evicted by `kubectl drain` (recreated immediately)
+  if (pod.ownerKind === 'DaemonSet') return { skip: true, reason: 'DaemonSet pod' };
+  return { skip: false, reason: '' };
+}
+
+/** Inspect a Pod and decide whether its nodeAffinity pins it to one specific node. */
+function podPinnedToNode(pod: { spec?: { affinity?: unknown } }, nodeName: string): boolean {
+  // Conservative best-effort detection — we only flag the explicit single-host case.
+  // A Pod with nodeName: <node> in spec is also pinned. Caller checks that separately.
+  const affinity = (pod.spec as { affinity?: { nodeAffinity?: unknown } } | undefined)?.affinity;
+  const nodeAffinity = affinity?.nodeAffinity as
+    | { requiredDuringSchedulingIgnoredDuringExecution?: {
+        nodeSelectorTerms?: Array<{ matchExpressions?: Array<{ key?: string; operator?: string; values?: string[] }> }>;
+      }; }
+    | undefined;
+  const terms = nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms ?? [];
+  for (const term of terms) {
+    for (const expr of term.matchExpressions ?? []) {
+      if (expr.key === 'kubernetes.io/hostname'
+        && expr.operator === 'In'
+        && Array.isArray(expr.values)
+        && expr.values.length === 1
+        && expr.values[0] === nodeName) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+interface RawPod {
+  metadata?: {
+    namespace?: string;
+    name?: string;
+    labels?: Record<string, string>;
+    ownerReferences?: Array<{ kind?: string }>;
+    annotations?: Record<string, string>;
+  };
+  spec?: {
+    nodeName?: string;
+    affinity?: unknown;
+  };
+  status?: {
+    phase?: string;
+  };
+}
+
+/**
+ * Build the impact preview the UI shows before the operator confirms a
+ * drain. The drain itself uses `evictPods`, which calls eviction API.
+ * Both share the same classification so the preview is faithful.
+ */
+export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
+  nodeName: string;
+  alreadyCordoned: boolean;
+  systemPods: Array<{ namespace: string; name: string; reason: string }>;
+  nonSystemPods: Array<{ namespace: string; name: string; clientId: string | null; pinnedToThisNode: boolean }>;
+  longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }>;
+}> {
+  // 1) Cordon state
+  let alreadyCordoned = false;
+  try {
+    const node = await k8s.core.readNode({ name }) as { spec?: { unschedulable?: boolean } };
+    alreadyCordoned = node.spec?.unschedulable === true;
+  } catch (err) {
+    if ((err as { code?: number }).code === 404) {
+      throw new ApiError('NODE_NOT_FOUND', `Node '${name}' not found in Kubernetes`, 404, { node_name: name });
+    }
+    throw err;
+  }
+
+  // 2) Pods on this node (excluding terminal phase)
+  const pods = await k8s.core.listPodForAllNamespaces({
+    fieldSelector: `spec.nodeName=${name}`,
+  });
+  const systemPods: Array<{ namespace: string; name: string; reason: string }> = [];
+  const nonSystemPods: Array<{ namespace: string; name: string; clientId: string | null; pinnedToThisNode: boolean }> = [];
+
+  for (const raw of pods.items as RawPod[]) {
+    const ns = raw.metadata?.namespace ?? '';
+    const podName = raw.metadata?.name ?? '';
+    const phase = raw.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+
+    const ownerKind = raw.metadata?.ownerReferences?.[0]?.kind;
+    const isMirror = raw.metadata?.annotations?.['kubernetes.io/config.mirror'] !== undefined;
+    const lite: PodLite = {
+      namespace: ns,
+      name: podName,
+      nodeName: raw.spec?.nodeName,
+      ownerKind: isMirror ? 'Node' : ownerKind,
+      clientId: raw.metadata?.labels?.['platform.phoenix-host.net/client-id'] ?? null,
+      hasNodeAffinityToThisNode: podPinnedToNode(raw, name),
+    };
+    const verdict = isUnevictable(lite, name);
+    if (verdict.skip || (SYSTEM_NAMESPACES as readonly string[]).includes(ns)) {
+      systemPods.push({
+        namespace: ns,
+        name: podName,
+        reason: verdict.reason || 'system namespace',
+      });
+      continue;
+    }
+    nonSystemPods.push({
+      namespace: ns,
+      name: podName,
+      clientId: lite.clientId,
+      pinnedToThisNode: lite.hasNodeAffinityToThisNode,
+    });
+  }
+
+  // 3) Longhorn replicas — refuse to drain when this is the LAST healthy
+  //    replica for any volume. The custom resource list is best-effort:
+  //    if the CRD is absent (cluster without Longhorn) we just skip it.
+  const longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }> = [];
+  try {
+    interface LhReplica {
+      metadata?: { name?: string };
+      spec?: { volumeName?: string; nodeID?: string };
+      status?: { currentState?: string };
+    }
+    const list = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io',
+      version: 'v1beta2',
+      namespace: 'longhorn-system',
+      plural: 'replicas',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhReplica[] };
+
+    // Pre-aggregate healthy replicas per volume so we can flag last-replica risk.
+    const healthyByVolume = new Map<string, number>();
+    for (const r of list.items ?? []) {
+      const vol = r.spec?.volumeName;
+      if (!vol) continue;
+      if (r.status?.currentState === 'running') {
+        healthyByVolume.set(vol, (healthyByVolume.get(vol) ?? 0) + 1);
+      }
+    }
+    for (const r of list.items ?? []) {
+      if (r.spec?.nodeID !== name) continue;
+      const vol = r.spec?.volumeName ?? '';
+      const replicaName = r.metadata?.name ?? '';
+      const isLastReplica = (healthyByVolume.get(vol) ?? 0) <= 1;
+      longhornReplicas.push({ volumeName: vol, replicaName, isLastReplica });
+    }
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) {
+      console.warn('[nodes] longhorn replicas list failed:', (err as Error).message);
+    }
+  }
+
+  return { nodeName: name, alreadyCordoned, systemPods, nonSystemPods, longhornReplicas };
+}
+
+/**
+ * Cordon the node (so the scheduler stops placing new pods) and evict
+ * everything in `nonSystemPods`. The Eviction API respects PodDisruption
+ * Budgets, so a tightly-budgeted Deployment can refuse — that error is
+ * captured per-pod so the UI can show partial progress.
+ *
+ * Returns a count of successful evictions and an array of failures.
+ * The caller (route handler) decides whether to treat partial failure
+ * as 200 with details or as 5xx; we return both and let the route choose
+ * (currently: 200 always — operator sees the failures and retries).
+ */
+export async function drainNode(
+  k8s: K8sClients,
+  name: string,
+  opts: { readonly forceLastReplica?: boolean; readonly gracePeriodSeconds?: number },
+): Promise<{ cordoned: boolean; evicted: number; failed: Array<{ namespace: string; name: string; error: string }> }> {
+  // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
+  const impact = await buildDrainImpact(k8s, name);
+  const lastReplicaVolumes = impact.longhornReplicas.filter((r) => r.isLastReplica);
+  if (lastReplicaVolumes.length > 0 && !opts.forceLastReplica) {
+    throw new ApiError(
+      'NODE_DRAIN_BLOCKED_LAST_REPLICA',
+      `Node '${name}' holds the last running replica for ${lastReplicaVolumes.length} volume(s). ` +
+      `Wait for replica rebuild on another node, or pass forceLastReplica=true to override.`,
+      409,
+      { volumes: lastReplicaVolumes.slice(0, 20) },
+    );
+  }
+
+  // 2) Cordon (idempotent — patch unschedulable=true).
+  let cordoned = impact.alreadyCordoned;
+  if (!cordoned) {
+    await k8s.core.patchNode({
+      name,
+      body: { spec: { unschedulable: true } },
+    } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+      STRATEGIC_MERGE_PATCH);
+    cordoned = true;
+  }
+
+  // 3) Evict non-system pods.
+  //
+  // The TS client exposes evictions via createNamespacedPodEviction
+  // (kubernetes-client v1.x). Validate the method exists before
+  // entering the loop — if a future library upgrade renames or
+  // removes it, the per-pod try/catch below would otherwise silently
+  // count every eviction as a "failure" with `is not a function` and
+  // the drain would appear to complete with zero pods evicted.
+  const evictionMethod = (k8s.core as unknown as Record<string, unknown>).createNamespacedPodEviction;
+  if (typeof evictionMethod !== 'function') {
+    throw new ApiError(
+      'NODE_DRAIN_API_UNAVAILABLE',
+      'Pod eviction API not available on the kubernetes client. ' +
+      'Library upgrade may have changed the method signature; check service.ts drainNode.',
+      500,
+    );
+  }
+  type EvictionRequest = {
+    name: string;
+    namespace: string;
+    body: unknown;
+  };
+  const evict = evictionMethod.bind(k8s.core) as (req: EvictionRequest) => Promise<unknown>;
+
+  const grace = opts.gracePeriodSeconds ?? 60;
+  let evicted = 0;
+  const failed: Array<{ namespace: string; name: string; error: string }> = [];
+
+  for (const pod of impact.nonSystemPods) {
+    try {
+      await evict({
+        name: pod.name,
+        namespace: pod.namespace,
+        body: {
+          apiVersion: 'policy/v1',
+          kind: 'Eviction',
+          metadata: { name: pod.name, namespace: pod.namespace },
+          deleteOptions: { gracePeriodSeconds: grace },
+        },
+      });
+      evicted += 1;
+    } catch (err) {
+      failed.push({
+        namespace: pod.namespace,
+        name: pod.name,
+        error: (err as Error).message ?? 'eviction failed',
+      });
+    }
+  }
+
+  return { cordoned, evicted, failed };
+}
+
+/**
+ * Delete the node from Kubernetes (`kubectl delete node`) and from the
+ * platform inventory (`cluster_nodes` row). The API server also
+ * cascade-deletes Endpoints owned by the node and frees its name.
+ *
+ * Pre-conditions enforced:
+ *   - Node must be cordoned (unschedulable=true).
+ *   - No non-system pods remaining on the node (drained).
+ *
+ * The actual host (k3s-agent process, OS) is NOT touched. Operator is
+ * expected to power down or repurpose the host afterwards.
+ */
+export async function deleteNode(
+  db: Database,
+  k8s: K8sClients,
+  name: string,
+): Promise<{ deletedFromKubernetes: boolean; deletedFromInventory: boolean }> {
+  // 1) Pre-check: must be cordoned + no non-system pods.
+  let nodeExistsInK8s = true;
+  try {
+    const node = await k8s.core.readNode({ name }) as { spec?: { unschedulable?: boolean } };
+    if (node.spec?.unschedulable !== true) {
+      throw new ApiError(
+        'NODE_DELETE_NOT_CORDONED',
+        `Node '${name}' is not cordoned. Drain it first.`,
+        409,
+        { node_name: name },
+      );
+    }
+  } catch (err) {
+    if ((err as { code?: number }).code === 404) {
+      // Already gone from k8s — proceed to inventory cleanup.
+      nodeExistsInK8s = false;
+    } else if ((err as ApiError).code === 'NODE_DELETE_NOT_CORDONED') {
+      throw err;
+    } else {
+      throw err;
+    }
+  }
+
+  if (nodeExistsInK8s) {
+    const impact = await buildDrainImpact(k8s, name);
+    if (impact.nonSystemPods.length > 0) {
+      throw new ApiError(
+        'NODE_DELETE_HAS_PODS',
+        `Node '${name}' still hosts ${impact.nonSystemPods.length} non-system pod(s). ` +
+        `Wait for the drain to complete (or re-run it).`,
+        409,
+        { remaining: impact.nonSystemPods.slice(0, 20) },
+      );
+    }
+  }
+
+  // 2) Delete from k8s (idempotent; 404 = already gone).
+  let deletedFromKubernetes = false;
+  if (nodeExistsInK8s) {
+    try {
+      await k8s.core.deleteNode({ name });
+      deletedFromKubernetes = true;
+    } catch (err) {
+      if ((err as { code?: number }).code === 404) {
+        deletedFromKubernetes = true;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 3) Delete from inventory.
+  await db.delete(clusterNodes).where(eq(clusterNodes.name, name));
+
+  return { deletedFromKubernetes, deletedFromInventory: true };
 }

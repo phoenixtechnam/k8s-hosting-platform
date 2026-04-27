@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Server, HardDrive } from 'lucide-react';
+import { Server, HardDrive, Layers } from 'lucide-react';
 import clsx from 'clsx';
 import ClusterNodes from '@/pages/ClusterNodes';
 import StorageSettings from '@/pages/StorageSettings';
+import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
 
-type TabKey = 'nodes' | 'storage';
+type TabKey = 'nodes' | 'storage' | 'ha';
 
 const TABS: ReadonlyArray<{
   readonly key: TabKey;
@@ -25,7 +26,15 @@ const TABS: ReadonlyArray<{
     icon: HardDrive,
     hint: 'Longhorn dashboard + active backup target',
   },
+  {
+    key: 'ha',
+    label: 'HA Settings',
+    icon: Layers,
+    hint: 'Platform storage replication tier (Local ↔ HA)',
+  },
 ];
+
+const VALID_TABS: ReadonlySet<TabKey> = new Set(['nodes', 'storage', 'ha']);
 
 /**
  * Combined "Nodes & Storage" admin page.
@@ -47,7 +56,8 @@ export default function NodesAndStorage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('tab');
   const activeTab: TabKey = useMemo(() => {
-    return requested === 'storage' ? 'storage' : 'nodes';
+    if (requested && VALID_TABS.has(requested as TabKey)) return requested as TabKey;
+    return 'nodes';
   }, [requested]);
 
   const setActiveTab = (key: TabKey): void => {
@@ -117,6 +127,17 @@ export default function NodesAndStorage() {
           aria-labelledby="nodes-and-storage-tab-storage"
         >
           <StorageSettings embedded />
+        </div>
+      )}
+      {activeTab === 'ha' && (
+        <div
+          role="tabpanel"
+          id="nodes-and-storage-panel-ha"
+          aria-labelledby="nodes-and-storage-tab-ha"
+          className="space-y-6"
+          data-testid="ha-settings-tab"
+        >
+          <PlatformStoragePolicyCard />
         </div>
       )}
     </div>

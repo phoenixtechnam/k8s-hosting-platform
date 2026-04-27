@@ -73,10 +73,11 @@ export default function App() {
             <Route path="settings/plans" element={<PlanManagement />} />
             <Route path="settings/tls" element={<TlsSettings />} />
             <Route path="settings/backups" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><BackupSettings /></ProtectedRoute>} />
-            <Route path="settings/nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
-            {/* Legacy direct-link compatibility: redirect to the combined page with the matching tab pre-selected. */}
-            <Route path="settings/storage" element={<Navigate to="/settings/nodes-and-storage?tab=storage" replace />} />
-            <Route path="settings/nodes" element={<Navigate to="/settings/nodes-and-storage?tab=nodes" replace />} />
+            <Route path="nodes-and-storage" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><NodesAndStorage /></ProtectedRoute>} />
+            {/* Legacy direct-link compatibility: redirect to the new top-level page with the matching tab pre-selected. */}
+            <Route path="settings/nodes-and-storage" element={<Navigate to="/nodes-and-storage" replace />} />
+            <Route path="settings/storage" element={<Navigate to="/nodes-and-storage?tab=storage" replace />} />
+            <Route path="settings/nodes" element={<Navigate to="/nodes-and-storage?tab=nodes" replace />} />
             <Route path="settings/users" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><AdminUsers /></ProtectedRoute>} />
             <Route path="settings/export-import" element={<ProtectedRoute allowedRoles={['super_admin']}><ExportImport /></ProtectedRoute>} />
             <Route path="settings/load-balancer" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LoadBalancerSettings /></ProtectedRoute>} />

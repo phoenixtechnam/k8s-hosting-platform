@@ -1,7 +1,13 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import { upsertNodeFromK8s, NODE_ROLE_LABEL, HOST_CLIENT_WORKLOADS_LABEL, type ObservedNode } from './service.js';
-import type { NodeRole } from '@k8s-hosting/api-contracts';
+import {
+  upsertNodeFromK8s,
+  NODE_ROLE_LABEL,
+  HOST_CLIENT_WORKLOADS_LABEL,
+  INGRESS_MODE_LABEL,
+  type ObservedNode,
+} from './service.js';
+import type { NodeRole, NodeIngressMode } from '@k8s-hosting/api-contracts';
 
 interface NodeUsageAggregate {
   pods: number;
@@ -100,6 +106,15 @@ export function projectNode(node: K8sNode): ObservedNode {
     ? (role === 'worker')
     : hostLabelRaw === 'true';
 
+  // Ingress mode: default 'all' when label absent (matches migration
+  // 0052 default and pre-feature behavior). Unknown values are
+  // clamped to 'all' so a typo can't black-hole traffic.
+  const ingressLabelRaw = labels[INGRESS_MODE_LABEL];
+  const ingressMode: NodeIngressMode =
+    ingressLabelRaw === 'local' ? 'local'
+    : ingressLabelRaw === 'none' ? 'none'
+    : 'all';
+
   const addresses = node.status?.addresses ?? [];
   const publicIp = addresses.find((a) => a.type === 'ExternalIP')?.address
     ?? addresses.find((a) => a.type === 'InternalIP')?.address
@@ -135,6 +150,7 @@ export function projectNode(node: K8sNode): ObservedNode {
     name,
     role,
     canHostClientWorkloads,
+    ingressMode,
     publicIp,
     kubeletVersion,
     k3sVersion,

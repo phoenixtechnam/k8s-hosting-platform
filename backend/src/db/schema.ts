@@ -1416,10 +1416,20 @@ interface NodeCondition {
   message?: string;
 }
 
+// Three-state ingress mode (migration 0052). The DB column is a plain
+// varchar with a CHECK constraint instead of a pgEnum because Postgres
+// enums require a separate `ALTER TYPE … ADD VALUE` migration step
+// per new value, which we may want to extend later (e.g. 'maintenance').
+export type NodeIngressMode = 'all' | 'local' | 'none';
+
 export const clusterNodes = pgTable('cluster_nodes', {
   name: varchar('name', { length: 253 }).primaryKey(),
+  // Optional UI alias. k8s identity stays in `name`; operators see
+  // displayName when set. Migration 0052.
+  displayName: varchar('display_name', { length: 253 }),
   role: nodeRoleEnum('role').notNull().default('worker'),
   canHostClientWorkloads: boolean('can_host_client_workloads').notNull().default(true),
+  ingressMode: varchar('ingress_mode', { length: 8 }).$type<NodeIngressMode>().notNull().default('all'),
   publicIp: inet('public_ip'),
   kubeletVersion: varchar('kubelet_version', { length: 32 }),
   k3sVersion: varchar('k3s_version', { length: 32 }),
