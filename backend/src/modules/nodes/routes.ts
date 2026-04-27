@@ -178,6 +178,105 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     return success({ nodeName: name, ...result });
   });
 
+  // GET /api/v1/admin/nodes/:name/storage
+  // Per-node Longhorn disk inventory: capacity, scheduled, reserved,
+  // and free-to-schedule. Drives the new storage-allocation card on
+  // the Cluster Nodes admin UI so operators see at-a-glance capacity
+  // pressure and can act before workloads fail to schedule.
+  app.get('/admin/nodes/:name/storage', {
+    schema: {
+      tags: ['Nodes'],
+      summary: 'Per-disk Longhorn capacity for one node',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { name } = request.params as { name: string };
+    validateNodeName(name);
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    interface LhNode {
+      metadata?: { name?: string };
+      spec?: { disks?: Record<string, { path?: string; storageReserved?: number; allowScheduling?: boolean; tags?: string[] }> };
+      status?: { diskStatus?: Record<string, { storageAvailable?: number; storageMaximum?: number; storageScheduled?: number }> };
+    }
+    const node = await k8s.custom.getNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]).catch(() => null) as LhNode | null;
+    if (!node) {
+      return success({ nodeName: name, disks: [] });
+    }
+    const disks = Object.entries(node.spec?.disks ?? {}).map(([key, d]) => {
+      const status = node.status?.diskStatus?.[key] ?? {};
+      const max = status.storageMaximum ?? 0;
+      const sched = status.storageScheduled ?? 0;
+      const reserved = d.storageReserved ?? 0;
+      return {
+        diskKey: key,
+        path: d.path ?? '',
+        allowScheduling: d.allowScheduling ?? true,
+        tags: d.tags ?? [],
+        storageMaximum: max,
+        storageScheduled: sched,
+        storageReserved: reserved,
+        storageAvailable: status.storageAvailable ?? 0,
+        freeToSchedule: Math.max(0, max - sched - reserved),
+      };
+    });
+    return success({ nodeName: name, disks });
+  });
+
+  // PATCH /api/v1/admin/nodes/:name/storage/:diskKey
+  // Adjust storageReserved or allowScheduling for one disk on one
+  // Longhorn node. Operator action; super_admin only.
+  app.patch('/admin/nodes/:name/storage/:diskKey', {
+    schema: {
+      tags: ['Nodes'],
+      summary: 'Patch Longhorn disk storageReserved / allowScheduling',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object', required: ['name', 'diskKey'],
+        properties: { name: { type: 'string' }, diskKey: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
+    const { name, diskKey } = request.params as { name: string; diskKey: string };
+    validateNodeName(name);
+    const body = (request.body ?? {}) as { storageReserved?: number; allowScheduling?: boolean };
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    const ops: Array<{ op: string; path: string; value: unknown }> = [];
+    if (typeof body.storageReserved === 'number' && body.storageReserved >= 0) {
+      ops.push({ op: 'replace', path: `/spec/disks/${diskKey}/storageReserved`, value: body.storageReserved });
+    }
+    if (typeof body.allowScheduling === 'boolean') {
+      ops.push({ op: 'replace', path: `/spec/disks/${diskKey}/allowScheduling`, value: body.allowScheduling });
+    }
+    if (ops.length === 0) {
+      throw new ApiError('INVALID_FIELD_VALUE', 'No supported fields supplied (storageReserved, allowScheduling)', 400);
+    }
+    await k8s.custom.patchNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name, body: ops,
+    } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+    // JSON Patch content-type
+    { headers: { 'Content-Type': 'application/json-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+    try {
+      const { auditLogs } = await import('../../db/schema.js');
+      await app.db.insert(auditLogs).values({
+        id: crypto.randomUUID(),
+        actorId: request.user?.sub ?? 'system',
+        actorType: 'user',
+        actionType: 'node.storage_patch',
+        resourceType: 'longhorn_node',
+        resourceId: `${name}/${diskKey}`,
+        changes: body as unknown as Record<string, unknown>,
+      });
+    } catch { /* non-fatal */ }
+    return success({ nodeName: name, diskKey, ...body });
+  });
+
   // POST /api/v1/admin/nodes/:name/delete
   // Remove the node from Kubernetes and inventory. Pre-checks: must be
   // cordoned and have zero non-system pods. The host itself is NOT
