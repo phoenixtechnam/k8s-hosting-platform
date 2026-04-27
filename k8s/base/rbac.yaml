@@ -136,6 +136,11 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
     verbs: ["update", "patch"]
+  # Mirror node-role label → Longhorn node tag "system" (M-NS-2).
+  # Lets the platform StorageClass restrict replicas to system servers.
+  - apiGroups: ["longhorn.io"]
+    resources: ["nodes"]
+    verbs: ["patch"]
   # M13: platform-storage-policy patches volume.spec.numberOfReplicas
   # live on Longhorn Volume CRs to switch the platform's StatefulSets
   # (postgres, stalwart) between local (1×) and HA (3×) replication.

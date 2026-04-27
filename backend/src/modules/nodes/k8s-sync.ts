@@ -38,7 +38,96 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
     observed.memoryRequestsBytes = u?.memoryBytes ?? 0;
     await upsertNodeFromK8s(db, observed);
   }
+  // Mirror node-role label → Longhorn node tag "system" so the platform
+  // StorageClass can pin replicas to system servers only. Worker nodes
+  // get the tag removed if it was previously set (e.g. operator
+  // demoted a server). Best-effort — Longhorn may not be installed yet
+  // (fresh dev cluster) — failures are logged and ignored.
+  await reconcileLonghornNodeTags(k8s, items);
   return items.length;
+}
+
+interface RawNodeForTag {
+  metadata?: { name?: string; labels?: Record<string, string> };
+}
+
+const SYSTEM_TAG = 'system';
+
+/**
+ * Patch each Longhorn node CR's `.spec.tags` so it contains the
+ * "system" tag iff the matching k8s node carries
+ * `platform.phoenix-host.net/node-role=server`. Idempotent.
+ *
+ * Longhorn's StorageClass `nodeSelector` parameter is matched against
+ * `.spec.tags` on the longhorn-system/Node CRs (NOT the k8s Node
+ * labels), so we have to mirror our role label through.
+ *
+ * Bootstrap.sh calls this once per server via `kubectl patch` — this
+ * reconciler keeps it true for the operator-driven re-role flow
+ * (Edit modal in the Nodes & Storage admin page) without requiring
+ * a manual kubectl step.
+ */
+async function reconcileLonghornNodeTags(
+  k8s: K8sClients,
+  k8sNodes: readonly RawNodeForTag[],
+): Promise<void> {
+  // Fetch existing Longhorn node CRs once. If the CRD isn't present
+  // (e.g. pre-Longhorn dev cluster), bail silently.
+  let existing: ReadonlyArray<{ metadata?: { name?: string }; spec?: { tags?: string[] } }> = [];
+  try {
+    const res = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io',
+      version: 'v1beta2',
+      namespace: 'longhorn-system',
+      plural: 'nodes',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: typeof existing };
+    existing = res.items ?? [];
+  } catch (err) {
+    const status = (err as { code?: number; statusCode?: number }).code
+      ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) {
+      console.warn('[node-sync] longhorn node tag reconcile: list failed:', (err as Error).message);
+    }
+    return;
+  }
+
+  const k8sRoleByName = new Map<string, string>();
+  for (const n of k8sNodes) {
+    const name = n.metadata?.name;
+    if (!name) continue;
+    const role = n.metadata?.labels?.['platform.phoenix-host.net/node-role'] ?? 'worker';
+    k8sRoleByName.set(name, role);
+  }
+
+  for (const lhNode of existing) {
+    const name = lhNode.metadata?.name;
+    if (!name) continue;
+    const role = k8sRoleByName.get(name) ?? 'worker';
+    const currentTags = lhNode.spec?.tags ?? [];
+    const hasSystem = currentTags.includes(SYSTEM_TAG);
+    const wantSystem = role === 'server';
+    if (hasSystem === wantSystem) continue;
+
+    const nextTags = wantSystem
+      ? [...currentTags, SYSTEM_TAG]
+      : currentTags.filter((t) => t !== SYSTEM_TAG);
+
+    try {
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'longhorn.io',
+        version: 'v1beta2',
+        namespace: 'longhorn-system',
+        plural: 'nodes',
+        name,
+        body: { spec: { tags: nextTags } },
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+      // Use merge-patch — JSON-patch on optional arrays is fragile.
+      { headers: { 'Content-Type': 'application/merge-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+      console.log(`[node-sync] longhorn node ${name} tags: ${currentTags.join(',') || '(none)'} → ${nextTags.join(',') || '(none)'}`);
+    } catch (err) {
+      console.warn(`[node-sync] longhorn node ${name} tag patch failed:`, (err as Error).message);
+    }
+  }
 }
 
 /**

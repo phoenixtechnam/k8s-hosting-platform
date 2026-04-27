@@ -74,6 +74,10 @@ export type VolumeFact = {
   desiredReplicas: number;
   healthy: boolean;
   phase: string | null;
+  /** M-NS-2: nodes currently hosting a healthy replica. UI flags drift when any of these is NOT a system server. */
+  replicaNodes: string[];
+  /** True when at least one replicaNodes entry sits on a non-system server. */
+  hasOffSystemReplica: boolean;
 };
 
 export async function getPolicy(db: Database): Promise<typeof schema.platformStoragePolicy.$inferSelect> {
@@ -136,6 +140,51 @@ export async function readClusterState(
   const totalNodeCount = nodes.items?.length ?? 0;
   const recommendedTier: 'local' | 'ha' = readyServerCount >= HA_SERVER_THRESHOLD ? 'ha' : 'local';
 
+  // M-NS-2: build the set of system-tagged nodes once so each volume's
+  // placement check is a constant-time lookup. A k8s node carries
+  // role=server in its labels; the matching Longhorn node must have
+  // the "system" tag (the reconciler in nodes/k8s-sync mirrors role
+  // → tag). We use the k8s label as the source of truth here so the
+  // UI immediately reflects role flips even before Longhorn re-syncs.
+  const systemNodes = new Set<string>();
+  for (const node of nodes.items ?? []) {
+    if (node.metadata?.labels?.['platform.phoenix-host.net/node-role'] === 'server') {
+      systemNodes.add(node.metadata.name ?? '');
+    }
+  }
+
+  // One up-front list of all running Longhorn replicas, keyed by
+  // volumeName → nodeIDs. Cheaper than per-volume queries when the
+  // platform has more than a handful of volumes.
+  const replicasByVolume = new Map<string, string[]>();
+  try {
+    interface LhReplica {
+      spec?: { volumeName?: string; nodeID?: string };
+      status?: { currentState?: string };
+    }
+    const reps = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'replicas',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhReplica[] };
+    for (const r of reps.items ?? []) {
+      const vol = r.spec?.volumeName;
+      const node = r.spec?.nodeID;
+      if (!vol || !node) continue;
+      if (r.status?.currentState !== 'running') continue;
+      const arr = replicasByVolume.get(vol) ?? [];
+      arr.push(node);
+      replicasByVolume.set(vol, arr);
+    }
+  } catch (err) {
+    // Longhorn may not be installed (dev cluster); empty placement is
+    // an acceptable degradation — the UI will simply show "—" for
+    // node placement.
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) {
+      console.warn('[platform-storage-policy] longhorn replica list failed:', (err as Error).message);
+    }
+  }
+
   // Discover Longhorn Volumes backing platform StatefulSet PVCs. We
   // look up by PVC name pattern rather than asking Longhorn directly
   // for a `pvc.name` filter (the v1beta2 API doesn't index that). The
@@ -159,6 +208,8 @@ export async function readClusterState(
       const robustness = vol?.status?.robustness ?? null;
       const state = vol?.status?.state ?? null;
       const healthy = robustness === 'healthy' && state === 'attached';
+      const replicaNodes = (replicasByVolume.get(lhVolName) ?? []).slice().sort();
+      const hasOffSystemReplica = replicaNodes.some((n) => !systemNodes.has(n));
       volumes.push({
         namespace: sts.namespace,
         pvcName: name,
@@ -167,6 +218,8 @@ export async function readClusterState(
         desiredReplicas,
         healthy,
         phase: state,
+        replicaNodes,
+        hasOffSystemReplica,
       });
     }
   }
@@ -234,9 +287,23 @@ async function patchLonghornVolumes(
   k8s: K8sClients,
   volumes: VolumeFact[],
 ): Promise<ApplyPatchResult[]> {
+  // First read the live nodeSelector for each platform volume — we
+  // want to patch BOTH numberOfReplicas (tier-driven) AND nodeSelector
+  // ("system") in a single round trip per volume, but only when the
+  // current value diverges. One LIST is cheaper than N GETs.
+  const liveSelectors = await readLiveNodeSelectors(k8s, volumes.map((v) => v.volumeName));
+
   const results: ApplyPatchResult[] = [];
   for (const v of volumes) {
-    if (v.currentReplicas === v.desiredReplicas) {
+    const currentSelector = liveSelectors.get(v.volumeName) ?? [];
+    // Drift = the selector is not exactly ["system"]. Stricter than
+    // "missing system" — also catches volumes that picked up extra
+    // tags (operator mistake or Longhorn evolution). The reconciler
+    // re-asserts exactly ["system"] so the desired state is canonical.
+    const wantsSelector = !(currentSelector.length === 1 && currentSelector[0] === 'system');
+    const replicaDelta = v.currentReplicas !== v.desiredReplicas;
+
+    if (!replicaDelta && !wantsSelector) {
       results.push({
         namespace: v.namespace, volumeName: v.volumeName,
         previousReplicas: v.currentReplicas, newReplicas: v.desiredReplicas,
@@ -244,7 +311,18 @@ async function patchLonghornVolumes(
       });
       continue;
     }
-    const patch = { spec: { numberOfReplicas: v.desiredReplicas } };
+
+    const patch: { spec: Record<string, unknown> } = { spec: {} };
+    if (replicaDelta) {
+      patch.spec.numberOfReplicas = v.desiredReplicas;
+    }
+    if (wantsSelector) {
+      // M-NS-2: pin platform replicas to system-tagged nodes only.
+      // Longhorn auto-evicts non-conformant replicas (e.g. one
+      // currently on the worker) and rebuilds on a server.
+      patch.spec.nodeSelector = ['system'];
+    }
+
     try {
       // Double-cast — see longhorn-reconciler.ts; @kubernetes/client-
       // node v1.4 typings reject the plain literal here.
@@ -268,6 +346,45 @@ async function patchLonghornVolumes(
     }
   }
   return results;
+}
+
+/**
+ * Read .spec.nodeSelector for each platform volume. Returns a map of
+ * name → tag list (empty array when the field is unset). Uses a single
+ * LIST call and filters in-process — one round-trip regardless of how
+ * many volumes there are. RBAC for `longhorn.io/volumes get,list,watch`
+ * already exists.
+ */
+async function readLiveNodeSelectors(
+  k8s: K8sClients,
+  volumeNames: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const wanted = new Set(volumeNames);
+  try {
+    interface LhVolume {
+      metadata?: { name?: string };
+      spec?: { nodeSelector?: string[] };
+    }
+    const res = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumes',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhVolume[] };
+    for (const v of res.items ?? []) {
+      const name = v.metadata?.name;
+      if (!name || !wanted.has(name)) continue;
+      const selector = Array.isArray(v.spec?.nodeSelector) ? [...v.spec.nodeSelector] : [];
+      out.set(name, selector);
+    }
+  } catch (err) {
+    console.warn('[platform-storage-policy] list volumes for nodeSelector read failed:', (err as Error).message);
+  }
+  // Volumes the LIST didn't return get an empty selector — the
+  // subsequent patch loop will still fire and add ["system"] if needed.
+  for (const name of volumeNames) {
+    if (!out.has(name)) out.set(name, []);
+  }
+  return out;
 }
 
 async function patchStatelessDeployments(
