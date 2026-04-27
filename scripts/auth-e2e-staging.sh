@@ -189,7 +189,9 @@ log "── scenario 7: cookie path works ──"
 
 # Capture the Set-Cookie pair from login.
 COOKIE_JAR=$(mktemp)
-trap "rm -f $COOKIE_JAR" EXIT
+# Single-quote captures $COOKIE_JAR at trap-fire time (shellcheck SC2064).
+# Behavior is identical here since COOKIE_JAR never gets reassigned.
+trap 'rm -f "$COOKIE_JAR"' EXIT
 curl -sk -c "$COOKIE_JAR" -X POST "$ADMIN_HOST/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" >/dev/null
