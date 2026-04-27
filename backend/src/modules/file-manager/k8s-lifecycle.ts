@@ -9,6 +9,7 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@k8s-hosting/api-contracts';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const FM_NAME = 'file-manager';
 const FM_PORT = 8111;
@@ -134,10 +135,12 @@ export async function ensureFileManagerRunning(
   } else {
     // Check if the existing deployment spec matches what we want
     const existingDeploy = await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace }) as Record<string, unknown>;
-    const existingSpec = (existingDeploy as { spec?: { template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string }> } } } }).spec?.template?.spec;
-    const existingPvcClaim = (existingSpec?.volumes ?? []).find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
-    const existingCaps = existingSpec?.containers?.[0]?.securityContext?.capabilities?.add ?? [];
-    const existingImage = existingSpec?.containers?.[0]?.image ?? '';
+    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string }> } } } }).spec;
+    const templateSpec = existingSpec?.template?.spec;
+    const existingReplicas = existingSpec?.replicas ?? 0;
+    const existingPvcClaim = (templateSpec?.volumes ?? []).find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
+    const existingCaps = templateSpec?.containers?.[0]?.securityContext?.capabilities?.add ?? [];
+    const existingImage = templateSpec?.containers?.[0]?.image ?? '';
 
     const expectedPvcClaim = `${namespace}-storage`;
     const expectedCaps = ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'];
@@ -152,8 +155,22 @@ export async function ensureFileManagerRunning(
         await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
       } catch { /* best-effort cleanup */ }
       await k8s.apps.createNamespacedDeployment(deployBody);
+    } else if (existingReplicas === 0) {
+      // Spec matches but the idle-cleanup loop (or operator) scaled
+      // the Deployment to 0. Without this branch, /start was a no-op
+      // — the deployment "existed with the right spec", so we'd skip,
+      // and getFileManagerStatus would forever return "Pod is being
+      // created" because nothing ever scheduled the pod. Rescale to
+      // 1 via the /scale subresource (cheaper than a full deploy
+      // patch and avoids template-touch side effects).
+      await k8s.apps.patchNamespacedDeployment({
+        name: FM_NAME,
+        namespace,
+        body: { spec: { replicas: 1 } },
+      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        STRATEGIC_MERGE_PATCH);
     }
-    // Otherwise: deployment exists with correct spec — skip
+    // Otherwise: deployment exists with correct spec + already at >=1 replica — skip
   }
 
   // Ensure SFTP gateway has per-namespace exec permission (Role + RoleBinding).
