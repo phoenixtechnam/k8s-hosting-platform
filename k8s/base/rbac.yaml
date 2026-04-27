@@ -89,10 +89,19 @@ rules:
     verbs: ["get", "list"]
   # Node awareness: list/get for health checks and M1 node pinning,
   # plus patch so the admin API can update platform-managed labels
-  # (node-role, host-client-workloads) + taints (server-only).
+  # (node-role, host-client-workloads, ingress-mode) + taints
+  # (server-only). `delete` is required for the M-NS-1 Drain-then-
+  # Delete flow which removes a node from k8s after a successful drain.
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
+  # M-NS-1: drain endpoint creates Eviction subresource objects.
+  # Eviction is treated as a distinct subresource for RBAC even
+  # though pods/* is already wildcarded above (the API server
+  # checks "pods/eviction" specifically).
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
@@ -122,7 +131,7 @@ rules:
   # BackupTarget/default CR. Keep these narrow — list/patch on the
   # BackupTarget, get/list for read-only inventory (Phase D).
   - apiGroups: ["longhorn.io"]
-    resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs"]
+    resources: ["backuptargets", "backupvolumes", "backups", "snapshots", "nodes", "volumes", "recurringjobs", "replicas"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["longhorn.io"]
     resources: ["backuptargets"]
