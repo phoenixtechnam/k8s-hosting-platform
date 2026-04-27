@@ -95,6 +95,56 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
+    // Phase G: capacity preflight. Reject the create request UP-FRONT if
+    // the cluster physically cannot fit the new client's PVCs at their
+    // selected storage tier. The original behaviour (accept, fail
+    // minutes later with a stuck FM) was operator-hostile — by the time
+    // the failure surfaced the operator had already told the new tenant
+    // their account was ready. Now they see "no node has 20 GiB free"
+    // before they hit Submit.
+    try {
+      const { checkProvisioningCapacity } = await import('./capacity-preflight.js');
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      let preflightK8s: ReturnType<typeof createK8sClients> | undefined;
+      try { preflightK8s = createK8sClients(kubeconfigPath); } catch { /* skip preflight */ }
+      const tier = (parsed.data.storage_tier ?? 'local') as 'local' | 'ha';
+      const preflight = await checkProvisioningCapacity(app.db, preflightK8s, parsed.data.plan_id, tier);
+      if (!preflight.ok && preflight.reason && preflight.fittingNodes < preflight.required.replicaCount) {
+        const planSizeGiB = preflight.required.planSizeBytes / (1024 ** 3);
+        const fmtBytes = (n: number): string => `${(n / (1024 ** 3)).toFixed(1)} GiB`;
+        const nodeBreakdown = preflight.nodes
+          .map((n) => `${n.nodeName}: ${fmtBytes(n.freeToScheduleBytes)} free`)
+          .join('; ');
+        throw new ApiError(
+          'PROVISION_OVER_CAPACITY',
+          preflight.reason,
+          409,
+          {
+            operatorError: {
+              code: 'PROVISION_OVER_CAPACITY',
+              title: 'Cluster cannot fit this client',
+              detail: `Plan needs ${planSizeGiB.toFixed(1)} GiB of storage on ${preflight.required.replicaCount} ${tier === 'ha' ? 'distinct nodes' : 'node'}, but only ${preflight.fittingNodes} node(s) qualify. ${preflight.reason}`,
+              remediation: [
+                'Open Nodes & Storage → Cluster Nodes and check Longhorn disk capacity per node.',
+                'Lower storageReserved on a node with headroom, OR add more storage / a new worker node.',
+                'Switch the client to a smaller hosting plan if HA is not required.',
+                tier === 'ha' ? 'Apply HA needs ≥3 nodes each with the plan size free; consider Local tier (1 replica).' : '',
+              ].filter(Boolean),
+              retryable: false,
+              diagnostics: { nodeBreakdown, fittingNodes: preflight.fittingNodes, requiredReplicas: preflight.required.replicaCount },
+            },
+          },
+          'Free up disk on a node, add a worker, or pick a smaller plan.',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      // Preflight infra issue (longhorn CRD missing, etc.) — log and
+      // proceed; the original failure path still applies if a real
+      // provision can't happen.
+      console.warn(`[clients.create] capacity preflight skipped: ${(err as Error).message}`);
+    }
+
     const result = await service.createClient(app.db, parsed.data, request.user.sub);
     const { _generatedPassword, _clientUserId, ...client } = result;
 
