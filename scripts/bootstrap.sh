@@ -1248,12 +1248,26 @@ install_calico() {
     # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
   fi
 
+  # controlPlaneReplicas=1 — Tigera's default of 2 is tuned for clusters
+  # with 100+ nodes. The project target audience (single hosting operator,
+  # 50-100 clients, typically 3-10 cluster nodes) doesn't benefit from
+  # 2 calico-apiserver + 2 calico-kube-controllers; on small clusters the
+  # redundant pods are pure overhead (~5m CPU + ~95 MiB combined). Larger
+  # deployments can override post-bootstrap with:
+  #   kubectl patch installation default --type=merge -p \
+  #     '{"spec":{"controlPlaneReplicas":2}}'
+  # NOTE: typha replicas are NOT settable here — the Tigera operator's
+  # built-in typha autoscaler computes replicas from node count and the
+  # Installation CR's typhaDeployment.spec.replicas field is silently
+  # dropped at admission. For small clusters where 2 typhas is excess,
+  # there is no supported override.
   cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
   name: default
 spec:
+  controlPlaneReplicas: 1
   calicoNetwork:
     bgp: Disabled
     mtu: 1380
