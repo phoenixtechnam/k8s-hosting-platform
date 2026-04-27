@@ -69,7 +69,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     // sits on the loading screen for ~10min would have its pod
     // scaled back to 0 by the idle-cleanup loop while still being
     // actively waited-on by the user.
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const status = await getFileManagerStatus(k8sClients, namespace);
     return success(status);
   });
@@ -85,7 +85,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     // Refresh idle timer so the cleanup loop doesn't immediately
     // scale the pod we just asked for back down. /start is a clear
     // user intent to USE the file-manager.
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const status = await getFileManagerStatus(k8sClients, namespace);
     return success(status);
   });
@@ -108,7 +108,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/disk-usage', {});
     if (result.status !== 200) {
@@ -126,7 +126,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/folder-size', {
       query: { path: query.path },
@@ -146,7 +146,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, string>;
     const path = query.path || '/';
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
@@ -169,7 +169,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/read', {
@@ -192,7 +192,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/download', {
@@ -216,7 +216,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = createDirectoryInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/mkdir', {
@@ -241,7 +241,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = writeFileInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/write', {
@@ -266,7 +266,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = renameInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/rename', {
@@ -292,7 +292,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = deleteInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/rm', {
@@ -317,7 +317,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = copyInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/copy', {
@@ -342,7 +342,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = archiveInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/archive', {
@@ -367,7 +367,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = extractInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/extract', {
@@ -392,7 +392,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = gitCloneInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/git-clone', {
@@ -417,7 +417,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = chmodInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chmod', {
@@ -442,7 +442,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const parsed = chownInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/chown', {
@@ -468,7 +468,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, string>;
     if (!query.path) throw new ApiError('INVALID_FIELD_VALUE', 'path query parameter required', 400);
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     // Ensure file manager is running
@@ -521,7 +521,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     // Ensure file-manager is running, then stream response directly
@@ -550,7 +550,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     if (!url || !destPath) throw new ApiError('MISSING_REQUIRED_FIELD', 'url and path required', 400);
 
     const namespace = await resolveNamespace(app, clientId);
-    recordFileManagerAccess(namespace);
+    recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
     await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);

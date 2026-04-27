@@ -1,13 +1,48 @@
-import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const LAST_ACCESS_ANNOTATION = 'platform.phoenix-host.net/file-manager-last-access';
 
-// Track last access time per namespace
+// Per-process cache (reduces API server load between writes — we still
+// reconcile against the Deployment annotation for cross-pod truth).
 const lastAccessMap = new Map<string, number>();
 
-export function recordFileManagerAccess(namespace: string): void {
-  lastAccessMap.set(namespace, Date.now());
+/**
+ * Record activity. Updates the in-process cache AND the FM Deployment
+ * annotation so other platform-api replicas (each running their own
+ * idle-cleanup loop) see the same access time. The annotation write
+ * is fire-and-forget — a failure here would just mean another replica
+ * might prematurely scale down, so we tolerate transient errors.
+ */
+export function recordFileManagerAccess(namespace: string, k8s?: K8sClients): void {
+  const now = Date.now();
+  lastAccessMap.set(namespace, now);
+  // Wrap the k8s client call in a try block — a missing or partially
+  // mocked client (`k8s.apps` undefined) would otherwise throw
+  // synchronously, escaping the promise's `.catch`. Real callers
+  // pass a fully-shaped client; tests pass a mock that may not
+  // implement every nested property.
+  if (!k8s?.apps?.patchNamespacedDeployment) return;
+  try {
+    void k8s.apps.patchNamespacedDeployment({
+      name: 'file-manager',
+      namespace,
+      body: { metadata: { annotations: { [LAST_ACCESS_ANNOTATION]: String(now) } } },
+    } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+      STRATEGIC_MERGE_PATCH).catch((err: unknown) => {
+      // Deployment may not exist yet (first /start hasn't created
+      // it), or pod may be racing the controller — either way, the
+      // in-memory cache covers the current pod.
+      const status = (err as { code?: number; statusCode?: number }).code
+        ?? (err as { statusCode?: number }).statusCode;
+      if (status !== 404) {
+        console.warn(`[file-manager] last-access annotation write failed for ${namespace}:`, (err as Error).message);
+      }
+    });
+  } catch (err) {
+    console.warn(`[file-manager] last-access annotation skipped for ${namespace}:`, (err as Error).message);
+  }
 }
 
 export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): NodeJS.Timeout | null {
@@ -38,9 +73,17 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
 
           if (replicas === 0) continue; // Already scaled down
 
-          const lastAccess = lastAccessMap.get(ns) ?? 0;
+          // Cross-pod truth: annotation set by recordFileManagerAccess()
+          // in any platform-api replica. Falls back to in-memory cache
+          // if the annotation is missing (older Deployment from before
+          // this change, or a race where /start hasn't yet annotated).
+          const annotations = (deploy as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations ?? {};
+          const annotated = Number(annotations[LAST_ACCESS_ANNOTATION] ?? '');
+          const cached = lastAccessMap.get(ns) ?? 0;
+          const lastAccess = Math.max(Number.isFinite(annotated) ? annotated : 0, cached);
+
           if (now - lastAccess > IDLE_TIMEOUT_MS) {
-            console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns}`);
+            console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns} (idle for ${Math.round((now - lastAccess) / 60_000)}m)`);
             await k8s.apps.patchNamespacedDeployment({
               name: 'file-manager',
               namespace: ns,
