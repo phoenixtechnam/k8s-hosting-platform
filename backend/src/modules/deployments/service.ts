@@ -543,6 +543,23 @@ export async function deleteDeployment(
   await db.update(ingressRoutes)
     .set({ deploymentId: null })
     .where(eq(ingressRoutes.deploymentId, deploymentId));
+
+  // Reconcile the Ingress: with no routes pointing at this deployment,
+  // reconcileIngress will rebuild rules from the remaining routes (or
+  // delete the Ingress entirely if no routable routes are left). Without
+  // this, the Ingress would keep a stale rule that 503's on every
+  // request because the backing Service is gone.
+  if (k8s) {
+    const [client] = await db.select().from(clients).where(eq(clients.id, clientId));
+    if (client?.kubernetesNamespace) {
+      try {
+        const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+        await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
+      } catch (err) {
+        console.warn(`[deployments] reconcileIngress on delete failed: ${(err as Error).message}`);
+      }
+    }
+  }
 }
 
 export async function restoreDeployment(
