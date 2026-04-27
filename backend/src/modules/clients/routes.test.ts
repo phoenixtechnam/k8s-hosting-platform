@@ -98,8 +98,15 @@ describe('client routes', () => {
     registerAuth(app);
     app.setErrorHandler(errorHandler);
 
-    // Decorate with a stub db (service is mocked, so db won't be used)
-    app.decorate('db', {});
+    // Decorate with a stub db. Phase 3: routes that disable users or
+    // reset passwords also revoke refresh tokens via
+    // revokeAllUserRefreshTokens — that hits db.update().set().where().
+    // Stub the chain so the route can complete; the service-layer
+    // mocks supply the real assertion data.
+    const noopUpdate = {
+      set: () => ({ where: async () => undefined }),
+    };
+    app.decorate('db', { update: () => noopUpdate });
     await app.register(clientRoutes, { prefix: '/api/v1' });
     await app.ready();
 

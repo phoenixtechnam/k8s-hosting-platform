@@ -401,6 +401,15 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
         status: parsed.data.status,
       },
     );
+
+    // Phase 3: a disable MUST kill every active refresh token for the
+    // sub-user so /auth/refresh stops working immediately. The current
+    // access JWT continues to verify until natural expiry (≤30 min).
+    if (parsed.data.status === 'disabled') {
+      const { revokeAllUserRefreshTokens } = await import('../auth/refresh-token-service.js');
+      await revokeAllUserRefreshTokens(app.db, userId, 'admin_revoke');
+    }
+
     return success(updated);
   });
 
@@ -435,6 +444,13 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       userId,
       parsed.data.new_password,
     );
+
+    // Phase 3: invalidate every active refresh token so the user
+    // can't keep rotating with a token issued before the password
+    // changed.
+    const { revokeAllUserRefreshTokens } = await import('../auth/refresh-token-service.js');
+    await revokeAllUserRefreshTokens(app.db, userId, 'password_change');
+
     reply.status(204).send();
   });
 
