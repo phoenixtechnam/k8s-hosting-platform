@@ -19,6 +19,10 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
 spec:
+  # Suspended by default. Unsuspended by longhorn-reconciler when a
+  # backup target becomes active. See cluster-state-cronjob.yaml for the
+  # full rationale.
+  suspend: true
   schedule: "45 2 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

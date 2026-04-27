@@ -159,6 +159,13 @@ scenario_fm() {
   local list; list=$(api GET "/clients/$cid/files?path=/")
   echo "$list" | python3 -c "import json,sys;d=json.load(sys.stdin);assert 'data' in d" 2>/dev/null \
     && ok "FM list / succeeded" || { fail "FM list failed: $list"; return 1; }
+
+  # Scale FM back to 0 so subsequent scenarios (https) don't lose
+  # their RWO PVC race against an already-running FM. The /files/stop
+  # endpoint is the operator-visible mirror of the idle-cleanup loop;
+  # use it explicitly instead of waiting 10 min for idle-scale.
+  api POST "/clients/$cid/files/stop" "" >/dev/null
+  ok "FM scaled back to 0 between scenarios"
 }
 
 # ─── scenario 3: HTTPS end-to-end (the actual SSL test) ────────────
