@@ -815,6 +815,34 @@ apply_node_labels_and_taints() {
       "platform.phoenix-host.net/server-only:NoSchedule-" \
       2>/dev/null || true
   fi
+
+  # Tag this server in Longhorn so the platform StorageClass'
+  # nodeSelector="system" can pin platform replicas to system servers
+  # and never to worker hosts. The node CR is created by Longhorn
+  # asynchronously (~30s after install_longhorn finishes), so this
+  # waits up to 60s. Workers stay untagged — tenant SC has no
+  # nodeSelector, so they remain valid replica targets for tenants.
+  apply_longhorn_node_tag "${node_name}"
+}
+
+# Idempotent — patches longhorn node CR so .spec.tags includes
+# "system". Safe to re-run.
+apply_longhorn_node_tag() {
+  local node_name="$1"
+  local i=0
+  while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
+    i=$((i + 2))
+    if [[ "$i" -ge 60 ]]; then
+      log "  longhorn node.${node_name} did not register within 60s — skipping tag (run manually:"
+      log "    kubectl patch node.longhorn.io -n longhorn-system ${node_name} --type=merge -p '{\"spec\":{\"tags\":[\"system\"]}}')"
+      return 0
+    fi
+    sleep 2
+  done
+  log "Tagging Longhorn node ${node_name} with 'system' (platform replica placement)..."
+  kubectl patch node.longhorn.io -n longhorn-system "$node_name" \
+    --type=merge \
+    -p '{"spec":{"tags":["system"]}}' 2>/dev/null || true
 }
 
 install_k3s() {

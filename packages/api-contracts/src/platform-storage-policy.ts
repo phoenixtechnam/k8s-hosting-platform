@@ -32,6 +32,10 @@ export const clusterStorageStateSchema = z.object({
     desiredReplicas: z.number().int().nonnegative(),
     healthy: z.boolean(),
     phase: z.string().nullable(),
+    /** M-NS-2: nodes currently hosting a healthy replica. */
+    replicaNodes: z.array(z.string()).default([]),
+    /** True when at least one replica sits on a non-system server (drift). */
+    hasOffSystemReplica: z.boolean().default(false),
   })),
 });
 export type ClusterStorageState = z.infer<typeof clusterStorageStateSchema>;

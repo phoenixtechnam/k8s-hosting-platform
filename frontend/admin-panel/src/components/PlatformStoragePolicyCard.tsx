@@ -97,18 +97,32 @@ export default function PlatformStoragePolicyCard() {
               <th className="px-3 py-2 text-left">PVC</th>
               <th className="px-3 py-2 text-right">Current</th>
               <th className="px-3 py-2 text-right">Desired</th>
+              <th className="px-3 py-2 text-left">Replicas on</th>
               <th className="px-3 py-2 text-left">Status</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {cluster.volumes.map((v) => {
               const inSync = v.currentReplicas === v.desiredReplicas;
+              const drift = v.hasOffSystemReplica;
               return (
-                <tr key={v.volumeName}>
+                <tr key={v.volumeName} className={drift ? 'bg-amber-50 dark:bg-amber-900/10' : ''}>
                   <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{v.volumeName}</td>
                   <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{v.namespace}/{v.pvcName}</td>
                   <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{v.currentReplicas}</td>
                   <td className="px-3 py-2 text-right text-gray-900 dark:text-gray-100">{v.desiredReplicas}</td>
+                  <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-300" data-testid={`replica-nodes-${v.volumeName}`}>
+                    {v.replicaNodes.length === 0 ? (
+                      <span className="text-gray-400">—</span>
+                    ) : (
+                      <span className="font-mono">{v.replicaNodes.join(', ')}</span>
+                    )}
+                    {drift && (
+                      <span className="ml-2 inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" title="At least one replica is on a non-system server. Trigger Apply HA / Apply Local to migrate.">
+                        <AlertTriangle size={10} /> off-system
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     {inSync && v.healthy ? (
                       <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
@@ -127,7 +141,7 @@ export default function PlatformStoragePolicyCard() {
             })}
             {cluster.volumes.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
+                <td colSpan={6} className="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
                   No platform Longhorn volumes detected yet.
                 </td>
               </tr>
