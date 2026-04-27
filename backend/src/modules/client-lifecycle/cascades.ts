@@ -193,6 +193,33 @@ export async function applyDeleted(
   clientId: string,
   namespace: string,
 ): Promise<void> {
+  // Snapshot which PVs claim this namespace BEFORE the namespace is
+  // deleted. The tenant SC uses reclaimPolicy=Retain (intentional —
+  // protects against accidental data loss), so when the namespace
+  // cascade-deletes the PVCs, the underlying PVs flip to Released
+  // rather than disappearing. We need to identify them up-front
+  // because once `deleteNamespace()` returns, the PVCs are still
+  // present (Terminating) and `claimRef` is still on the PV — but
+  // the moment the PVC actually goes away, the PV becomes a Released
+  // orphan with no easy way to associate it back to a namespace.
+  interface PvLite {
+    metadata?: { name?: string };
+    spec?: { claimRef?: { namespace?: string } };
+    status?: { phase?: string };
+  }
+  const pvCandidates = new Set<string>();
+  try {
+    const pvsBefore = await ctx.k8s.core.listPersistentVolume({});
+    for (const p of ((pvsBefore as { items?: PvLite[] }).items ?? [])) {
+      const name = p.metadata?.name;
+      if (name && p.spec?.claimRef?.namespace === namespace) {
+        pvCandidates.add(name);
+      }
+    }
+  } catch (err) {
+    console.warn(`[cascades.applyDeleted] PV pre-snapshot failed: ${(err as Error).message}`);
+  }
+
   // Drop the k8s namespace — brings pods, PVC, ingress, services,
   // configmaps, secrets with it. `clients.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
@@ -214,4 +241,96 @@ export async function applyDeleted(
   // `audit_logs` intentionally keeps client_id as a tombstone (no
   // cascade) so the deletion event stays auditable.
   await ctx.db.delete(clients).where(eq(clients.id, clientId));
+
+  // Released PV + Longhorn volume cleanup. Runs in the background
+  // (no await on the caller) — `deleteNamespace()` returns while the
+  // namespace is still Terminating, so we have to poll for the PVCs
+  // to actually go away (which transitions PVs Bound → Released)
+  // before we can delete them. Without this, every client deletion
+  // leaves orphan PVs that fill up storageScheduled until Longhorn
+  // refuses new replicas with "insufficient storage".
+  if (pvCandidates.size > 0) {
+    void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
+      console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
+    });
+  }
+}
+
+/**
+ * Background poll: wait up to 60s for each candidate PV to transition
+ * to Released (or disappear), then delete the PV + the matching
+ * Longhorn volume CR. Runs detached from the request lifecycle —
+ * `applyDeleted` returns immediately after kicking this off.
+ */
+async function cleanupReleasedPvs(
+  ctx: CascadeCtx,
+  namespace: string,
+  candidates: Set<string>,
+): Promise<void> {
+  interface PvLite {
+    metadata?: { name?: string };
+    spec?: { claimRef?: { namespace?: string } };
+    status?: { phase?: string };
+  }
+  const handled = new Set<string>();
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < 60_000 && handled.size < candidates.size) {
+    const pvsNow = await ctx.k8s.core.listPersistentVolume({}).catch(() => null);
+    if (!pvsNow) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      continue;
+    }
+    const items = (pvsNow as { items?: PvLite[] }).items ?? [];
+    const stillPresent = new Set<string>();
+    for (const p of items) {
+      const name = p.metadata?.name;
+      if (!name) continue;
+      stillPresent.add(name);
+      if (!candidates.has(name) || handled.has(name)) continue;
+      if (p.status?.phase === 'Released') handled.add(name);
+    }
+    // Tolerate a candidate that disappeared on its own (Delete reclaim).
+    for (const c of candidates) {
+      if (!stillPresent.has(c)) handled.add(c);
+    }
+    if (handled.size >= candidates.size) break;
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+
+  let cleaned = 0;
+  for (const pvName of handled) {
+    try {
+      await ctx.k8s.core.deletePersistentVolume({ name: pvName });
+      cleaned++;
+    } catch (err) {
+      const status = (err as { statusCode?: number; code?: number }).statusCode
+        ?? (err as { code?: number }).code;
+      if (status !== 404) {
+        console.warn(`[cascades.applyDeleted] failed to delete Released PV ${pvName}: ${(err as Error).message}`);
+      }
+    }
+    // Cascade to Longhorn volume CR (CSI volume name == PV name).
+    // PV deletion alone leaves a "detached" longhorn.io/volume that
+    // still counts against storageScheduled.
+    try {
+      await ctx.k8s.custom.deleteNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes', name: pvName,
+      } as unknown as Parameters<typeof ctx.k8s.custom.deleteNamespacedCustomObject>[0]);
+    } catch (err) {
+      const status = (err as { statusCode?: number; code?: number }).statusCode
+        ?? (err as { code?: number }).code;
+      if (status !== 404) {
+        console.warn(`[cascades.applyDeleted] failed to delete Longhorn volume ${pvName}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  if (cleaned > 0) {
+    console.log(`[cascades.applyDeleted] cleaned up ${cleaned} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
+  }
+  if (candidates.size > handled.size) {
+    console.warn(`[cascades.applyDeleted] ${candidates.size - handled.size} PV(s) for ${namespace} did not reach Released within 60s — leaving for manual cleanup`);
+  }
 }
