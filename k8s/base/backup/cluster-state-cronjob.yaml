@@ -67,6 +67,11 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
 spec:
+  # Suspended by default. The longhorn-reconciler unsuspends DR CronJobs
+  # when a backup target is activated (Settings → Backups → Active) and
+  # re-suspends them when the active target is cleared. Without a
+  # backup-credentials Secret these jobs fail with CreateContainerConfigError.
+  suspend: true
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

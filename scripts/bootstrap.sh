@@ -1315,6 +1315,12 @@ EOF
     fi
     sleep 2
   done
+  # xdpEnabled / genericXDPEnabled are turned off because we do not use
+  # Felix's XDP-based prefilter (we run iptables dataplane + VXLAN). When
+  # an unrelated XDP program is already attached to lo (e.g. NetBird's
+  # nb_xdp_prog in xdpgeneric mode), Felix otherwise enters a tight retry
+  # loop trying to replace/wipe it — observed burning ~700-900m CPU per
+  # node on the staging cluster (2026-04-27).
   cat <<EOF | kubectl apply -f -
 apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
@@ -1323,6 +1329,8 @@ metadata:
 spec:
   wireguardEnabled: true
   wireguardListeningPort: 51821
+  xdpEnabled: false
+  genericXDPEnabled: false
 EOF
 
   marker_set "calico-installed"

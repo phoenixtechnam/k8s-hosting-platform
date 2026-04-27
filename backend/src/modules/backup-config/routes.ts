@@ -44,7 +44,7 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     k8s = undefined;
   }
   const longhornClients: LonghornClients | undefined = k8s
-    ? { core: k8s.core, custom: k8s.custom }
+    ? { core: k8s.core, custom: k8s.custom, batch: k8s.batch }
     : undefined;
 
   app.addHook('onRequest', authenticate);

@@ -10,7 +10,12 @@ function createMockClients() {
     patchClusterCustomObject: vi.fn(),
     patchNamespacedCustomObject: vi.fn(),
   };
-  return { core, custom } as unknown as {
+  const batch = {
+    // Default: succeed silently. Tests that care about cron toggle
+    // assert against this mock directly.
+    patchNamespacedCronJob: vi.fn().mockResolvedValue({}),
+  };
+  return { core, custom, batch } as unknown as {
     core: {
       replaceNamespacedSecret: ReturnType<typeof vi.fn>;
       createNamespacedSecret: ReturnType<typeof vi.fn>;
@@ -18,6 +23,9 @@ function createMockClients() {
     custom: {
       patchClusterCustomObject: ReturnType<typeof vi.fn>;
       patchNamespacedCustomObject: ReturnType<typeof vi.fn>;
+    };
+    batch: {
+      patchNamespacedCronJob: ReturnType<typeof vi.fn>;
     };
   };
 }
@@ -330,5 +338,101 @@ describe('clearBackupTarget', () => {
     // branch on kind externally.
     expect(clients.custom.patchClusterCustomObject).not.toHaveBeenCalled();
     expect(clients.custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+});
+
+describe('DR CronJob suspend toggle', () => {
+  // Names listed in BACKUP_CRONJOB_NAMES (longhorn-reconciler.ts). Kept
+  // in lockstep with k8s/base/backup/*.yaml — every CronJob there that
+  // mounts the backup-credentials Secret must appear here.
+  const EXPECTED_CRONJOBS = [
+    'platform-cluster-state-backup',
+    'platform-etcd-snapshot-upload',
+    'platform-pg-backup',
+    'platform-secrets-backup',
+    'platform-hostpath-snapshot-upload',
+  ];
+
+  it('unsuspends every DR CronJob on S3 activate', async () => {
+    const clients = createMockClients();
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, INPUT);
+
+    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    const namesPatched = clients.batch.patchNamespacedCronJob.mock.calls.map((c) => c[0].name);
+    expect(namesPatched).toEqual(expect.arrayContaining(EXPECTED_CRONJOBS));
+    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+      expect(call[0].namespace).toBe('platform');
+      expect(call[0].body).toEqual({ spec: { suspend: false } });
+    }
+  });
+
+  it('unsuspends every DR CronJob on SSH activate', async () => {
+    const clients = createMockClients();
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await reconcileBackupTarget(clients as any, SSH_INPUT);
+
+    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+      expect(call[0].body).toEqual({ spec: { suspend: false } });
+    }
+  });
+
+  it('suspends every DR CronJob on clearBackupTarget (S3)', async () => {
+    const clients = createMockClients();
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await clearBackupTarget(clients as any);
+
+    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+      expect(call[0].body).toEqual({ spec: { suspend: true } });
+    }
+  });
+
+  it('suspends every DR CronJob on clearBackupTarget (SSH)', async () => {
+    const clients = createMockClients();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await clearBackupTarget(clients as any, { kind: 'ssh' });
+
+    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
+    for (const call of clients.batch.patchNamespacedCronJob.mock.calls) {
+      expect(call[0].body).toEqual({ spec: { suspend: true } });
+    }
+  });
+
+  it('skips toggle silently when batch client is not provided (legacy callers)', async () => {
+    const clients = createMockClients();
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    const noBatch = { core: clients.core, custom: clients.custom };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(noBatch as any, INPUT)).resolves.toBeUndefined();
+    // The reconciler still completes the Secret + BackupTarget writes;
+    // only the cron toggle is skipped (the warning lands in console.warn).
+    expect(clients.core.replaceNamespacedSecret).toHaveBeenCalled();
+  });
+
+  it('continues past a missing CronJob (404) on activate', async () => {
+    const clients = createMockClients();
+    clients.core.replaceNamespacedSecret.mockResolvedValue({});
+    clients.custom.patchClusterCustomObject.mockResolvedValue({});
+    // Simulate first cron not deployed yet (e.g. partial Flux apply)
+    clients.batch.patchNamespacedCronJob
+      .mockRejectedValueOnce({ statusCode: 404 })
+      .mockResolvedValue({});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(reconcileBackupTarget(clients as any, INPUT)).resolves.toBeUndefined();
+    // All five attempted; first 404 swallowed, remaining four succeed.
+    expect(clients.batch.patchNamespacedCronJob).toHaveBeenCalledTimes(EXPECTED_CRONJOBS.length);
   });
 });

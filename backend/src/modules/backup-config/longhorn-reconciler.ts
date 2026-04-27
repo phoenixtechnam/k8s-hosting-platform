@@ -65,7 +65,25 @@ export type LonghornBackupTargetInput = S3BackupTargetInput | SshBackupTargetInp
 export interface LonghornClients {
   readonly core: k8s.CoreV1Api;
   readonly custom: k8s.CustomObjectsApi;
+  // Optional: the BatchV1Api used to suspend/unsuspend the DR CronJobs
+  // when an operator activates/deactivates a backup target. Made
+  // optional so existing callers (and tests) that only stub core+custom
+  // keep compiling — the reconciler skips the cron toggle when batch
+  // is not provided and logs a warning.
+  readonly batch?: k8s.BatchV1Api;
 }
+
+// CronJobs that consume the platform-ns `backup-credentials` Secret.
+// Shipped with `suspend: true` in k8s/base/backup/*.yaml so a fresh
+// install doesn't churn CreateContainerConfigError pods. The reconciler
+// flips suspend on/off in lock-step with backup-target activation.
+const BACKUP_CRONJOB_NAMES = [
+  'platform-cluster-state-backup',
+  'platform-etcd-snapshot-upload',
+  'platform-pg-backup',
+  'platform-secrets-backup',
+  'platform-hostpath-snapshot-upload',
+] as const;
 
 /**
  * Create or update the credentials Secret(s) the cluster needs to run
@@ -93,6 +111,7 @@ export async function reconcileBackupTarget(
     // Longhorn BackupTarget CR is intentionally left alone — SSH is
     // platform-level only. `clearBackupTarget({kind:'ssh'})` is the
     // reverse path and also a no-op on the CR.
+    await setBackupCronJobsSuspended(clients.batch, false);
     return;
   }
   // S3 path — longhorn-system Secret mandatory (BackupTarget patch reads
@@ -107,6 +126,7 @@ export async function reconcileBackupTarget(
     console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
   }
   await upsertBackupTarget(clients.custom, input);
+  await setBackupCronJobsSuspended(clients.batch, false);
 }
 
 /**
@@ -123,10 +143,64 @@ export async function clearBackupTarget(
   clients: LonghornClients,
   opts: { readonly kind?: 's3' | 'ssh' } = {},
 ): Promise<void> {
+  // Suspend DR CronJobs first so they stop trying to mount the
+  // (still-present) credentials Secret while the BackupTarget CR is
+  // being torn down. Idempotent — no-op when already suspended.
+  await setBackupCronJobsSuspended(clients.batch, true);
   if (opts.kind === 'ssh') return;
   await patchBackupTarget(clients.custom, {
     spec: { backupTargetURL: '', credentialSecret: '' },
   });
+}
+
+/**
+ * Toggle `spec.suspend` on every DR CronJob. Errors on individual
+ * CronJobs are logged but not thrown — a missing CronJob (e.g. on a
+ * partial install) shouldn't fail the whole activate/deactivate flow.
+ */
+async function setBackupCronJobsSuspended(
+  batch: k8s.BatchV1Api | undefined,
+  suspended: boolean,
+): Promise<void> {
+  if (!batch) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[longhorn-reconciler] BatchV1Api unavailable — DR CronJobs not toggled. ' +
+      'They will remain in their current suspend state. Edit them with kubectl ' +
+      'as a workaround.',
+    );
+    return;
+  }
+  for (const name of BACKUP_CRONJOB_NAMES) {
+    try {
+      await patchCronJobSuspend(batch, name, suspended);
+    } catch (err) {
+      if (isNotFound(err)) continue;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[longhorn-reconciler] Failed to set suspend=${suspended} on ${name}:`,
+        err,
+      );
+    }
+  }
+}
+
+async function patchCronJobSuspend(
+  batch: k8s.BatchV1Api,
+  name: string,
+  suspended: boolean,
+): Promise<void> {
+  // Strategic-merge-patch is what kubectl uses by default for built-in
+  // resources. CronJob/BatchV1 supports it directly; no Content-Type
+  // override needed (unlike the Longhorn BackupTarget CR which only
+  // accepts merge-patch+json — see patchBackupTarget below).
+  await batch.patchNamespacedCronJob(
+    {
+      name,
+      namespace: PLATFORM_NAMESPACE,
+      body: { spec: { suspend: suspended } },
+    } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+  );
 }
 
 // Build the Secret data block for an S3 target. Explicit empty strings
