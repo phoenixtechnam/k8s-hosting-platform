@@ -276,15 +276,20 @@ scenario_https() {
     return 1
   fi
 
-  # 7. HTTPS — assert the request reaches the workload. Static-nginx
-  #    serves a default index.html (Welcome page) → 200 OK with body.
-  #    Anything else (404 from default backend, 503, network error)
-  #    is a real failure.
+  # 7. HTTPS — assert the request reaches the workload pod. The
+  #    nginx-php catalog default vhost serves 403 Forbidden on / (no
+  #    docroot configured by default), 200/301/302 are the catalog
+  #    welcome cases. ALL of those mean the request reached the
+  #    tenant's nginx pod. The failures we want to catch:
+  #      404 — ingress-nginx default backend (route not found)
+  #      503 — pod not ready / no endpoints
+  #      000 — connection failed
+  #      hostname mismatch — wrong cert served (caught by step 6)
   local status; status=$(curl -sk -o /dev/null -m 15 -w "%{http_code}" "https://$domain/")
-  if [[ "$status" =~ ^(200|301|302)$ ]]; then
-    ok "HTTPS GET / returned $status"
+  if [[ "$status" =~ ^(200|301|302|403)$ ]]; then
+    ok "HTTPS GET / returned $status (tenant workload responded)"
   else
-    fail "HTTPS GET https://$domain/ returned $status (expected 2xx/3xx from the tenant workload)"
+    fail "HTTPS GET https://$domain/ returned $status (expected 2xx/3xx/403 from tenant workload, got default-backend or pod-not-ready)"
     return 1
   fi
 }
