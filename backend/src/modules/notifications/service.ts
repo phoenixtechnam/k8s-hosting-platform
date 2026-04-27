@@ -1,7 +1,8 @@
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { notifications } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { sendNotificationEmail } from './email-sender.js';
+import { getActiveChannels } from './channels/registry.js';
+import type { NotificationRecord } from './channels/types.js';
 import type { Database } from '../../db/index.js';
 
 interface CreateNotificationInput {
@@ -84,7 +85,12 @@ export async function deleteNotification(db: Database, userId: string, id: strin
  * Fire-and-forget notification helper. Wraps createNotification in try/catch
  * so callers can safely notify without risking their own operation.
  *
- * Round-2 refactor: `encryptionKey` now defaults to
+ * After the persisted row is created, every active channel
+ * (in-app, email, future Slack/webhook/sms) gets a chance to deliver.
+ * Channel availability is decided by `channels/registry.ts` —
+ * unavailable channels are filtered out before this function sees them.
+ *
+ * Round-2 refactor: `encryptionKey` defaults to
  * `process.env.OIDC_ENCRYPTION_KEY` (the same key used by
  * startDkimScheduler in app.ts), so call sites no longer need to
  * thread it through every layer just to get emails sent. Pass an
@@ -102,18 +108,41 @@ export async function notifyUser(
   },
   encryptionKey?: string,
 ): Promise<void> {
+  let created: NotificationRecord | undefined;
   try {
-    const created = await createNotification(db, { userId, ...opts });
-
-    // Fire-and-forget email notification if encryption key is available
-    const effectiveKey = encryptionKey ?? process.env.OIDC_ENCRYPTION_KEY;
-    if (effectiveKey && created) {
-      sendNotificationEmail(db, created, effectiveKey).catch(() => {
-        // Silently ignore email failures
-      });
-    }
+    const row = await createNotification(db, { userId, ...opts });
+    if (!row) return;
+    created = {
+      id: row.id,
+      userId: row.userId,
+      type: row.type as NotificationRecord['type'],
+      title: row.title,
+      message: row.message,
+      resourceType: row.resourceType ?? null,
+      resourceId: row.resourceId ?? null,
+    };
   } catch {
     // Fire-and-forget: notification failure must not break the caller
+    return;
+  }
+
+  // Iterate the channel registry. Each channel decides for itself
+  // whether to skip / deliver / fail; failures are caught here so a
+  // bad channel can't starve the others. The in-app channel is a
+  // no-op (the row is already persisted above) so we tolerate it
+  // running unconditionally.
+  const channels = getActiveChannels();
+  const ctx = { db, notification: created, encryptionKey };
+  for (const channel of channels) {
+    // Sequential: keeps log ordering predictable for ops triage and
+    // avoids hammering an SMTP relay with parallel sends per fan-out.
+    // eslint-disable-next-line no-await-in-loop
+    await channel.deliver(ctx).catch(() => {
+      // Channels SHOULD return DeliveryResult rather than throw, but
+      // a defensive catch here means a buggy channel impl can't kill
+      // the loop. Swallow without logging — channels are responsible
+      // for their own diagnostics.
+    });
   }
 }
 
