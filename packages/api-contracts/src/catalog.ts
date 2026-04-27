@@ -164,6 +164,8 @@ export const deploymentResponseSchema = z.object({
   lastUpgradedAt: z.string().nullable(),
   lastError: z.string().nullable(),
   statusMessage: z.string().nullable(),
+  /** Cluster node currently hosting the first scheduled pod. Refreshed by the status-reconciler every ~60s. */
+  currentNodeName: z.string().nullable().default(null),
   deletedAt: z.string().nullable(),
   status: z.string(),
   volumePaths: z.array(volumePathSchema).nullable().optional(),

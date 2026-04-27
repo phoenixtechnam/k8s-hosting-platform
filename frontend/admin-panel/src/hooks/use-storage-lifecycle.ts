@@ -181,3 +181,34 @@ export function useClearFailedState() {
     onSuccess: () => qc.invalidateQueries(),
   });
 }
+
+// ─── PVC node placement (Storage Lifecycle node-host column) ───
+//
+// Backend joins the client's PVC → Longhorn volume → running replicas
+// to surface which node currently holds the data. Refreshes on the
+// same cadence as the rest of the lifecycle UI.
+
+export interface ClientPvcPlacement {
+  readonly namespace: string;
+  readonly pvcName: string;
+  readonly volumeName: string;
+  readonly sizeBytes: number;
+  readonly state: string | null;
+  readonly robustness: string | null;
+  readonly replicaNodes: readonly string[];
+}
+
+export function useClientStoragePlacement(clientId: string | undefined) {
+  return useQuery({
+    queryKey: ['client-storage-placement', clientId],
+    queryFn: async () => {
+      if (!clientId) throw new Error('useClientStoragePlacement called without a clientId');
+      return apiFetch<{ data: { pvcs: ClientPvcPlacement[] } }>(
+        `/api/v1/clients/${encodeURIComponent(clientId)}/storage-placement`,
+      );
+    },
+    enabled: Boolean(clientId),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}

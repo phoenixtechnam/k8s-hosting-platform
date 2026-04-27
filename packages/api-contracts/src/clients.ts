@@ -105,3 +105,19 @@ export type CreateClientInput = z.infer<typeof createClientSchema>;
 export type UpdateClientInput = z.infer<typeof updateClientSchema>;
 export type ClientResponse = z.infer<typeof clientResponseSchema>;
 export type ClientListResponse = z.infer<typeof clientListResponseSchema>;
+
+// PVC node placement (GET /api/v1/clients/:id/storage-placement).
+// Read by the Storage Lifecycle card so the operator sees which
+// node currently hosts the client's data.
+export const clientStoragePlacementSchema = z.object({
+  pvcs: z.array(z.object({
+    namespace: z.string(),
+    pvcName: z.string(),
+    volumeName: z.string(),
+    sizeBytes: z.number().int().nonnegative(),
+    state: z.string().nullable(),
+    robustness: z.string().nullable(),
+    replicaNodes: z.array(z.string()).default([]),
+  })).default([]),
+});
+export type ClientStoragePlacement = z.infer<typeof clientStoragePlacementSchema>;

@@ -39,7 +39,9 @@ import {
   useRestoreClient as useStorageRestore,
   useStorageOperations,
   useClearFailedState,
+  useClientStoragePlacement,
 } from '@/hooks/use-storage-lifecycle';
+import { useTableSearch } from '@/hooks/use-table-search';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
 
@@ -935,18 +937,32 @@ function ImapSyncStatusBadge({ status }: { readonly status: ImapSyncJob['status'
 function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<Deployment> & { readonly clientId: string | undefined }) {
   const restartDeployment = useRestartDeployment(clientId);
 
+  const items = (data?.data ?? []) as readonly Deployment[];
+  const search = useTableSearch(items, ['name', 'type', 'status', 'currentNodeName'] as ReadonlyArray<keyof Deployment>);
+  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(search.filteredData, 'name');
+
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load deployments." />;
-  const items = data?.data ?? [];
-  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'name');
   if (items.length === 0) return <TabEmpty resource="deployments" />;
 
   return (
-    <table className="w-full text-left text-sm" data-testid="deployments-table">
+    <div>
+      <div className="mb-3 flex items-center justify-end">
+        <input
+          type="search"
+          value={search.query}
+          onChange={(e) => search.setQuery(e.target.value)}
+          placeholder="Search by name, type, status, node…"
+          className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1 text-sm"
+          data-testid="deployments-search"
+        />
+      </div>
+      <table className="w-full text-left text-sm" data-testid="deployments-table">
       <thead>
         <tr className="border-b border-gray-100 dark:border-gray-700 text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
           <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label="Node" sortKey="currentNodeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Replicas" sortKey="replicaCount" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="CPU" sortKey="cpuRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Memory" sortKey="memoryRequest" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
@@ -971,6 +987,7 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
               <tr className="border-b border-gray-50 dark:border-gray-700">
                 <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
+                <td className="py-2 font-mono text-gray-700 dark:text-gray-300">{d.currentNodeName ?? <span className="text-gray-400">—</span>}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
                 <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
@@ -998,7 +1015,7 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
               </tr>
               {detail && (
                 <tr className={detailTone} data-testid={`deployment-${d.id}-detail`}>
-                  <td colSpan={8} className="px-3 py-1.5 text-xs">
+                  <td colSpan={9} className="px-3 py-1.5 text-xs">
                     <span className="font-medium">{d.status === 'failed' ? 'Error: ' : 'Status: '}</span>
                     {detail}
                   </td>
@@ -1009,6 +1026,10 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
         })}
       </tbody>
     </table>
+    {search.query && search.filteredData.length === 0 && (
+      <p className="mt-2 text-xs text-gray-500 italic">No deployments match &quot;{search.query}&quot;.</p>
+    )}
+    </div>
   );
 }
 
@@ -1703,6 +1724,8 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
         </div>
       </div>
 
+      <PvcPlacementSection clientId={clientId} />
+
       {activeOp && (
         <div className="mb-3 rounded-md bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
           <div className="flex items-center justify-between text-amber-900 dark:text-amber-100">
@@ -2045,6 +2068,86 @@ function NamespaceIntegrityBanner({ clientId }: { readonly clientId: string }) {
           Run reconciler
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Storage Lifecycle subsection — shows which cluster node currently
+ * holds the client's PVC(s). Operators want this at a glance so they
+ * can correlate "client is on staging1" with platform metrics, drains,
+ * and capacity plans.
+ *
+ * Sortable + searchable — same UX as the Deployments tab and admin
+ * Installed Applications table.
+ */
+function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
+  const { data, isLoading, error } = useClientStoragePlacement(clientId);
+  const pvcs = data?.data.pvcs ?? [];
+  const search = useTableSearch(pvcs, ['pvcName', 'volumeName', 'state', 'robustness']);
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(search.filteredData, 'pvcName');
+
+  if (isLoading) {
+    return (
+      <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400">
+        Loading PVC placement…
+      </div>
+    );
+  }
+  if (error || pvcs.length === 0) {
+    return (
+      <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400">
+        No PVCs found for this client (yet).
+      </div>
+    );
+  }
+  return (
+    <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 p-3" data-testid="pvc-placement-section">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-300">Persistent volumes ({pvcs.length})</h3>
+        <input
+          type="search"
+          value={search.query}
+          onChange={(e) => search.setQuery(e.target.value)}
+          placeholder="Search…"
+          className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs"
+          data-testid="pvc-placement-search"
+        />
+      </div>
+      <table className="w-full text-xs">
+        <thead className="text-gray-500 dark:text-gray-400">
+          <tr>
+            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <th className="text-left py-1 pr-2">Replica node(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedData.map((p) => (
+            <tr key={p.volumeName} className="border-t border-gray-100 dark:border-gray-700">
+              <td className="py-1.5 pr-2 font-mono">{p.pvcName}</td>
+              <td className="py-1.5 pr-2 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
+              <td className="py-1.5 pr-2">{p.state ?? '—'}</td>
+              <td className="py-1.5 pr-2">
+                <span className={p.robustness === 'healthy'
+                  ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                  : p.robustness === 'degraded' ? 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                  : 'rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-300'}>
+                  {p.robustness ?? '—'}
+                </span>
+              </td>
+              <td className="py-1.5 pr-2 font-mono">
+                {p.replicaNodes.length === 0 ? <span className="text-gray-400">—</span> : p.replicaNodes.join(', ')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {search.query && search.filteredData.length === 0 && (
+        <p className="mt-2 text-xs text-gray-500 italic">No PVCs match &quot;{search.query}&quot;.</p>
+      )}
     </div>
   );
 }

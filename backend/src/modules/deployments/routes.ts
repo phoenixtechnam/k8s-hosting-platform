@@ -756,6 +756,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         storagePath: deployments.storagePath,
         installedVersion: deployments.installedVersion,
         replicaCount: deployments.replicaCount,
+        currentNodeName: deployments.currentNodeName,
         createdAt: deployments.createdAt,
         updatedAt: deployments.updatedAt,
       })

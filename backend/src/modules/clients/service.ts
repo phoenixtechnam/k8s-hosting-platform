@@ -117,6 +117,108 @@ export async function getClientById(db: Database, id: string) {
   return client;
 }
 
+/**
+ * Surface PVC node placement for the Storage Lifecycle card. Walks
+ * the client's PVCs, joins each to its Longhorn Volume CR, then to
+ * the running replicas. Returns one row per PVC with the list of
+ * node IDs hosting a healthy replica.
+ *
+ * Best-effort: a missing Longhorn CRD (dev cluster) or transient
+ * API blip yields an empty replicas list rather than failing the
+ * whole request — the UI shows "—" in that case.
+ */
+export async function getClientStoragePlacement(
+  db: Database,
+  id: string,
+  k8s: K8sClients,
+): Promise<{
+  pvcs: Array<{
+    namespace: string;
+    pvcName: string;
+    volumeName: string;
+    sizeBytes: number;
+    state: string | null;
+    robustness: string | null;
+    replicaNodes: string[];
+  }>;
+}> {
+  const [client] = await db.select().from(clients).where(eq(clients.id, id));
+  if (!client) throw clientNotFound(id);
+  if (!client.kubernetesNamespace) {
+    return { pvcs: [] };
+  }
+
+  const namespace = client.kubernetesNamespace;
+  const pvcsResp = await k8s.core.listNamespacedPersistentVolumeClaim({ namespace })
+    .catch(() => ({ items: [] as Array<{ metadata?: { name?: string }; spec?: { volumeName?: string } }> }));
+
+  // Group running replicas by volume name, single LIST cluster-wide.
+  const replicaNodesByVolume = new Map<string, string[]>();
+  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number }> = new Map();
+  try {
+    interface LhReplica {
+      spec?: { volumeName?: string; nodeID?: string };
+      status?: { currentState?: string };
+    }
+    interface LhVolume {
+      metadata?: { name?: string };
+      spec?: { size?: string };
+      status?: { state?: string; robustness?: string };
+    }
+    const [reps, vols] = await Promise.all([
+      k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'replicas',
+      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhReplica[] }>,
+      k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes',
+      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolume[] }>,
+    ]);
+    for (const r of reps.items ?? []) {
+      if (r.status?.currentState !== 'running') continue;
+      const v = r.spec?.volumeName;
+      const n = r.spec?.nodeID;
+      if (!v || !n) continue;
+      const arr = replicaNodesByVolume.get(v) ?? [];
+      arr.push(n);
+      replicaNodesByVolume.set(v, arr);
+    }
+    volumeIndex = new Map((vols.items ?? []).map((v) => [
+      v.metadata?.name ?? '',
+      {
+        state: v.status?.state ?? null,
+        robustness: v.status?.robustness ?? null,
+        sizeBytes: Number(v.spec?.size ?? '0') || 0,
+      },
+    ]));
+  } catch (err) {
+    console.warn('[clients/storage-placement] longhorn list failed:', (err as Error).message);
+  }
+
+  const pvcs: Array<{
+    namespace: string; pvcName: string; volumeName: string;
+    sizeBytes: number; state: string | null; robustness: string | null;
+    replicaNodes: string[];
+  }> = [];
+  for (const pvc of (pvcsResp.items ?? [])) {
+    const pvcName = pvc.metadata?.name ?? '';
+    const volumeName = pvc.spec?.volumeName ?? '';
+    if (!volumeName) continue;
+    const meta = volumeIndex.get(volumeName);
+    pvcs.push({
+      namespace,
+      pvcName,
+      volumeName,
+      sizeBytes: meta?.sizeBytes ?? 0,
+      state: meta?.state ?? null,
+      robustness: meta?.robustness ?? null,
+      replicaNodes: (replicaNodesByVolume.get(volumeName) ?? []).slice().sort(),
+    });
+  }
+  return { pvcs };
+}
+
 async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
   const [plan] = await db.select({ storageLimit: hostingPlans.storageLimit })
     .from(hostingPlans).where(eq(hostingPlans.id, planId));

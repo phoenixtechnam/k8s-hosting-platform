@@ -383,6 +383,13 @@ export const deployments = pgTable('deployments', {
   lastUpgradedAt: timestamp('last_upgraded_at'),
   lastError: text('last_error'),
   statusMessage: text('status_message'),
+  /**
+   * Migration 0053 — current node hosting the deployment's first
+   * Running/Pending pod. Refreshed by the status-reconciler every
+   * 60 s. Null when no pod exists. Multi-replica deployments report
+   * the first found node only; UI labels it as "host node".
+   */
+  currentNodeName: varchar('current_node_name', { length: 253 }),
   deletedAt: timestamp('deleted_at'),
   status: deploymentStatusEnum().notNull().default('pending'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

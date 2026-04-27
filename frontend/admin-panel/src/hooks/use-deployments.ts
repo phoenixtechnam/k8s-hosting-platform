@@ -13,6 +13,8 @@ export interface Deployment {
   readonly lastError: string | null;
   /** Transient progress message while status='pending' (e.g. "1/3 replicas ready"). */
   readonly statusMessage: string | null;
+  /** Cluster node currently hosting the first scheduled pod. */
+  readonly currentNodeName: string | null;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
