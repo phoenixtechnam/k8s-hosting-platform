@@ -223,6 +223,20 @@ export async function applyNetworkPolicy(
                     matchLabels: { 'kubernetes.io/metadata.name': 'ingress-nginx' },
                   },
                 },
+                // ingress-nginx runs hostNetwork=true. When it forwards
+                // cross-node to a tenant pod, Linux re-sources the
+                // packet via vxlan.calico — the tenant pod sees a
+                // source IP in the cluster pod CIDR (10.42.0.0/16),
+                // NOT the ingress-nginx namespace. Without this
+                // ipBlock the namespaceSelector above never matches
+                // for cross-node traffic, and tenant HTTP
+                // (including LE HTTP-01 challenges to the
+                // cm-acme-http-solver pod) times out at 504.
+                // Same fix shape as k8s/base/network-policies.yaml:
+                // allow-ingress-to-platform.
+                {
+                  ipBlock: { cidr: '10.42.0.0/16' },
+                },
               ],
             },
           ],
