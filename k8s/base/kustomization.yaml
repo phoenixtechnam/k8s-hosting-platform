@@ -6,6 +6,10 @@ resources:
   - rbac.yaml
   - network-policies.yaml
   - resource-quotas.yaml
+  # System-namespace LimitRanges that flip BestEffort control-plane
+  # pods (Calico, cert-manager, CNPG, Longhorn CSI sidecars) into
+  # Burstable QoS so they are not first-evicted under pressure.
+  - limit-ranges-system.yaml
   - platform-config.yaml
   - platform-version.yaml
   # cluster-issuers.yaml is NOT included here — ClusterIssuers are created
