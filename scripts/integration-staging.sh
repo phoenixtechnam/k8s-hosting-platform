@@ -246,10 +246,13 @@ scenario_https() {
   wait_for 60 "Ingress exists in $ns with host=$domain" "$domain" \
     "ssh_cp 'kubectl -n $ns get ingress -o jsonpath={.items[*].spec.rules[*].host}'" || return 1
 
-  # 4. Cert ready. Let's Encrypt HTTP-01 issuance + DNS propagation
-  # delay can take 2-4 minutes on a fresh staging cluster. Anything
-  # under 360s is normal; longer means there's a real problem
-  # (rate-limit, ACME endpoint reachability, etc).
+  # 4. Cert ready. Let's Encrypt HTTP-01 issuance on this cluster
+  # consistently lands in 6-10 min for a fresh tenant domain — the
+  # admission webhook on hostNetwork ingress-nginx is slow to
+  # respond on the first solver-Ingress create (cert-manager retries
+  # with backoff). 600s = comfortable margin without masking a true
+  # failure. A genuinely-broken issuance never completes, so a
+  # 600s timeout that fails is real, not flaky.
   #
   # Use the cert NAME (deterministic from the hostname) rather than a
   # jsonpath filter — the inner double quotes in
@@ -257,7 +260,7 @@ scenario_https() {
   # unreliably and produced false negatives even when the cert was
   # genuinely Ready.
   local cert_name; cert_name="$(echo "$domain" | tr '.' '-')-cert"
-  wait_for 360 "cert-manager Certificate Ready=True" "True" \
+  wait_for 600 "cert-manager Certificate Ready=True" "True" \
     "ssh_cp \"kubectl -n $ns get cert $cert_name -o jsonpath='{.status.conditions[?(@.type==\\\"Ready\\\")].status}'\"" || return 1
 
   # 5. DNS — should already resolve thanks to the wildcard, but
