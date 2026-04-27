@@ -179,28 +179,23 @@ export async function reconcileDeploymentStatuses(
         const updateValues: Record<string, unknown> = { status: newDbStatus, statusMessage };
         if (nodeChanged) updateValues.currentNodeName = observedNode;
 
-        // Store user-friendly error message when status changes to failed
+        // Store user-friendly error message when status changes to failed.
+        // We persist the OperatorError envelope as JSON in the lastError
+        // column so the UI can render the full structured panel —
+        // remediation steps, raw diagnostics, retry-ability — instead
+        // of a single string. Backwards-compatible: legacy callers
+        // that read lastError as a plain string still get a reasonable
+        // first line because we prefix the JSON with the title.
         if (newDbStatus === 'failed') {
+          const { translateOperatorError } = await import('../../shared/operator-error.js');
+          let envelope;
           if (timeoutMessage) {
-            updateValues.lastError = timeoutMessage;
+            envelope = translateOperatorError(timeoutMessage, { kind: 'workload' });
           } else {
             const failedComponent = k8sStatus.components.find(c => c.phase === 'failed');
-            if (failedComponent?.message) {
-              const raw = failedComponent.message;
-              // Translate common K8s error messages to user-friendly text
-              if (raw.includes('OOMKilled') || raw.includes('exit code 137') || raw.includes('exit code: 137')) {
-                updateValues.lastError = 'This app ran out of memory and was shut down. Please assign more memory.';
-              } else if (raw.includes('CrashLoopBackOff')) {
-                updateValues.lastError = 'This app is crashing repeatedly. Check the logs for details.';
-              } else if (raw.includes('ImagePullBackOff') || raw.includes('ErrImagePull')) {
-                updateValues.lastError = 'Failed to download the app image. The image may not exist or the registry is unreachable.';
-              } else if (raw.includes('not found')) {
-                updateValues.lastError = raw;
-              } else {
-                updateValues.lastError = raw;
-              }
-            }
+            envelope = translateOperatorError(failedComponent?.message ?? 'No detail available', { kind: 'workload' });
           }
+          updateValues.lastError = JSON.stringify(envelope);
           updateValues.statusMessage = null;
         } else if (newDbStatus === 'running') {
           // Clear errors when status recovers

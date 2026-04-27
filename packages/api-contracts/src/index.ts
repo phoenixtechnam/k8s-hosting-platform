@@ -14,6 +14,7 @@
 //   5. PaginationParams enforces limit <= MAX_PAGE_LIMIT (100)
 
 export * from './shared.js';
+export * from './operator-error.js';
 export * from './auth.js';
 export * from './clients.js';
 export * from './domains.js';

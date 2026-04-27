@@ -42,6 +42,7 @@ import {
   useClientStoragePlacement,
 } from '@/hooks/use-storage-lifecycle';
 import { useTableSearch } from '@/hooks/use-table-search';
+import ErrorPanel from '@/components/ErrorPanel';
 
 type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
 
@@ -973,12 +974,24 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
       </thead>
       <tbody>
         {sortedItems.map((d) => {
-          // Surface lastError / statusMessage as a follow-up row so
-          // operators see the failure reason without drilling down.
-          // Pre-fix this was invisible — a stuck Longhorn volume looked
-          // identical to a healthy starting workload until the 60-min
-          // stale timeout kicked in.
-          const detail = (d.lastError && d.lastError.trim()) || (d.statusMessage && d.statusMessage.trim()) || '';
+          // Try to parse lastError as the OperatorError envelope (JSON
+          // produced by the status-reconciler since the error-standard
+          // change). Fall back to plain string for legacy rows.
+          let envelope: import('@k8s-hosting/api-contracts').OperatorError | null = null;
+          let plainDetail = '';
+          if (d.lastError && d.lastError.trim()) {
+            try {
+              const parsed = JSON.parse(d.lastError);
+              if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
+                envelope = parsed as import('@k8s-hosting/api-contracts').OperatorError;
+              } else {
+                plainDetail = d.lastError;
+              }
+            } catch {
+              plainDetail = d.lastError;
+            }
+          }
+          if (!envelope && !plainDetail) plainDetail = (d.statusMessage ?? '').trim();
           const detailTone = d.status === 'failed'
             ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
             : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300';
@@ -1013,11 +1026,24 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
                   )}
                 </td>
               </tr>
-              {detail && (
+              {envelope && (
+                <tr data-testid={`deployment-${d.id}-detail`}>
+                  <td colSpan={9} className="px-3 py-1.5">
+                    <ErrorPanel
+                      error={envelope}
+                      severity={d.status === 'failed' ? 'error' : 'warn'}
+                      compact
+                      onRetry={d.status === 'failed' ? () => restartDeployment.mutate(d.id) : undefined}
+                      retryPending={restartDeployment.isPending}
+                    />
+                  </td>
+                </tr>
+              )}
+              {!envelope && plainDetail && (
                 <tr className={detailTone} data-testid={`deployment-${d.id}-detail`}>
                   <td colSpan={9} className="px-3 py-1.5 text-xs">
                     <span className="font-medium">{d.status === 'failed' ? 'Error: ' : 'Status: '}</span>
-                    {detail}
+                    {plainDetail}
                   </td>
                 </tr>
               )}
