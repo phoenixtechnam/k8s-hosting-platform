@@ -240,6 +240,42 @@ export async function applyNetworkPolicy(
         },
       },
     },
+    {
+      // platform-api → tenant pods (file-manager sidecar, future
+      // tenant-side admin operations). Without this, default-deny-
+      // ingress blocks the cross-namespace HTTP call that
+      // fileManagerRequest makes via the apiserver services/proxy
+      // (the proxy runs in-apiserver but the destination tenant pod
+      // sees the source as the cluster pod CIDR after vxlan re-source).
+      // Scoped tightly: only platform-api pods, only the FM port.
+      name: 'allow-platform-api',
+      body: {
+        metadata: { name: 'allow-platform-api', namespace },
+        spec: {
+          podSelector: {},
+          policyTypes: ['Ingress'],
+          ingress: [{
+            _from: [
+              {
+                namespaceSelector: {
+                  matchLabels: { 'kubernetes.io/metadata.name': 'platform' },
+                },
+                podSelector: {
+                  matchLabels: { app: 'platform-api' },
+                },
+              },
+              // ipBlock catches the host-network re-source case (when
+              // platform-api sits on a different node than the FM pod
+              // and Linux rewrites the source IP to vxlan.calico's
+              // tunnel address inside the cluster pod CIDR). Mirrors
+              // the same pattern in k8s/base/network-policies.yaml.
+              { ipBlock: { cidr: '10.42.0.0/16' } },
+            ],
+            ports: [{ protocol: 'TCP', port: 8111 }],
+          }],
+        },
+      },
+    },
   ];
 
   for (const policy of policies) {
