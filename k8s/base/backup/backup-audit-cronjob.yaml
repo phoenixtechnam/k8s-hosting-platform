@@ -61,10 +61,15 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-audit
 spec:
+  # Suspended by default. The audit checks whether Longhorn PVCs carry
+  # the backup-group label — pointless when no backup target is active.
+  # Unsuspended by longhorn-reconciler in lockstep with the DR
+  # CronJobs, even though this one doesn't read backup-credentials.
+  suspend: true
   schedule: "0 4 * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       backoffLimit: 1
