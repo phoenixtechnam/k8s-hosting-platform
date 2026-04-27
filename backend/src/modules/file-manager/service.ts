@@ -340,8 +340,11 @@ export async function fileManagerRequest(
     platformInternal?: boolean;
   } = {},
 ): Promise<ProxyResult> {
-  // Ensure deployed
-  await ensureFileManagerRunning(k8sClients, namespace, image);
+  // Ensure deployed AND scaled up. The provisioner creates the FM
+  // Deployment with replicas=0 so it doesn't fight the workload's
+  // RWO PVC at provision time (Multi-Attach). Pass initialReplicas=1
+  // so /files/start (and the proxy path) bring it up on demand.
+  await ensureFileManagerRunning(k8sClients, namespace, image, 1);
 
   // Wait for ready
   const status = await waitForReady(k8sClients, namespace);
@@ -364,7 +367,9 @@ export async function getReadyFileManagerPod(
   namespace: string,
   image = 'file-manager-sidecar:latest',
 ): Promise<string> {
-  await ensureFileManagerRunning(k8sClients, namespace, image);
+  // Same on-demand semantics as fileManagerRequest — scale up to 1
+  // even if provisioner created it at 0.
+  await ensureFileManagerRunning(k8sClients, namespace, image, 1);
   const status = await waitForReady(k8sClients, namespace);
   if (!status.ready) {
     throw new Error(`File manager not ready: ${status.message ?? 'timeout'}`);
