@@ -119,7 +119,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     validateNodeName(name);
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const impact = await buildDrainImpact(k8s, name);
+    const impact = await buildDrainImpact(k8s, app.db, name);
     return success(impact);
   });
 
@@ -153,7 +153,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     }
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
-    const result = await drainNode(k8s, name, parsed.data);
+    const result = await drainNode(k8s, app.db, name, parsed.data);
     // Audit — include the operator's force-flag decision so
     // last-replica overrides are attributable, mirroring the
     // pattern used by force_demote in updateNode.
