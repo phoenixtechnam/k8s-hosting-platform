@@ -5,7 +5,7 @@ import { clusterNodes, type ClusterNode } from '../../db/schema.js';
 import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@k8s-hosting/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -317,11 +317,22 @@ function isUnevictable(pod: PodLite, thisNode: string): { skip: boolean; reason:
   return { skip: false, reason: '' };
 }
 
-/** Inspect a Pod and decide whether its nodeAffinity pins it to one specific node. */
-function podPinnedToNode(pod: { spec?: { affinity?: unknown } }, nodeName: string): boolean {
-  // Conservative best-effort detection — we only flag the explicit single-host case.
-  // A Pod with nodeName: <node> in spec is also pinned. Caller checks that separately.
-  const affinity = (pod.spec as { affinity?: { nodeAffinity?: unknown } } | undefined)?.affinity;
+/**
+ * Check whether a Pod template (or live Pod) is pinned to one specific
+ * node via nodeSelector or nodeAffinity. We accept both forms because:
+ *   - The platform's k8s-deployer sets `nodeSelector: kubernetes.io/hostname=<name>`
+ *     when a tenant deployment has `clients.workerNodeName` populated.
+ *   - Operators may also use nodeAffinity for more complex pinning.
+ * Returns the pin kind so the UI can label rows accurately.
+ */
+function detectNodePin(
+  spec: { nodeSelector?: Record<string, string>; affinity?: unknown } | undefined,
+  nodeName: string,
+): 'nodeSelector' | 'nodeAffinity' | null {
+  if (spec?.nodeSelector?.['kubernetes.io/hostname'] === nodeName) {
+    return 'nodeSelector';
+  }
+  const affinity = (spec as { affinity?: { nodeAffinity?: unknown } } | undefined)?.affinity;
   const nodeAffinity = affinity?.nodeAffinity as
     | { requiredDuringSchedulingIgnoredDuringExecution?: {
         nodeSelectorTerms?: Array<{ matchExpressions?: Array<{ key?: string; operator?: string; values?: string[] }> }>;
@@ -335,11 +346,11 @@ function podPinnedToNode(pod: { spec?: { affinity?: unknown } }, nodeName: strin
         && Array.isArray(expr.values)
         && expr.values.length === 1
         && expr.values[0] === nodeName) {
-        return true;
+        return 'nodeAffinity';
       }
     }
   }
-  return false;
+  return null;
 }
 
 interface RawPod {
@@ -347,11 +358,12 @@ interface RawPod {
     namespace?: string;
     name?: string;
     labels?: Record<string, string>;
-    ownerReferences?: Array<{ kind?: string }>;
+    ownerReferences?: Array<{ kind?: string; name?: string }>;
     annotations?: Record<string, string>;
   };
   spec?: {
     nodeName?: string;
+    nodeSelector?: Record<string, string>;
     affinity?: unknown;
   };
   status?: {
@@ -361,14 +373,49 @@ interface RawPod {
 
 /**
  * Build the impact preview the UI shows before the operator confirms a
- * drain. The drain itself uses `evictPods`, which calls eviction API.
- * Both share the same classification so the preview is faithful.
+ * drain. Three primary kinds of resources are surfaced:
+ *
+ *  1. nonSystemPods   — live Pods on this node that will be evicted
+ *  2. pinnedWorkloads — Deployment/StatefulSet specs pinned here, even
+ *                       when replicas=0 or pods are in unusual phases
+ *                       (these are the re-pin targets the operator
+ *                       actually wants to move)
+ *  3. tenantPvcs      — Longhorn PVCs in tenant namespaces with a
+ *                       replica on this node
+ *
+ * Each entry carries client attribution (clientId + clientName via the
+ * platform DB's `clients.kubernetesNamespace` lookup) so the modal
+ * shows a human label and a link to the client detail page.
+ *
+ * `db` is required for the client lookup; pass app.db.
  */
-export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
+export async function buildDrainImpact(
+  k8s: K8sClients,
+  db: Database,
+  name: string,
+): Promise<{
   nodeName: string;
   alreadyCordoned: boolean;
   systemPods: Array<{ namespace: string; name: string; reason: string }>;
-  nonSystemPods: Array<{ namespace: string; name: string; clientId: string | null; pinnedToThisNode: boolean }>;
+  nonSystemPods: Array<{
+    namespace: string; name: string;
+    clientId: string | null; clientName: string | null;
+    pinnedToThisNode: boolean;
+    workloadKind: string | null; workloadName: string | null;
+  }>;
+  pinnedWorkloads: Array<{
+    namespace: string; kind: 'Deployment' | 'StatefulSet'; name: string;
+    clientId: string | null; clientName: string | null;
+    replicas: number;
+    pinKind: 'nodeSelector' | 'nodeAffinity';
+  }>;
+  tenantPvcs: Array<{
+    namespace: string; pvcName: string; volumeName: string;
+    clientId: string | null; clientName: string | null;
+    sizeBytes: number; replicaCount: number;
+    isLastReplica: boolean;
+    currentNodeSelector: string[];
+  }>;
   longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }>;
 }> {
   // 1) Cordon state
@@ -383,12 +430,30 @@ export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
     throw err;
   }
 
-  // 2) Pods on this node (excluding terminal phase)
+  // 2) Cluster-wide client lookup table (namespace → {id, name}).
+  //    Single SELECT covers every tenant; cheaper than per-namespace queries.
+  const { clients: clientsTbl } = await import('../../db/schema.js');
+  const clientRows = await db.select({
+    id: clientsTbl.id,
+    name: clientsTbl.companyName,
+    ns: clientsTbl.kubernetesNamespace,
+  }).from(clientsTbl);
+  const clientByNs = new Map<string, { id: string; name: string }>();
+  for (const c of clientRows) {
+    if (c.ns) clientByNs.set(c.ns, { id: c.id, name: c.name });
+  }
+
+  // 3) Pods on this node (excluding terminal phase)
   const pods = await k8s.core.listPodForAllNamespaces({
     fieldSelector: `spec.nodeName=${name}`,
   });
   const systemPods: Array<{ namespace: string; name: string; reason: string }> = [];
-  const nonSystemPods: Array<{ namespace: string; name: string; clientId: string | null; pinnedToThisNode: boolean }> = [];
+  const nonSystemPods: Array<{
+    namespace: string; name: string;
+    clientId: string | null; clientName: string | null;
+    pinnedToThisNode: boolean;
+    workloadKind: string | null; workloadName: string | null;
+  }> = [];
 
   for (const raw of pods.items as RawPod[]) {
     const ns = raw.metadata?.namespace ?? '';
@@ -404,7 +469,7 @@ export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
       nodeName: raw.spec?.nodeName,
       ownerKind: isMirror ? 'Node' : ownerKind,
       clientId: raw.metadata?.labels?.['platform.phoenix-host.net/client-id'] ?? null,
-      hasNodeAffinityToThisNode: podPinnedToNode(raw, name),
+      hasNodeAffinityToThisNode: detectNodePin(raw.spec, name) !== null,
     };
     const verdict = isUnevictable(lite, name);
     if (verdict.skip || (SYSTEM_NAMESPACES as readonly string[]).includes(ns)) {
@@ -415,15 +480,66 @@ export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
       });
       continue;
     }
+    const clientLookup = clientByNs.get(ns);
+    const ownerRef = raw.metadata?.ownerReferences?.[0];
     nonSystemPods.push({
       namespace: ns,
       name: podName,
-      clientId: lite.clientId,
+      clientId: lite.clientId ?? clientLookup?.id ?? null,
+      clientName: clientLookup?.name ?? null,
       pinnedToThisNode: lite.hasNodeAffinityToThisNode,
+      workloadKind: ownerRef?.kind ?? null,
+      workloadName: ownerRef?.name ?? null,
     });
   }
 
-  // 3) Longhorn replicas — refuse to drain when this is the LAST healthy
+  // 4) Pinned workloads (Deployments + StatefulSets) — even when they
+  //    have replicas=0 or pods stuck Pending, the Deployment's pin is
+  //    what the operator wants to re-target. Fetched cluster-wide,
+  //    filtered to those with kubernetes.io/hostname=<this node>.
+  const pinnedWorkloads: Array<{
+    namespace: string; kind: 'Deployment' | 'StatefulSet'; name: string;
+    clientId: string | null; clientName: string | null;
+    replicas: number;
+    pinKind: 'nodeSelector' | 'nodeAffinity';
+  }> = [];
+  interface LiteWorkload {
+    metadata?: { name?: string; namespace?: string };
+    spec?: {
+      replicas?: number;
+      template?: { spec?: { nodeSelector?: Record<string, string>; affinity?: unknown } };
+    };
+  }
+  try {
+    const [deps, sts] = await Promise.all([
+      k8s.apps.listDeploymentForAllNamespaces({}) as Promise<{ items?: LiteWorkload[] }>,
+      k8s.apps.listStatefulSetForAllNamespaces({}) as Promise<{ items?: LiteWorkload[] }>,
+    ]);
+    const enumerate = (items: LiteWorkload[] | undefined, kind: 'Deployment' | 'StatefulSet') => {
+      for (const w of items ?? []) {
+        const ns = w.metadata?.namespace ?? '';
+        if ((SYSTEM_NAMESPACES as readonly string[]).includes(ns)) continue;
+        const pin = detectNodePin(w.spec?.template?.spec, name);
+        if (!pin) continue;
+        const c = clientByNs.get(ns);
+        pinnedWorkloads.push({
+          namespace: ns,
+          kind,
+          name: w.metadata?.name ?? '',
+          clientId: c?.id ?? null,
+          clientName: c?.name ?? null,
+          replicas: w.spec?.replicas ?? 0,
+          pinKind: pin,
+        });
+      }
+    };
+    enumerate(deps.items, 'Deployment');
+    enumerate(sts.items, 'StatefulSet');
+  } catch (err) {
+    console.warn('[nodes] pinned workload enumeration failed:', (err as Error).message);
+  }
+
+  // 5) Longhorn replicas — refuse to drain when this is the LAST healthy
   //    replica for any volume. The custom resource list is best-effort:
   //    if the CRD is absent (cluster without Longhorn) we just skip it.
   const longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }> = [];
@@ -463,7 +579,85 @@ export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
     }
   }
 
-  return { nodeName: name, alreadyCordoned, systemPods, nonSystemPods, longhornReplicas };
+  // 6) Tenant PVCs with a replica on this node. We list Longhorn Volumes
+  //    cluster-wide once and join with PV → PVC namespace to produce
+  //    operator-friendly entries. Tenant = namespace IS in the clients
+  //    table (excluding platform / mail / etc).
+  const tenantPvcs: Array<{
+    namespace: string; pvcName: string; volumeName: string;
+    clientId: string | null; clientName: string | null;
+    sizeBytes: number; replicaCount: number;
+    isLastReplica: boolean;
+    currentNodeSelector: string[];
+  }> = [];
+  try {
+    interface LhVolume {
+      metadata?: { name?: string };
+      spec?: { size?: string; numberOfReplicas?: number; nodeSelector?: string[] };
+      status?: { kubernetesStatus?: { pvcName?: string; namespace?: string } };
+    }
+    const vols = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumes',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhVolume[] };
+
+    // Aggregate healthy-replica counts again (slightly redundant but
+    // saves an extra LIST when the CRD is hot).
+    const replicaNodes = new Map<string, string[]>(); // volume → node IDs
+    const replicaListResp = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'replicas',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as {
+      items?: Array<{ spec?: { volumeName?: string; nodeID?: string }; status?: { currentState?: string } }>;
+    };
+    for (const r of replicaListResp.items ?? []) {
+      if (r.status?.currentState !== 'running') continue;
+      const v = r.spec?.volumeName;
+      const n = r.spec?.nodeID;
+      if (!v || !n) continue;
+      const arr = replicaNodes.get(v) ?? [];
+      arr.push(n);
+      replicaNodes.set(v, arr);
+    }
+
+    for (const v of vols.items ?? []) {
+      const volName = v.metadata?.name ?? '';
+      const k8sStatus = v.status?.kubernetesStatus;
+      const ns = k8sStatus?.namespace ?? '';
+      const pvcName = k8sStatus?.pvcName ?? '';
+      if (!ns || !clientByNs.has(ns)) continue; // tenant only
+      const nodes = replicaNodes.get(volName) ?? [];
+      if (!nodes.includes(name)) continue;
+      const c = clientByNs.get(ns)!;
+      const sizeBytes = Number(v.spec?.size ?? '0');
+      tenantPvcs.push({
+        namespace: ns,
+        pvcName,
+        volumeName: volName,
+        clientId: c.id,
+        clientName: c.name,
+        sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+        replicaCount: nodes.length,
+        isLastReplica: nodes.length <= 1,
+        currentNodeSelector: Array.isArray(v.spec?.nodeSelector) ? [...v.spec.nodeSelector] : [],
+      });
+    }
+  } catch (err) {
+    const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (status !== 404) {
+      console.warn('[nodes] tenant PVC enumeration failed:', (err as Error).message);
+    }
+  }
+
+  return {
+    nodeName: name,
+    alreadyCordoned,
+    systemPods,
+    nonSystemPods,
+    pinnedWorkloads,
+    tenantPvcs,
+    longhornReplicas,
+  };
 }
 
 /**
@@ -479,11 +673,25 @@ export async function buildDrainImpact(k8s: K8sClients, name: string): Promise<{
  */
 export async function drainNode(
   k8s: K8sClients,
+  db: Database,
   name: string,
-  opts: { readonly forceLastReplica?: boolean; readonly gracePeriodSeconds?: number },
-): Promise<{ cordoned: boolean; evicted: number; failed: Array<{ namespace: string; name: string; error: string }> }> {
+  opts: {
+    readonly forceLastReplica?: boolean;
+    readonly gracePeriodSeconds?: number;
+    /** "<ns>/<kind>/<name>" → "" (auto) | "<targetNode>" | "stay" */
+    readonly workloadPlacement?: Record<string, string>;
+    /** "<volumeName>" → "" (auto) | "<targetNode>" */
+    readonly pvcPlacement?: Record<string, string>;
+  },
+): Promise<{
+  cordoned: boolean;
+  evicted: number;
+  failed: Array<{ namespace: string; name: string; error: string }>;
+  rePinnedWorkloads: number;
+  rePinnedPvcs: number;
+}> {
   // 1) Refuse if last Longhorn replica anywhere on this node, unless overridden.
-  const impact = await buildDrainImpact(k8s, name);
+  const impact = await buildDrainImpact(k8s, db, name);
   const lastReplicaVolumes = impact.longhornReplicas.filter((r) => r.isLastReplica);
   if (lastReplicaVolumes.length > 0 && !opts.forceLastReplica) {
     throw new ApiError(
@@ -493,6 +701,166 @@ export async function drainNode(
       409,
       { volumes: lastReplicaVolumes.slice(0, 20) },
     );
+  }
+
+  // 1.5) Apply re-pin instructions BEFORE cordoning.
+  //
+  // We read the existing Deployment / StatefulSet, mutate the
+  // nodeSelector map in-place (drop or set the hostname key), then
+  // write the entire map back via merge-patch. This avoids the
+  // strategic-merge "null deletes" trick whose behavior is fragile
+  // across content-type encodings — full map replacement is
+  // unambiguous regardless of which patch type the client picks.
+  //
+  // Race note: between this patch and the eviction in step 3, the
+  // Deployment controller has milliseconds to roll the new template.
+  // The new pod usually schedules on the chosen target, but under
+  // load it can land elsewhere (the ReplicaSet snapshot may still
+  // reflect the old template when the eviction's replacement pod
+  // is created). Documented; operator must verify post-drain.
+  let rePinnedWorkloads = 0;
+  let rePinnedDbSyncFailures = 0;
+  for (const [key, target] of Object.entries(opts.workloadPlacement ?? {})) {
+    const parts = key.split('/');
+    if (parts.length !== 3) continue;
+    const [ns, kind, wname] = parts;
+    if (target === 'stay') continue;
+
+    interface RawWorkload {
+      spec?: { template?: { spec?: { nodeSelector?: Record<string, string> } } };
+    }
+    let live: RawWorkload | null = null;
+    try {
+      if (kind === 'Deployment') {
+        live = await k8s.apps.readNamespacedDeployment({ namespace: ns, name: wname }) as RawWorkload;
+      } else if (kind === 'StatefulSet') {
+        live = await k8s.apps.readNamespacedStatefulSet({ namespace: ns, name: wname }) as RawWorkload;
+      }
+    } catch (err) {
+      console.warn(`[nodes] re-pin read ${kind}/${wname} in ${ns} failed:`, (err as Error).message);
+      continue;
+    }
+    if (!live) continue;
+
+    const existingSelector = live.spec?.template?.spec?.nodeSelector ?? {};
+    const nextSelector: Record<string, string> = { ...existingSelector };
+    if (target === '') {
+      delete nextSelector['kubernetes.io/hostname'];
+    } else {
+      nextSelector['kubernetes.io/hostname'] = target;
+    }
+
+    const body = {
+      spec: {
+        template: {
+          spec: { nodeSelector: nextSelector },
+        },
+      },
+    };
+    try {
+      if (kind === 'Deployment') {
+        await k8s.apps.patchNamespacedDeployment({
+          namespace: ns, name: wname, body,
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+          STRATEGIC_MERGE_PATCH);
+      } else if (kind === 'StatefulSet') {
+        await k8s.apps.patchNamespacedStatefulSet({
+          namespace: ns, name: wname, body,
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
+          STRATEGIC_MERGE_PATCH);
+      }
+      // Also persist the platform-side pin record so the next deploy
+      // doesn't snap back. Best-effort — failure logged + counted but
+      // not fatal (the k8s patch IS the source of truth at runtime).
+      try {
+        const { clients: clientsTbl } = await import('../../db/schema.js');
+        const clientRow = await db.select({ id: clientsTbl.id })
+          .from(clientsTbl)
+          .where(eq(clientsTbl.kubernetesNamespace, ns))
+          .limit(1);
+        if (clientRow[0]) {
+          await db.update(clientsTbl)
+            .set({ workerNodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
+            .where(eq(clientsTbl.id, clientRow[0].id));
+        } else {
+          rePinnedDbSyncFailures += 1;
+          console.warn(`[nodes] re-pin DB sync skipped — no clients row for namespace ${ns} (orphaned workload?)`);
+        }
+      } catch (err) {
+        rePinnedDbSyncFailures += 1;
+        console.warn(`[nodes] platform pin DB sync failed for ${ns}:`, (err as Error).message);
+      }
+      rePinnedWorkloads += 1;
+    } catch (err) {
+      console.warn(`[nodes] re-pin ${kind}/${wname} in ${ns} failed:`, (err as Error).message);
+    }
+  }
+
+  // 1.6) Apply tenant PVC re-pin instructions.
+  //
+  // Longhorn Volume.spec.nodeSelector is matched against
+  // `node.longhorn.io.spec.tags` — NOT against k8s hostname labels.
+  // To pin a tenant volume to a specific worker we therefore have to:
+  //   (a) ensure the target Longhorn Node CR carries the per-host tag
+  //       `node-<hostname>` (idempotent — patched at drain-time)
+  //   (b) write that tag into the Volume's spec.nodeSelector
+  //
+  // For "auto" (target === ''), we just clear the selector → Longhorn
+  // schedules anywhere except the draining node (which Longhorn skips
+  // automatically once the disk is in eviction mode + cordoned).
+  let rePinnedPvcs = 0;
+  const PER_HOST_TAG_PREFIX = 'node-';
+  for (const [volumeName, target] of Object.entries(opts.pvcPlacement ?? {})) {
+    if (target === 'stay') continue;
+
+    let nextSelector: string[] = [];
+    if (target !== '') {
+      const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
+      // Add the tag to the target Longhorn Node CR (idempotent — read
+      // existing tags first, append if missing). Treats the target node
+      // not existing as a fatal error so the operator hears about it
+      // rather than silently stranding the volume.
+      try {
+        const existing = await k8s.custom.getNamespacedCustomObject({
+          group: 'longhorn.io', version: 'v1beta2',
+          namespace: 'longhorn-system', plural: 'nodes', name: target,
+        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
+        const currentTags = existing.spec?.tags ?? [];
+        if (!currentTags.includes(hostTag)) {
+          await k8s.custom.patchNamespacedCustomObject({
+            group: 'longhorn.io', version: 'v1beta2',
+            namespace: 'longhorn-system', plural: 'nodes', name: target,
+            body: { spec: { tags: [...currentTags, hostTag] } },
+          } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+            MERGE_PATCH);
+        }
+        nextSelector = [hostTag];
+      } catch (err) {
+        const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+        if (status === 404) {
+          throw new ApiError(
+            'NODE_REPIN_TARGET_NOT_FOUND',
+            `Target node '${target}' not found in Longhorn — cannot re-pin volume ${volumeName}.`,
+            400,
+            { volumeName, target },
+          );
+        }
+        console.warn(`[nodes] PVC re-pin ${volumeName} → ${target} (tag step) failed:`, (err as Error).message);
+        continue;
+      }
+    }
+
+    try {
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes',
+        name: volumeName, body: { spec: { nodeSelector: nextSelector } },
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+        MERGE_PATCH);
+      rePinnedPvcs += 1;
+    } catch (err) {
+      console.warn(`[nodes] PVC re-pin ${volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
+    }
   }
 
   // 2) Cordon (idempotent — patch unschedulable=true).
@@ -556,7 +924,7 @@ export async function drainNode(
     }
   }
 
-  return { cordoned, evicted, failed };
+  return { cordoned, evicted, failed, rePinnedWorkloads, rePinnedPvcs };
 }
 
 /**
@@ -600,7 +968,7 @@ export async function deleteNode(
   }
 
   if (nodeExistsInK8s) {
-    const impact = await buildDrainImpact(k8s, name);
+    const impact = await buildDrainImpact(k8s, db, name);
     if (impact.nonSystemPods.length > 0) {
       throw new ApiError(
         'NODE_DELETE_HAS_PODS',

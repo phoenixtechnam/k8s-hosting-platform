@@ -91,9 +91,47 @@ export const drainImpactSchema = z.object({
     namespace: z.string(),
     name: z.string(),
     clientId: z.string().nullable(),
-    /** Set when the pod's nodeAffinity pins it to *this* node only. */
+    /** Resolved client name for UI display. Falls back to namespace when client lookup fails. */
+    clientName: z.string().nullable().default(null),
+    /** Set when the pod's nodeAffinity OR nodeSelector pins it to *this* node only. */
     pinnedToThisNode: z.boolean(),
+    /** Owner Deployment / StatefulSet name when traceable (used by re-pin UI). */
+    workloadKind: z.string().nullable().default(null),
+    workloadName: z.string().nullable().default(null),
   })),
+  /**
+   * Workloads (Deployment / StatefulSet) pinned to this node — even when
+   * replicas=0 or the pod is in an unusual phase. Source of truth for the
+   * re-pin dropdown: each entry is one workload the operator can move.
+   */
+  pinnedWorkloads: z.array(z.object({
+    namespace: z.string(),
+    kind: z.enum(['Deployment', 'StatefulSet']),
+    name: z.string(),
+    clientId: z.string().nullable(),
+    clientName: z.string().nullable(),
+    replicas: z.number().int().nonnegative(),
+    /** How the pin was expressed: nodeSelector vs. nodeAffinity. */
+    pinKind: z.enum(['nodeSelector', 'nodeAffinity']),
+  })).default([]),
+  /**
+   * Tenant Longhorn PVCs with a replica on this node. Distinct from
+   * `longhornReplicas` (which is platform + tenant) so the UI can let
+   * the operator re-target tenant volumes specifically.
+   */
+  tenantPvcs: z.array(z.object({
+    namespace: z.string(),
+    pvcName: z.string(),
+    volumeName: z.string(),
+    clientId: z.string().nullable(),
+    clientName: z.string().nullable(),
+    sizeBytes: z.number().int().nonnegative(),
+    replicaCount: z.number().int().nonnegative(),
+    /** True when this node holds the LAST running replica for the tenant volume. */
+    isLastReplica: z.boolean(),
+    /** Existing nodeSelector on the volume (informational). */
+    currentNodeSelector: z.array(z.string()).default([]),
+  })).default([]),
   longhornReplicas: z.array(z.object({
     volumeName: z.string(),
     replicaName: z.string(),
@@ -103,11 +141,22 @@ export const drainImpactSchema = z.object({
 });
 export type DrainImpact = z.infer<typeof drainImpactSchema>;
 
+/**
+ * Per-workload re-pin instructions (one entry per pinned Deployment/
+ * StatefulSet returned in DrainImpact.pinnedWorkloads).
+ *   ""        — clear the pin (let the scheduler decide)
+ *   "<node>"  — re-pin to a specific other node
+ *   "stay"    — keep the pin (drain refuses unless forceLastReplica covers)
+ *
+ * Key format: "<namespace>/<kind>/<name>".
+ */
 export const drainNodeRequestSchema = z.object({
   /** Skip the "last Longhorn replica" guard. Operator accepts data risk. */
   forceLastReplica: z.boolean().optional(),
   /** Eviction grace period in seconds. Default 60. Cap 600. */
   gracePeriodSeconds: z.number().int().min(0).max(600).optional(),
+  workloadPlacement: z.record(z.string(), z.string()).optional().default({}),
+  pvcPlacement: z.record(z.string(), z.string()).optional().default({}),
 });
 export type DrainNodeRequest = z.infer<typeof drainNodeRequestSchema>;
 
@@ -120,6 +169,10 @@ export const drainNodeResponseSchema = z.object({
     name: z.string(),
     error: z.string(),
   })),
+  /** Workload re-pin patches applied (Deployment/StatefulSet nodeSelector). */
+  rePinnedWorkloads: z.number().int().nonnegative().default(0),
+  /** Tenant Longhorn volumes whose nodeSelector was updated. */
+  rePinnedPvcs: z.number().int().nonnegative().default(0),
 });
 export type DrainNodeResponse = z.infer<typeof drainNodeResponseSchema>;
 
