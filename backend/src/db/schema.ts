@@ -535,6 +535,47 @@ export const auditLogs = pgTable('audit_logs', {
   index('audit_logs_created_idx').on(table.createdAt),
 ]);
 
+// ─── Refresh Tokens (Phase 3 split-token auth) ───
+//
+// Replaces the in-memory tokenDenylist Map with a DB-backed table.
+// The access JWT is short-lived (30 min) and verified statelessly.
+// Refresh tokens are 256-bit opaque random strings, hashed (sha256)
+// at rest, and validated via DB lookup on `/auth/refresh`.
+//
+// Rotation chain: each `family_id` groups successive refresh tokens
+// for one login session. On rotation, the previous token is marked
+// `revoked_at = now() / revoked_reason='rotated'` and a fresh one is
+// inserted with the same family_id. If a previously-rotated token is
+// re-presented, the entire family is revoked (`reuse_detected`) on
+// the assumption the token leaked.
+
+// Reason values: 'logout' | 'rotated' | 'reuse_detected' | 'password_change' | 'admin_revoke'
+// Stored as varchar (not enum) so we can add new reasons without a migration.
+
+export const refreshTokens = pgTable('refresh_tokens', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  familyId: varchar('family_id', { length: 36 }).notNull(),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  panel: panelEnum().notNull(),
+  clientId: varchar('client_id', { length: 36 })
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  userAgent: varchar('user_agent', { length: 500 }),
+  ipAddress: varchar('ip_address', { length: 64 }),
+  issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: varchar('revoked_reason', { length: 50 }),
+}, (table) => [
+  uniqueIndex('refresh_tokens_hash_unique').on(table.tokenHash),
+  index('refresh_tokens_user_idx').on(table.userId),
+  index('refresh_tokens_family_idx').on(table.familyId),
+  index('refresh_tokens_expires_idx').on(table.expiresAt),
+]);
+
 // ─── Provisioning Tasks ───
 
 export const provisioningTasks = pgTable('provisioning_tasks', {

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { loginSchema, changePasswordSchema, updateProfileSchema } from './schema.js';
 import { authenticateUser, verifyPassword, hashNewPassword } from './service.js';
@@ -6,32 +6,34 @@ import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { users } from '../../db/schema.js';
 import { extractPlatformSessionCookie, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
+import {
+  issueRefreshToken,
+  validateRefreshToken,
+  revokeRefreshTokenById,
+  revokeAllUserRefreshTokens,
+  touchLastUsed,
+  ACCESS_TOKEN_TTL_SECONDS,
+  REFRESH_TOKEN_TTL_SECONDS,
+} from './refresh-token-service.js';
 
-// Session cookie lifetime matches the JWT exp (60 min). The cookie lets
-// nginx auth_request gate subdomains like mail-admin.k8s-platform.test
-// without the browser needing to inject a Bearer header.
-const SESSION_MAX_AGE_SECONDS = 3600;
+// Phase 3: split-token auth.
+//   - Access JWT: 30 min (ACCESS_TOKEN_TTL_SECONDS), stateless verify.
+//   - Refresh token: 24 h (REFRESH_TOKEN_TTL_SECONDS), DB-backed, rotated.
+//
+// The platform_session cookie holds the access JWT (for nginx
+// auth_request gates that can't carry a Bearer header). It expires when
+// the access JWT expires; the frontend silently refreshes via
+// /auth/refresh up to the refresh-token TTL.
+const REFRESH_COOKIE = 'platform_refresh';
 
-function buildSessionCookie(token: string, maxAge: number): string {
+function buildSessionCookie(name: string, token: string, maxAge: number): string {
   const domain = process.env.SESSION_COOKIE_DOMAIN;
-  // Secure is always on — dev uses self-signed TLS on :2011 and prod is
-  // TLS everywhere. Browsers accept Secure cookies on https://*.test.
-  //
-  // SameSite=Lax is the safer default — blocks cross-site cookies on
-  // all requests except top-level navigation. That's fine when the
-  // admin panel is the only origin that sees this cookie.
-  //
-  // But when SESSION_COOKIE_DOMAIN is explicitly configured (Domain=
-  // attribute, e.g. `.staging.phoenix-host.net`), we're deliberately
-  // sharing this cookie across subdomains — Longhorn iframe,
-  // Stalwart iframe, webmail, etc. SameSite=Lax breaks those iframe
-  // auth flows because cross-origin subresource requests are not
-  // considered top-level navigation. Upgrade to SameSite=None (with
-  // Secure, required by all modern browsers) so the cookie travels on
-  // iframe-initiated requests inside the apex.
+  // SameSite=None (with Secure) when SESSION_COOKIE_DOMAIN is set so the
+  // cookie crosses subdomains for iframe-hosted admin tools (Longhorn,
+  // Stalwart, etc). Otherwise Lax — same-origin only, safer default.
   const sameSite = domain ? 'None' : 'Lax';
   const parts = [
-    `${PLATFORM_SESSION_COOKIE}=${token}`,
+    `${name}=${token}`,
     'Path=/',
     'HttpOnly',
     'Secure',
@@ -42,28 +44,55 @@ function buildSessionCookie(token: string, maxAge: number): string {
   return parts.join('; ');
 }
 
-function setSessionCookie(reply: FastifyReply, token: string): void {
-  reply.header('Set-Cookie', buildSessionCookie(token, SESSION_MAX_AGE_SECONDS));
+function setSessionCookies(reply: FastifyReply, accessToken: string, refreshToken: string): void {
+  reply.header('Set-Cookie', [
+    buildSessionCookie(PLATFORM_SESSION_COOKIE, accessToken, ACCESS_TOKEN_TTL_SECONDS),
+    buildSessionCookie(REFRESH_COOKIE, refreshToken, REFRESH_TOKEN_TTL_SECONDS),
+  ]);
 }
 
-function clearSessionCookie(reply: FastifyReply): void {
-  reply.header('Set-Cookie', buildSessionCookie('', 0));
+function clearSessionCookies(reply: FastifyReply): void {
+  reply.header('Set-Cookie', [
+    buildSessionCookie(PLATFORM_SESSION_COOKIE, '', 0),
+    buildSessionCookie(REFRESH_COOKIE, '', 0),
+  ]);
 }
 
-// In-memory token denylist (Phase 1). Replace with Redis in production.
-// Map stores token → expiry timestamp for TTL-based eviction.
-const tokenDenylist = new Map<string, number>();
-
-// Prune expired entries every 10 minutes
-setInterval(() => {
-  const now = Math.floor(Date.now() / 1000);
-  for (const [token, exp] of tokenDenylist) {
-    if (exp < now) tokenDenylist.delete(token);
+function extractRefreshTokenFromCookie(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const pair of cookieHeader.split(';')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    if (name !== REFRESH_COOKIE) continue;
+    const value = pair.slice(eq + 1).trim();
+    return value.length > 0 ? value : undefined;
   }
-}, 600_000);
+  return undefined;
+}
 
-export function isTokenDenied(token: string): boolean {
-  return tokenDenylist.has(token);
+interface AccessTokenInput {
+  readonly userId: string;
+  readonly role: string;
+  readonly panel: 'admin' | 'client';
+  readonly clientId?: string | null;
+  readonly impersonatedBy?: string;
+}
+
+function signAccessToken(app: FastifyInstance, input: AccessTokenInput): string {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: Record<string, unknown> = {
+    sub: input.userId,
+    role: input.role,
+    panel: input.panel,
+    exp: now + ACCESS_TOKEN_TTL_SECONDS,
+    iat: now,
+    jti: crypto.randomUUID(),
+  };
+  if (input.clientId) payload.clientId = input.clientId;
+  if (input.impersonatedBy) payload.impersonatedBy = input.impersonatedBy;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return app.jwt.sign(payload as any);
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -93,6 +122,9 @@ export async function authRoutes(app: FastifyInstance) {
               type: 'object',
               properties: {
                 token: { type: 'string' },
+                refreshToken: { type: 'string' },
+                expiresIn: { type: 'integer' },
+                refreshExpiresIn: { type: 'integer' },
                 user: {
                   type: 'object',
                   properties: {
@@ -128,24 +160,29 @@ export async function authRoutes(app: FastifyInstance) {
     const { email, password } = parsed.data;
     const user = await authenticateUser(app.db, email, password);
 
-    const jwtPayload: Record<string, unknown> = {
-      sub: user.id,
+    const accessToken = signAccessToken(app, {
+      userId: user.id,
       role: user.role,
       panel: user.panel ?? 'admin',
-      exp: Math.floor(Date.now() / 1000) + 3600, // 60 min — auto-refreshed by frontend on activity
-      iat: Math.floor(Date.now() / 1000),
-      jti: crypto.randomUUID(),
-    };
-    if (user.clientId) jwtPayload.clientId = user.clientId;
+      clientId: user.clientId,
+    });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const token = app.jwt.sign(jwtPayload as any);
+    const issued = await issueRefreshToken(app.db, {
+      userId: user.id,
+      panel: (user.panel ?? 'admin') as 'admin' | 'client',
+      clientId: user.clientId ?? null,
+      userAgent: pickUserAgent(request),
+      ipAddress: request.ip,
+    });
 
-    setSessionCookie(reply, token);
+    setSessionCookies(reply, accessToken, issued.token);
 
     return reply.send({
       data: {
-        token,
+        token: accessToken,
+        refreshToken: issued.token,
+        expiresIn: ACCESS_TOKEN_TTL_SECONDS,
+        refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
         user: {
           id: user.id,
           email: user.email,
@@ -286,20 +323,46 @@ export async function authRoutes(app: FastifyInstance) {
       .set({ passwordHash: newHash })
       .where(eq(users.id, payload.sub));
 
+    // Phase 3: a password change MUST invalidate every refresh token —
+    // any leaked token from before the change must stop working
+    // immediately. The current request's access JWT is left alone (it
+    // expires within 30 min). The user gets a fresh refresh token in
+    // the response so the active session continues uninterrupted.
+    await revokeAllUserRefreshTokens(app.db, payload.sub, 'password_change');
+    const issued = await issueRefreshToken(app.db, {
+      userId: user.id,
+      panel: (user.panel ?? 'admin') as 'admin' | 'client',
+      clientId: user.clientId ?? null,
+      userAgent: pickUserAgent(request),
+      ipAddress: request.ip,
+    });
+    // Refresh the session cookie so the browser also picks up the new
+    // refresh token. Access cookie is left in place until expiry.
+    reply.header('Set-Cookie', buildSessionCookie(REFRESH_COOKIE, issued.token, REFRESH_TOKEN_TTL_SECONDS));
+
     return reply.send({
-      data: { message: 'Password updated successfully' },
+      data: {
+        message: 'Password updated successfully',
+        refreshToken: issued.token,
+        refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
+      },
     });
   });
 
-  // POST /auth/logout — revoke current token
+  // POST /auth/logout — revoke the refresh token + clear cookies.
+  // Intentionally accepts requests even without a Bearer access token,
+  // so a UI with an expired access token can still log out cleanly.
   app.post('/auth/logout', async (request, reply) => {
-    await request.jwtVerify();
-    const decoded = request.user as { exp?: number };
-    const authHeader = request.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      tokenDenylist.set(authHeader.slice(7), decoded.exp ?? Math.floor(Date.now() / 1000) + 3600);
+    const presented = pickRefreshToken(request);
+    if (presented) {
+      const validation = await validateRefreshToken(app.db, presented);
+      if (validation.ok) {
+        await revokeRefreshTokenById(app.db, validation.id, 'logout');
+      }
+      // not_found / expired / revoked / reuse_detected — no-op, the
+      // client is already logged out from the server's POV.
     }
-    clearSessionCookie(reply);
+    clearSessionCookies(reply);
     return reply.send({ data: { message: 'Logged out successfully' } });
   });
 
@@ -323,9 +386,6 @@ export async function authRoutes(app: FastifyInstance) {
   app.get('/auth/verify-admin-session', async (request, reply) => {
     const token = extractPlatformSessionCookie(request.headers.cookie);
     if (!token) {
-      return reply.code(401).send();
-    }
-    if (isTokenDenied(token)) {
       return reply.code(401).send();
     }
     let user: JwtPayload;
@@ -406,50 +466,97 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  // POST /auth/refresh — issue a new token and revoke the old one
-  app.post('/auth/refresh', async (request, reply) => {
-    await request.jwtVerify();
-    const payload = request.user as { sub: string; role: string };
+  // POST /auth/refresh — rotate the refresh token and issue a new access JWT.
+  //
+  // Accepts the refresh token from either:
+  //   - body: { refreshToken: "..." }
+  //   - cookie: platform_refresh
+  //
+  // Returns: { token, refreshToken, expiresIn, refreshExpiresIn, user }
+  //
+  // Invariants:
+  //   - The presented refresh token MUST be unused. If it was already
+  //     rotated, we treat that as a reuse attack and revoke the family.
+  //   - Successful rotation revokes the old token (rotated reason) and
+  //     issues a new one with the same family_id.
+  //   - Access JWT is freshly signed (30 min TTL).
+  //   - Impersonation claim is preserved across rotation.
+  app.post('/auth/refresh', {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    const presented = pickRefreshToken(request);
+    if (!presented) {
+      throw new ApiError('REFRESH_TOKEN_MISSING', 'Refresh token required', 401);
+    }
 
-    // Verify user still exists and is active
+    const validation = await validateRefreshToken(app.db, presented);
+    if (!validation.ok) {
+      // reuse_detected is special — log it for incident review.
+      if (validation.reason === 'reuse_detected') {
+        request.log.warn({ event: 'refresh_token_reuse' }, 'Refresh token reuse detected — family revoked');
+      }
+      throw new ApiError('REFRESH_TOKEN_INVALID', `Refresh token ${validation.reason}`, 401);
+    }
+
     const [user] = await app.db
       .select()
       .from(users)
-      .where(eq(users.id, payload.sub))
+      .where(eq(users.id, validation.userId))
       .limit(1);
 
-    if (!user) {
+    if (!user || user.status !== 'active') {
+      // Revoke the otherwise-valid token so the deactivated user can't
+      // continue rotating.
+      await revokeRefreshTokenById(app.db, validation.id, 'admin_revoke');
       throw invalidToken();
     }
 
-    // Revoke old token
-    const decoded = request.user as { exp?: number };
+    // Rotate: revoke the presented token (rotated), issue a new one.
+    await revokeRefreshTokenById(app.db, validation.id, 'rotated');
+    const issued = await issueRefreshToken(app.db, {
+      userId: user.id,
+      panel: validation.panel,
+      clientId: validation.clientId,
+      familyId: validation.familyId,
+      userAgent: pickUserAgent(request),
+      ipAddress: request.ip,
+    });
+    await touchLastUsed(app.db, validation.id);
+
+    // Preserve impersonation claim if present on the access JWT.
+    let impersonatedBy: string | undefined;
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
-      tokenDenylist.set(authHeader.slice(7), decoded.exp ?? Math.floor(Date.now() / 1000) + 3600);
+      try {
+        const decoded = request.server.jwt.verify<JwtPayload>(authHeader.slice(7));
+        if (decoded.impersonatedBy) impersonatedBy = decoded.impersonatedBy;
+      } catch {
+        // Access token may be expired by now (that's why we're refreshing).
+        // Accept the refresh anyway — impersonation claim is non-critical.
+      }
     }
 
-    // Issue new token
-    const refreshPayload: Record<string, unknown> = {
-      sub: user.id,
+    const accessToken = signAccessToken(app, {
+      userId: user.id,
       role: user.roleName,
-      panel: user.panel ?? 'admin',
-      exp: Math.floor(Date.now() / 1000) + 3600, // 60 min — auto-refreshed by frontend on activity
-      iat: Math.floor(Date.now() / 1000),
-      jti: crypto.randomUUID(),
-    };
-    if (user.clientId) refreshPayload.clientId = user.clientId;
-    // Preserve impersonation claim on refresh
-    const originalPayload = request.user as unknown as Record<string, unknown>;
-    if (originalPayload.impersonatedBy) refreshPayload.impersonatedBy = originalPayload.impersonatedBy;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const newToken = app.jwt.sign(refreshPayload as any);
+      panel: (user.panel ?? 'admin') as 'admin' | 'client',
+      clientId: user.clientId,
+      impersonatedBy,
+    });
 
-    setSessionCookie(reply, newToken);
+    setSessionCookies(reply, accessToken, issued.token);
 
     return reply.send({
       data: {
-        token: newToken,
+        token: accessToken,
+        refreshToken: issued.token,
+        expiresIn: ACCESS_TOKEN_TTL_SECONDS,
+        refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
         user: {
           id: user.id,
           email: user.email,
@@ -461,5 +568,19 @@ export async function authRoutes(app: FastifyInstance) {
       },
     });
   });
+}
 
+function pickRefreshToken(request: FastifyRequest): string | undefined {
+  const body = request.body as { refreshToken?: unknown } | undefined;
+  if (body && typeof body.refreshToken === 'string' && body.refreshToken.length > 0) {
+    return body.refreshToken;
+  }
+  return extractRefreshTokenFromCookie(request.headers.cookie);
+}
+
+function pickUserAgent(request: FastifyRequest): string | undefined {
+  const ua = request.headers['user-agent'];
+  if (typeof ua === 'string') return ua;
+  if (Array.isArray(ua)) return ua[0];
+  return undefined;
 }

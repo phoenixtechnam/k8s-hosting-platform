@@ -17,7 +17,7 @@ interface AuthState {
   readonly isLoading: boolean;
   readonly error: string | null;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   initialize: () => void;
   setTokenAndUser: (token: string, user: AuthUser) => void;
 }
@@ -45,11 +45,13 @@ export const useAuth = create<AuthState>((set) => ({
           })
           .catch(() => {
             localStorage.removeItem('auth_token');
+            localStorage.removeItem('auth_refresh_token');
             localStorage.removeItem('auth_user');
             set({ token: null, user: null, isAuthenticated: false, isLoading: false });
           });
       } catch {
         localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_refresh_token');
         localStorage.removeItem('auth_user');
         set({ isLoading: false });
       }
@@ -62,14 +64,21 @@ export const useAuth = create<AuthState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       const res = await apiFetch<{
-        data: { token: string; user: AuthUser };
+        data: {
+          token: string;
+          refreshToken: string;
+          expiresIn: number;
+          refreshExpiresIn: number;
+          user: AuthUser;
+        };
       }>('/api/v1/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       });
 
-      const { token, user } = res.data;
+      const { token, refreshToken, user } = res.data;
       localStorage.setItem('auth_token', token);
+      localStorage.setItem('auth_refresh_token', refreshToken);
       localStorage.setItem('auth_user', JSON.stringify(user));
       set({ token, user, isAuthenticated: true, isLoading: false });
     } catch (err) {
@@ -82,8 +91,20 @@ export const useAuth = create<AuthState>((set) => ({
     }
   },
 
-  logout: () => {
+  logout: async () => {
+    const refreshToken = localStorage.getItem('auth_refresh_token');
+    if (refreshToken) {
+      try {
+        await apiFetch('/api/v1/auth/logout', {
+          method: 'POST',
+          body: JSON.stringify({ refreshToken }),
+        });
+      } catch {
+        // best-effort
+      }
+    }
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_refresh_token');
     localStorage.removeItem('auth_user');
     set({ token: null, user: null, isAuthenticated: false, error: null });
   },

@@ -500,6 +500,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'WAF log scraper not started');
       }
 
+      // Daily prune of expired refresh tokens (Phase 3 split-token auth).
+      // Keeps a 7-day forensic window after expiry; older rows are
+      // hard-deleted to keep the table small. Failure is non-fatal.
+      const refreshPruneInterval = setInterval(async () => {
+        try {
+          const { pruneExpiredRefreshTokens } = await import('./modules/auth/refresh-token-service.js');
+          const removed = await pruneExpiredRefreshTokens(app.db);
+          if (removed > 0) app.log.info(`refresh-token-prune: removed ${removed} expired rows`);
+        } catch (err) {
+          app.log.warn({ err }, 'refresh-token-prune failed — will retry tomorrow');
+        }
+      }, 24 * 60 * 60 * 1000); // 24h
+      app.addHook('onClose', () => clearInterval(refreshPruneInterval));
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }

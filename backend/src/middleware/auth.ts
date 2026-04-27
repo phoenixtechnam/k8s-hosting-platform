@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { insufficientPermissions, missingToken, invalidToken, ApiError } from '../shared/errors.js';
-import { isTokenDenied } from '../modules/auth/routes.js';
 
 export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read_only';
 export type ClientRole = 'client_admin' | 'client_user';
@@ -63,11 +62,13 @@ export function authenticate(
 
   const token = authHeader.slice(7);
 
-  if (isTokenDenied(token)) {
-    done(invalidToken());
-    return;
-  }
-
+  // Phase 3: no denylist check. Access tokens are short-lived (30 min)
+  // and verified statelessly via signature + exp. Revocation is via the
+  // refresh-token side: a logout / password change kills future
+  // /auth/refresh, and the access token expires within 30 min. For
+  // immediate revocation of an active access token (admin disable),
+  // see the admin-disable-user flow which sets users.status='disabled'
+  // and is checked by /auth/refresh.
   try {
     const decoded = request.server.jwt.verify<JwtPayload>(token);
     request.user = decoded;

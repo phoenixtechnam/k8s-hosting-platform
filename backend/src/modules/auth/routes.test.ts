@@ -18,6 +18,12 @@ const mockWhere = vi.fn().mockResolvedValue([]);
 const mockSelectWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([mockUser]) });
 const mockUpdateSet = vi.fn().mockReturnValue({ where: mockWhere });
 
+// Phase 3: refresh-token-service issues a row on every login + refresh
+// and revokes on logout / password change. Mock both insert / update /
+// delete so the in-memory test stack doesn't crash on these calls.
+const mockInsertValues = vi.fn().mockResolvedValue([]);
+const mockDeleteWhere = vi.fn().mockResolvedValue({ rowCount: 0 });
+
 const mockDb = {
   select: vi.fn().mockReturnValue({
     from: vi.fn().mockReturnValue({
@@ -26,6 +32,12 @@ const mockDb = {
   }),
   update: vi.fn().mockReturnValue({
     set: mockUpdateSet,
+  }),
+  insert: vi.fn().mockReturnValue({
+    values: mockInsertValues,
+  }),
+  delete: vi.fn().mockReturnValue({
+    where: mockDeleteWhere,
   }),
 };
 
@@ -205,11 +217,14 @@ describe('auth routes', () => {
         const setCookie = res.headers['set-cookie'];
         const header = Array.isArray(setCookie) ? setCookie.join('\n') : setCookie;
         expect(header).toMatch(/platform_session=/);
+        expect(header).toMatch(/platform_refresh=/);
         expect(header).toMatch(/HttpOnly/i);
         expect(header).toMatch(/SameSite=Lax/i);
         expect(header).toMatch(/Secure/i);
         expect(header).toMatch(/Path=\//);
-        expect(header).toMatch(/Max-Age=3600/);
+        // Phase 3: access cookie 1800s (30min), refresh cookie 86400s (24h).
+        expect(header).toMatch(/Max-Age=1800/);
+        expect(header).toMatch(/Max-Age=86400/);
         expect(header).not.toMatch(/Domain=/i);
       } finally {
         if (prev !== undefined) process.env.SESSION_COOKIE_DOMAIN = prev;

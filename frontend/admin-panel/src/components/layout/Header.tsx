@@ -41,9 +41,9 @@ export default function Header({ onMenuClick }: HeaderProps) {
     }
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
     setMenuOpen(false);
-    logout();
+    await logout();
   };
 
   return (

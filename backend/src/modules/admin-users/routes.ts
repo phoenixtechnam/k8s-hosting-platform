@@ -6,6 +6,7 @@ import { users } from '../../db/schema.js';
 import { createAdminUserSchema, updateAdminUserSchema } from '@k8s-hosting/api-contracts';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
+import { revokeAllUserRefreshTokens } from '../auth/refresh-token-service.js';
 
 export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -123,6 +124,18 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
 
     if (Object.keys(updateValues).length > 0) {
       await app.db.update(users).set(updateValues).where(eq(users.id, id));
+    }
+
+    // Phase 3: a disable / password change MUST kill every active
+    // refresh token for the user. The access JWT is short-lived
+    // (30 min) so it expires on its own; revoking refresh tokens
+    // here ensures /auth/refresh stops working immediately.
+    if (
+      (parsed.data.status !== undefined && parsed.data.status === 'disabled') ||
+      parsed.data.password !== undefined
+    ) {
+      const reason = parsed.data.password !== undefined ? 'password_change' : 'admin_revoke';
+      await revokeAllUserRefreshTokens(app.db, id, reason);
     }
 
     const [updated] = await app.db

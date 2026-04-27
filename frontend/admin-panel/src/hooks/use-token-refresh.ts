@@ -1,9 +1,19 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { config } from '@/lib/runtime-config';
 
-const REFRESH_CHECK_INTERVAL = 5 * 60 * 1000; // check every 5 min
-const ACTIVITY_THRESHOLD = 5 * 60 * 1000;     // must have activity within 5 min
-const TOKEN_REFRESH_WINDOW = 15 * 60;          // refresh when <15 min until expiry (seconds)
+// Phase 3 split-token auth:
+//   access JWT  — 30 min, in localStorage('auth_token')
+//   refresh tok — 24 h,  in localStorage('auth_refresh_token')
+//
+// Strategy:
+//   - On activity, check if access token is within 5 min of expiry.
+//     If yes, POST /auth/refresh with the refresh token to rotate.
+//   - If user has been idle > 25 min (close to access TTL), stop
+//     proactive refresh — the silent-retry on 401 in api-client will
+//     handle the next request.
+const REFRESH_CHECK_INTERVAL = 60 * 1000;       // check every 1 min
+const ACTIVITY_THRESHOLD = 25 * 60 * 1000;      // proactive only if active in last 25 min
+const TOKEN_REFRESH_WINDOW = 5 * 60;            // refresh when <5 min until access expiry (seconds)
 
 function getTokenExp(): number | null {
   const token = localStorage.getItem('auth_token');
@@ -17,21 +27,20 @@ function getTokenExp(): number | null {
 }
 
 /**
- * Auto-refreshes the JWT token when the user is active and the token
- * is approaching expiry. Stops refreshing after 60 min of inactivity
- * (token expires naturally).
+ * Proactively rotates the access JWT before expiry while the user is
+ * active. Idle users still get one silent rotation when their next
+ * request lands a 401 (handled in api-client). After 24h (refresh-token
+ * TTL) the silent rotation will fail and the user is sent to /login.
  */
 export function useTokenRefresh() {
   const lastActivityRef = useRef(Date.now());
 
-  // Track user activity
   const onActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
   }, []);
 
   useEffect(() => {
     const events = ['mousedown', 'keydown', 'touchstart', 'scroll', 'mousemove'];
-    // Throttle: only update once per second max
     let throttled = false;
     const handler = () => {
       if (throttled) return;
@@ -44,38 +53,40 @@ export function useTokenRefresh() {
     return () => { for (const evt of events) window.removeEventListener(evt, handler); };
   }, [onActivity]);
 
-  // Periodic refresh check
   useEffect(() => {
     const timer = setInterval(async () => {
-      const token = localStorage.getItem('auth_token');
-      if (!token) return;
+      const refreshToken = localStorage.getItem('auth_refresh_token');
+      if (!refreshToken) return;
 
       const timeSinceActivity = Date.now() - lastActivityRef.current;
-      if (timeSinceActivity > ACTIVITY_THRESHOLD) return; // inactive — don't refresh
+      if (timeSinceActivity > ACTIVITY_THRESHOLD) return;
 
       const exp = getTokenExp();
       if (!exp) return;
 
       const now = Math.floor(Date.now() / 1000);
       const timeUntilExpiry = exp - now;
-      if (timeUntilExpiry > TOKEN_REFRESH_WINDOW) return; // still plenty of time
-      if (timeUntilExpiry <= 0) return; // already expired
+      if (timeUntilExpiry > TOKEN_REFRESH_WINDOW) return;
+      if (timeUntilExpiry <= 0) return; // api-client retry will handle this
 
-      // Refresh the token
       try {
         const base = config.API_URL || '';
         const res = await fetch(`${base}/api/v1/auth/refresh`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ refreshToken }),
         });
         if (res.ok) {
-          const data = await res.json();
-          if (data.data?.token) {
-            localStorage.setItem('auth_token', data.data.token);
+          const body = await res.json();
+          const data = body?.data;
+          if (data?.token && data?.refreshToken) {
+            localStorage.setItem('auth_token', data.token);
+            localStorage.setItem('auth_refresh_token', data.refreshToken);
           }
         }
       } catch {
-        // Refresh failed — token will expire naturally
+        // Refresh failed — silent retry on next 401 will catch it.
       }
     }, REFRESH_CHECK_INTERVAL);
 

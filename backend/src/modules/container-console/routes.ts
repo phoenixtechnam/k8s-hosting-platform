@@ -4,7 +4,6 @@ import { PassThrough } from 'stream';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 import { authenticate, type JwtPayload } from '../../middleware/auth.js';
-import { isTokenDenied } from '../auth/routes.js';
 import * as deploymentService from '../deployments/service.js';
 import {
   fetchPods,
@@ -45,7 +44,9 @@ function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPaylo
   const token = query.token ?? request.headers.authorization?.replace('Bearer ', '');
   if (!token) throw new ApiError('UNAUTHORIZED', 'Missing authentication token', 401);
 
-  if (isTokenDenied(token)) throw new ApiError('UNAUTHORIZED', 'Token has been revoked', 401);
+  // Phase 3: no denylist check — access tokens are short-lived (30 min)
+  // and verified statelessly. WebSocket session lifetime is bounded by
+  // the access token's exp anyway.
 
   try {
     return app.jwt.verify<JwtPayload>(token);
