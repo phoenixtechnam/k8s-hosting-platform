@@ -6,6 +6,7 @@ import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemSta
 import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
+import NodeStorageCard from '@/components/NodeStorageCard';
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null) return '—';
@@ -173,6 +174,8 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
       )}
 
       <NodeDetails node={node} />
+
+      <NodeStorageCard nodeName={node.name} />
 
       {editOpen && <NodeEditModal node={node} onClose={() => setEditOpen(false)} />}
       {drainOpen && <NodeDrainDeleteModal node={node} onClose={() => setDrainOpen(false)} />}
