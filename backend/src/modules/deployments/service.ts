@@ -339,6 +339,22 @@ export async function createDeployment(
         workerNodeName: client.workerNodeName ?? undefined,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
+
+      // Phase 3 fix: a Domain may have been added BEFORE this deployment
+      // existed, leaving an ingress_routes row with deployment_id=null
+      // (or the user may explicitly bind one via `input.domain_name`).
+      // Either way, the Ingress resource only gets built when
+      // reconcileIngress runs — and previously it only ran from
+      // domain/route mutations, so a fresh deployment behind an existing
+      // domain stayed Ingress-less until the operator clicked something
+      // that re-triggered it. Reconcile here so the deployment-create
+      // flow is enough on its own.
+      try {
+        const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+        await reconcileIngress(db, k8s, clientId, namespace);
+      } catch (err) {
+        console.warn(`[deployments] reconcileIngress failed for ${input.name}: ${(err as Error).message}`);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[deployments] K8s deploy failed for ${input.name}:`, message);
@@ -1124,7 +1140,14 @@ export async function listStorageFolders(
     const namespace = await getClientNamespace(db, clientId);
     try {
       const { fileManagerRequest } = await import('../file-manager/service.js');
-      const FM_IMAGE = 'file-manager-sidecar:latest';
+      // Match the FM_IMAGE resolution used in file-manager/routes.ts —
+      // env-var first, fall back to the bare local-dev tag. The bare
+      // tag resolves to docker.io/library/file-manager-sidecar in
+      // production (which doesn't exist) so the env var is required
+      // for any non-localhost deploy. Surfaced by the integration
+      // harness when a tenant workload share-mounts the same RWO PVC
+      // as a stuck-on-pull FM and gets blocked with Multi-Attach.
+      const FM_IMAGE = process.env.FILE_MANAGER_IMAGE ?? 'file-manager-sidecar:latest';
       const listing = await fileManagerRequest(k8s, kubeconfigPath, namespace, FM_IMAGE, '/ls', {
         query: { path: basePath, dirs_only: 'true' },
       });
