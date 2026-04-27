@@ -1,0 +1,93 @@
+# LimitRanges for system namespaces — Phase 3 of resource hardening.
+#
+# Goal: lift BestEffort control-plane pods (calico, cert-manager, CNPG,
+# Longhorn CSI sidecars, Tigera operator) into Burstable QoS so they
+# are not first to be OOM-killed under memory pressure. The defaults
+# below are deliberately tiny — the point is to FLIP THE QoS CLASS,
+# not to over-reserve. Operators can still set higher requests
+# explicitly per-component when warranted.
+#
+# Applied at admission time: only NEW pods get the defaults. After
+# applying these manifests, restart the affected DaemonSets and
+# Deployments so existing pods are re-admitted with the injected
+# requests. See Phase 3 plan for the rollout-restart command list.
+#
+# Why no `default` (limits): without limits a pod stays Burstable
+# (request<limit). Adding limits would put it in Guaranteed (request
+# == limit) which forces strict CPU throttling — unwanted for control-
+# plane pods that benefit from headroom during reconcile bursts.
+#
+# Why no max/min: control-plane pods that legitimately need more
+# (Longhorn rebuild bursts, cert-manager during cert renewal storms)
+# should not be capped by this LimitRange. Per-namespace ResourceQuota
+# is the right place for ceilings.
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: calico-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: tigera-operator
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: cnpg-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi
