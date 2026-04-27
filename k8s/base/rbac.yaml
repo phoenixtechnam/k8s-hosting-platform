@@ -151,11 +151,13 @@ rules:
   # M13: platform-storage-policy patches volume.spec.numberOfReplicas
   # live on Longhorn Volume CRs to switch the platform's StatefulSets
   # (postgres, stalwart) between local (1×) and HA (3×) replication.
-  # Narrow to patch only — no create/delete; Longhorn manages the
-  # underlying replica scheduling.
+  # Phase D: client deprovision deletes orphan volumes left after PV
+  # cleanup (CSI volume name == PV name; without delete, every client
+  # deletion leaks a "detached" volume that counts against
+  # storageScheduled until Longhorn refuses new replicas).
   - apiGroups: ["longhorn.io"]
     resources: ["volumes"]
-    verbs: ["patch"]
+    verbs: ["patch", "delete"]
   # M14: Apply HA also scales the CNPG Cluster CR. apps/deployments
   # is already covered by the broader apps verbs:["*"] rule above.
   - apiGroups: ["postgresql.cnpg.io"]
