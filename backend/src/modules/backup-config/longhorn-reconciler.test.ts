@@ -344,13 +344,15 @@ describe('clearBackupTarget', () => {
 describe('DR CronJob suspend toggle', () => {
   // Names listed in BACKUP_CRONJOB_NAMES (longhorn-reconciler.ts). Kept
   // in lockstep with k8s/base/backup/*.yaml — every CronJob there that
-  // mounts the backup-credentials Secret must appear here.
+  // mounts the backup-credentials Secret OR audits backup coverage
+  // must appear here.
   const EXPECTED_CRONJOBS = [
     'platform-cluster-state-backup',
     'platform-etcd-snapshot-upload',
     'platform-pg-backup',
     'platform-secrets-backup',
     'platform-hostpath-snapshot-upload',
+    'platform-backup-audit',
   ];
 
   it('unsuspends every DR CronJob on S3 activate', async () => {

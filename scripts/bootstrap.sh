@@ -1510,6 +1510,12 @@ install_longhorn() {
   helm_cmd repo add longhorn https://charts.longhorn.io 2>/dev/null || true
   helm_cmd repo update
 
+  # longhornUI.replicaCount=1 — the dashboard is operator-facing only
+  # and not on any client request path. The chart default is 2; on a
+  # 4-node staging cluster the second replica is ~30 MiB + scheduling
+  # overhead with no fault-tolerance benefit (no SLO on Longhorn UI
+  # uptime). Production overlays can override if dashboard HA is
+  # actually needed.
   helm_cmd upgrade --install longhorn longhorn/longhorn \
     --namespace longhorn-system \
     --create-namespace \
@@ -1518,6 +1524,7 @@ install_longhorn() {
     --set defaultSettings.replicaAutoBalance=best-effort \
     --set defaultSettings.storageMinimalAvailablePercentage=15 \
     --set defaultSettings.defaultDataLocality=best-effort \
+    --set longhornUI.replicaCount=1 \
     --wait \
     --timeout 600s
 

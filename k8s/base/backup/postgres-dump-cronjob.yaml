@@ -25,8 +25,8 @@ spec:
   suspend: true
   schedule: "45 2 * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 7
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
   startingDeadlineSeconds: 3600
   jobTemplate:
     spec:

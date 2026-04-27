@@ -35,7 +35,13 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'platform', name: 'oauth2-proxy' },
   { namespace: 'platform', name: 'dex' },
 ];
-const DEPLOYMENT_REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 2, ha: 3 };
+// Single-server (local) installs default to 1 replica per stateless
+// service — pre-HA. Going to 2 on a single node provides no fault
+// isolation (both pods on the same node) and only doubles memory + the
+// rolling-deploy gap. HA tier (3+ servers) gets 3 because that's the
+// only count that survives a node failure DURING a rolling update
+// (2 replicas + maxUnavailable=1 + node failure can hit 0).
+const DEPLOYMENT_REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
 
 // CNPG cluster (Postgres). Apply HA flips spec.instances 1↔3 — CNPG
 // streams replication from primary, no manual data migration needed.

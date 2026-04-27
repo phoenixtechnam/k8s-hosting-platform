@@ -73,16 +73,21 @@ export interface LonghornClients {
   readonly batch?: k8s.BatchV1Api;
 }
 
-// CronJobs that consume the platform-ns `backup-credentials` Secret.
-// Shipped with `suspend: true` in k8s/base/backup/*.yaml so a fresh
-// install doesn't churn CreateContainerConfigError pods. The reconciler
-// flips suspend on/off in lock-step with backup-target activation.
+// CronJobs whose execution is meaningful only while a backup target is
+// active. Most read the `backup-credentials` Secret directly (and would
+// fail with CreateContainerConfigError without it); platform-backup-
+// audit doesn't read the Secret but its audit (are PVCs in the backup
+// group?) is pointless when no backup target is configured. Shipped
+// with `suspend: true` in k8s/base/backup/*.yaml so a fresh install
+// doesn't churn failed pods; the reconciler flips suspend on/off in
+// lockstep with backup-target activation.
 const BACKUP_CRONJOB_NAMES = [
   'platform-cluster-state-backup',
   'platform-etcd-snapshot-upload',
   'platform-pg-backup',
   'platform-secrets-backup',
   'platform-hostpath-snapshot-upload',
+  'platform-backup-audit',
 ] as const;
 
 /**
