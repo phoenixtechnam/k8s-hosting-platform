@@ -178,8 +178,12 @@ export async function createDomain(db: Database, clientId: string, input: Create
     if (client.kubernetesNamespace) {
       try {
         await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
-      } catch {
+      } catch (err) {
         // Ingress reconciliation failure shouldn't block domain creation
+        // BUT must be logged — silent swallowing was the root cause of
+        // "domain shows OK in API but Ingress missing in K8s" bugs that
+        // had operators add domains via UI and hit 404 + fake cert.
+        console.warn(`[domains.createDomain] reconcileIngress failed for ${client.kubernetesNamespace} (domain=${input.domain_name}): ${(err as Error).message}`);
       }
     }
   }
@@ -188,8 +192,9 @@ export async function createDomain(db: Database, clientId: string, input: Create
   if (k8s) {
     try {
       await ensureDomainCertificate(db, k8s, id);
-    } catch {
+    } catch (err) {
       // Non-blocking — cert can be provisioned later via reconciler
+      console.warn(`[domains.createDomain] ensureDomainCertificate failed for ${input.domain_name}: ${(err as Error).message}`);
     }
   }
 
@@ -341,8 +346,8 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
     if (client.kubernetesNamespace) {
       try {
         await reconcileIngress(db, k8s, clientId, client.kubernetesNamespace);
-      } catch {
-        // Non-blocking
+      } catch (err) {
+        console.warn(`[domains.updateDomain] reconcileIngress failed for ${client.kubernetesNamespace}: ${(err as Error).message}`);
       }
     }
   }
@@ -354,8 +359,8 @@ export async function updateDomain(db: Database, clientId: string, domainId: str
   if (k8s && input.dns_mode !== undefined) {
     try {
       await ensureDomainCertificate(db, k8s, domainId);
-    } catch {
-      // Non-blocking — logged inside the cert module
+    } catch (err) {
+      console.warn(`[domains.updateDomain] ensureDomainCertificate failed: ${(err as Error).message}`);
     }
   }
 
