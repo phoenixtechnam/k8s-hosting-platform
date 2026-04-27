@@ -167,8 +167,13 @@ export async function createDomain(db: Database, clientId: string, input: Create
   if (input.deployment_id && created) {
     try {
       await createRoute(db, created.id, clientId, input.domain_name, input.deployment_id);
-    } catch {
-      // Route creation failure shouldn't block domain creation
+    } catch (err) {
+      // Route creation failure shouldn't block domain creation, but
+      // MUST be logged. A silently-swallowed createRoute leaves the
+      // operator with a domain in the API and no Ingress in K8s
+      // (the "domain shows OK in UI but HTTPS hits fake cert + 404"
+      // bug they hit on x.staging.success.com.na).
+      console.warn(`[domains.createDomain] createRoute failed for ${input.domain_name} → deployment ${input.deployment_id}: ${(err as Error).message}`);
     }
   }
 
