@@ -65,6 +65,11 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = request.params as { clientId: string };
     const namespace = await resolveNamespace(app, clientId);
     const { k8sClients } = getK8s();
+    // Status polling counts as activity — without this, a UI that
+    // sits on the loading screen for ~10min would have its pod
+    // scaled back to 0 by the idle-cleanup loop while still being
+    // actively waited-on by the user.
+    recordFileManagerAccess(namespace);
     const status = await getFileManagerStatus(k8sClients, namespace);
     return success(status);
   });
@@ -77,6 +82,10 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const namespace = await resolveNamespace(app, clientId);
     const { k8sClients } = getK8s();
     await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    // Refresh idle timer so the cleanup loop doesn't immediately
+    // scale the pod we just asked for back down. /start is a clear
+    // user intent to USE the file-manager.
+    recordFileManagerAccess(namespace);
     const status = await getFileManagerStatus(k8sClients, namespace);
     return success(status);
   });
