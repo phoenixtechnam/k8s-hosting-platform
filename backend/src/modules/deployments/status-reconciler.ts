@@ -163,8 +163,21 @@ export async function reconcileDeploymentStatuses(
         ? (k8sStatus.components.find(c => c.message)?.message ?? null)
         : null;
 
-      if (newDbStatus !== deployment.status || statusMessage !== (deployment.statusMessage ?? null)) {
+      // Capture host node — first scheduled node across all components.
+      // The "Node" column on the admin Deployments / Installed Applications
+      // tables reads this. Multi-replica deployments report the first
+      // observed node only (see k8s-deployer.ts comment).
+      const observedNode = k8sStatus.components
+        .map((c) => c.nodeName)
+        .find((n): n is string => Boolean(n)) ?? null;
+
+      const nodeChanged = observedNode !== (deployment.currentNodeName ?? null);
+
+      if (newDbStatus !== deployment.status
+        || statusMessage !== (deployment.statusMessage ?? null)
+        || nodeChanged) {
         const updateValues: Record<string, unknown> = { status: newDbStatus, statusMessage };
+        if (nodeChanged) updateValues.currentNodeName = observedNode;
 
         // Store user-friendly error message when status changes to failed
         if (newDbStatus === 'failed') {

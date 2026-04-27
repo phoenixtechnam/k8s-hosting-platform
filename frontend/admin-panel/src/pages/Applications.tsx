@@ -942,8 +942,9 @@ function InstalledTab() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
   const [bulkAction, setBulkAction] = useState<'start' | 'stop' | 'restart' | 'delete' | null>(null);
-  const [sortField, setSortField] = useState<'name' | 'status' | 'createdAt'>('createdAt');
+  const [sortField, setSortField] = useState<'name' | 'status' | 'createdAt' | 'node'>('createdAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const { data: response, isLoading, isError, error } = useAdminDeployments({
     page,
@@ -961,18 +962,36 @@ function InstalledTab() {
   const totalCount = pagination?.total_count ?? 0;
   const totalPages = pagination?.total_pages ?? 1;
 
-  // Sort locally (server already sorts by createdAt desc)
+  // Filter by search query first, then sort. Searching across all
+  // operator-relevant fields (app name, deployment name, client,
+  // status, current node) — picking by node is the most common
+  // post-drain triage query.
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return deployments;
+    return deployments.filter((d) => {
+      const haystack = [
+        d.name, d.catalogEntryName, d.catalogEntryCode, d.catalogEntryType,
+        d.clientName, d.status, d.currentNodeName, d.installedVersion,
+      ].filter((v): v is string => Boolean(v)).join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [deployments, searchQuery]);
+
   const sorted = useMemo(() => {
-    const arr = [...deployments];
+    const arr = [...filtered];
     arr.sort((a, b) => {
       let cmp = 0;
       if (sortField === 'name') cmp = a.name.localeCompare(b.name);
       else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
+      else if (sortField === 'node') {
+        cmp = (a.currentNodeName ?? '').localeCompare(b.currentNodeName ?? '');
+      }
       else cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return arr;
-  }, [deployments, sortField, sortDir]);
+  }, [filtered, sortField, sortDir]);
 
   const handleSort = useCallback((field: typeof sortField) => {
     if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -1037,8 +1056,16 @@ function InstalledTab() {
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search by app, client, status, node…"
+          className="flex-1 max-w-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          data-testid="installed-search"
+        />
         <span className="text-sm text-gray-500 dark:text-gray-400">
-          {totalCount} deployment{totalCount !== 1 ? 's' : ''}
+          {searchQuery ? `${sorted.length} of ${totalCount}` : `${totalCount} deployment${totalCount !== 1 ? 's' : ''}`}
         </span>
       </div>
 
@@ -1189,6 +1216,11 @@ function InstalledTab() {
                         Status{sortIndicator('status')}
                       </button>
                     </th>
+                    <th className="px-3 py-3">
+                      <button type="button" onClick={() => handleSort('node')} className="inline-flex items-center hover:text-gray-700 dark:hover:text-gray-200">
+                        Node{sortIndicator('node')}
+                      </button>
+                    </th>
                     <th className="px-3 py-3">CPU</th>
                     <th className="px-3 py-3">Memory</th>
                     <th className="px-3 py-3">Version</th>
@@ -1239,6 +1271,9 @@ function InstalledTab() {
                         </td>
                         <td className="px-3 py-3">
                           <StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} />
+                        </td>
+                        <td className="px-3 py-3 text-gray-700 dark:text-gray-300 text-xs font-mono">
+                          {d.currentNodeName ?? <span className="text-gray-400">—</span>}
                         </td>
                         <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.cpuRequest}</td>
                         <td className="px-3 py-3 text-gray-600 dark:text-gray-400 text-xs font-mono">{d.memoryRequest}</td>
