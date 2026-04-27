@@ -61,6 +61,12 @@ parameters:
   fsType: "ext4"
   dataLocality: "disabled"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # M-NS-2: pin platform replicas to system server nodes only.
+  # Worker nodes are tagged "" (empty) so this nodeSelector excludes
+  # them — a fresh platform PVC is provisioned exclusively across
+  # nodes with the "system" Longhorn tag (see syncNodesOnce in
+  # backend/src/modules/nodes/k8s-sync.ts).
+  nodeSelector: "system"
 ---
 # M13: 1-replica counterpart to longhorn-system-ha for fresh installs
 # that haven't reached the 3-server HA threshold yet. The platform
@@ -85,6 +91,9 @@ parameters:
   fsType: "ext4"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # M-NS-2: still system-only — single replica, but it must land on a
+  # tagged server (not the worker, which is reserved for tenants).
+  nodeSelector: "system"
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -103,6 +112,10 @@ parameters:
   fsType: "ext4"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # M-NS-2: explicitly NO nodeSelector — tenant volumes can land on
+  # any schedulable node (workers AND servers when servers also opt
+  # into host-client-workloads=true). Listed here so a future edit
+  # doesn't accidentally inherit "system" from a copy-paste.
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -121,6 +134,7 @@ parameters:
   fsType: "ext4"
   dataLocality: "disabled"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
+  # M-NS-2: tenant volumes never carry the system nodeSelector.
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
