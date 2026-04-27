@@ -114,8 +114,9 @@ scenario_lifecycle() {
   ok "client created cid=$cid"
   echo "$cid" > /tmp/integration.cid
 
-  wait_for 60 "namespace provisioned" "Active" \
-    "ssh_cp 'kubectl get ns -l platform.phoenix-host.net/client-id=$cid --no-headers'" || return 1
+  # Namespace label is `client=<id>` (set by k8s-provisioner.applyNamespace).
+  wait_for 90 "namespace provisioned" "Active" \
+    "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
 
   # Cleanup will run unconditionally even on later failure.
   return 0
@@ -161,7 +162,7 @@ scenario_ssl() {
   [[ -n "$did" ]] || { fail "domain create failed"; return 1; }
   ok "domain created did=$did"
 
-  local ns; ns=$(ssh_cp "kubectl get ns -l platform.phoenix-host.net/client-id=$cid -o jsonpath='{.items[0].metadata.name}'")
+  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
   wait_for 180 "challenge moves out of invalid" "(pending|valid)" \
     "ssh_cp 'kubectl get challenge -n $ns -o jsonpath={.items[0].status.state} 2>&1'" || return 1
 }

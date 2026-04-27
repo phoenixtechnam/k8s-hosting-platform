@@ -553,6 +553,37 @@ export async function runDeprovision(
     }
     await updateProgress('Delete Namespace', 'completed');
 
+    // Step 1.5: Delete Released PVs whose claimRef points at this
+    // namespace. The tenant SC is `reclaimPolicy: Retain` (intentional
+    // — protects against accidental data loss when the operator
+    // deletes a PVC). After client deletion the operator has already
+    // signed off on losing the data, so we purge the leftover PVs to
+    // free Longhorn capacity AND remove the conflict surface for
+    // future re-provisioning. Caught by integration-staging.sh
+    // reprovision scenario when 3+ Released PVs accumulated from
+    // earlier test runs.
+    try {
+      interface PvLite { metadata?: { name?: string }; spec?: { claimRef?: { namespace?: string } }; status?: { phase?: string } }
+      const pvs = await k8s.core.listPersistentVolume({});
+      const released = ((pvs as { items?: PvLite[] }).items ?? []).filter(
+        (p) => p.status?.phase === 'Released' && p.spec?.claimRef?.namespace === namespace,
+      );
+      for (const pv of released) {
+        const pvName = pv.metadata?.name;
+        if (!pvName) continue;
+        try {
+          await k8s.core.deletePersistentVolume({ name: pvName });
+        } catch (err) {
+          console.warn(`[deprovision] failed to delete Released PV ${pvName}:`, (err as Error).message);
+        }
+      }
+      if (released.length > 0) {
+        console.log(`[deprovision] cleaned up ${released.length} Released PV(s) for namespace ${namespace}`);
+      }
+    } catch (err) {
+      console.warn('[deprovision] Released PV cleanup failed:', (err as Error).message);
+    }
+
     await db.update(provisioningTasks).set({
       status: 'completed',
       completedSteps,
