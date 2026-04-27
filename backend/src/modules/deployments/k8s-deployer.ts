@@ -877,11 +877,29 @@ async function getK8sDeploymentStatus(
     return { name: componentName, type: 'deployment', phase: 'running', ready: true };
   }
 
-  // Check K8s events for FailedCreate (quota exceeded, etc.) — always check when not ready
+  // Check K8s events for FailedCreate (quota exceeded, etc.) and
+  // Pod-level FailedAttachVolume — always check when not ready.
+  //
+  // FailedAttachVolume is the most common reason a tenant pod gets
+  // stuck in Init: the Longhorn PVC can't attach because the volume
+  // is detached/faulted (e.g. replica scheduling failed because no
+  // node has enough free disk). The Pod is technically Scheduled and
+  // PodScheduled=True, so the earlier unschedulable check above
+  // returns nothing — without this branch the reconciler reports
+  // `pending` with no detail until the 60-min stale timeout flips it
+  // to `Timed out: No progress detected`. Surface it immediately.
   if (desiredReplicas > 0) {
     try {
       const events = await k8s.core.listNamespacedEvent({ namespace });
-      const eventItems = (events as { items?: readonly { reason?: string; message?: string; involvedObject?: { kind?: string; name?: string } }[] }).items ?? [];
+      const eventItems = (events as { items?: readonly {
+        reason?: string;
+        message?: string;
+        type?: string;
+        lastTimestamp?: string;
+        involvedObject?: { kind?: string; name?: string };
+      }[] }).items ?? [];
+
+      // ReplicaSet quota / forbidden errors first (existing behavior).
       const failedEvent = eventItems.find(
         e => e.reason === 'FailedCreate' && e.involvedObject?.kind === 'ReplicaSet' && e.involvedObject?.name?.startsWith(name),
       );
@@ -892,6 +910,53 @@ async function getK8sDeploymentStatus(
             message: 'Insufficient resources: the client quota has been exceeded. Free up resources or upgrade the plan.' };
         }
         return { name: componentName, type: 'deployment', phase: 'failed', ready: false, message: msg };
+      }
+
+      // Pod-level volume / image / config errors. We classify a few
+      // well-known reasons to user-friendly text, fall through to
+      // the raw event message for everything else.
+      const podName = podList[0] && (podList[0] as { metadata?: { name?: string } }).metadata?.name;
+      const podEvents = podName
+        ? eventItems.filter(e => e.involvedObject?.kind === 'Pod' && e.involvedObject?.name === podName)
+        : eventItems.filter(e => e.involvedObject?.kind === 'Pod');
+      const volEvent = podEvents.find(e => e.reason === 'FailedAttachVolume' || e.reason === 'FailedMount');
+      if (volEvent?.message) {
+        const msg = volEvent.message;
+        if (msg.includes('not ready for workloads') || msg.includes('faulted')) {
+          return {
+            name: componentName,
+            type: 'deployment',
+            phase: 'failed',
+            ready: false,
+            message: 'Storage volume is faulted: replica scheduling failed (likely insufficient free disk on cluster nodes). Operator action required.',
+          };
+        }
+        if (msg.includes('insufficient storage')) {
+          return {
+            name: componentName,
+            type: 'deployment',
+            phase: 'failed',
+            ready: false,
+            message: 'Storage scheduling failed: no cluster node has enough free disk for the requested volume.',
+          };
+        }
+        return {
+          name: componentName,
+          type: 'deployment',
+          phase: 'failed',
+          ready: false,
+          message: `Volume attach failed: ${msg.slice(0, 240)}`,
+        };
+      }
+      const imgEvent = podEvents.find(e => e.reason === 'Failed' || e.reason === 'BackOff');
+      if (imgEvent?.message?.match(/(ImagePull|manifest unknown|denied)/i)) {
+        return {
+          name: componentName,
+          type: 'deployment',
+          phase: 'failed',
+          ready: false,
+          message: `Image pull error: ${imgEvent.message.slice(0, 240)}`,
+        };
       }
     } catch { /* events not available */ }
   }

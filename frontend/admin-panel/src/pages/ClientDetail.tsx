@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { Fragment, useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
 import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle } from 'lucide-react';
@@ -956,36 +956,57 @@ function DeploymentsTab({ data, isLoading, error, clientId }: TabContentProps<De
         </tr>
       </thead>
       <tbody>
-        {sortedItems.map((d) => (
-          <tr key={d.id} className="border-b border-gray-50 dark:border-gray-700">
-            <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
-            <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
-            <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
-            <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
-            <td className="py-2 text-right">
-              {d.status === 'running' && (
-                <button
-                  type="button"
-                  onClick={() => restartDeployment.mutate(d.id)}
-                  disabled={restartDeployment.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Pull latest image and restart"
-                  data-testid={`restart-deployment-${d.id}`}
-                >
-                  {restartDeployment.isPending ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <RefreshCw size={12} />
+        {sortedItems.map((d) => {
+          // Surface lastError / statusMessage as a follow-up row so
+          // operators see the failure reason without drilling down.
+          // Pre-fix this was invisible — a stuck Longhorn volume looked
+          // identical to a healthy starting workload until the 60-min
+          // stale timeout kicked in.
+          const detail = (d.lastError && d.lastError.trim()) || (d.statusMessage && d.statusMessage.trim()) || '';
+          const detailTone = d.status === 'failed'
+            ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
+            : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300';
+          return (
+            <Fragment key={d.id}>
+              <tr className="border-b border-gray-50 dark:border-gray-700">
+                <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{d.name}</td>
+                <td className="py-2 text-gray-600 dark:text-gray-400">{d.type}</td>
+                <td className="py-2 text-gray-600 dark:text-gray-400">{d.replicaCount}</td>
+                <td className="py-2 text-gray-600 dark:text-gray-400">{d.cpuRequest}</td>
+                <td className="py-2 text-gray-600 dark:text-gray-400">{d.memoryRequest}</td>
+                <td className="py-2"><StatusBadge status={d.status as Parameters<typeof StatusBadge>[0]['status']} /></td>
+                <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+                <td className="py-2 text-right">
+                  {d.status === 'running' && (
+                    <button
+                      type="button"
+                      onClick={() => restartDeployment.mutate(d.id)}
+                      disabled={restartDeployment.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Pull latest image and restart"
+                      data-testid={`restart-deployment-${d.id}`}
+                    >
+                      {restartDeployment.isPending ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={12} />
+                      )}
+                      Restart
+                    </button>
                   )}
-                  Restart
-                </button>
+                </td>
+              </tr>
+              {detail && (
+                <tr className={detailTone} data-testid={`deployment-${d.id}-detail`}>
+                  <td colSpan={8} className="px-3 py-1.5 text-xs">
+                    <span className="font-medium">{d.status === 'failed' ? 'Error: ' : 'Status: '}</span>
+                    {detail}
+                  </td>
+                </tr>
               )}
-            </td>
-          </tr>
-        ))}
+            </Fragment>
+          );
+        })}
       </tbody>
     </table>
   );

@@ -9,6 +9,10 @@ export interface Deployment {
   readonly catalogEntryId: string;
   readonly type: 'application' | 'runtime' | 'database' | 'service' | 'static';
   readonly status: string;
+  /** Persistent error message when status='failed' (e.g. volume faulted, image pull error). */
+  readonly lastError: string | null;
+  /** Transient progress message while status='pending' (e.g. "1/3 replicas ready"). */
+  readonly statusMessage: string | null;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
