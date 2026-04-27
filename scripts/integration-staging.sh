@@ -250,8 +250,15 @@ scenario_https() {
   # delay can take 2-4 minutes on a fresh staging cluster. Anything
   # under 360s is normal; longer means there's a real problem
   # (rate-limit, ACME endpoint reachability, etc).
+  #
+  # Use the cert NAME (deterministic from the hostname) rather than a
+  # jsonpath filter — the inner double quotes in
+  # `?(@.spec.dnsNames[0]=="...")` round-trip through ssh+eval
+  # unreliably and produced false negatives even when the cert was
+  # genuinely Ready.
+  local cert_name; cert_name="$(echo "$domain" | tr '.' '-')-cert"
   wait_for 360 "cert-manager Certificate Ready=True" "True" \
-    "ssh_cp 'kubectl -n $ns get cert -o jsonpath={.items[?(@.spec.dnsNames[0]==\"$domain\")].status.conditions[?(@.type==\"Ready\")].status}'" || return 1
+    "ssh_cp \"kubectl -n $ns get cert $cert_name -o jsonpath='{.status.conditions[?(@.type==\\\"Ready\\\")].status}'\"" || return 1
 
   # 5. DNS — should already resolve thanks to the wildcard, but
   #    double-check rather than discover surprises during step 6/7.

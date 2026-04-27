@@ -13,8 +13,16 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // Platform StatefulSets whose volumes this policy controls. Add to the
 // list when a new system StatefulSet ships with a PVC.
+//
+// NOTE: Postgres is owned by CNPG (Cluster/postgres in k8s/base/database.yaml),
+// not a StatefulSet. CNPG's `instances` field is set by CNPG_INSTANCES_FOR
+// below. The legacy `data-postgres-0` prefix entry was retired with the
+// orphan StatefulSet (Phase 4 cleanup, 2026-04-27). CNPG-managed PVCs
+// are named `<cluster>-<n>` (e.g. postgres-1) which doesn't match this
+// pvcPrefix shape; if Longhorn-replica control over CNPG volumes is
+// needed in the future, add a separate code path rather than retrofitting
+// it here.
 export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix: string }> = [
-  { namespace: 'platform', pvcPrefix: 'data-postgres' },     // data-postgres-0, ...-1, ...
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
 ];
 
