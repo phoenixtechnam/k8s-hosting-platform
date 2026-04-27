@@ -17,6 +17,7 @@ function createMockK8sClients(): K8sClients {
       createNamespacedDeployment: vi.fn().mockResolvedValue({}),
       replaceNamespacedDeployment: vi.fn().mockResolvedValue({}),
       deleteNamespacedDeployment: vi.fn().mockResolvedValue({}),
+      patchNamespacedDeployment: vi.fn().mockResolvedValue({}),
     } as unknown as K8sClients['apps'],
     rbac: {
       readNamespacedRole: vi.fn().mockRejectedValue(notFound()),
@@ -42,9 +43,9 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
     });
 
-    it('should skip recreation if deployment exists with correct spec', async () => {
+    it('should skip recreation if deployment exists with correct spec and >=1 replica', async () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
-        spec: { template: { spec: {
+        spec: { replicas: 1, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
           containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } } }],
         } } },
@@ -55,6 +56,31 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
       // Should not recreate since PVC is correct
       expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+      // Replicas already at 1 → no scale patch either.
+      expect(mockK8s.apps.patchNamespacedDeployment).not.toHaveBeenCalled();
+    });
+
+    it('should rescale to 1 if deployment exists with correct spec but cleanup-loop scaled it to 0', async () => {
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { replicas: 0, template: { spec: {
+          volumes: [{ persistentVolumeClaim: { claimName: 'client-test-ns-storage' } }],
+          containers: [{ image: 'file-manager-sidecar:latest', securityContext: { capabilities: { add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] } } }],
+        } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'client-test-ns', 'file-manager-sidecar:latest');
+      expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
+      expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+      // Bug fix: must rescale from 0 → 1, otherwise /start is a no-op.
+      expect(mockK8s.apps.patchNamespacedDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'file-manager',
+          namespace: 'client-test-ns',
+          body: { spec: { replicas: 1 } },
+        }),
+        expect.anything(),
+      );
     });
 
     it('should delete and recreate deployment if PVC claim is wrong', async () => {
