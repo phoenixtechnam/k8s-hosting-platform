@@ -23,12 +23,29 @@ function isK8s404(err: unknown): boolean {
 
 /**
  * Ensure the file-manager Deployment + Service exist in the namespace.
- * If already running, does nothing.
+ *
+ * The file-manager mounts the same RWO `client-storage` PVC that
+ * tenant workloads also mount. K8s RWO requires single-node
+ * attachment, so when FM and a workload land on different nodes,
+ * the second one to schedule hits a Multi-Attach error and stays
+ * in Init forever. Two strategies are baked in here:
+ *
+ *   - `initialReplicas` defaults to 0. The provisioner creates the
+ *     Deployment scaled to zero so it exists for SFTP plumbing but
+ *     does NOT compete for the PVC at provision time. Operators
+ *     opt-in via /files/start which scales to 1; the idle-cleanup
+ *     loop scales back to 0 after 10 min of inactivity.
+ *   - Pod affinity: when FM scales up, prefer the node where any
+ *     tenant workload pod is currently running so they share the
+ *     RWO PVC mount. With no workload pods, FM goes anywhere; the
+ *     first workload that scales up afterwards will then pin to
+ *     FM's node via the platform's normal node selection.
  */
 export async function ensureFileManagerRunning(
   k8s: K8sClients,
   namespace: string,
   image: string,
+  initialReplicas = 0,
 ): Promise<void> {
   // Check if deployment exists
   let deployExists = false;
@@ -62,11 +79,35 @@ export async function ensureFileManagerRunning(
       body: {
         metadata: { name: FM_NAME, namespace, labels: FM_LABELS },
         spec: {
-          replicas: 1,
+          replicas: initialReplicas,
           selector: { matchLabels: FM_LABELS },
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
+              // Co-locate FM with any tenant workload pod in this namespace
+              // — they share the RWO `client-storage` PVC, and K8s only
+              // allows single-node attachment. preferred (not required) so
+              // a freshly-provisioned namespace with zero workloads can
+              // still scale FM up when /files/start runs without waiting
+              // for a workload to exist first.
+              affinity: {
+                podAffinity: {
+                  preferredDuringSchedulingIgnoredDuringExecution: [{
+                    weight: 100,
+                    podAffinityTerm: {
+                      labelSelector: {
+                        matchExpressions: [{
+                          key: 'app',
+                          operator: 'NotIn',
+                          values: [FM_NAME],
+                        }],
+                      },
+                      topologyKey: 'kubernetes.io/hostname',
+                      namespaces: [namespace],
+                    },
+                  }],
+                },
+              },
               containers: [{
                 name: FM_NAME,
                 image,

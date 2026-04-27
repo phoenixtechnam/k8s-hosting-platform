@@ -177,7 +177,10 @@ describe('file-manager service', () => {
         '/api/files',
       );
 
-      expect(mockEnsureRunning).toHaveBeenCalledWith(mockK8sClients, 'client-ns-1', 'file-manager:latest');
+      // Phase D fix: fileManagerRequest passes initialReplicas=1 so the
+      // /files/start path scales FM up from the 0 it was provisioned
+      // with (avoids RWO Multi-Attach with workload pods).
+      expect(mockEnsureRunning).toHaveBeenCalledWith(mockK8sClients, 'client-ns-1', 'file-manager:latest', 1);
       expect(mockGetStatus).toHaveBeenCalled();
       expect(result.status).toBe(200);
     });
