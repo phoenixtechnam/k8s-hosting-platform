@@ -96,6 +96,8 @@ export interface ComponentPodStatus {
   readonly phase: 'not_deployed' | 'starting' | 'running' | 'failed' | 'stopped';
   readonly ready: boolean;
   readonly message?: string;
+  /** Node hosting the pod, when scheduled (used by status-reconciler to populate deployments.current_node_name). */
+  readonly nodeName?: string | null;
 }
 
 export interface AggregateDeploymentStatus {
@@ -815,6 +817,9 @@ async function getK8sDeploymentStatus(
 
   // Check for pod failures — use baseName for app label selector
   type PodItem = {
+    spec?: {
+      nodeName?: string;
+    };
     status?: {
       phase?: string;
       conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
@@ -823,6 +828,10 @@ async function getK8sDeploymentStatus(
   };
   const pods = await k8s.core.listNamespacedPod({ namespace, labelSelector: `app=${baseName}` });
   const podList = (pods as { items?: PodItem[] }).items ?? [];
+
+  // First scheduled node — used by status-reconciler to populate
+  // deployments.current_node_name for the admin UI's "host node" column.
+  const nodeName = podList.find((p) => p.spec?.nodeName)?.spec?.nodeName ?? null;
 
   for (const pod of podList) {
     for (const cs of (pod.status?.containerStatuses ?? [])) {
@@ -874,7 +883,7 @@ async function getK8sDeploymentStatus(
   }
 
   if (readyReplicas >= desiredReplicas) {
-    return { name: componentName, type: 'deployment', phase: 'running', ready: true };
+    return { name: componentName, type: 'deployment', phase: 'running', ready: true, nodeName };
   }
 
   // Check K8s events for FailedCreate (quota exceeded, etc.) and
@@ -967,6 +976,7 @@ async function getK8sDeploymentStatus(
     phase: 'starting',
     ready: false,
     message: `${readyReplicas}/${desiredReplicas} replicas ready`,
+    nodeName,
   };
 }
 

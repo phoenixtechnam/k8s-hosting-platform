@@ -203,6 +203,29 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     return success(client);
   });
 
+  // GET /api/v1/clients/:id/storage-placement
+  //
+  // Returns which cluster nodes hold the client's PVC(s) and their
+  // Longhorn volume state. Read by the Storage Lifecycle card on the
+  // client detail page so the operator sees physical placement at a
+  // glance ("running on staging1, replicated to staging2 + worker"
+  // vs. the more abstract "tier=ha"). Best-effort: a Longhorn API
+  // hiccup returns an empty replicas list rather than failing the
+  // whole call.
+  app.get('/clients/:id/storage-placement', {
+    onRequest: [requireRole('super_admin', 'admin')],
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const k8s = getK8s();
+    if (!k8s) {
+      // Dev/test environment without kubeconfig — return empty rather
+      // than 500 so the UI degrades gracefully.
+      return success({ pvcs: [] });
+    }
+    const placement = await service.getClientStoragePlacement(app.db, id, k8s);
+    return success(placement);
+  });
+
   // PATCH /api/v1/clients/:id
   app.patch('/clients/:id', {
     onRequest: [requireRole('super_admin', 'admin')],

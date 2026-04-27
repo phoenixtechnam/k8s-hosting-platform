@@ -44,6 +44,8 @@ export interface AdminDeployment {
   readonly storagePath: string | null;
   readonly installedVersion: string | null;
   readonly replicaCount: number;
+  /** Cluster node currently hosting the deployment's first scheduled pod. */
+  readonly currentNodeName: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
