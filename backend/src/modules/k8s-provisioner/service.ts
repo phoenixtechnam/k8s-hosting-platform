@@ -562,19 +562,69 @@ export async function runDeprovision(
     // future re-provisioning. Caught by integration-staging.sh
     // reprovision scenario when 3+ Released PVs accumulated from
     // earlier test runs.
+    //
+    // CRITICAL ORDERING: `deleteNamespace()` returns immediately while
+    // the namespace is still Terminating. The PVC still exists then,
+    // so its PV is still Bound — not Released. If we list PVs at this
+    // moment we find zero candidates and the cleanup is a no-op. The
+    // first integration-staging run after the cascade fix shipped
+    // surfaced this: namespace deleted, BUT a fresh orphan PV remained
+    // because the cleanup raced ahead of the PVC cascade.
+    //
+    // Fix: snapshot which PVs claim this namespace BEFORE deletion,
+    // then poll up to 60s for them to transition to Released (or
+    // disappear entirely if the SC happened to be Delete reclaim).
     try {
       interface PvLite { metadata?: { name?: string }; spec?: { claimRef?: { namespace?: string } }; status?: { phase?: string } }
-      const pvs = await k8s.core.listPersistentVolume({});
-      const released = ((pvs as { items?: PvLite[] }).items ?? []).filter(
-        (p) => p.status?.phase === 'Released' && p.spec?.claimRef?.namespace === namespace,
-      );
-      for (const pv of released) {
-        const pvName = pv.metadata?.name;
-        if (!pvName) continue;
+
+      // Snapshot the PVs bound to PVCs in this namespace at delete-time.
+      const pvsBefore = await k8s.core.listPersistentVolume({});
+      const candidatesByName = new Map<string, PvLite>();
+      for (const p of ((pvsBefore as { items?: PvLite[] }).items ?? [])) {
+        const name = p.metadata?.name;
+        if (!name) continue;
+        if (p.spec?.claimRef?.namespace === namespace) {
+          candidatesByName.set(name, p);
+        }
+      }
+
+      const releasedNames = new Set<string>();
+      const startedAt = Date.now();
+      // Poll: PVCs cascade-delete during namespace termination, then
+      // the PV transitions Bound → Released. Empirically <10s for
+      // tenant PVCs but allow 60s to absorb worst-case Longhorn delay.
+      while (Date.now() - startedAt < 60_000 && releasedNames.size < candidatesByName.size) {
+        const pvsNow = await k8s.core.listPersistentVolume({});
+        for (const p of ((pvsNow as { items?: PvLite[] }).items ?? [])) {
+          const name = p.metadata?.name;
+          if (!name || !candidatesByName.has(name)) continue;
+          if (p.status?.phase === 'Released') releasedNames.add(name);
+        }
+        if (releasedNames.size >= candidatesByName.size) break;
+        // Also tolerate the case where a candidate disappeared on its
+        // own (Delete reclaim) — count it as "handled" so we don't
+        // poll forever waiting for it to become Released.
+        const stillPresent = new Set(((pvsNow as { items?: PvLite[] }).items ?? [])
+          .map((p) => p.metadata?.name).filter((n): n is string => !!n));
+        for (const candidate of candidatesByName.keys()) {
+          if (!stillPresent.has(candidate)) releasedNames.add(candidate);
+        }
+        if (releasedNames.size >= candidatesByName.size) break;
+        await new Promise((r) => setTimeout(r, 2_000));
+      }
+
+      let cleanedCount = 0;
+      for (const pvName of candidatesByName.keys()) {
+        // Only act on PVs we actually saw transition (avoid deleting
+        // a PV that's in some unexpected state we don't understand).
+        if (!releasedNames.has(pvName)) continue;
         try {
           await k8s.core.deletePersistentVolume({ name: pvName });
+          cleanedCount++;
         } catch (err) {
-          console.warn(`[deprovision] failed to delete Released PV ${pvName}:`, (err as Error).message);
+          if (!isK8s404(err)) {
+            console.warn(`[deprovision] failed to delete Released PV ${pvName}:`, (err as Error).message);
+          }
         }
         // Cascade to Longhorn volume — PV deletion alone does NOT
         // delete the volume.longhorn.io CR (Longhorn Retain semantics
@@ -595,8 +645,11 @@ export async function runDeprovision(
           }
         }
       }
-      if (released.length > 0) {
-        console.log(`[deprovision] cleaned up ${released.length} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
+      if (cleanedCount > 0) {
+        console.log(`[deprovision] cleaned up ${cleanedCount} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
+      }
+      if (candidatesByName.size > releasedNames.size) {
+        console.warn(`[deprovision] ${candidatesByName.size - releasedNames.size} PV(s) for ${namespace} did not reach Released within 60s — leaving for manual cleanup`);
       }
     } catch (err) {
       console.warn('[deprovision] Released PV cleanup failed:', (err as Error).message);
