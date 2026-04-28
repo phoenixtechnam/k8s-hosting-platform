@@ -144,8 +144,16 @@ scenario_lifecycle() {
   ok "client created cid=$cid"
   echo "$cid" > /tmp/integration.cid
 
+  # Wait for namespace=Active first (orchestrator step 1).
   wait_for 90 "namespace provisioned" "Active" \
     "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
+
+  # Then wait for the orchestrator to fully complete: PVC bound, FM
+  # Deployment created at scale 0, ResourceQuota + NetworkPolicies
+  # applied. Without this, the FM scenario fires /files/start before
+  # the FM Deployment exists and races a half-provisioned namespace.
+  wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
+    "api GET '/clients/$cid'" || return 1
 
   return 0
 }
