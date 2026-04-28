@@ -207,8 +207,14 @@ function buildOauth2ProxyConfig(
   // either be omitted or use a typed empty literal (`""` / `[]`).
   const lines: string[] = [];
   // Provider — generic OIDC, issuer-driven discovery.
+  // Strip trailing slash from issuer URL — many IdPs (Zitadel, Keycloak)
+  // return the bare hostname with no trailing slash in the discovery
+  // document's `issuer` field, and oauth2-proxy will refuse to start
+  // with: 'issuer did not match the issuer returned by provider'.
+  // Normalise here so operators can paste either form into the UI.
+  const normalisedIssuer = primary.issuerUrl.replace(/\/+$/, '');
   lines.push(`provider="oidc"`);
-  lines.push(`oidc_issuer_url="${primary.issuerUrl}"`);
+  lines.push(`oidc_issuer_url="${normalisedIssuer}"`);
   lines.push(`client_id="${primary.clientId}"`);
   lines.push(`client_secret="${clientSecret}"`);
   // PKCE S256 toggle. Empty string => no PKCE; "S256" => enable.
