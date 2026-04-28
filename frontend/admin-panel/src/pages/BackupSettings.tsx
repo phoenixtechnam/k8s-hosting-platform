@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2 } from 'lucide-react';
+import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Cloud, Zap, CheckCircle, Edit2, Activity } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import BackupHealthBanner from '@/components/BackupHealthBanner';
+import BackupHealthTable from '@/components/BackupHealthTable';
+import { useBackupHealth } from '@/hooks/use-backup-health';
 import {
   useBackupConfigs,
   useCreateBackupConfig,
@@ -22,6 +25,7 @@ type StorageType = 'ssh' | 's3';
 
 export default function BackupSettings() {
   const { data: response, isLoading } = useBackupConfigs();
+  const { data: healthSummaries, isLoading: healthLoading } = useBackupHealth();
   const createConfig = useCreateBackupConfig();
   const updateConfig = useUpdateBackupConfig();
   const deleteConfig = useDeleteBackupConfig();
@@ -205,6 +209,9 @@ export default function BackupSettings() {
 
   return (
     <div className="space-y-6">
+      {/* DR Job Health banner — only renders when a DR cron is failing */}
+      <BackupHealthBanner summaries={healthSummaries} />
+
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <HardDrive size={28} className="text-gray-700 dark:text-gray-300" />
@@ -517,6 +524,20 @@ export default function BackupSettings() {
       )}
 
       <RecentBackupsPanel activeConfigId={configs.find((c) => c.active)?.id ?? null} />
+
+      {/* DR Job Health table — discovers Jobs cluster-wide via labels.
+          Adding a new backup job (with the
+          platform.phoenix-host.net/backup-health-watch=true label) is a
+          pure YAML change — no UI update needed. */}
+      <section data-testid="backup-health-section">
+        <div className="flex items-center gap-2 mb-3">
+          <Activity size={20} className="text-gray-700 dark:text-gray-300" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            DR Job Health
+          </h2>
+        </div>
+        <BackupHealthTable summaries={healthSummaries} isLoading={healthLoading} />
+      </section>
     </div>
   );
 }

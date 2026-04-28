@@ -66,6 +66,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
+    platform.phoenix-host.net/backup-health-watch: "true"
+    platform.phoenix-host.net/backup-category: "dr"
+    platform.phoenix-host.net/backup-severity: "critical"
+    platform.phoenix-host.net/depends-on: "backup-credentials"
+  annotations:
+    platform.phoenix-host.net/backup-display-name: "Cluster state backup"
 spec:
   # Suspended by default. The longhorn-reconciler unsuspends DR CronJobs
   # when a backup target is activated (Settings → Backups → Active) and

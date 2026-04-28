@@ -14,6 +14,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-backup
+    platform.phoenix-host.net/backup-health-watch: "true"
+    platform.phoenix-host.net/backup-category: "dr"
+    platform.phoenix-host.net/backup-severity: "warning"
+    platform.phoenix-host.net/depends-on: "backup-credentials"
+  annotations:
+    platform.phoenix-host.net/backup-display-name: "Hostpath snapshot upload"
 spec:
   # Suspended by default. Unsuspended by longhorn-reconciler when a
   # backup target becomes active. See cluster-state-cronjob.yaml for the
