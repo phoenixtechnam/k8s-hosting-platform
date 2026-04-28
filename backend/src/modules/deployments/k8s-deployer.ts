@@ -460,6 +460,14 @@ async function deployK8sDeployment(
     spec: {
       replicas: replicaCount,
       selector: { matchLabels: selectorLabels },
+      // Recreate (kill old before new) is mandatory for tenant workloads
+      // because the storage PVC is RWO. Default RollingUpdate with
+      // maxSurge=25% allows a new pod to spin up alongside the old one,
+      // and the new pod gets stuck in Multi-Attach because the old pod
+      // still holds the volume. This deadlock is observable as
+      // "Init:0/1" persisting across restarts. Stateful pods (DB,
+      // anything backed by a single PVC) must use Recreate.
+      strategy: { type: 'Recreate' },
       template: {
         metadata: { labels },
         spec: podSpec,

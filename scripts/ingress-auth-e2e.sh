@@ -384,6 +384,99 @@ scenario_rotate_config() {
   return 1
 }
 
+scenario_acme_challenge_unblocked() {
+  # cert-manager provisions a sibling Ingress carrying path=/.well-known
+  # /acme-challenge/<token> with NO auth-* annotations. NGINX merges
+  # that Ingress with the gated tenant Ingress into per-path location
+  # blocks — the challenge path must remain reachable so LE can renew
+  # certificates while OAuth2 is enabled.
+  #
+  # Strategy: simulate the HTTP-01 solver by creating a one-shot Ingress
+  # in the client namespace with a fake challenge path, send an HTTP
+  # GET against the host, and assert the response is NOT a 302 to the
+  # IdP. Cleanup deletes the test Ingress whether the assertion passes
+  # or fails.
+  local probe_token
+  probe_token="acme-probe-$(date +%s)"
+  local manifest
+  manifest=$(cat <<YAML
+apiVersion: v1
+kind: Service
+metadata:
+  name: acme-probe-stub
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app.kubernetes.io/name: oauth2-proxy
+  ports:
+    - port: 8089
+      targetPort: 4180
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: acme-probe
+  namespace: ${NAMESPACE}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${HOSTNAME}
+      http:
+        paths:
+          - path: /.well-known/acme-challenge/${probe_token}
+            pathType: Exact
+            backend:
+              service:
+                name: acme-probe-stub
+                port:
+                  number: 8089
+YAML
+)
+  local apply_out
+  apply_out=$(ssh_run "cat <<'EOF' | kubectl apply -f -
+${manifest}
+EOF" 2>&1)
+  if ! echo "$apply_out" | grep -qiE 'created|configured|unchanged'; then
+    fail "could not apply solver-stub Ingress: $apply_out"
+    return 1
+  fi
+
+  # Allow nginx-ingress to reload (~3-5s).
+  sleep 6
+
+  local status
+  status=$(curl -sk -o /dev/null -w '%{http_code}' \
+    "http://${HOSTNAME}/.well-known/acme-challenge/${probe_token}")
+  # The stub backend is the oauth2-proxy Service, so we expect 4xx
+  # (oauth2-proxy doesn't know the path) — but critically NOT a 302
+  # redirect to the IdP, which would prove the gate is intercepting.
+  if [[ "$status" == "302" ]]; then
+    fail "acme-challenge path was gated (got 302 to IdP) — LE renewal would fail"
+    ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+    return 1
+  fi
+  ok "acme-challenge path bypasses auth gate (HTTP ${status}, not 302)"
+
+  # Ensure NGINX picked our solver Ingress, not the tenant Ingress.
+  # An auth-required tenant location would set an X-Auth-Request-Redirect
+  # response header — its absence here proves location-level isolation.
+  local resp_headers
+  resp_headers=$(curl -sk -D - -o /dev/null \
+    "http://${HOSTNAME}/.well-known/acme-challenge/${probe_token}" 2>/dev/null)
+  if echo "$resp_headers" | grep -qi '^x-auth-request-redirect:'; then
+    fail "auth-request response header leaked into acme-challenge location"
+    ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+    return 1
+  fi
+  ok "no auth_request leak into /.well-known/acme-challenge/* location"
+
+  # Cleanup.
+  ssh_run "kubectl -n ${NAMESPACE} delete ingress acme-probe service acme-probe-stub --ignore-not-found" >/dev/null 2>&1 || true
+  return 0
+}
+
 scenario_disable_teardown() {
   api DELETE "/clients/$CLIENT_ID/ingress-routes/$ROUTE_ID/auth" >/dev/null
   ok "DELETE /auth returned"
@@ -422,6 +515,7 @@ run_scenario ingress_annotations
 run_scenario redirect_to_idp
 run_scenario validator_ping
 run_scenario rotate_config
+run_scenario acme_challenge_unblocked
 run_scenario disable_teardown
 
 echo

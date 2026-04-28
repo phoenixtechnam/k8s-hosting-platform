@@ -84,12 +84,15 @@ export async function ensureFileManagerRunning(
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
-              // Co-locate FM with any tenant workload pod in this namespace
-              // — they share the RWO `client-storage` PVC, and K8s only
-              // allows single-node attachment. preferred (not required) so
-              // a freshly-provisioned namespace with zero workloads can
-              // still scale FM up when /files/start runs without waiting
-              // for a workload to exist first.
+              // Co-locate FM with tenant workload pods that mount the
+              // shared RWO `client-storage` PVC. Use platform.io/managed=true
+              // — that label is on tenant deployments but NOT on system
+              // sidecars (oauth2-proxy, etc.) which don't mount storage.
+              // An "any non-FM pod" selector drew FM to oauth2-proxy's
+              // node and broke when the tenant pod was elsewhere
+              // (Multi-Attach error on RWO). preferred (not required)
+              // so a fresh namespace with zero workloads can still
+              // scale FM up before any deployment exists.
               affinity: {
                 podAffinity: {
                   preferredDuringSchedulingIgnoredDuringExecution: [{
@@ -97,9 +100,9 @@ export async function ensureFileManagerRunning(
                     podAffinityTerm: {
                       labelSelector: {
                         matchExpressions: [{
-                          key: 'app',
-                          operator: 'NotIn',
-                          values: [FM_NAME],
+                          key: 'platform.io/managed',
+                          operator: 'In',
+                          values: ['true'],
                         }],
                       },
                       topologyKey: 'kubernetes.io/hostname',
