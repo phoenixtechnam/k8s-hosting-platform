@@ -112,12 +112,44 @@ HAS_USED_FIELD=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys
 [[ "$HAS_SIZE" == "Y" ]] && ok "storage-placement.sizeBytes > 0" || fail "sizeBytes missing/0 — body: $(echo "$PLACEMENT" | head -c 300)"
 [[ "$HAS_USED_FIELD" == "Y" ]] && ok "storage-placement.usedBytes field present" || fail "usedBytes field missing in API response"
 
-# ─── flip back to local ──────────────────────────────────────────────
+# ─── deploy a tenant workload, verify affinity patch on tier flip ────
+log "── deploy tenant workload + verify affinity flip ──"
+CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
+DEPL_NAME="t$(date +%s)"
+DEPL_RESP=$(api POST "/clients/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$DEPL_NAME\",\"replica_count\":1}")
+DEPL_ID=$(echo "$DEPL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('id',''))" 2>/dev/null)
+[[ -n "$DEPL_ID" ]] && ok "deployment created $DEPL_NAME" || { fail "deploy create failed: $(echo "$DEPL_RESP" | head -c 200)"; }
+
+# Wait for deploy + record current affinity (still HA tier)
+for _ in $(seq 1 30); do
+  STATE=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\\.io/hostname}{\"|\"}{.spec.template.spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].preference.matchExpressions[0].values[0]}' 2>/dev/null" || true)
+  [[ -n "$STATE" ]] && break
+  sleep 2
+done
+
+# After ha-tier deploy on a fresh tier=ha client, expect:
+#   nodeSelector empty (HA = soft preferred, no hard pin)
+#   affinity preferred to workerNodeName
+HA_NS=$(echo "$STATE" | cut -d'|' -f1)
+HA_AFF=$(echo "$STATE" | cut -d'|' -f2)
+[[ -z "$HA_NS" ]] && ok "HA tier: nodeSelector cleared" || fail "HA tier: nodeSelector still set ($HA_NS) — strategic-merge null bug"
+
+# ─── flip back to local + verify nodeSelector reapplied ──────────────
 log "── flip back to local (round-trip) ──"
 api PATCH "/clients/$CID" '{"storage_tier":"local"}' >/dev/null
 RELOAD2=$(api GET "/clients/$CID")
 TIER2=$(echo "$RELOAD2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageTier'))" 2>/dev/null)
 [[ "$TIER2" == "local" ]] && ok "round-trip ha→local persists" || fail "round-trip failed: tier=$TIER2"
+
+# After local-tier flip, deployment should have:
+#   nodeSelector = workerNodeName (hard pin)
+#   affinity cleared
+sleep 3
+LOCAL_STATE=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\\.io/hostname}{\"|\"}{.spec.template.spec.affinity}' 2>/dev/null" || true)
+LOCAL_NS=$(echo "$LOCAL_STATE" | cut -d'|' -f1)
+LOCAL_AFF=$(echo "$LOCAL_STATE" | cut -d'|' -f2)
+[[ -n "$LOCAL_NS" ]] && ok "local tier: nodeSelector set to $LOCAL_NS" || fail "local tier: nodeSelector not applied"
+[[ -z "$LOCAL_AFF" ]] && ok "local tier: affinity cleared" || fail "local tier: affinity still set ($LOCAL_AFF) — null-doesnt-clear bug"
 
 REPL2=""
 for _ in $(seq 1 15); do

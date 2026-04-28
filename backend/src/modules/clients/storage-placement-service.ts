@@ -24,7 +24,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 import { patchTenantVolumeReplicas } from '../k8s-provisioner/service.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 const HA_REPLICAS = 2;
 const LOCAL_REPLICAS = 1;
@@ -189,7 +189,14 @@ export async function applyTenantTier(
             spec: {
               template: {
                 spec: {
-                  // Strategic merge: passing null clears the field.
+                  // RFC 7386 merge-patch: null DELETES the field, object
+                  // REPLACES it. Strategic-merge silently keeps stale
+                  // nodeSelector when null is passed for a map field —
+                  // that left tenant deploys with both a hard nodeSelector
+                  // (from the local-tier provisioning) AND a soft
+                  // affinity (from a later HA flip), so pods stuck on
+                  // the original node and lost their volume on a worker
+                  // re-pin. Use merge-patch so null actually clears.
                   nodeSelector,
                   affinity,
                 },
@@ -197,7 +204,7 @@ export async function applyTenantTier(
             },
           },
         } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-          STRATEGIC_MERGE_PATCH);
+          MERGE_PATCH);
         patchedCount++;
       } catch (err) {
         // Deployment may not exist in k8s yet (DB row only — workload

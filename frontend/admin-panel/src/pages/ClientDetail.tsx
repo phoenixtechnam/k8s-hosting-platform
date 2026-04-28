@@ -2219,7 +2219,7 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
             <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Allocated" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <th className="px-2 py-1.5 text-left font-medium">Replica node(s)</th>
@@ -2251,6 +2251,9 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
       {search.query && search.filteredData.length === 0 && (
         <p className="mt-2 text-xs text-gray-500 italic">No PVCs match &quot;{search.query}&quot;.</p>
       )}
+      <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400 italic">
+        Allocated = Longhorn on-disk allocation (filesystem metadata + sparse blocks). Empty 10 GiB volumes report ~230 MiB; this is not user-file usage.
+      </p>
     </div>
   );
 }
