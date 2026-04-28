@@ -384,7 +384,64 @@ export async function syncRouteAnnotations(
   // 6. Sync protected directory child Ingresses
   await syncProtectedDirIngresses(db, k8s, routeId, clientId);
 
+  // 7. OIDC / OAuth2 access control. When enabled, layer the
+  //    nginx auth_request annotations on top of the existing
+  //    annotation map. Pointing at the per-client claim-validator
+  //    Service (port 4181) chains "session check" + "claim policy"
+  //    behind a single auth-url. The ?route=<id> query parameter
+  //    selects the matching rule set inside the validator.
+  const authAnnotations = await buildIngressAuthAnnotations(db, namespace, routeId, route.hostname);
+  Object.assign(annotations, authAnnotations);
+
   return annotations;
+}
+
+/**
+ * Returns the auth_request-related annotations when the ingress has
+ * an enabled auth config; empty object otherwise. Exported for tests.
+ */
+export async function buildIngressAuthAnnotations(
+  db: Database,
+  namespace: string,
+  routeId: string,
+  hostname: string,
+): Promise<Record<string, string>> {
+  const { ingressAuthConfigs } = await import('../../db/schema.js');
+  const [cfg] = await db
+    .select()
+    .from(ingressAuthConfigs)
+    .where(eq(ingressAuthConfigs.ingressRouteId, routeId));
+  if (!cfg || !cfg.enabled) return {};
+
+  // The claim-validator service exposes :4181 inside the client
+  // namespace. We point auth-url at it; oauth2-proxy's /oauth2/auth
+  // is reached transitively (the validator forwards to it).
+  const validatorBase = `http://oauth2-proxy.${namespace}.svc.cluster.local:4181`;
+  // /oauth2/start is served directly by oauth2-proxy on :4180 — it
+  // returns the redirect to the IdP. The browser follows that
+  // redirect, so it must hit the public-facing host. We expose
+  // /oauth2/* via a sibling Ingress rule (see ingress reconciler).
+  const signinUrl = `https://${hostname}/oauth2/start?rd=$escaped_request_uri`;
+
+  // Headers oauth2-proxy populates on a 200 auth-request response;
+  // nginx-ingress will copy these into the upstream request thanks
+  // to auth-response-headers.
+  const responseHeaders: string[] = [];
+  if (cfg.passUserHeaders) {
+    responseHeaders.push('X-Auth-Request-User', 'X-Auth-Request-Email', 'X-Auth-Request-Preferred-Username');
+  }
+  if (cfg.setXauthrequest) {
+    responseHeaders.push('X-Auth-Request-Groups');
+  }
+  if (cfg.passAccessToken) responseHeaders.push('X-Auth-Request-Access-Token');
+  if (cfg.passIdToken) responseHeaders.push('X-Auth-Request-Id-Token');
+  if (cfg.passAuthorizationHeader) responseHeaders.push('Authorization');
+
+  return {
+    'nginx.ingress.kubernetes.io/auth-url': `${validatorBase}/auth?route=${routeId}`,
+    'nginx.ingress.kubernetes.io/auth-signin': signinUrl,
+    'nginx.ingress.kubernetes.io/auth-response-headers': responseHeaders.join(','),
+  };
 }
 
 /**
