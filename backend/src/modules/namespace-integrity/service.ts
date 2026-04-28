@@ -8,7 +8,6 @@ import {
   applyNetworkPolicy,
   applyPVC,
 } from '../k8s-provisioner/service.js';
-import { getDefaultStorageClass } from '../storage-settings/service.js';
 
 // Issue 1 fix: a namespace can lose its tenant PVC / ResourceQuota /
 // NetworkPolicies after a cluster rebootstrap (sqlite→etcd, DR
@@ -126,11 +125,9 @@ export async function checkClientNamespaceIntegrity(
   }
 
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
-  const storageClass = client.storageTier === 'ha'
-    ? 'longhorn-tenant-ha'
-    : client.storageTier === 'local'
-      ? 'longhorn-tenant-local'
-      : await getDefaultStorageClass(db);
+  // Unified tenant SC; tier is encoded as Volume.spec.numberOfReplicas
+  // and patched live by applyTenantTier rather than baked into the SC.
+  const storageClass = 'longhorn-tenant';
 
   const repaired: IntegrityFinding[] = [];
   const errors: string[] = [];

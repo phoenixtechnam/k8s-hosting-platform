@@ -84,10 +84,17 @@ export interface DeployCatalogEntryInput {
    * M5: worker pin from clients.worker_node_name. Null/undefined lets
    * the default scheduler pick any node matching the implicit
    * constraints (server-only taints prevent tenant pods from landing
-   * on tainted control-plane nodes). When set, the Deployment carries
-   * a `kubernetes.io/hostname=<workerNodeName>` nodeSelector.
+   * on tainted control-plane nodes). When set:
+   *   - Local tier: hard nodeSelector (pod must run on that node).
+   *   - HA tier: soft preferred affinity (pod can fail over).
    */
   readonly workerNodeName?: string | null;
+  /**
+   * Storage tier from clients.storage_tier. Drives whether the worker
+   * pin is hard (nodeSelector) or soft (preferred affinity). HA tier
+   * MUST use soft so the pod can reschedule when the pin node fails.
+   */
+  readonly storageTier?: 'local' | 'ha' | null;
 }
 
 export interface ComponentPodStatus {
@@ -349,7 +356,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier);
         break;
 
       case 'statefulset':
@@ -360,7 +367,7 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier);
         break;
 
       case 'cronjob':
@@ -391,12 +398,15 @@ async function deployK8sDeployment(
   volumes: Array<{ container_path: string; local_path?: string }> = [],
   passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
   envVars?: Array<{ name: string; value: string }>,
-  // M3: optional worker pin. When set, the Deployment carries a
-  // `kubernetes.io/hostname=<workerNodeName>` nodeSelector so the
-  // scheduler places the pod on that specific worker. M5 wires this
-  // from the client row; current callers pass undefined and fall back
-  // to the default scheduler.
+  // M3/HA: optional worker pin + tier-aware affinity. Local tier =
+  // hard nodeSelector (data is on that one node, pod can't run anywhere
+  // else). HA tier = soft preference (Longhorn keeps a replica on the
+  // pin node for locality, but if the node fails the scheduler is free
+  // to move the pod to a node holding the surviving replica). Without
+  // this distinction HA tier provides no actual failover — the pod
+  // stays Pending forever waiting for the dead node to come back.
   workerNodeName?: string | null,
+  storageTier?: 'local' | 'ha' | null,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
@@ -419,7 +429,30 @@ async function deployK8sDeployment(
     ...(spec ? { volumes: spec.podVolumes } : {}),
   };
   if (workerNodeName) {
-    podSpec.nodeSelector = { 'kubernetes.io/hostname': workerNodeName };
+    if (storageTier === 'ha') {
+      // HA tier: soft preference. Pod prefers the pin node for locality
+      // but k8s is free to schedule elsewhere when that node is
+      // NotReady — so the pod can fail over to a node holding the
+      // surviving replica.
+      podSpec.affinity = {
+        nodeAffinity: {
+          preferredDuringSchedulingIgnoredDuringExecution: [{
+            weight: 100,
+            preference: {
+              matchExpressions: [{
+                key: 'kubernetes.io/hostname',
+                operator: 'In',
+                values: [workerNodeName],
+              }],
+            },
+          }],
+        },
+      };
+    } else {
+      // Local tier (or unset → defaults to local semantics): hard pin.
+      // The single replica only exists here, so the pod must run here.
+      podSpec.nodeSelector = { 'kubernetes.io/hostname': workerNodeName };
+    }
   }
 
   const body = {

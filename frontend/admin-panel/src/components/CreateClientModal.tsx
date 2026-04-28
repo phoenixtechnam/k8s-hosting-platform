@@ -5,7 +5,34 @@ import { useCreateClient, useDeleteClient } from '@/hooks/use-clients';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { usePlans, useRegions } from '@/hooks/use-plans';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
 import ProvisioningProgressModal from './ProvisioningProgressModal';
+
+/**
+ * Same "free / total" formatter as PlacementCard. Kept colocated rather
+ * than extracted to a shared util because both call sites are in the
+ * same admin-panel and the formatting is dropdown-specific.
+ */
+function formatAvailability(usage: WorkerUsage | undefined): string {
+  if (!usage) return '';
+  const parts: string[] = [];
+  if (usage.cpuMillicoresAllocatable != null && usage.cpuMillicoresUsed != null) {
+    const total = usage.cpuMillicoresAllocatable / 1000;
+    const free = Math.max(0, (usage.cpuMillicoresAllocatable - usage.cpuMillicoresUsed) / 1000);
+    parts.push(`${free.toFixed(2)}/${total.toFixed(0)} CPUs`);
+  }
+  if (usage.memoryBytesAllocatable != null && usage.memoryBytesUsed != null) {
+    const total = usage.memoryBytesAllocatable / 1024 ** 3;
+    const free = Math.max(0, (usage.memoryBytesAllocatable - usage.memoryBytesUsed) / 1024 ** 3);
+    parts.push(`${free.toFixed(1)}/${total.toFixed(0)} GB RAM`);
+  }
+  if (usage.diskBytesTotal != null && usage.diskBytesFree != null) {
+    const total = usage.diskBytesTotal / 1024 ** 3;
+    const free = usage.diskBytesFree / 1024 ** 3;
+    parts.push(`${free.toFixed(0)}/${total.toFixed(0)} GB disk`);
+  }
+  return parts.length > 0 ? ` — ${parts.join(' · ')} available` : '';
+}
 
 interface CreateClientModalProps {
   readonly open: boolean;
@@ -31,6 +58,8 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
   const { data: plansData } = usePlans();
   const { data: regionsData } = useRegions();
   const { data: nodesData } = useClusterNodes();
+  const { data: usageData } = useWorkerUsageSummary();
+  const usageByName = new Map((usageData?.data ?? []).map((u) => [u.name, u]));
   const createClient = useCreateClient();
   const deleteClient = useDeleteClient();
   const triggerProvisioning = useTriggerProvisioning();
@@ -303,7 +332,7 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
 
             <div>
               <label htmlFor="worker" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Worker node
+                Worker node (primary data location)
               </label>
               <select
                 id="worker"
@@ -312,19 +341,18 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
                 className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                 data-testid="worker-select"
               >
-                <option value="">Default scheduler (any tenant-capable node)</option>
+                <option value="">Auto (recommended — scheduler picks based on capacity)</option>
                 {(nodesData?.data ?? [])
                   .filter((n) => n.canHostClientWorkloads)
                   .map((n) => (
                     <option key={n.name} value={n.name}>
-                      {n.name} — {n.role}
-                      {n.cpuMillicores ? ` · ${(n.cpuMillicores / 1000).toFixed(1)} cores` : ''}
-                      {n.memoryBytes ? ` · ${(n.memoryBytes / 1024 ** 3).toFixed(0)}GiB` : ''}
+                      {n.name}
+                      {formatAvailability(usageByName.get(n.name))}
                     </option>
                   ))}
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Pin this client's pods to a specific node. Leave as default unless you need worker placement control.
+                Pod and primary Longhorn replica land on this node. Auto picks the node with most free capacity at provisioning. HA tier can fail over to other nodes.
               </p>
             </div>
 

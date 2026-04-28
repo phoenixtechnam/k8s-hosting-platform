@@ -2,7 +2,6 @@ import { eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
-import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
@@ -378,6 +377,40 @@ export async function applyPVC(
   }
 }
 
+/**
+ * Patch the tenant's Longhorn Volume CR to the desired replica count.
+ *
+ * Volume name == bound PV name (CSI convention); we resolve it via the
+ * PVC's `volumeName`. Idempotent: a no-op when the volume already has
+ * the target replica count. Used at provision time (initial setup) and
+ * by applyTenantTier (live tier flip).
+ *
+ * Throws on transient errors (Longhorn CRD missing, API unreachable,
+ * volume not bound yet) — caller decides whether to log + continue or
+ * fail loudly.
+ */
+export async function patchTenantVolumeReplicas(
+  k8s: K8sClients,
+  namespace: string,
+  targetReplicas: number,
+): Promise<void> {
+  const pvcName = `${namespace}-storage`;
+  // Step 1: PVC → bound PV name.
+  const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace }) as { spec?: { volumeName?: string } };
+  const pvName = pvc?.spec?.volumeName;
+  if (!pvName) {
+    throw new Error(`PVC ${namespace}/${pvcName} has no bound volume yet`);
+  }
+  // Step 2: JSON-patch the Volume CR. Use replace; Longhorn rebuilds
+  // replicas async after the spec changes.
+  await k8s.custom.patchNamespacedCustomObject({
+    group: 'longhorn.io', version: 'v1beta2',
+    namespace: 'longhorn-system', plural: 'volumes', name: pvName,
+    body: [{ op: 'replace', path: '/spec/numberOfReplicas', value: targetReplicas }],
+  } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+    { headers: { 'Content-Type': 'application/json-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export interface ProvisionOptions {
@@ -411,17 +444,33 @@ export async function runProvisionNamespace(
   const cpuLimit = options?.overrides?.cpu_limit ?? String(parseFloat(plan.cpuLimit));
   const memoryLimit = options?.overrides?.memory_limit ?? String(parseFloat(plan.memoryLimit));
   const storageLimit = options?.overrides?.storage_limit ?? String(parseFloat(plan.storageLimit));
-  // M7: pick SC by storage tier. `local` → longhorn-tenant-local (1
-  // replica, M2 default), `ha` → longhorn-tenant-ha (2 replicas). Fall
-  // back to the operator-configured default for clients that haven't
-  // been assigned a tier yet or for clusters that haven't applied the
-  // M2 StorageClass manifests. The platform-managed SC names come
-  // from k8s/base/longhorn/storageclasses.yaml.
-  const storageClass = client.storageTier === 'ha'
-    ? 'longhorn-tenant-ha'
-    : client.storageTier === 'local'
-      ? 'longhorn-tenant-local'
-      : await getDefaultStorageClass(db);
+  // Unified tenant SC. PVC.spec.storageClassName is immutable on a
+  // bound PVC, so splitting tier semantics across two SCs forced a
+  // snapshot+restore migration to change tier. We now use ONE SC and
+  // patch Volume.spec.numberOfReplicas live (1 for Local, 2 for HA)
+  // after the PVC binds. Tier change is also live (applyTenantTier).
+  const storageClass = 'longhorn-tenant';
+
+  // Auto-pick worker for Local tier when the operator chose "Auto"
+  // (workerNodeName=null). Local tier MUST run on a specific node
+  // because the single replica only exists there — without a pin,
+  // the next pod reschedule could land on a node with no replica
+  // and Longhorn would have to migrate the volume (slow + risky).
+  // HA tier with Auto stays null: the scheduler picks freely and
+  // dataLocality=best-effort drifts the primary toward the chosen
+  // node naturally.
+  if (!client.workerNodeName && client.storageTier !== 'ha') {
+    try {
+      const { autoPickWorkerNode } = await import('../clients/storage-placement-service.js');
+      const picked = await autoPickWorkerNode(db, k8s);
+      if (picked) {
+        await db.update(clients).set({ workerNodeName: picked }).where(eq(clients.id, clientId));
+        client.workerNodeName = picked;
+      }
+    } catch (err) {
+      console.warn(`[k8s-provisioner] auto-pick worker failed for ${namespace}: ${(err as Error).message}`);
+    }
+  }
 
   let stepsLog = buildStepsLog(PROVISION_STEPS);
   let completedSteps = 0;
@@ -488,6 +537,22 @@ export async function runProvisionNamespace(
     await updateProgress('Create PVC', 'running');
     const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);
+
+    // Patch the freshly-bound Volume CR to the tier-specific replica
+    // count. The unified `longhorn-tenant` SC ships with replicas=1
+    // by default; HA tenants need replicas=2. Patching after bind is
+    // safe (Longhorn rebuilds replicas async). Idempotent — a re-
+    // provision with the same tier flips to a no-op.
+    const targetReplicas = client.storageTier === 'ha' ? 2 : 1;
+    try {
+      await patchTenantVolumeReplicas(k8s, namespace, targetReplicas);
+    } catch (err) {
+      // Non-fatal: Volume CR may not exist yet (Longhorn race) or the
+      // CRD may be unreachable. Tier reconciler / next applyTenantTier
+      // call will repair. Surfaced via console for diagnostics.
+      console.warn(`[k8s-provisioner] tenant Volume replica patch failed for ${namespace}:`, (err as Error).message);
+    }
+
     await updateProgress('Create PVC', 'completed');
 
     // Step 5: Start file-manager sidecar (Deployment + Service)
