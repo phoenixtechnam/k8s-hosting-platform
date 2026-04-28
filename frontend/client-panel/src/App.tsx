@@ -11,6 +11,10 @@ import Backups from '@/pages/Backups';
 import Email from '@/pages/Email';
 import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
+import OidcProviders from '@/pages/settings/OidcProviders';
+import MtlsProviders from '@/pages/settings/MtlsProviders';
+import OpenZitiProviders from '@/pages/settings/OpenZitiProviders';
+import ZrokProviders from '@/pages/settings/ZrokProviders';
 import UserSettings from '@/pages/UserSettings';
 import DomainDetail from '@/pages/DomainDetail';
 import RouteDetail from '@/pages/RouteDetail';
@@ -57,6 +61,10 @@ export default function App() {
                   resource-usage — read-only metrics  */}
             <Route index element={<Dashboard />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="settings/oidc-providers" element={<OidcProviders />} />
+            <Route path="settings/mtls-providers" element={<MtlsProviders />} />
+            <Route path="settings/openziti-providers" element={<OpenZitiProviders />} />
+            <Route path="settings/zrok-providers" element={<ZrokProviders />} />
             <Route path="resource-usage" element={<ResourceUsage />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="user-settings" element={<UserSettings />} />

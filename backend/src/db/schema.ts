@@ -40,6 +40,10 @@ export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
 ]);
 export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   'snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore',
+  // 0059_storage_op_fsck.sql: filesystem check (xfs_repair -n /
+  // e2fsck -n) and repair (without -n). Both run via the
+  // storage-lifecycle quiesce orchestrator.
+  'fsck',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
   'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled',
@@ -258,6 +262,11 @@ export const domains = pgTable('domains', {
   verifiedAt: timestamp('verified_at'),
   lastVerifiedAt: timestamp('last_verified_at'),
   sslAutoRenew: integer('ssl_auto_renew').notNull().default(1),
+  // Set by deployment-network-access reconciler when the underlying
+  // deployment goes mesh-only (mode='tunneler'). annotation-sync.ts
+  // checks this flag and short-circuits public Ingress creation.
+  // Default false so existing domains are unaffected.
+  suppressPublicIngress: boolean('suppress_public_ingress').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
@@ -1348,6 +1357,134 @@ export const clientOauth2ProxyState = pgTable('client_oauth2_proxy_state', {
 
 export type ClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferSelect;
 export type NewClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferInsert;
+
+// ─── Multi-mode network access foundation (Phase 1 of OpenZiti integration) ───
+// See packages/api-contracts/src/{ingress-mtls,ziti-providers,zrok-providers,
+// deployment-network-access}.ts for the contract docs. Migration 0058.
+
+export const clientZitiProviders = pgTable('client_ziti_providers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  controllerUrl: varchar('controller_url', { length: 500 }).notNull(),
+  enrollmentJwtEncrypted: text('enrollment_jwt_encrypted'),
+  certExpiresAt: timestamp('cert_expires_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  clientIdx: index('client_ziti_providers_client_idx').on(table.clientId),
+}));
+
+export type ClientZitiProvider = typeof clientZitiProviders.$inferSelect;
+export type NewClientZitiProvider = typeof clientZitiProviders.$inferInsert;
+
+export const clientZrokAccounts = pgTable('client_zrok_accounts', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  controllerUrl: varchar('controller_url', { length: 500 }).notNull(),
+  accountEmail: varchar('account_email', { length: 255 }).notNull(),
+  accountTokenEncrypted: text('account_token_encrypted').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  clientIdx: index('client_zrok_accounts_client_idx').on(table.clientId),
+}));
+
+export type ClientZrokAccount = typeof clientZrokAccounts.$inferSelect;
+export type NewClientZrokAccount = typeof clientZrokAccounts.$inferInsert;
+
+export const clientMtlsProviders = pgTable('client_mtls_providers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  caCertPemEncrypted: text('ca_cert_pem_encrypted').notNull(),
+  caKeyPemEncrypted: text('ca_key_pem_encrypted'),
+  caCertFingerprint: varchar('ca_cert_fingerprint', { length: 64 }).notNull(),
+  caCertSubject: varchar('ca_cert_subject', { length: 500 }).notNull(),
+  caCertExpiresAt: timestamp('ca_cert_expires_at').notNull(),
+  canIssue: boolean('can_issue').notNull().default(false),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  clientIdx: index('client_mtls_providers_client_idx').on(table.clientId),
+}));
+
+export type ClientMtlsProvider = typeof clientMtlsProviders.$inferSelect;
+export type NewClientMtlsProvider = typeof clientMtlsProviders.$inferInsert;
+
+export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  ingressRouteId: varchar('ingress_route_id', { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  providerId: varchar('provider_id', { length: 36 })
+    .references(() => clientMtlsProviders.id, { onDelete: 'restrict' }),
+  caCertPemEncrypted: text('ca_cert_pem_encrypted'),
+  caCertFingerprint: varchar('ca_cert_fingerprint', { length: 64 }),
+  caCertSubject: varchar('ca_cert_subject', { length: 500 }),
+  caCertExpiresAt: timestamp('ca_cert_expires_at'),
+  verifyMode: varchar('verify_mode', { length: 32 }).notNull().default('on'),
+  subjectRegex: varchar('subject_regex', { length: 500 }),
+  passCertToUpstream: boolean('pass_cert_to_upstream').notNull().default(false),
+  passDnToUpstream: boolean('pass_dn_to_upstream').notNull().default(true),
+  lastError: text('last_error'),
+  lastReconciledAt: timestamp('last_reconciled_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type IngressMtlsConfig = typeof ingressMtlsConfigs.$inferSelect;
+export type NewIngressMtlsConfig = typeof ingressMtlsConfigs.$inferInsert;
+
+export const deploymentNetworkAccessConfigs = pgTable('deployment_network_access_configs', {
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .primaryKey()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  mode: varchar('mode', { length: 32 }).notNull().default('public'),
+  zitiProviderId: varchar('ziti_provider_id', { length: 36 })
+    .references(() => clientZitiProviders.id, { onDelete: 'restrict' }),
+  zitiServiceName: varchar('ziti_service_name', { length: 255 }),
+  zrokProviderId: varchar('zrok_provider_id', { length: 36 })
+    .references(() => clientZrokAccounts.id, { onDelete: 'restrict' }),
+  zrokShareToken: varchar('zrok_share_token', { length: 255 }),
+  passIdentityHeaders: boolean('pass_identity_headers').notNull().default(true),
+  provisioned: boolean('provisioned').notNull().default(false),
+  publicIngressSuppressed: boolean('public_ingress_suppressed').notNull().default(false),
+  lastError: text('last_error'),
+  lastReconciledAt: timestamp('last_reconciled_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  zitiIdx: index('deployment_network_access_ziti_idx').on(table.zitiProviderId),
+  zrokIdx: index('deployment_network_access_zrok_idx').on(table.zrokProviderId),
+}));
+
+export type DeploymentNetworkAccessConfig = typeof deploymentNetworkAccessConfigs.$inferSelect;
+export type NewDeploymentNetworkAccessConfig = typeof deploymentNetworkAccessConfigs.$inferInsert;
+
+export const clientMeshProxyState = pgTable('client_mesh_proxy_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  kind: varchar('kind', { length: 32 }).notNull(),
+  provisioned: boolean('provisioned').notNull().default(false),
+  lastProvisionedAt: timestamp('last_provisioned_at'),
+  lastError: text('last_error'),
+}, (table) => ({
+  pk: uniqueIndex('client_mesh_proxy_state_pk').on(table.clientId, table.kind),
+}));
+
+export type ClientMeshProxyState = typeof clientMeshProxyState.$inferSelect;
+export type NewClientMeshProxyState = typeof clientMeshProxyState.$inferInsert;
 
 // Type exports
 export type User = typeof users.$inferSelect;

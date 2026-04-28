@@ -393,6 +393,13 @@ export async function syncRouteAnnotations(
   const authAnnotations = await buildIngressAuthAnnotations(db, namespace, routeId, route.hostname);
   Object.assign(annotations, authAnnotations);
 
+  // 8. mTLS access control. Layered with OIDC — when both are
+  //    configured, NGINX runs auth_request AND requires a valid
+  //    client cert (defence in depth). The CA bundle is materialised
+  //    as a Secret in the client namespace by syncMtlsSecret.
+  const mtlsAnnotations = await syncMtlsSecretAndBuildAnnotations(db, k8s, namespace, routeId);
+  Object.assign(annotations, mtlsAnnotations);
+
   return annotations;
 }
 
@@ -626,4 +633,79 @@ export async function deleteProtectedDirIngress(
   } catch (e: unknown) {
     if (!isK8s404(e)) throw e;
   }
+}
+
+// ─── mTLS Secret Sync + Annotations ─────────────────────────────────
+
+/**
+ * Sync the CA-bundle Secret for an mTLS-enabled ingress and return the
+ * matching `auth-tls-*` annotations. When mTLS is disabled or the CA
+ * bundle is missing, the Secret is best-effort deleted and an empty
+ * annotation map is returned.
+ *
+ * The encryption key is read from app config / OIDC_ENCRYPTION_KEY
+ * (reused for v1, see migration 0058).
+ */
+async function syncMtlsSecretAndBuildAnnotations(
+  db: Database,
+  k8s: K8sClients,
+  namespace: string,
+  routeId: string,
+): Promise<Record<string, string>> {
+  const { loadEnabledForRoute } = await import('../ingress-mtls/service.js');
+  const encryptionKey =
+    process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+  const secretName = `route-mtls-${routeId.slice(0, 8)}`;
+
+  const loaded = await loadEnabledForRoute(db, encryptionKey, routeId);
+  if (!loaded) {
+    // Disabled / no CA — best-effort delete of any stale Secret.
+    try {
+      await k8s.core.deleteNamespacedSecret({ name: secretName, namespace });
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+    }
+    return {};
+  }
+
+  const { config, caCertPem } = loaded;
+  const secretBody = {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: secretName,
+      namespace,
+      labels: {
+        'app.kubernetes.io/managed-by': 'hosting-platform',
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/purpose': 'mtls-ca',
+      },
+    },
+    type: 'Opaque',
+    data: { 'ca.crt': Buffer.from(caCertPem).toString('base64') },
+  };
+  try {
+    await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
+  } catch (err: unknown) {
+    if (isK8s409(err)) {
+      await k8s.core.replaceNamespacedSecret({ name: secretName, namespace, body: secretBody });
+    } else {
+      throw err;
+    }
+  }
+
+  const annotations: Record<string, string> = {
+    'nginx.ingress.kubernetes.io/auth-tls-secret': `${namespace}/${secretName}`,
+    'nginx.ingress.kubernetes.io/auth-tls-verify-client': config.verifyMode,
+  };
+  if (config.passCertToUpstream) {
+    annotations['nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream'] = 'true';
+  }
+  // When the operator only wants the DN forwarded (and not the full
+  // cert), nginx-ingress already populates `ssl-client-subject-dn`
+  // upstream by default — no annotation toggle needed. We surface
+  // `passDnToUpstream` in the contract for future expansion (e.g.
+  // forwarding via a custom header name) but it currently has no
+  // effect on the rendered Ingress.
+  return annotations;
 }

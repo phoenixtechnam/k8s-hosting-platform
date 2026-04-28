@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
+import MtlsSection from '@/components/MtlsSection';
 import {
   useRouteDetail,
   useUpdateRouteRedirects,
@@ -694,6 +695,7 @@ function AccessControlTab({
   return (
     <div className="space-y-8" data-testid="access-control-tab">
       <OidcSection clientId={clientId} routeId={routeId} hostname={hostname} />
+      <MtlsSection clientId={clientId} routeId={routeId} />
       <ProtectedDirsSection clientId={clientId} routeId={routeId} />
     </div>
   );
