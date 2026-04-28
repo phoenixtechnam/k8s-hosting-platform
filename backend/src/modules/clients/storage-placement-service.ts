@@ -111,6 +111,11 @@ export interface ApplyTierResult {
  *      So HA pods can actually fail over when the pin node dies.
  *   3. Persist clients.storage_tier.
  *
+ * `previousTier` is passed in by the caller (typically `updateClient`)
+ * so it can be captured BEFORE the DB write of the new tier — without
+ * that, this function would read the row after the write and see
+ * previousTier === newTier, skipping the Volume CR patch.
+ *
  * Idempotent: invoking with the same tier flips nothing. Throws
  * ApiError on bad inputs (unknown client, invalid tier).
  */
@@ -118,6 +123,7 @@ export async function applyTenantTier(
   db: Database,
   k8s: K8sClients,
   clientId: string,
+  previousTier: 'local' | 'ha',
   newTier: 'local' | 'ha',
 ): Promise<ApplyTierResult> {
   if (newTier !== 'local' && newTier !== 'ha') {
@@ -127,7 +133,6 @@ export async function applyTenantTier(
   if (!client) {
     throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
   }
-  const previousTier = (client.storageTier ?? 'local') as 'local' | 'ha';
   if (!client.kubernetesNamespace) {
     throw new ApiError('CLIENT_NOT_PROVISIONED', `Client ${clientId} has no namespace yet`, 409);
   }
@@ -206,8 +211,11 @@ export async function applyTenantTier(
     }
   }
 
+  // The caller's pre-write of storageTier is the durable record. We
+  // refresh updated_at here so the row's mtime reflects the cluster
+  // sync attempt (UI sorts on it). Idempotent.
   await db.update(clients)
-    .set({ storageTier: newTier, updatedAt: sql`now()` })
+    .set({ updatedAt: sql`now()` })
     .where(eq(clients.id, clientId));
 
   return {

@@ -137,6 +137,7 @@ export async function getClientStoragePlacement(
     pvcName: string;
     volumeName: string;
     sizeBytes: number;
+    usedBytes: number;
     state: string | null;
     robustness: string | null;
     replicaNodes: string[];
@@ -154,7 +155,7 @@ export async function getClientStoragePlacement(
 
   // Group running replicas by volume name, single LIST cluster-wide.
   const replicaNodesByVolume = new Map<string, string[]>();
-  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number }> = new Map();
+  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number; usedBytes: number }> = new Map();
   try {
     interface LhReplica {
       spec?: { volumeName?: string; nodeID?: string };
@@ -163,7 +164,7 @@ export async function getClientStoragePlacement(
     interface LhVolume {
       metadata?: { name?: string };
       spec?: { size?: string };
-      status?: { state?: string; robustness?: string };
+      status?: { state?: string; robustness?: string; actualSize?: string | number };
     }
     const [reps, vols] = await Promise.all([
       k8s.custom.listNamespacedCustomObject({
@@ -190,6 +191,9 @@ export async function getClientStoragePlacement(
         state: v.status?.state ?? null,
         robustness: v.status?.robustness ?? null,
         sizeBytes: Number(v.spec?.size ?? '0') || 0,
+        // Longhorn populates actualSize after the first attach + write.
+        // Fresh volumes report 0 — UI renders that as "—".
+        usedBytes: Number(v.status?.actualSize ?? '0') || 0,
       },
     ]));
   } catch (err) {
@@ -198,7 +202,7 @@ export async function getClientStoragePlacement(
 
   const pvcs: Array<{
     namespace: string; pvcName: string; volumeName: string;
-    sizeBytes: number; state: string | null; robustness: string | null;
+    sizeBytes: number; usedBytes: number; state: string | null; robustness: string | null;
     replicaNodes: string[];
   }> = [];
   for (const pvc of (pvcsResp.items ?? [])) {
@@ -211,6 +215,7 @@ export async function getClientStoragePlacement(
       pvcName,
       volumeName,
       sizeBytes: meta?.sizeBytes ?? 0,
+      usedBytes: meta?.usedBytes ?? 0,
       state: meta?.state ?? null,
       robustness: meta?.robustness ?? null,
       replicaNodes: (replicaNodesByVolume.get(volumeName) ?? []).slice().sort(),
@@ -359,32 +364,48 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     await validateWorkerPin(db, input.worker_node_name);
     updateValues.workerNodeName = input.worker_node_name;
   }
-  // Storage tier flip is LIVE via applyTenantTier — it reads the
-  // current tier as "previous", patches the Longhorn Volume CR +
-  // deployment affinity, then writes the new tier. We deliberately
-  // do NOT add storageTier to updateValues here so applyTenantTier
-  // can compare old vs new (a same-row read after a DB update would
-  // see the new value, skipping the patch).
+  // Storage tier flip is LIVE — pre-write the new tier here so the DB
+  // stays the durable record even if the cluster sync below has a
+  // transient hiccup. applyTenantTier still needs to know the OLD tier
+  // to skip work on a no-op flip; we capture it BEFORE adding tier to
+  // updateValues. A previous version let applyTenantTier own the write,
+  // but its early CLIENT_NOT_PROVISIONED throw on a partial-state row
+  // got swallowed and the operator's intent was silently lost.
   const tierChange: 'local' | 'ha' | undefined = input.storage_tier as 'local' | 'ha' | undefined;
+  let previousTier: 'local' | 'ha' = 'local';
+  if (tierChange !== undefined) {
+    const [row] = await db.select({ storageTier: clients.storageTier })
+      .from(clients).where(eq(clients.id, id)).limit(1);
+    previousTier = ((row?.storageTier ?? 'local') as 'local' | 'ha');
+    updateValues.storageTier = tierChange;
+  }
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
   }
 
-  // Live tier patch: flips Volume.spec.numberOfReplicas + each tenant
-  // Deployment's nodeAffinity (hard nodeSelector ↔ soft preferred).
-  // applyTenantTier owns the storageTier DB write so previousTier vs
-  // newTier comparison stays meaningful. Best-effort on the cluster
-  // side — a Longhorn API hiccup is logged; operators re-trigger via
-  // the Storage Placement card.
-  if (tierChange !== undefined) {
+  // Live cluster sync of the tier flip. If the namespace isn't ready
+  // yet (CLIENT_NOT_PROVISIONED) we still keep the DB write — the
+  // platform-storage-policy reconciler picks up the new tier on the
+  // next pass. For other failures (Longhorn API down) we surface the
+  // error to the operator instead of swallowing it: the DB now says
+  // "ha" but the cluster might be on "local", and silently lying about
+  // success is what burned us in the first place.
+  if (tierChange !== undefined && tierChange !== previousTier) {
     try {
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
       const { applyTenantTier } = await import('./storage-placement-service.js');
       const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
-      await applyTenantTier(db, k8s, id, tierChange);
+      await applyTenantTier(db, k8s, id, previousTier, tierChange);
     } catch (err) {
-      console.warn(`[clients.updateClient] applyTenantTier failed for ${id}: ${(err as Error).message}`);
+      const code = (err as { code?: string }).code;
+      if (code === 'CLIENT_NOT_PROVISIONED') {
+        // Acceptable: namespace not ready yet, reconciler will catch up.
+        console.warn(`[clients.updateClient] tier flip queued — ${(err as Error).message}`);
+      } else {
+        // Re-throw so the route returns a real error envelope.
+        throw err;
+      }
     }
   }
 
