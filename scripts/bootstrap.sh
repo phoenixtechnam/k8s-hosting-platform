@@ -397,9 +397,18 @@ install_packages() {
   apt-get update -qq
   # Note: software-properties-common was dropped — it's not present in
   # Debian 13 trixie repos and we don't use add-apt-repository anywhere.
+  # xfsprogs / e2fsprogs: required by Longhorn workers to format,
+  # mount, and repair tenant volumes. The longhorn-tenant
+  # StorageClass formats with fsType=xfs (see
+  # k8s/base/longhorn/storageclasses.yaml) and the storage-lifecycle
+  # fsck endpoint runs xfs_repair / e2fsck on the host via a one-shot
+  # privileged Pod. Hetzner Debian 13 images ship these by default
+  # but we pin them explicitly so a minimal base image doesn't break
+  # tenant provisioning.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
+    xfsprogs e2fsprogs \
     age \
     >/dev/null 2>&1
 

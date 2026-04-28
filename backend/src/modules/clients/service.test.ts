@@ -453,3 +453,123 @@ describe('deleteClient', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('getClientStoragePlacement', () => {
+  it('returns storage health fields populated from Longhorn Volume CR', async () => {
+    const { getClientStoragePlacement } = await import('./service.js');
+
+    const client = {
+      id: 'c1',
+      kubernetesNamespace: 'client-acme-abc12345',
+    };
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const db = { select: selectFn } as unknown as Parameters<typeof getClientStoragePlacement>[0];
+
+    const k8s = {
+      core: {
+        listNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({
+          items: [{
+            metadata: { name: 'client-acme-abc12345-storage' },
+            spec: { volumeName: 'pvc-fake-uuid' },
+          }],
+        }),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+        listPersistentVolume: vi.fn().mockResolvedValue({
+          items: [{
+            metadata: { name: 'pvc-fake-uuid' },
+            spec: { csi: { volumeAttributes: { fsType: 'xfs' } } },
+          }],
+        }),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockImplementation(({ plural }: { plural: string }) => {
+          if (plural === 'replicas') {
+            return Promise.resolve({
+              items: [
+                { spec: { volumeName: 'pvc-fake-uuid', nodeID: 'node-a' }, status: { currentState: 'running' } },
+                { spec: { volumeName: 'pvc-fake-uuid', nodeID: 'node-b' }, status: { currentState: 'running' } },
+              ],
+            });
+          }
+          return Promise.resolve({
+            items: [{
+              metadata: { name: 'pvc-fake-uuid' },
+              spec: { size: '10737418240', numberOfReplicas: 2, frontend: 'blockdev' },
+              status: {
+                state: 'attached',
+                robustness: 'healthy',
+                actualSize: 41943040, // ~40 MiB — XFS empty volume
+                lastBackupAt: '2026-04-26T22:01:14Z',
+                frontend: 'blockdev',
+                conditions: [
+                  { type: 'Scheduled', status: 'True' },           // healthy → filtered out
+                  { type: 'Restore', status: 'False' },           // not active → filtered out
+                  { type: 'OfflineRebuilding', status: 'True', reason: 'AutoRebuild', message: 'rebuilding' },
+                ],
+              },
+            }],
+          });
+        }),
+      },
+    } as unknown as Parameters<typeof getClientStoragePlacement>[2];
+
+    const result = await getClientStoragePlacement(db, 'c1', k8s);
+    expect(result.pvcs).toHaveLength(1);
+    const row = result.pvcs[0];
+    expect(row.pvcName).toBe('client-acme-abc12345-storage');
+    expect(row.fsType).toBe('xfs');
+    expect(row.replicasHealthy).toBe(2);
+    expect(row.replicasExpected).toBe(2);
+    expect(row.lastBackupAt).toBe('2026-04-26T22:01:14Z');
+    expect(row.frontendState).toBe('blockdev');
+    // Scheduled==True is healthy and filtered; only OfflineRebuilding remains.
+    expect(row.engineConditions).toHaveLength(1);
+    expect(row.engineConditions[0].type).toBe('OfflineRebuilding');
+    expect(row.engineConditions[0].reason).toBe('AutoRebuild');
+    expect(row.replicaNodes).toEqual(['node-a', 'node-b']);
+    expect(row.allocatedBytes).toBe(41943040);
+  });
+
+  it('falls back to fsType:null when PV list fails', async () => {
+    const { getClientStoragePlacement } = await import('./service.js');
+
+    const client = { id: 'c1', kubernetesNamespace: 'ns1' };
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const db = { select: vi.fn().mockReturnValue({ from: fromFn }) } as unknown as Parameters<typeof getClientStoragePlacement>[0];
+
+    const k8s = {
+      core: {
+        listNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({
+          items: [{ metadata: { name: 'ns1-storage' }, spec: { volumeName: 'pvc-x' } }],
+        }),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+        listPersistentVolume: vi.fn().mockRejectedValue(new Error('forbidden')),
+      },
+      custom: {
+        listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [] }),
+      },
+    } as unknown as Parameters<typeof getClientStoragePlacement>[2];
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await getClientStoragePlacement(db, 'c1', k8s);
+    warnSpy.mockRestore();
+    expect(result.pvcs[0].fsType).toBeNull();
+  });
+
+  it('returns empty pvcs when client has no namespace', async () => {
+    const { getClientStoragePlacement } = await import('./service.js');
+
+    const client = { id: 'c1', kubernetesNamespace: null };
+    const whereFn = vi.fn().mockResolvedValue([client]);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const db = { select: vi.fn().mockReturnValue({ from: fromFn }) } as unknown as Parameters<typeof getClientStoragePlacement>[0];
+
+    const k8s = {} as unknown as Parameters<typeof getClientStoragePlacement>[2];
+    const result = await getClientStoragePlacement(db, 'c1', k8s);
+    expect(result.pvcs).toEqual([]);
+  });
+});
