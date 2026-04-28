@@ -73,22 +73,15 @@ export interface LonghornClients {
   readonly batch?: k8s.BatchV1Api;
 }
 
-// CronJobs whose execution is meaningful only while a backup target is
-// active. Most read the `backup-credentials` Secret directly (and would
-// fail with CreateContainerConfigError without it); platform-backup-
-// audit doesn't read the Secret but its audit (are PVCs in the backup
-// group?) is pointless when no backup target is configured. Shipped
-// with `suspend: true` in k8s/base/backup/*.yaml so a fresh install
-// doesn't churn failed pods; the reconciler flips suspend on/off in
-// lockstep with backup-target activation.
-const BACKUP_CRONJOB_NAMES = [
-  'platform-cluster-state-backup',
-  'platform-etcd-snapshot-upload',
-  'platform-pg-backup',
-  'platform-secrets-backup',
-  'platform-hostpath-snapshot-upload',
-  'platform-backup-audit',
-] as const;
+// CronJob discovery is label-based: any CronJob in the `platform`
+// namespace carrying the
+//   platform.phoenix-host.net/depends-on=backup-credentials
+// label gets suspended when no backup target is active and unsuspended
+// when one becomes active. Replaces the previously-hardcoded
+// BACKUP_CRONJOB_NAMES constant — adding a new credentials-dependent
+// CronJob is now a YAML-only change, no backend release required.
+const DEPENDS_ON_LABEL = 'platform.phoenix-host.net/depends-on';
+const DEPENDS_ON_VALUE = 'backup-credentials';
 
 /**
  * Create or update the credentials Secret(s) the cluster needs to run
@@ -176,7 +169,19 @@ async function setBackupCronJobsSuspended(
     );
     return;
   }
-  for (const name of BACKUP_CRONJOB_NAMES) {
+  let names: string[];
+  try {
+    names = await listCredentialsDependentCronJobs(batch);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[longhorn-reconciler] Failed to discover credentials-dependent CronJobs; ' +
+      'suspend toggle skipped. Check apiserver health.',
+      err,
+    );
+    return;
+  }
+  for (const name of names) {
     try {
       await patchCronJobSuspend(batch, name, suspended);
     } catch (err) {
@@ -188,6 +193,25 @@ async function setBackupCronJobsSuspended(
       );
     }
   }
+}
+
+/**
+ * List CronJobs in the platform namespace carrying the
+ * depends-on=backup-credentials label.
+ */
+export async function listCredentialsDependentCronJobs(
+  batch: k8s.BatchV1Api,
+): Promise<string[]> {
+  const list = await batch.listNamespacedCronJob({
+    namespace: PLATFORM_NAMESPACE,
+    labelSelector: `${DEPENDS_ON_LABEL}=${DEPENDS_ON_VALUE}`,
+  } as unknown as Parameters<typeof batch.listNamespacedCronJob>[0]);
+  const names: string[] = [];
+  for (const cj of list.items ?? []) {
+    const name = cj.metadata?.name;
+    if (name) names.push(name);
+  }
+  return names;
 }
 
 async function patchCronJobSuspend(

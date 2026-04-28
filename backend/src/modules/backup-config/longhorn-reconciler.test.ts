@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { reconcileBackupTarget, clearBackupTarget } from './longhorn-reconciler.js';
 
-function createMockClients() {
+// Default discovered set used when listNamespacedCronJob isn't
+// explicitly overridden — mirrors the post-Phase-1 staging cluster.
+const DEFAULT_DISCOVERED_CRONS = [
+  'platform-cluster-state-backup',
+  'platform-etcd-snapshot-upload',
+  'platform-pg-backup',
+  'platform-secrets-backup',
+  'platform-hostpath-snapshot-upload',
+  'platform-backup-audit',
+];
+
+function createMockClients(discoveredCrons: string[] = DEFAULT_DISCOVERED_CRONS) {
   const core = {
     replaceNamespacedSecret: vi.fn(),
     createNamespacedSecret: vi.fn(),
@@ -11,9 +22,16 @@ function createMockClients() {
     patchNamespacedCustomObject: vi.fn(),
   };
   const batch = {
-    // Default: succeed silently. Tests that care about cron toggle
-    // assert against this mock directly.
     patchNamespacedCronJob: vi.fn().mockResolvedValue({}),
+    listNamespacedCronJob: vi.fn().mockResolvedValue({
+      items: discoveredCrons.map((name) => ({
+        metadata: {
+          name,
+          namespace: 'platform',
+          labels: { 'platform.phoenix-host.net/depends-on': 'backup-credentials' },
+        },
+      })),
+    }),
   };
   return { core, custom, batch } as unknown as {
     core: {
@@ -26,6 +44,7 @@ function createMockClients() {
     };
     batch: {
       patchNamespacedCronJob: ReturnType<typeof vi.fn>;
+      listNamespacedCronJob: ReturnType<typeof vi.fn>;
     };
   };
 }
