@@ -102,6 +102,13 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "patch", "delete"]
+  # Subresource: nodes/proxy — used by getClientStoragePlacement to
+  # query each node's kubelet `/stats/summary` endpoint for filesystem-
+  # level usedBytes per PVC. Without this the API call silently falls
+  # back to 0 and the storage table reports user-data usage as empty.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
   # M-NS-1: drain endpoint creates Eviction subresource objects.
   # Eviction is treated as a distinct subresource for RBAC even
   # though pods/* is already wildcarded above (the API server

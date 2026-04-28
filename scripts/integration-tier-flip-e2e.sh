@@ -109,8 +109,12 @@ log "── GET /storage-placement (storage table data) ──"
 PLACEMENT=$(api GET "/clients/$CID/storage-placement")
 HAS_SIZE=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and d[0].get('sizeBytes',0) > 0 else 'N')" 2>/dev/null)
 HAS_USED_FIELD=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and 'usedBytes' in d[0] else 'N')" 2>/dev/null)
+HAS_ALLOC_FIELD=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'];print('Y' if d and 'allocatedBytes' in d[0] else 'N')" 2>/dev/null)
+USED_OK=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)['data']['pvcs'][0];u=d['usedBytes'];a=d.get('allocatedBytes',0);print('Y' if u < 100*1024*1024 and (u==0 or u <= a) else 'N')" 2>/dev/null)
 [[ "$HAS_SIZE" == "Y" ]] && ok "storage-placement.sizeBytes > 0" || fail "sizeBytes missing/0 — body: $(echo "$PLACEMENT" | head -c 300)"
 [[ "$HAS_USED_FIELD" == "Y" ]] && ok "storage-placement.usedBytes field present" || fail "usedBytes field missing in API response"
+[[ "$HAS_ALLOC_FIELD" == "Y" ]] && ok "storage-placement.allocatedBytes field present" || fail "allocatedBytes field missing"
+[[ "$USED_OK" == "Y" ]] && ok "usedBytes is filesystem-level (not block-allocation overhead)" || fail "usedBytes looks like Longhorn allocation not kubelet — body: $(echo "$PLACEMENT" | head -c 400)"
 
 # ─── deploy a tenant workload, verify affinity patch on tier flip ────
 log "── deploy tenant workload + verify affinity flip ──"
