@@ -7,6 +7,14 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /**
+     * The `error.details` payload from the API response envelope. The
+     * platform's error-handler middleware embeds an `operatorError`
+     * field here for any error it could translate. Consumed by
+     * `extractOperatorError` to render `<ErrorPanel>` with the full
+     * envelope rather than a stringified `error.message`.
+     */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -104,7 +112,7 @@ async function apiFetchWithRetry<T>(
       showTokenExpiredAndRedirect();
     }
 
-    throw new ApiError(res.status, code, body.error?.message ?? res.statusText);
+    throw new ApiError(res.status, code, body.error?.message ?? res.statusText, body.error?.details);
   }
 
   // Empty-body handling. We used to only special-case 204, which meant any

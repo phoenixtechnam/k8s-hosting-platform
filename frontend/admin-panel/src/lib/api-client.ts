@@ -7,6 +7,15 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /**
+     * The `error.details` payload from the API response envelope. The
+     * platform's error-handler middleware embeds an `operatorError`
+     * field here for any error it could translate (k8s API failures,
+     * intentional preflight rejects). Consumed by `extractOperatorError`
+     * to render `<ErrorPanel>` with the full title/detail/remediation
+     * envelope rather than a stringified `error.message`.
+     */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -117,7 +126,7 @@ async function apiFetchWithRetry<T>(
       showTokenExpiredAndRedirect();
     }
 
-    throw new ApiError(res.status, code, body.error?.message ?? res.statusText);
+    throw new ApiError(res.status, code, body.error?.message ?? res.statusText, body.error?.details);
   }
 
   if (res.status === 204) return undefined as T;

@@ -104,7 +104,7 @@ export async function checkProvisioningCapacity(
     };
   }
 
-  let nodes: NodeCapacity[] = [];
+  const nodes: NodeCapacity[] = [];
   try {
     const lhResp = await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2',
