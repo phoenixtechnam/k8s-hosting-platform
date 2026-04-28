@@ -36,9 +36,11 @@ import {
   domains,
 } from '../../db/schema.js';
 import {
-  decryptClientSecret,
   getOrCreateClientCookieSecret,
+  listEnabledForClient as listEnabledForClientJoined,
+  type EnabledIngressAuthRow,
 } from './service.js';
+import { decryptProviderSecret } from './providers-service.js';
 import type { Database } from '../../db/index.js';
 import type { IngressAuthConfig, IngressClaimRule } from '../../db/schema.js';
 
@@ -100,7 +102,7 @@ export async function reconcileClient(
     };
   }
 
-  const enabled = await listEnabledForClient(deps.db, clientId);
+  const enabled = await listEnabledForClientJoined(deps.db, clientId);
   try {
     if (enabled.length === 0) {
       const wasProvisioned = await tearDownClientProxy(deps, clientId, namespace);
@@ -133,35 +135,8 @@ export async function reconcileClient(
   }
 }
 
-/**
- * Look up the ingresses for a client that have an active auth config.
- * Returns the rows joined with hostname so the reconciler can build
- * the OAuth callback / cookie-domain set without extra queries.
- *
- * Exported for tests + the route-side reconciliation hook.
- */
-export async function listEnabledForClient(
-  db: Database,
-  clientId: string,
-): Promise<ReadonlyArray<IngressAuthConfig & { hostname: string }>> {
-  // ingress_routes → domains → clients. Use a Drizzle SQL fragment so
-  // the join stays concise and we don't re-do it inline.
-  const rows = await db
-    .select({
-      cfg: ingressAuthConfigs,
-      hostname: ingressRoutes.hostname,
-    })
-    .from(ingressAuthConfigs)
-    .innerJoin(
-      ingressRoutes,
-      eq(ingressRoutes.id, ingressAuthConfigs.ingressRouteId),
-    )
-    .innerJoin(domains, eq(domains.id, ingressRoutes.domainId))
-    .where(
-      sql`${ingressAuthConfigs.enabled} = true AND ${domains.clientId} = ${clientId}`,
-    );
-  return rows.map((r) => ({ ...r.cfg, hostname: r.hostname }));
-}
+// Backward-compat re-export for callers that only need the list.
+export { listEnabledForClientJoined as listEnabledForClient };
 
 async function getClientNamespace(
   db: Database,
@@ -198,62 +173,53 @@ async function markStateError(
  *  same client uses a different issuer URL.
  */
 function buildOauth2ProxyConfig(
-  primary: IngressAuthConfig & { hostname: string },
+  primary: EnabledIngressAuthRow,
   cookieSecret: string,
   clientSecret: string,
 ): string {
   // oauth2-proxy reads TOML. Booleans MUST be unquoted, strings MUST
-  // be quoted. Durations are strings (`"3600s"`). Empty values must
-  // either be omitted or use a typed empty literal (`""` / `[]`).
+  // be quoted. Durations are strings (`"3600s"`).
+  const { cfg, provider, hostname } = primary;
   const lines: string[] = [];
-  // Provider — generic OIDC, issuer-driven discovery.
-  // Strip trailing slash from issuer URL — many IdPs (Zitadel, Keycloak)
-  // return the bare hostname with no trailing slash in the discovery
-  // document's `issuer` field, and oauth2-proxy will refuse to start
-  // with: 'issuer did not match the issuer returned by provider'.
-  // Normalise here so operators can paste either form into the UI.
-  const normalisedIssuer = primary.issuerUrl.replace(/\/+$/, '');
+  // Strip trailing slash from issuer URL — many IdPs (Zitadel,
+  // Keycloak) return the bare hostname without a trailing slash in
+  // discovery, and oauth2-proxy refuses to start on mismatch.
+  const normalisedIssuer = provider.issuerUrl.replace(/\/+$/, '');
   lines.push(`provider="oidc"`);
   lines.push(`oidc_issuer_url="${normalisedIssuer}"`);
-  lines.push(`client_id="${primary.clientId}"`);
+  lines.push(`client_id="${provider.oauthClientId}"`);
   lines.push(`client_secret="${clientSecret}"`);
-  // PKCE S256 toggle. Empty string => no PKCE; "S256" => enable.
-  if (primary.usePkce) {
+  if (provider.usePkce) {
     lines.push(`code_challenge_method="S256"`);
   }
-  // Scopes — opaque string, oauth2-proxy passes through.
-  lines.push(`scope="${primary.scopes}"`);
-  // Cookie / session.
+  // Scopes: ingress override wins; fall back to provider's default.
+  const scopes = cfg.scopesOverride ?? provider.defaultScopes;
+  lines.push(`scope="${scopes}"`);
   lines.push(`cookie_secret="${cookieSecret}"`);
   lines.push(`cookie_secure=true`);
   lines.push(`cookie_httponly=true`);
   lines.push(`cookie_samesite="lax"`);
-  lines.push(`cookie_expire="${primary.cookieExpireSeconds}s"`);
-  lines.push(`cookie_refresh="${primary.cookieRefreshSeconds}s"`);
-  if (primary.cookieDomain) {
-    lines.push(`cookie_domains=["${primary.cookieDomain}"]`);
+  lines.push(`cookie_expire="${cfg.cookieExpireSeconds}s"`);
+  lines.push(`cookie_refresh="${cfg.cookieRefreshSeconds}s"`);
+  if (cfg.cookieDomain) {
+    lines.push(`cookie_domains=["${cfg.cookieDomain}"]`);
   }
-  // Identity propagation flags. oauth2-proxy maps these onto
-  // X-Auth-Request-* response headers that nginx-ingress then sends
-  // to the upstream app via auth-response-headers.
-  lines.push(`pass_authorization_header=${primary.passAuthorizationHeader}`);
-  lines.push(`pass_access_token=${primary.passAccessToken}`);
-  lines.push(`set_authorization_header=${primary.passAuthorizationHeader}`);
-  lines.push(`set_xauthrequest=${primary.setXauthrequest}`);
-  lines.push(`pass_user_headers=${primary.passUserHeaders}`);
-  // Reverse-proxy mode is required for nginx auth_request.
+  lines.push(`pass_authorization_header=${cfg.passAuthorizationHeader}`);
+  lines.push(`pass_access_token=${cfg.passAccessToken}`);
+  lines.push(`set_authorization_header=${cfg.passAuthorizationHeader}`);
+  lines.push(`set_xauthrequest=${cfg.setXauthrequest}`);
+  lines.push(`pass_user_headers=${cfg.passUserHeaders}`);
   lines.push(`reverse_proxy=true`);
-  lines.push(`whitelist_domains=["${primary.hostname}"]`);
-  // Email allowlist. "*" means accept any email — oauth2-proxy syntax.
+  lines.push(`whitelist_domains=["${hostname}"]`);
   lines.push(`email_domains=["*"]`);
   return lines.join('\n') + '\n';
 }
 
 function buildClaimRulesJson(
-  configs: ReadonlyArray<IngressAuthConfig & { hostname: string }>,
+  configs: ReadonlyArray<EnabledIngressAuthRow>,
 ): string {
   const out: Record<string, ReadonlyArray<IngressClaimRule>> = {};
-  for (const cfg of configs) {
+  for (const { cfg } of configs) {
     if (cfg.claimRules && cfg.claimRules.length > 0) {
       out[cfg.id] = cfg.claimRules;
     }
@@ -265,7 +231,7 @@ async function ensureClientProxy(
   deps: ReconcileDeps,
   clientId: string,
   namespace: string,
-  enabled: ReadonlyArray<IngressAuthConfig & { hostname: string }>,
+  enabled: ReadonlyArray<EnabledIngressAuthRow>,
 ): Promise<'provisioned' | 'updated'> {
   const cookieSecret = await getOrCreateClientCookieSecret(
     deps.db,
@@ -273,7 +239,7 @@ async function ensureClientProxy(
     clientId,
   );
   const primary = enabled[0]!;
-  const clientSecret = decryptClientSecret(primary, deps.encryptionKey);
+  const clientSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
   const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, clientSecret);
   const claimRulesJson = buildClaimRulesJson(enabled);
 
@@ -306,7 +272,7 @@ async function ensureClientProxy(
 
   // Update last_reconciled_at on every config row so the UI shows a
   // recent timestamp even when nothing about the row changed.
-  for (const cfg of enabled) {
+  for (const { cfg } of enabled) {
     // eslint-disable-next-line no-await-in-loop
     await deps.db
       .update(ingressAuthConfigs)
