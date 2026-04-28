@@ -193,6 +193,7 @@ export interface ClientPvcPlacement {
   readonly pvcName: string;
   readonly volumeName: string;
   readonly sizeBytes: number;
+  readonly usedBytes: number;
   readonly state: string | null;
   readonly robustness: string | null;
   readonly replicaNodes: readonly string[];

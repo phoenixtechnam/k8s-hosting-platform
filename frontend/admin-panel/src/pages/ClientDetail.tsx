@@ -2214,22 +2214,26 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
         />
       </div>
       <table className="w-full text-xs">
-        <thead className="text-gray-500 dark:text-gray-400">
+        <thead className="text-left text-gray-500 dark:text-gray-400">
           <tr>
-            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-            <th className="text-left py-1 pr-2">Replica node(s)</th>
+            <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <th className="px-2 py-1.5 text-left font-medium">Replica node(s)</th>
           </tr>
         </thead>
         <tbody>
           {sortedData.map((p) => (
             <tr key={p.volumeName} className="border-t border-gray-100 dark:border-gray-700">
-              <td className="py-1.5 pr-2 font-mono">{p.pvcName}</td>
-              <td className="py-1.5 pr-2 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
-              <td className="py-1.5 pr-2">{p.state ?? '—'}</td>
-              <td className="py-1.5 pr-2">
+              <td className="px-2 py-1.5 font-mono">{p.pvcName}</td>
+              <td className="px-2 py-1.5 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
+              <td className="px-2 py-1.5">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
+              <td className="px-2 py-1.5">{p.usedBytes > 0 ? formatBytes(p.usedBytes) : '—'}</td>
+              <td className="px-2 py-1.5">{p.state ?? '—'}</td>
+              <td className="px-2 py-1.5">
                 <span className={p.robustness === 'healthy'
                   ? 'rounded bg-green-100 px-1 py-0.5 text-[10px] text-green-800 dark:bg-green-900/40 dark:text-green-300'
                   : p.robustness === 'degraded' ? 'rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
@@ -2237,7 +2241,7 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
                   {p.robustness ?? '—'}
                 </span>
               </td>
-              <td className="py-1.5 pr-2 font-mono">
+              <td className="px-2 py-1.5 font-mono">
                 {p.replicaNodes.length === 0 ? <span className="text-gray-400">—</span> : p.replicaNodes.join(', ')}
               </td>
             </tr>
