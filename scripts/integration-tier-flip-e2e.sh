@@ -131,7 +131,6 @@ done
 #   nodeSelector empty (HA = soft preferred, no hard pin)
 #   affinity preferred to workerNodeName
 HA_NS=$(echo "$STATE" | cut -d'|' -f1)
-HA_AFF=$(echo "$STATE" | cut -d'|' -f2)
 [[ -z "$HA_NS" ]] && ok "HA tier: nodeSelector cleared" || fail "HA tier: nodeSelector still set ($HA_NS) — strategic-merge null bug"
 
 # ─── flip back to local + verify nodeSelector reapplied ──────────────
