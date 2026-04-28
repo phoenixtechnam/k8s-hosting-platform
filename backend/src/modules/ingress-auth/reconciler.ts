@@ -202,22 +202,25 @@ function buildOauth2ProxyConfig(
   cookieSecret: string,
   clientSecret: string,
 ): string {
+  // oauth2-proxy reads TOML. Booleans MUST be unquoted, strings MUST
+  // be quoted. Durations are strings (`"3600s"`). Empty values must
+  // either be omitted or use a typed empty literal (`""` / `[]`).
   const lines: string[] = [];
-  // Provider — generic oidc, issuer-driven discovery.
+  // Provider — generic OIDC, issuer-driven discovery.
   lines.push(`provider="oidc"`);
   lines.push(`oidc_issuer_url="${primary.issuerUrl}"`);
   lines.push(`client_id="${primary.clientId}"`);
   lines.push(`client_secret="${clientSecret}"`);
-  // Token-endpoint auth method. oauth2-proxy expects either
-  // "client_secret_basic" or "client_secret_post" verbatim.
-  lines.push(`oidc_extra_audiences=`); // empty
-  lines.push(`code_challenge_method="${primary.usePkce ? 'S256' : ''}"`);
+  // PKCE S256 toggle. Empty string => no PKCE; "S256" => enable.
+  if (primary.usePkce) {
+    lines.push(`code_challenge_method="S256"`);
+  }
   // Scopes — opaque string, oauth2-proxy passes through.
   lines.push(`scope="${primary.scopes}"`);
   // Cookie / session.
   lines.push(`cookie_secret="${cookieSecret}"`);
-  lines.push(`cookie_secure="true"`);
-  lines.push(`cookie_httponly="true"`);
+  lines.push(`cookie_secure=true`);
+  lines.push(`cookie_httponly=true`);
   lines.push(`cookie_samesite="lax"`);
   lines.push(`cookie_expire="${primary.cookieExpireSeconds}s"`);
   lines.push(`cookie_refresh="${primary.cookieRefreshSeconds}s"`);
@@ -226,20 +229,14 @@ function buildOauth2ProxyConfig(
   }
   // Identity propagation flags. oauth2-proxy maps these onto
   // X-Auth-Request-* response headers that nginx-ingress then sends
-  // to the upstream app.
-  lines.push(`pass_authorization_header="${primary.passAuthorizationHeader}"`);
-  lines.push(`pass_access_token="${primary.passAccessToken}"`);
-  lines.push(`set_authorization_header="${primary.passAuthorizationHeader}"`);
-  lines.push(`set_xauthrequest="${primary.setXauthrequest}"`);
-  lines.push(`pass_user_headers="${primary.passUserHeaders}"`);
-  // Always emit X-Auth-Request-Id-Token when any claim rule is
-  // configured — the validator sidecar requires it. Inferred from the
-  // presence of claim_rules below.
+  // to the upstream app via auth-response-headers.
+  lines.push(`pass_authorization_header=${primary.passAuthorizationHeader}`);
+  lines.push(`pass_access_token=${primary.passAccessToken}`);
+  lines.push(`set_authorization_header=${primary.passAuthorizationHeader}`);
+  lines.push(`set_xauthrequest=${primary.setXauthrequest}`);
+  lines.push(`pass_user_headers=${primary.passUserHeaders}`);
   // Reverse-proxy mode is required for nginx auth_request.
-  lines.push(`reverse_proxy="true"`);
-  // Skip the built-in /oauth2/sign_in page; rely on auth-signin
-  // annotation which redirects to /oauth2/start (handled by
-  // oauth2-proxy itself).
+  lines.push(`reverse_proxy=true`);
   lines.push(`whitelist_domains=["${primary.hostname}"]`);
   // Email allowlist. "*" means accept any email — oauth2-proxy syntax.
   lines.push(`email_domains=["*"]`);
