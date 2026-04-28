@@ -51,20 +51,18 @@ export interface BackupHealthSummary {
 
 /**
  * List Jobs cluster-wide matching the backup-health-watch label.
- * Returns an empty array on any API error so the scheduler stays
- * resilient (a transient apiserver hiccup shouldn't crash the loop).
+ *
+ * Throws on apiserver errors so the calling tick can log + skip rather
+ * than silently no-oping (a token rotation or transient 5xx would
+ * otherwise hide the failure for hours). The scheduler's outer
+ * try/catch in runTick converts the throw into a logged warning.
  */
 export async function listHealthWatchedJobs(
   batch: k8s.BatchV1Api,
 ): Promise<ReadonlyArray<BackupJobMeta>> {
-  let jobList: k8s.V1JobList;
-  try {
-    jobList = await batch.listJobForAllNamespaces({
-      labelSelector: `${LABEL_HEALTH_WATCH}=true`,
-    } as unknown as Parameters<typeof batch.listJobForAllNamespaces>[0]);
-  } catch {
-    return [];
-  }
+  const jobList = await batch.listJobForAllNamespaces({
+    labelSelector: `${LABEL_HEALTH_WATCH}=true`,
+  } as unknown as Parameters<typeof batch.listJobForAllNamespaces>[0]);
 
   const result: BackupJobMeta[] = [];
   for (const job of jobList.items ?? []) {

@@ -21,7 +21,10 @@ import type { Database } from '../../db/index.js';
  * 'admin_role'` with an explicit role list when finer targeting is
  * needed (e.g. billing alerts only to billing role).
  */
-export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read-only';
+// Match the DB role_name enum exactly (underscore, not hyphen — confirmed
+// against backend/src/db/seed.ts and schema.ts). Type-checking against this
+// list ensures resolveRecipients calls compile only with valid DB values.
+export type AdminRole = 'super_admin' | 'admin' | 'billing' | 'support' | 'read_only';
 
 const DEFAULT_ADMIN_ROLES: ReadonlyArray<AdminRole> = ['super_admin', 'admin'];
 
