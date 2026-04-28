@@ -359,11 +359,13 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     await validateWorkerPin(db, input.worker_node_name);
     updateValues.workerNodeName = input.worker_node_name;
   }
-  // Storage tier flip is now LIVE — handled below via applyTenantTier
-  // after the row update. Capturing the intent here so the post-update
-  // step can read both the old (current row) and new (input) tier.
+  // Storage tier flip is LIVE via applyTenantTier — it reads the
+  // current tier as "previous", patches the Longhorn Volume CR +
+  // deployment affinity, then writes the new tier. We deliberately
+  // do NOT add storageTier to updateValues here so applyTenantTier
+  // can compare old vs new (a same-row read after a DB update would
+  // see the new value, skipping the patch).
   const tierChange: 'local' | 'ha' | undefined = input.storage_tier as 'local' | 'ha' | undefined;
-  if (tierChange !== undefined) updateValues.storageTier = tierChange;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
@@ -371,9 +373,10 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
 
   // Live tier patch: flips Volume.spec.numberOfReplicas + each tenant
   // Deployment's nodeAffinity (hard nodeSelector ↔ soft preferred).
-  // Best-effort: a Longhorn API hiccup is logged but doesn't roll back
-  // the DB write — operators can re-trigger via the Storage Placement
-  // card. Same DB-then-cluster pattern as the resource-quota sync below.
+  // applyTenantTier owns the storageTier DB write so previousTier vs
+  // newTier comparison stays meaningful. Best-effort on the cluster
+  // side — a Longhorn API hiccup is logged; operators re-trigger via
+  // the Storage Placement card.
   if (tierChange !== undefined) {
     try {
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
