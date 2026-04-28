@@ -215,6 +215,131 @@ describe('updateClient', () => {
     expect(result).toEqual(existingClient);
     expect(updateFn).not.toHaveBeenCalled();
   });
+
+  // Storage policy: shrink stays explicit (require POST /storage/resize),
+  // grow is auto-triggered through the online-grow path. These tests
+  // pin the dispatch logic in updateClient.
+  describe('storage size change dispatch', () => {
+    function makeStorageMockDb(existingStorageGi: number | null, planStorageGi: number) {
+      // First select: clients (getClientById). Return one row.
+      // Second select: hostingPlans (resolve plan storage). Return plan.
+      // Subsequent selects: more clients lookups (no-op for our purpose).
+      const existingClient = {
+        id: 'c1',
+        companyName: 'Acme',
+        planId: 'plan-1',
+        storageLimitOverride: existingStorageGi != null ? existingStorageGi.toFixed(2) : null,
+        kubernetesNamespace: 'client-acme',
+        cpuLimitOverride: null,
+        memoryLimitOverride: null,
+        storageTier: 'local',
+        status: 'active',
+      };
+      const planRow = { id: 'plan-1', storageLimit: String(planStorageGi) };
+
+      // Track call order so we can return clients vs plans appropriately.
+      let selectCall = 0;
+      const whereFn = vi.fn().mockImplementation(() => {
+        selectCall++;
+        // Heuristic: even calls = clients lookup, odd = plan lookup.
+        // Both updateClient code paths read clients first then hostingPlans.
+        return Promise.resolve(selectCall % 2 === 1 ? [existingClient] : [planRow]);
+      });
+      const fromFn = vi.fn().mockReturnValue({
+        where: whereFn,
+        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([existingClient]) }),
+      });
+      const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+      const updateWhere = vi.fn().mockResolvedValue(undefined);
+      const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
+      const updateFn = vi.fn().mockReturnValue({ set: updateSet });
+      const insertValues = vi.fn().mockResolvedValue(undefined);
+      const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
+      return {
+        db: {
+          select: selectFn,
+          update: updateFn,
+          insert: insertFn,
+          transaction: vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) => cb({
+            select: selectFn,
+            update: updateFn,
+            insert: insertFn,
+          })),
+        } as unknown as Parameters<typeof updateClient>[0],
+        existingClient,
+        updateSet,
+      };
+    }
+
+    it('rejects shrink (target MiB < current MiB) with STORAGE_RESIZE_REQUIRED', async () => {
+      const { db } = makeStorageMockDb(10, 10); // override = 10 GiB, plan = 10 GiB
+      // Try to shrink to 5 GiB (less than 10 GiB).
+      await expect(
+        updateClient(db, 'c1', { storage_limit_override: 5 }),
+      ).rejects.toMatchObject({
+        code: 'STORAGE_RESIZE_REQUIRED',
+        status: 409,
+      });
+    });
+
+    it('rejects shrink via plan_id change to smaller plan', async () => {
+      // existing: override=null, plan=20 → currentMib = 20 GiB
+      // target: switch to plan with 10 GiB (override stays null)
+      // Plan mock returns 10 GiB on the SECOND lookup of plans.
+      const existingClient = {
+        id: 'c1',
+        planId: 'plan-old',
+        storageLimitOverride: null,
+        kubernetesNamespace: 'client-acme',
+        storageTier: 'local',
+        status: 'active',
+      };
+
+      const oldPlan = { id: 'plan-old', storageLimit: '20' };
+      const newPlan = { id: 'plan-new', storageLimit: '10' };
+
+      let call = 0;
+      const whereFn = vi.fn().mockImplementation(() => {
+        call++;
+        if (call === 1) return Promise.resolve([existingClient]); // getClientById
+        if (call === 2) return Promise.resolve([oldPlan]);        // current plan lookup
+        if (call === 3) return Promise.resolve([newPlan]);        // new plan lookup
+        return Promise.resolve([existingClient]);
+      });
+      const fromFn = vi.fn().mockReturnValue({
+        where: whereFn,
+        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([existingClient]) }),
+      });
+      const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+      const updateFn = vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
+      const db = { select: selectFn, update: updateFn } as unknown as Parameters<typeof updateClient>[0];
+
+      await expect(
+        updateClient(db, 'c1', { plan_id: 'plan-new' }),
+      ).rejects.toMatchObject({
+        code: 'STORAGE_RESIZE_REQUIRED',
+      });
+    });
+
+    it('grow path: lets PATCH succeed without throwing (auto-resize is best-effort and offline test env skips it)', async () => {
+      const { db } = makeStorageMockDb(10, 10);
+
+      // 10 GiB → 20 GiB is a grow. The auto-resize step tries to import
+      // the storage-lifecycle service and resolveSnapshotStore; in this
+      // unit test there's no real DB or k8s, so the import path either
+      // resolves or fails — either way, the catch block must swallow
+      // it and let the PATCH succeed. This is the contract: the
+      // policy decision (grow allowed) doesn't depend on the
+      // orchestrator actually starting.
+      const result = await updateClient(db, 'c1', { storage_limit_override: 20 });
+      // Either the result is the existing client or the augmented one
+      // with storageGrowOperationId — both are acceptable outcomes.
+      expect(result).toBeDefined();
+      expect((result as { id: string }).id).toBe('c1');
+    });
+  });
 });
 
 describe('deleteClient', () => {

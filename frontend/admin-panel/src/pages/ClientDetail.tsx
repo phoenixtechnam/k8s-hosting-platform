@@ -1121,6 +1121,10 @@ function ResourceLimitsCard({
   const [subUsersCustom, setSubUsersCustom] = useState(false);
   const [mailboxesCustom, setMailboxesCustom] = useState(false);
   const [priceCustom, setPriceCustom] = useState(false);
+  // When PATCH /clients/:id auto-triggers an online-grow, the response
+  // includes storageGrowOperationId. Open the shared progress modal so
+  // the operator can watch growing_pvc → growing_filesystem → idle live.
+  const [growOpId, setGrowOpId] = useState<string | null>(null);
 
   const effectiveCpu = client.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
   const effectiveMem = client.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
@@ -1154,7 +1158,7 @@ function ResourceLimitsCard({
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await updateClient.mutateAsync({
+      const result = await updateClient.mutateAsync({
         cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
         memory_limit_override: memCustom ? Number(memOverride) : null,
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
@@ -1162,6 +1166,10 @@ function ResourceLimitsCard({
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
       });
+      // If the PATCH grew storage online, the backend kicked off a
+      // storage-lifecycle op and surfaces its id here.
+      const opId = (result as { data?: { storageGrowOperationId?: string | null } })?.data?.storageGrowOperationId;
+      if (opId) setGrowOpId(opId);
       setEditing(false);
     } catch { /* error via updateClient.error */ }
   };
@@ -1319,6 +1327,16 @@ function ResourceLimitsCard({
           </div>
         )}
       </div>
+
+      {/* Online-grow progress modal — opens when the PATCH response
+          carries a storageGrowOperationId. Polls the storage-lifecycle
+          op record and shows resizing → restoring → idle live so
+          operators don't have to wonder if the bump took effect. */}
+      <OperationProgressModal
+        operationId={growOpId}
+        title="Storage grow"
+        onClose={() => setGrowOpId(null)}
+      />
     </div>
   );
 }

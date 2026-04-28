@@ -83,6 +83,12 @@ export const clientResponseSchema = z.object({
   subscriptionExpiresAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  // Online-grow side-effect metadata: when PATCH /clients/:id grows
+  // storage_limit_override (or switches to a larger plan), the
+  // updateClient handler kicks off the storage-lifecycle online-grow
+  // orchestrator and surfaces the operation id here so the UI can
+  // open a progress modal. Absent on every other update.
+  storageGrowOperationId: z.string().nullable().optional(),
 });
 
 export const clientListResponseSchema = paginatedResponseSchema(clientResponseSchema);

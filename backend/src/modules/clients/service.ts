@@ -487,21 +487,28 @@ export async function listClients(
   };
 }
 
-export async function updateClient(db: Database, id: string, input: UpdateClientInput) {
+export async function updateClient(
+  db: Database,
+  id: string,
+  input: UpdateClientInput,
+  opts: { triggeredByUserId?: string | null; k8sClients?: K8sClients } = {},
+) {
   const existing = await getClientById(db, id); // throws if not found
 
-  // Storage safety: refuse to shrink `storage_limit_override` (or
-  // switch to a plan with smaller storage) through the plain update
-  // endpoint — a shrink requires `POST /storage/resize` which
-  // orchestrates quiesce → snapshot → PVC delete → recreate →
-  // restore. Silently writing a smaller quota row would leave the
-  // DB and the real PVC inconsistent.
+  // Storage policy:
+  //   • shrink (target < current MiB) → reject with STORAGE_RESIZE_REQUIRED.
+  //     Operator must call POST /storage/resize explicitly so the
+  //     destructive flow (snapshot+recreate+restore) is opt-in.
+  //   • grow  (target > current MiB) → accepted; we auto-trigger the
+  //     storage-lifecycle online-grow orchestrator AFTER the DB write
+  //     and surface the operation id so the UI can poll progress.
   //
   // Comparison is done in MiB (not GiB) so decimal-GiB overrides
   // (e.g. "2.44" for a 2500 MiB resize) don't silently round to the
   // plan's integer-GiB value and let a shrink slip through.
   const newOverride = input.storage_limit_override;
   const newPlanId = input.plan_id;
+  let pendingGrowMib: number | null = null;
   if (newOverride !== undefined || (newPlanId !== undefined && newPlanId !== existing.planId)) {
     const toMib = (gi: number) => Math.round(gi * 1024);
     const currentMib = existing.storageLimitOverride != null
@@ -536,6 +543,12 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
           remediation: 'Use the Resize Storage modal on the client detail page',
         },
       );
+    }
+    if (targetMib > currentMib) {
+      // Mark intent — resize call happens AFTER the DB write below so
+      // the persisted override matches what we ask the orchestrator
+      // to grow to.
+      pendingGrowMib = targetMib;
     }
   }
 
@@ -665,7 +678,38 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     }
   }
 
-  return getClientById(db, id);
+  // Auto-trigger online-grow when subscription/quota change asked for
+  // more storage. Done AFTER all other DB writes so the persisted
+  // override matches what the orchestrator targets. Failures here
+  // attach storageGrowOperationId=null to the response so the UI can
+  // surface the failure without rolling back the rest of the PATCH.
+  let storageGrowOperationId: string | null = null;
+  if (pendingGrowMib != null) {
+    try {
+      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+      const { resizeClient } = await import('../storage-lifecycle/service.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+      const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+      const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+      const { operationId } = await resizeClient(
+        { db, k8s, store, platformNamespace },
+        id,
+        { newMib: pendingGrowMib, triggeredByUserId: opts.triggeredByUserId ?? null },
+      );
+      storageGrowOperationId = operationId;
+    } catch (err) {
+      console.warn('[clients] Auto online-grow failed to start:', err instanceof Error ? err.message : String(err));
+      // Don't throw — the persisted override still applies to the
+      // ResourceQuota; operator can retry via the dedicated /storage/resize
+      // endpoint if the orchestrator startup itself failed.
+    }
+  }
+
+  const updated = await getClientById(db, id);
+  return storageGrowOperationId != null
+    ? { ...updated, storageGrowOperationId }
+    : updated;
 }
 
 export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {

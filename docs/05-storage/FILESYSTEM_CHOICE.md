@@ -34,17 +34,86 @@ XFS's well-known limitation is that it cannot be shrunk while
 online (or at all, in some configurations). For a generic
 filesystem this would be a hard constraint, but for this platform:
 
-- **Resize is always destroy+recreate.** See
-  `backend/src/modules/storage-lifecycle/service.ts:runResize`.
-  The flow is snapshot → quiesce → delete PVC → recreate at new
-  size → restore from snapshot. Both shrink AND grow take this
-  path. There is currently no online-grow split — a future
-  optimization would be to grow with `xfs_growfs` (which IS
-  supported), but that's out of scope for the migration PR.
+- **Resize policy splits grow vs shrink** (see Resize Semantics
+  below). Online grow uses `xfs_growfs` (XFS) / `resize2fs` (ext4)
+  with zero downtime; shrink is destructive (snapshot → recreate
+  → restore). XFS's lack of in-place shrink doesn't matter because
+  we never attempt one — the destructive shrink path always
+  reformats at the new size.
 - **Repair tooling is shipped.** `bootstrap.sh` installs
   `xfsprogs` and `e2fsprogs` on every node. The fsck endpoints
   (see Health/Repair section below) require both regardless of the
   per-PVC fsType, so we install both.
+
+## Resize semantics
+
+Storage resizes route through the storage-lifecycle service in
+`backend/src/modules/storage-lifecycle/service.ts:resizeClient`.
+That entry point dispatches based on the direction of the change:
+
+| Direction | Path | Downtime | Implementation |
+|-----------|------|----------|----------------|
+| `newMib > currentMib` (grow) | `runGrowOnline` | None | Patch `PVC.spec.resources.requests.storage` → wait for `PVC.status.capacity.storage` to reflect the new size → wait for `FileSystemResizePending` to clear (kubelet runs `xfs_growfs` / `resize2fs`) → persist `clients.storage_limit_override`. |
+| `newMib === currentMib` | no-op | None | Synthetic completed op recorded with `params.mode='noop'`. |
+| `newMib < currentMib` (shrink) | `runResizeDestructive` | Tenant downtime | Pre-resize snapshot → quiesce → delete PVC → recreate at new size → restore → unquiesce. Snapshot retained 7 days as rollback. |
+
+### Operator runbook: I want to bump tenant storage
+
+Edit the client's resource limits (`storageLimitOverride`) or move
+them to a larger plan via the admin panel. The PATCH endpoint
+detects the grow and **automatically triggers `runGrowOnline`** in
+the background. The response carries `storageGrowOperationId` so the
+UI opens a progress modal and polls
+`GET /admin/storage/operations/:opId` every ~1.5s.
+
+Pods stay running throughout. The sequence reflected in the modal
+is:
+
+1. `resizing` 10% — patching PVC to the new size.
+2. `resizing` 35% — waiting for Longhorn to extend the block device
+   (PVC capacity catches up).
+3. `restoring` 70% — waiting for kubelet to grow the live filesystem.
+4. `idle` 100% — done.
+
+**Possible failures:**
+
+- `GROW_REJECTED` (400) — kubelet refused the patch. The storage
+  class either has `allowVolumeExpansion=false` or the requested
+  size is below current. Check
+  `kubectl get sc longhorn-tenant -o yaml | grep allowVolumeExpansion`.
+- `LONGHORN_BUSY` (502) — Longhorn API hiccup while reading the
+  PVC during the wait loop. Re-run the PATCH; the orchestrator is
+  idempotent.
+- `FS_RESIZE_TIMEOUT` (504) — Longhorn took longer than 60s to
+  extend the block device, or kubelet took longer than 120s to
+  clear `FileSystemResizePending`. Inspect the kubelet logs on the
+  node currently mounting the PVC. Common causes: insufficient host
+  capacity (run `df -h /var/lib/longhorn` on each replica node) or
+  a stuck `xfs_growfs` / `resize2fs` process.
+
+### Operator runbook: I want to shrink tenant storage
+
+Plain `PATCH /clients/:id` with a smaller `storage_limit_override`
+**rejects with `STORAGE_RESIZE_REQUIRED` (409)** — shrink requires
+the destructive flow which loses any data above the new size, and
+that has to be opt-in.
+
+To proceed:
+
+1. Open the client detail page → Storage Lifecycle → Resize Storage.
+2. The modal explains: "shrink will quiesce your workloads,
+   snapshot the PVC, drop and recreate it at the new size, then
+   restore from the snapshot. Snapshot retained 7d as rollback."
+3. Confirm → calls `POST /admin/clients/:id/storage/resize` →
+   `runResizeDestructive` orchestrator runs.
+4. Same progress modal as grow polls
+   `/admin/storage/operations/:opId`. Expect tenant downtime ≈
+   `du -sh /data` of the PVC × 2 (snapshot + restore) plus quiesce
+   overhead.
+
+**Rollback:** if the restore fails partway through, the pre-resize
+snapshot is kept for 7 days. Restore via Storage Lifecycle →
+Restore from snapshot.
 
 ## Why ext4 stays on system / mail
 
@@ -169,3 +238,7 @@ Storage Lifecycle Restore flow.
   fsType per tier.
 - `scripts/integration-tier-flip-e2e.sh` — e2e harness asserts
   fresh-tenant fsType=xfs and allocatedBytes < 60 MiB.
+- `scripts/integration-grow-e2e.sh` — e2e harness for the
+  online-grow path: PATCH 10→15 GiB, asserts pod continuity,
+  PVC capacity update, FileSystemResizePending clears, and that
+  the orchestrator never visited destructive states.

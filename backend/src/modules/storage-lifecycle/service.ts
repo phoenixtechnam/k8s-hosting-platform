@@ -305,15 +305,22 @@ async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<numbe
 }
 
 /**
- * Resize a client's PVC to a new size (shrinking supported via destroy+
- * recreate; growing also works on storage classes with
- * allowVolumeExpansion).
+ * Resize a client's PVC to a new size. Dispatches to:
  *
- * This is the full orchestration: validate → pre-resize snapshot →
- * quiesce → delete PVC → recreate at new size → restore from snapshot →
- * unquiesce. Rollback path is: if anything fails AFTER the PVC delete,
- * we try to recreate the old-size PVC and restore from the pre-resize
- * snapshot (snapshot retained 7 days as rollback insurance).
+ *   • online grow (`runGrowOnline`) when newMib > currentMib — patches
+ *     PVC.spec.resources.requests.storage and lets kubelet run
+ *     xfs_growfs / resize2fs on the live filesystem. Zero downtime.
+ *
+ *   • destructive resize (`runResizeDestructive`) when newMib < currentMib —
+ *     pre-resize snapshot → quiesce → delete PVC → recreate at new size →
+ *     restore from snapshot → unquiesce. Used because filesystems can't
+ *     shrink in place safely while the volume is mounted.
+ *
+ *   • no-op when newMib === currentMib (returns existing op id if any).
+ *
+ * Rollback for the destructive path: if anything fails AFTER the PVC
+ * delete, we try to recreate the old-size PVC and restore from the
+ * pre-resize snapshot (snapshot retained 7 days as rollback insurance).
  */
 export async function resizeClient(
   ctx: ServiceCtx,
@@ -329,14 +336,89 @@ export async function resizeClient(
   const newMib = params.newMib ?? (params.newGi! * 1024);
 
   const dry = await resizeDryRunMib(ctx, clientId, newMib);
+  if (newMib === dry.currentMib) {
+    // No-op — surface a synthetic completed op so callers don't have
+    // to special-case "PATCH that didn't actually change anything".
+    const opId = uuid();
+    await ctx.db.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'resize',
+      state: 'idle',
+      progressPct: 100,
+      progressMessage: `Storage already at ${newMib} MiB — no resize needed`,
+      params: { fromMib: dry.currentMib, toMib: newMib, mode: 'noop' },
+      triggeredByUserId: params.triggeredByUserId ?? null,
+      completedAt: new Date(),
+    });
+    return { operationId: opId };
+  }
+
+  if (newMib > dry.currentMib) {
+    return resizeGrow(ctx, clientId, dry.currentMib, newMib, params.triggeredByUserId ?? null);
+  }
+  // newMib < currentMib → destructive shrink (must check willFit).
   if (!dry.willFit) {
     throw new ApiError('RESIZE_UNSAFE', dry.rejectReason!, 400, { dryRun: dry });
   }
+  return resizeDestructive(ctx, client.kubernetesNamespace, clientId, dry.currentMib, newMib, params.triggeredByUserId ?? null);
+}
 
+/**
+ * Online-grow path. PVC.spec.resources.requests.storage is patched up
+ * to the new size; Longhorn extends the block device, then kubelet runs
+ * xfs_growfs / resize2fs against the live filesystem. Pods stay up.
+ *
+ * State machine: snapshotting (no-op for the schema's sake) → resizing
+ * (PVC patch + capacity wait) → restoring (FileSystemResizePending wait,
+ * we re-use the existing state since the schema doesn't have
+ * "growing_filesystem"; UI shows the textual progressMessage) → idle.
+ */
+async function resizeGrow(
+  ctx: ServiceCtx,
+  clientId: string,
+  currentMib: number,
+  newMib: number,
+  triggeredByUserId: string | null,
+): Promise<{ operationId: string }> {
+  const opId = uuid();
+  const [client] = await ctx.db.select().from(clients).where(eq(clients.id, clientId));
+  if (!client) throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
+  const namespace = client.kubernetesNamespace;
+  const pvcName = `${namespace}-storage`;
+
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'resize',
+      state: 'resizing',
+      progressPct: 0,
+      progressMessage: `Online-grow ${currentMib} → ${newMib} MiB`,
+      params: { fromMib: currentMib, toMib: newMib, mode: 'grow_online' },
+      triggeredByUserId,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'resizing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  void runGrowOnline(ctx, opId, namespace, pvcName, currentMib, newMib)
+    .catch((err) => { console.error(`[storage-lifecycle] runGrowOnline pre-orchestrator throw for op ${opId}:`, err); });
+  return { operationId: opId };
+}
+
+async function resizeDestructive(
+  ctx: ServiceCtx,
+  namespace: string,
+  clientId: string,
+  currentMib: number,
+  newMib: number,
+  triggeredByUserId: string | null,
+): Promise<{ operationId: string }> {
   const opId = uuid();
   const snapId = uuid();
   const archivePath = ctx.store.reservePath(clientId, snapId);
-  const namespace = client.kubernetesNamespace;
   const pvcName = `${namespace}-storage`;
   const preResizeRetention = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
@@ -348,7 +430,7 @@ export async function resizeClient(
       status: 'creating',
       archivePath,
       expiresAt: preResizeRetention,
-      label: `Pre-resize ${dry.currentMib}MiB → ${newMib}MiB`,
+      label: `Pre-resize ${currentMib}MiB → ${newMib}MiB`,
     });
     await tx.insert(storageOperations).values({
       id: opId,
@@ -358,26 +440,214 @@ export async function resizeClient(
       progressPct: 0,
       progressMessage: 'Starting resize',
       snapshotId: snapId,
-      params: { fromMib: dry.currentMib, toMib: newMib },
-      triggeredByUserId: params.triggeredByUserId ?? null,
+      params: { fromMib: currentMib, toMib: newMib, mode: 'destructive' },
+      triggeredByUserId,
     });
     await tx.update(clients)
       .set({ storageLifecycleState: 'snapshotting', activeStorageOpId: opId })
       .where(eq(clients.id, clientId));
   });
 
-  // Kick off the async orchestration. We return immediately with the
-  // operation id — caller polls or SSE-subscribes for progress.
-  // Kick off orchestration async. runResize has its own try/catch that
-  // writes failures to storage_operations — the outer .catch only fires
-  // on a *synchronous* throw before that runs (DB down, etc.). Log
+  // Kick off orchestration async. runResizeDestructive has its own try/catch
+  // that writes failures to storage_operations — the outer .catch only
+  // fires on a *synchronous* throw before that runs (DB down, etc.). Log
   // noisily so those don't get eaten silently.
-  void runResize(ctx, opId, snapId, client.kubernetesNamespace, pvcName, newMib, archivePath)
-    .catch((err) => { console.error(`[storage-lifecycle] runResize pre-orchestrator throw for op ${opId}:`, err); });
+  void runResizeDestructive(ctx, opId, snapId, namespace, pvcName, newMib, archivePath)
+    .catch((err) => { console.error(`[storage-lifecycle] runResizeDestructive pre-orchestrator throw for op ${opId}:`, err); });
   return { operationId: opId };
 }
 
-async function runResize(
+/**
+ * Orchestrate online PVC grow. Steps:
+ *
+ *   1. Patch PVC.spec.resources.requests.storage to the new size.
+ *   2. Poll PVC.status.capacity.storage until it reflects the new size
+ *      (Longhorn extends the underlying volume).
+ *   3. Poll PVC.status.conditions for the absence of FileSystemResizePending
+ *      (kubelet ran xfs_growfs / resize2fs against the live mount).
+ *   4. Persist the new size on clients.storageLimitOverride so the
+ *      ResourceQuota and the next quota recompute see the same value.
+ *
+ * No quiesce, no snapshot — pods stay running throughout. Failures are
+ * surfaced through the OperatorError envelope and the op is marked
+ * `failed`. The PVC patch itself is best-effort idempotent.
+ */
+async function runGrowOnline(
+  ctx: ServiceCtx,
+  opId: string,
+  namespace: string,
+  pvcName: string,
+  currentMib: number,
+  newMib: number,
+): Promise<void> {
+  const newSizeStr = newMib % 1024 === 0 ? `${newMib / 1024}Gi` : `${newMib}Mi`;
+  const newBytes = newMib * 1024 * 1024;
+  const progress = async (state: typeof clients.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
+    await ctx.db.update(clients)
+      .set({ storageLifecycleState: state })
+      .where(eq(clients.activeStorageOpId, opId));
+  };
+
+  try {
+    await progress('resizing', 10, `Patching PVC ${pvcName} to ${newSizeStr}`);
+
+    // 1. Patch PVC.spec.resources.requests.storage. Use a JSON merge
+    //    patch — strategic-merge isn't supported on PVCs and a JSON
+    //    patch with `op:replace` would fail if the path doesn't exist.
+    try {
+      await (ctx.k8s.core as unknown as {
+        patchNamespacedPersistentVolumeClaim: (a: {
+          name: string;
+          namespace: string;
+          body: unknown;
+        }) => Promise<unknown>;
+      }).patchNamespacedPersistentVolumeClaim({
+        name: pvcName,
+        namespace,
+        body: { spec: { resources: { requests: { storage: newSizeStr } } } },
+      });
+    } catch (err) {
+      const code = (err as { statusCode?: number; code?: number }).statusCode
+        ?? (err as { code?: number }).code;
+      // 422 from kubelet usually means SC doesn't allow expansion or
+      // the requested size is below current — surface clearly.
+      if (code === 422) {
+        throw new ApiError(
+          'GROW_REJECTED',
+          `kubelet rejected PVC patch — storage class may not allow volume expansion, or new size ${newSizeStr} is below current`,
+          400,
+        );
+      }
+      throw err;
+    }
+
+    // 2. Poll PVC.status.capacity.storage until it reflects the new size.
+    //    Longhorn marks PVC capacity once the block device is extended.
+    //    Timeout: 60s.
+    await progress('resizing', 35, 'Waiting for Longhorn to extend the volume');
+    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 60_000);
+
+    // 3. Poll PVC.status.conditions[type=FileSystemResizePending] until
+    //    it's gone. kubelet runs xfs_growfs (XFS) / resize2fs (ext4)
+    //    on the live mount. Timeout: 120s.
+    await progress('restoring', 70, 'Waiting for kubelet to grow the filesystem (xfs_growfs / resize2fs)');
+    await waitForFileSystemResizeCleared(ctx.k8s, namespace, pvcName, 120_000);
+
+    // 4. Persist the new size on the client row so the ResourceQuota
+    //    and any subsequent quota recompute see the same value.
+    const clientId = await currentClientId(ctx.db, opId);
+    if (clientId) {
+      const giDecimal = Math.round((newMib / 1024) * 100) / 100;
+      await ctx.db.update(clients).set({
+        storageLimitOverride: giDecimal.toFixed(2),
+      }).where(eq(clients.id, clientId));
+    }
+
+    await updateOp(ctx.db, opId, {
+      state: 'idle',
+      progressPct: 100,
+      progressMessage: `Grew ${currentMib} → ${newMib} MiB online (no downtime)`,
+      completedAt: new Date(),
+    });
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'idle', null);
+  } catch (err) {
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(ctx.db, opId, {
+      state: 'failed', lastError: persisted, completedAt: new Date(),
+    });
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
+/**
+ * Poll PVC.status.capacity.storage until it parses to >= the target
+ * size in bytes. Throws `FS_RESIZE_TIMEOUT` if the deadline elapses
+ * without progress.
+ */
+async function waitForPvcCapacity(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  targetBytes: number,
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    let pvc;
+    try {
+      pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    } catch (err) {
+      throw new ApiError('LONGHORN_BUSY', `Could not read PVC ${pvcName}: ${(err as Error).message}`, 502);
+    }
+    const cap = (pvc as { status?: { capacity?: { storage?: string } } }).status?.capacity?.storage;
+    if (cap) {
+      const capBytes = parseQuantityToBytes(cap);
+      if (capBytes >= targetBytes) return;
+    }
+    if (Date.now() - start > timeoutMs) {
+      throw new ApiError(
+        'FS_RESIZE_TIMEOUT',
+        `PVC ${pvcName}.status.capacity.storage did not reach ${targetBytes} bytes within ${timeoutMs}ms (last seen: ${cap ?? 'none'}). Longhorn volume may be busy or insufficient host capacity.`,
+        504,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/**
+ * Poll PVC.status.conditions until the FileSystemResizePending
+ * condition is absent (kubelet has run the FS-side grow).
+ */
+async function waitForFileSystemResizeCleared(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    let pvc;
+    try {
+      pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    } catch (err) {
+      throw new ApiError('LONGHORN_BUSY', `Could not read PVC ${pvcName}: ${(err as Error).message}`, 502);
+    }
+    const conditions = ((pvc as { status?: { conditions?: Array<{ type?: string; status?: string }> } }).status?.conditions) ?? [];
+    const pending = conditions.find((c) => c.type === 'FileSystemResizePending' && c.status === 'True');
+    if (!pending) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new ApiError(
+        'FS_RESIZE_TIMEOUT',
+        `kubelet has not cleared FileSystemResizePending on PVC ${pvcName} within ${timeoutMs}ms. xfs_growfs / resize2fs may have failed; check kubelet logs on the node currently mounting this PVC.`,
+        504,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/**
+ * Parse a Kubernetes resource quantity (e.g. "10Gi", "5120Mi", "10000000000")
+ * into bytes. Supports binary (Ki/Mi/Gi/Ti) and SI (K/M/G/T) suffixes.
+ */
+function parseQuantityToBytes(qty: string): number {
+  const m = qty.match(/^(\d+(?:\.\d+)?)\s*([A-Za-z]*)$/);
+  if (!m) return 0;
+  const value = parseFloat(m[1]);
+  const unit = m[2];
+  const binary: Record<string, number> = { Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, Pi: 1024 ** 5 };
+  const decimal: Record<string, number> = { K: 1000, M: 1000 ** 2, G: 1000 ** 3, T: 1000 ** 4, P: 1000 ** 5, k: 1000 };
+  if (!unit) return value;
+  if (binary[unit]) return value * binary[unit];
+  if (decimal[unit]) return value * decimal[unit];
+  return value;
+}
+
+async function runResizeDestructive(
   ctx: ServiceCtx,
   opId: string,
   snapId: string,
