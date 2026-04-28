@@ -249,11 +249,18 @@ export async function applyDeleted(
   // before we can delete them. Without this, every client deletion
   // leaves orphan PVs that fill up storageScheduled until Longhorn
   // refuses new replicas with "insufficient storage".
-  if (pvCandidates.size > 0) {
-    void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
-      console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
-    });
-  }
+  //
+  // We always kick off the poll — even with an empty pre-snapshot —
+  // because PVC binding is async. A test that creates+deletes a
+  // client within ~5s sees the cascade fire BEFORE Longhorn has
+  // allocated the PV (PVC still Pending, no claimRef on any PV).
+  // Pre-snapshot returns empty in that race, but the PV binds
+  // moments later and becomes a Released orphan. The poll
+  // continually re-discovers PVs by claimRef.namespace so a
+  // late-binding PV still gets cleaned up.
+  void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
+    console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
+  });
 }
 
 /**
@@ -273,9 +280,17 @@ async function cleanupReleasedPvs(
     status?: { phase?: string };
   }
   const handled = new Set<string>();
+  // The tracking set grows during the poll — late-binding PVs (PVC
+  // was Pending when applyDeleted ran) get added the moment Longhorn
+  // populates claimRef.namespace.
+  const tracked = new Set<string>(candidates);
   const startedAt = Date.now();
 
-  while (Date.now() - startedAt < 60_000 && handled.size < candidates.size) {
+  // Always poll for the full 60s window — a fast create+delete may
+  // see candidates=∅ at start, then the PV appears mid-loop. We need
+  // to keep watching until either every tracked PV is handled OR the
+  // window closes.
+  while (Date.now() - startedAt < 60_000) {
     const pvsNow = await ctx.k8s.core.listPersistentVolume({}).catch(() => null);
     if (!pvsNow) {
       await new Promise((r) => setTimeout(r, 2_000));
@@ -287,14 +302,18 @@ async function cleanupReleasedPvs(
       const name = p.metadata?.name;
       if (!name) continue;
       stillPresent.add(name);
-      if (!candidates.has(name) || handled.has(name)) continue;
+      // Discover late-binding PVs whose claimRef points at our
+      // soon-to-be-deleted namespace.
+      if (p.spec?.claimRef?.namespace === namespace) tracked.add(name);
+      if (!tracked.has(name) || handled.has(name)) continue;
       if (p.status?.phase === 'Released') handled.add(name);
     }
     // Tolerate a candidate that disappeared on its own (Delete reclaim).
-    for (const c of candidates) {
+    for (const c of tracked) {
       if (!stillPresent.has(c)) handled.add(c);
     }
-    if (handled.size >= candidates.size) break;
+    // Exit early once we've seen at least one PV and all are handled.
+    if (tracked.size > 0 && handled.size >= tracked.size) break;
     await new Promise((r) => setTimeout(r, 2_000));
   }
 
@@ -330,7 +349,7 @@ async function cleanupReleasedPvs(
   if (cleaned > 0) {
     console.log(`[cascades.applyDeleted] cleaned up ${cleaned} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
   }
-  if (candidates.size > handled.size) {
-    console.warn(`[cascades.applyDeleted] ${candidates.size - handled.size} PV(s) for ${namespace} did not reach Released within 60s — leaving for manual cleanup`);
+  if (tracked.size > handled.size) {
+    console.warn(`[cascades.applyDeleted] ${tracked.size - handled.size} PV(s) for ${namespace} did not reach Released within 60s — leaving for manual cleanup`);
   }
 }
