@@ -4,7 +4,21 @@ import type { ProvisioningStep } from '@k8s-hosting/api-contracts';
 import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
+import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
+
+/**
+ * Render a raw provisioning error into either a JSON-stringified
+ * OperatorError envelope (when the translator recognized it — quota,
+ * scheduling, image pull, etc.) or the plain k8s string (UNKNOWN
+ * fallback). The frontend ProvisioningProgressModal auto-detects
+ * the JSON form and renders <ErrorPanel> with title + remediation.
+ */
+function formatProvisionErrorForStorage(message: string): string {
+  const envelope = translateOperatorError(message, { kind: 'provision' });
+  if (envelope.code === 'UNKNOWN') return message;
+  return JSON.stringify(envelope);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -312,12 +326,27 @@ export async function applyPVC(
   storageGi: string,
   storageClass: string,
 ): Promise<void> {
+  const pvcName = `${namespace}-storage`;
+
+  // Read-before-create. The naive create-then-409-fallback pattern
+  // doesn't work here: when the PVC already exists, ResourceQuota
+  // admission fires BEFORE the name-uniqueness check and returns 403
+  // (would-exceed-quota: existing 10Gi already consumed). The 409 catch
+  // never sees it. Re-provision then dies on "Create PVC" forever.
+  // Reading first short-circuits cleanly.
+  try {
+    await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    return; // Already exists — PVCs are immutable, leave it alone.
+  } catch (err: unknown) {
+    if (!isK8s404(err)) throw err;
+  }
+
   try {
     await k8s.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {
         metadata: {
-          name: `${namespace}-storage`,
+          name: pvcName,
           namespace,
           labels: {
             // Opt this PVC into Longhorn's `default` RecurringJob group
@@ -342,7 +371,9 @@ export async function applyPVC(
       },
     });
   } catch (err: unknown) {
-    // Already exists — PVCs are immutable (can't resize in-place without CSI support)
+    // Defense-in-depth: if a parallel re-provision raced past the read
+    // and inserted the PVC, swallow the 409. PVCs are immutable so
+    // there's nothing to update. Genuine 403 (quota) still throws.
     if (!isK8s409(err)) throw err;
   }
 }
@@ -484,9 +515,14 @@ export async function runProvisionNamespace(
     }).where(eq(clients.id, clientId));
   } catch (err: unknown) {
     const message = formatK8sError(err);
+    const persistedError = formatProvisionErrorForStorage(message);
 
     // Also mark the currently-running step as failed so the UI surfaces
     // which step errored (previously only `errorMessage` was set).
+    // The step-level error stays as the raw k8s string — the UI shows
+    // it inline next to the step icon, so a structured envelope there
+    // would be visual noise. The top-level errorMessage is the
+    // ErrorPanel surface.
     const runningStep = stepsLog.find(s => s.status === 'running');
     if (runningStep) {
       stepsLog = updateStepStatus(stepsLog, runningStep.name, 'failed', message);
@@ -494,7 +530,7 @@ export async function runProvisionNamespace(
 
     await db.update(provisioningTasks).set({
       status: 'failed',
-      errorMessage: message,
+      errorMessage: persistedError,
       completedAt: new Date(),
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));
@@ -672,13 +708,14 @@ export async function runDeprovision(
     }).where(eq(clients.id, clientId));
   } catch (err: unknown) {
     const message = formatK8sError(err);
+    const persistedError = formatProvisionErrorForStorage(message);
     const runningStep = stepsLog.find(s => s.status === 'running');
     if (runningStep) {
       stepsLog = updateStepStatus(stepsLog, runningStep.name, 'failed', message);
     }
     await db.update(provisioningTasks).set({
       status: 'failed',
-      errorMessage: message,
+      errorMessage: persistedError,
       completedAt: new Date(),
       stepsLog,
     }).where(eq(provisioningTasks.id, taskId));

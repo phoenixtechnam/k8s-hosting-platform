@@ -9,6 +9,12 @@ function createMockK8sClients(): K8sClients {
       createNamespace: vi.fn().mockResolvedValue({}),
       readNamespace: vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 })),
       createNamespacedResourceQuota: vi.fn().mockResolvedValue({}),
+      // Phase F+G fix: applyPVC now reads-then-creates to dodge the
+      // ResourceQuota admission firing 403 before the existence check.
+      // Mock 404 so the create branch still runs in the existing tests.
+      readNamespacedPersistentVolumeClaim: vi.fn().mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      ),
       createNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({}),
       createNamespacedServiceAccount: vi.fn().mockResolvedValue({}),
       createNamespacedService: vi.fn().mockResolvedValue({}),
