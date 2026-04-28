@@ -446,6 +446,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startStoragePolicyAdvisor } = await import('./modules/platform-storage-policy/scheduler.js');
         const storageAdvisorHandle = startStoragePolicyAdvisor(app.db, k8sForImapsync);
         app.addHook('onClose', () => storageAdvisorHandle.stop());
+
+        // Backup-health: watches Jobs cluster-wide via the
+        // platform.phoenix-host.net/backup-health-watch=true label and
+        // emits one notification per failed Job UID. Routes admin or
+        // client_admin recipients per the optional client-id label.
+        const { startBackupHealthScheduler } = await import('./modules/backup-health/scheduler.js');
+        const backupHealthStop = startBackupHealthScheduler({
+          db: app.db,
+          batch: k8sForImapsync.batch,
+        });
+        app.addHook('onClose', () => backupHealthStop());
       } catch (err) {
         app.log.warn({ err }, 'mail-imapsync: scheduler not started — k8s client unavailable');
       }

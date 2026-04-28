@@ -194,6 +194,21 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // GET /api/v1/admin/backup-health — discovery-driven roll-up of
+  // every Job carrying the backup-health-watch=true label. Used by
+  // the admin Backups page banner + DR Job Health table.
+  app.get('/admin/backup-health', async () => {
+    if (!longhornClients?.batch) {
+      throw new ApiError('K8S_UNAVAILABLE', 'K8s client unavailable', 502);
+    }
+    const { listHealthWatchedJobs, summariseHealth } = await import(
+      '../backup-health/service.js'
+    );
+    const jobs = await listHealthWatchedJobs(longhornClients.batch);
+    const summary = summariseHealth(jobs);
+    return success(summary);
+  });
+
   // POST /api/v1/admin/backup-configs/:id/deactivate
   app.post('/admin/backup-configs/:id/deactivate', async (request) => {
     const { id } = request.params as { id: string };
