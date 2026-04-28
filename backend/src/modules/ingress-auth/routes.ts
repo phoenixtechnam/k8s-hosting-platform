@@ -28,6 +28,7 @@ import {
 } from './service.js';
 import { reconcileClient } from './reconciler.js';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { reconcileIngress } from '../domains/k8s-ingress.js';
 import type { ZodError } from 'zod';
 
 function zodMessage(err: ZodError): string {
@@ -88,16 +89,14 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
   // PATCH — upsert + reconcile.
   app.patch('/clients/:cid/ingress-routes/:rid/auth', async (request) => {
     const { cid, rid } = request.params as { cid: string; rid: string };
-    await assertRouteBelongsToClient(app, cid, rid);
+    const { namespace } = await assertRouteBelongsToClient(app, cid, rid);
     const parsed = ingressAuthConfigSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
     const cfg = await upsertAuthConfig(app.db, { encryptionKey }, rid, parsed.data);
     if (k8s) {
-      // Fire and await — surfaces reconcile errors to the caller so
-      // the UI sees "saved but proxy update failed" rather than a
-      // silent inconsistency.
+      // 1) Provision/update the per-client oauth2-proxy + claim-validator
       const outcome = await reconcileClient(
         { db: app.db, k8s, encryptionKey },
         cid,
@@ -109,6 +108,12 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
           502,
         );
       }
+      // 2) Re-write the Ingress so the auth-url annotations land
+      try {
+        await reconcileIngress(app.db, k8s, cid, namespace);
+      } catch (err) {
+        request.log.warn({ err, cid, rid }, 'Auth saved + proxy provisioned, but Ingress annotation sync failed');
+      }
     }
     return success(cfg);
   });
@@ -116,10 +121,16 @@ export async function ingressAuthRoutes(app: FastifyInstance): Promise<void> {
   // DELETE — disable + reconcile (tears down the proxy when last).
   app.delete('/clients/:cid/ingress-routes/:rid/auth', async (request) => {
     const { cid, rid } = request.params as { cid: string; rid: string };
-    await assertRouteBelongsToClient(app, cid, rid);
+    const { namespace } = await assertRouteBelongsToClient(app, cid, rid);
     await deleteAuthConfig(app.db, rid);
     if (k8s) {
       await reconcileClient({ db: app.db, k8s, encryptionKey }, cid);
+      // Re-sync Ingress to drop the auth-* annotations.
+      try {
+        await reconcileIngress(app.db, k8s, cid, namespace);
+      } catch (err) {
+        request.log.warn({ err, cid, rid }, 'Auth deleted + proxy torn down, but Ingress annotation sync failed');
+      }
     }
     return success({ deleted: true });
   });
