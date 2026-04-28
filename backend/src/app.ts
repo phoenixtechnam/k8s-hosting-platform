@@ -86,6 +86,7 @@ import { sslCertRoutes } from './modules/ssl-certs/routes.js';
 import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
 import { tlsSettingsRoutes } from './modules/tls-settings/routes.js';
 import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
+import { ingressAuthRoutes } from './modules/ingress-auth/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
@@ -309,6 +310,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(eolScannerRoutes, { prefix: '/api/v1' });
   await app.register(tlsSettingsRoutes, { prefix: '/api/v1' });
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
+  await app.register(ingressAuthRoutes, { prefix: '/api/v1' });
   await app.register(sqliteRoutes, { prefix: '/api/v1' });
 
   const { systemSettingsRoutes } = await import('./modules/system-settings/routes.js');

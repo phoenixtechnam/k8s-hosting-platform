@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useDomains } from '@/hooks/use-domains';
+import OidcSection from '@/components/OidcSection';
 import {
   useRouteDetail,
   useUpdateRouteRedirects,
@@ -30,7 +31,7 @@ import {
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
-type Tab = 'redirects' | 'security' | 'protected-dirs' | 'advanced';
+type Tab = 'redirects' | 'security' | 'access-control' | 'advanced';
 
 export default function RouteDetail() {
   const { domainId, routeId } = useParams<{ domainId: string; routeId: string }>();
@@ -70,7 +71,7 @@ export default function RouteDetail() {
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'redirects', label: 'Redirects', icon: <ArrowLeftRight size={14} /> },
     { key: 'security', label: 'Security', icon: <Shield size={14} /> },
-    { key: 'protected-dirs', label: 'Protected Directories', icon: <FolderLock size={14} /> },
+    { key: 'access-control', label: 'Access Control', icon: <FolderLock size={14} /> },
     { key: 'advanced', label: 'Advanced', icon: <Settings size={14} /> },
   ];
 
@@ -148,7 +149,9 @@ export default function RouteDetail() {
       {/* Tab content */}
       {activeTab === 'redirects' && <RedirectsTab clientId={clientId!} routeId={routeId!} route={route} dnsMode={dnsMode} />}
       {activeTab === 'security' && <SecurityTab clientId={clientId!} routeId={routeId!} route={route} />}
-      {activeTab === 'protected-dirs' && <ProtectedDirsSection clientId={clientId!} routeId={routeId!} />}
+      {activeTab === 'access-control' && (
+        <AccessControlTab clientId={clientId!} routeId={routeId!} hostname={route.hostname} />
+      )}
       {activeTab === 'advanced' && <AdvancedTab clientId={clientId!} routeId={routeId!} route={route} />}
     </div>
   );
@@ -673,6 +676,25 @@ function SecurityTab({ clientId, routeId, route }: {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// ─── Access Control Tab (OIDC + Protected Directories) ─────────────────────
+
+function AccessControlTab({
+  clientId,
+  routeId,
+  hostname,
+}: {
+  readonly clientId: string;
+  readonly routeId: string;
+  readonly hostname: string;
+}) {
+  return (
+    <div className="space-y-8" data-testid="access-control-tab">
+      <OidcSection clientId={clientId} routeId={routeId} hostname={hostname} />
+      <ProtectedDirsSection clientId={clientId} routeId={routeId} />
     </div>
   );
 }

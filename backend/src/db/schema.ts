@@ -1247,6 +1247,70 @@ export const platformStoragePolicy = pgTable('platform_storage_policy', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// ─── Ingress access control (OIDC + claim rules) ────────────────────────────
+
+export interface IngressClaimRule {
+  readonly claim: string;
+  readonly operator:
+    | 'equals'
+    | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'in'
+    | 'not_in'
+    | 'exists'
+    | 'regex';
+  readonly value?: string | string[];
+}
+
+export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  ingressRouteId: varchar('ingress_route_id', { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
+  clientId: varchar('client_id', { length: 255 }).notNull(),
+  clientSecretEncrypted: text('client_secret_encrypted').notNull(),
+  authMethod: varchar('auth_method', { length: 32 }).notNull().default('client_secret_basic'),
+  responseType: varchar('response_type', { length: 32 }).notNull().default('code'),
+  usePkce: boolean('use_pkce').notNull().default(true),
+  scopes: varchar('scopes', { length: 500 }).notNull().default('openid profile email'),
+  allowedEmails: text('allowed_emails'),
+  allowedEmailDomains: text('allowed_email_domains'),
+  allowedGroups: text('allowed_groups'),
+  claimRules: jsonb('claim_rules').$type<ReadonlyArray<IngressClaimRule>>(),
+  passAuthorizationHeader: boolean('pass_authorization_header').notNull().default(true),
+  passAccessToken: boolean('pass_access_token').notNull().default(true),
+  passIdToken: boolean('pass_id_token').notNull().default(true),
+  passUserHeaders: boolean('pass_user_headers').notNull().default(true),
+  setXauthrequest: boolean('set_xauthrequest').notNull().default(true),
+  cookieDomain: varchar('cookie_domain', { length: 255 }),
+  cookieRefreshSeconds: integer('cookie_refresh_seconds').notNull().default(3600),
+  cookieExpireSeconds: integer('cookie_expire_seconds').notNull().default(86400),
+  lastError: text('last_error'),
+  lastReconciledAt: timestamp('last_reconciled_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type IngressAuthConfig = typeof ingressAuthConfigs.$inferSelect;
+export type NewIngressAuthConfig = typeof ingressAuthConfigs.$inferInsert;
+
+export const clientOauth2ProxyState = pgTable('client_oauth2_proxy_state', {
+  clientId: varchar('client_id', { length: 36 })
+    .primaryKey()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  cookieSecretEncrypted: text('cookie_secret_encrypted').notNull(),
+  provisioned: boolean('provisioned').notNull().default(false),
+  lastProvisionedAt: timestamp('last_provisioned_at'),
+  lastError: text('last_error'),
+});
+
+export type ClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferSelect;
+export type NewClientOauth2ProxyState = typeof clientOauth2ProxyState.$inferInsert;
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
