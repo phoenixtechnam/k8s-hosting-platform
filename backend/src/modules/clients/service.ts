@@ -224,6 +224,8 @@ export async function getClientStoragePlacement(
     }
     if (nodes.size > 0) {
       const k8sNode = await import('@kubernetes/client-node');
+      const https = await import('https');
+      const { URL } = await import('url');
       const kc = new k8sNode.KubeConfig();
       kc.loadFromCluster();
       const cluster = kc.getCurrentCluster();
@@ -233,32 +235,61 @@ export async function getClientStoragePlacement(
         interface KubeletVolume { name?: string; usedBytes?: number; pvcRef?: { name?: string; namespace?: string } }
         interface KubeletPod { volume?: KubeletVolume[] }
         interface KubeletSummary { pods?: KubeletPod[] }
-        await Promise.all(Array.from(nodes).map(async (node) => {
-          try {
-            const url = `${cluster.server}/api/v1/nodes/${encodeURIComponent(node)}/proxy/stats/summary`;
-            const ca = httpsOpts.ca, cert = httpsOpts.cert, key = httpsOpts.key;
-            const { Agent } = await import('https');
-            const agent = new Agent({ ca, cert, key });
-            const resp = await fetch(url, {
-              headers: httpsOpts.headers ?? {},
-              // @ts-expect-error node fetch supports agent
-              agent,
+
+        const fetchSummary = (node: string): Promise<KubeletSummary | null> => new Promise((resolve) => {
+          const u = new URL(`${cluster.server}/api/v1/nodes/${encodeURIComponent(node)}/proxy/stats/summary`);
+          const req = https.request({
+            method: 'GET',
+            host: u.hostname,
+            port: u.port || 443,
+            path: u.pathname,
+            ca: httpsOpts.ca,
+            cert: httpsOpts.cert,
+            key: httpsOpts.key,
+            // K3s apiserver presents a self-signed cert when reached via
+            // KUBERNETES_SERVICE_HOST; in-cluster CA covers it but some
+            // installs serve a different cert on the proxy port. Reject
+            // unauthorized stays default (true) — applyToHTTPSOptions
+            // pulls the right CA from the SA token mount.
+            headers: httpsOpts.headers ?? {},
+          }, (res) => {
+            if (res.statusCode !== 200) {
+              console.warn(`[clients/storage-placement] kubelet ${node} HTTP ${res.statusCode}`);
+              res.resume();
+              resolve(null);
+              return;
+            }
+            let data = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(data) as KubeletSummary); }
+              catch (err) {
+                console.warn(`[clients/storage-placement] kubelet ${node} parse: ${(err as Error).message}`);
+                resolve(null);
+              }
             });
-            if (!resp.ok) return;
-            const summary = await resp.json() as KubeletSummary;
-            for (const p of summary.pods ?? []) {
-              for (const v of p.volume ?? []) {
-                if (v.pvcRef?.namespace === namespace && v.pvcRef.name && typeof v.usedBytes === 'number') {
-                  // Multiple pods may mount the same RWO PVC; usedBytes
-                  // is the same filesystem reading. Last write wins.
-                  usedBytesByPvc.set(v.pvcRef.name, v.usedBytes);
-                }
+          });
+          req.on('error', (err) => {
+            console.warn(`[clients/storage-placement] kubelet ${node} req: ${err.message}`);
+            resolve(null);
+          });
+          req.end();
+        });
+
+        const summaries = await Promise.all(Array.from(nodes).map(fetchSummary));
+        for (const summary of summaries) {
+          if (!summary) continue;
+          for (const p of summary.pods ?? []) {
+            for (const v of p.volume ?? []) {
+              if (v.pvcRef?.namespace === namespace && v.pvcRef.name && typeof v.usedBytes === 'number') {
+                // Multiple pods may mount the same RWO PVC; usedBytes
+                // is the same filesystem reading. Last write wins.
+                usedBytesByPvc.set(v.pvcRef.name, v.usedBytes);
               }
             }
-          } catch {
-            // Best-effort. Falls back to 0 if kubelet proxy is unreachable.
           }
-        }));
+        }
       }
     }
   } catch (err) {
