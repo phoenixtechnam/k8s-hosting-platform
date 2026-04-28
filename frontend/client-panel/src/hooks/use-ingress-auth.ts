@@ -4,10 +4,69 @@ import type {
   IngressAuthConfigInput,
   IngressAuthConfigResponse,
   IngressAuthTestResponse,
+  OidcProviderInput,
+  OidcProviderResponse,
 } from '@k8s-hosting/api-contracts';
 
 interface ApiEnvelope<T> {
   readonly data: T;
+}
+
+const PROVIDERS_KEY = (cid: string) => ['oidc-providers', cid] as const;
+
+/** List per-client OIDC providers — feeds the dropdown in OidcSection. */
+export function useOidcProviders(clientId: string | undefined) {
+  return useQuery({
+    queryKey: PROVIDERS_KEY(clientId ?? ''),
+    queryFn: async () => {
+      const res = await apiFetch<ApiEnvelope<OidcProviderResponse[]>>(
+        `/api/v1/clients/${clientId}/oidc-providers`,
+      );
+      return res.data;
+    },
+    enabled: Boolean(clientId),
+  });
+}
+
+export function useCreateOidcProvider(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: OidcProviderInput) => {
+      const res = await apiFetch<ApiEnvelope<OidcProviderResponse>>(
+        `/api/v1/clients/${clientId}/oidc-providers`,
+        { method: 'POST', body: JSON.stringify(input) },
+      );
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY(clientId) }),
+  });
+}
+
+export function useUpdateOidcProvider(clientId: string, providerId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: Partial<OidcProviderInput>) => {
+      const res = await apiFetch<ApiEnvelope<OidcProviderResponse>>(
+        `/api/v1/clients/${clientId}/oidc-providers/${providerId}`,
+        { method: 'PATCH', body: JSON.stringify(input) },
+      );
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY(clientId) }),
+  });
+}
+
+export function useDeleteOidcProvider(clientId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (providerId: string) => {
+      await apiFetch<ApiEnvelope<{ deleted: boolean }>>(
+        `/api/v1/clients/${clientId}/oidc-providers/${providerId}`,
+        { method: 'DELETE' },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY(clientId) }),
+  });
 }
 
 const KEY = (cid: string, rid: string) => ['ingress-auth', cid, rid] as const;
