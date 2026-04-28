@@ -883,6 +883,203 @@ async function runRestoreArchive(
   }
 }
 
+// ─── Filesystem check / repair (fsck) ──────────────────────────────────
+
+/**
+ * Look up the PV name + node placement + fsType for a client's tenant
+ * PVC. Used by both fsck flows. Returns null if the PVC isn't bound
+ * yet or Longhorn doesn't have a record.
+ */
+async function locateTenantVolume(
+  ctx: ServiceCtx,
+  namespace: string,
+  pvcName: string,
+): Promise<{ volumeName: string; nodeName: string; fsType: string } | null> {
+  // PVC → volumeName
+  let pvc;
+  try {
+    pvc = await ctx.k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+  } catch {
+    return null;
+  }
+  const pvcShape = pvc as { spec?: { volumeName?: string } };
+  const volumeName = pvcShape.spec?.volumeName;
+  if (!volumeName) return null;
+
+  // PV → fsType from CSI volumeAttributes
+  let fsType = 'unknown';
+  try {
+    const pv = await (ctx.k8s.core as unknown as {
+      readPersistentVolume: (a: { name: string }) => Promise<{ spec?: { csi?: { volumeAttributes?: Record<string, string> } } }>;
+    }).readPersistentVolume({ name: volumeName });
+    fsType = pv.spec?.csi?.volumeAttributes?.fsType ?? 'unknown';
+  } catch { /* fsType stays unknown — runFsck will reject */ }
+
+  // Longhorn Volume CR → currentNodeID (where /dev/longhorn/<vol> exists)
+  let nodeName = '';
+  try {
+    const lhVol = await (ctx.k8s.custom as unknown as {
+      getNamespacedCustomObject: (a: {
+        group: string; version: string; namespace: string; plural: string; name: string;
+      }) => Promise<{ status?: { currentNodeID?: string; ownerID?: string } }>;
+    }).getNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+    });
+    nodeName = lhVol.status?.currentNodeID ?? lhVol.status?.ownerID ?? '';
+  } catch { /* fall through — empty nodeName fails below */ }
+
+  if (!nodeName) return null;
+  return { volumeName, nodeName, fsType };
+}
+
+/**
+ * Dry-run filesystem check. Quiesces the tenant (xfs_repair / e2fsck
+ * refuse to run on mounted FS, even with -n), runs the check-only
+ * tool against the Longhorn block device, then unquiesces.
+ *
+ * Reports back via storage_operations.progressMessage / lastError.
+ * The full tool output is appended to progressMessage when clean,
+ * lastError when errors are reported.
+ */
+export async function fsckCheckClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  opts: { triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string }> {
+  return startFsck(ctx, clientId, true, opts);
+}
+
+/**
+ * Repair-mode filesystem check. Same flow as check, but the tool is
+ * allowed to write to the filesystem (xfs_repair without -n; e2fsck -y).
+ * Operator-initiated only — the storage-lifecycle UI surfaces a
+ * confirmation modal because writes here can lose data on a badly
+ * damaged filesystem.
+ */
+export async function fsckRepairClient(
+  ctx: ServiceCtx,
+  clientId: string,
+  opts: { triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string }> {
+  return startFsck(ctx, clientId, false, opts);
+}
+
+async function startFsck(
+  ctx: ServiceCtx,
+  clientId: string,
+  dryRun: boolean,
+  opts: { triggeredByUserId?: string | null },
+): Promise<{ operationId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+
+  const opId = uuid();
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'fsck',
+      state: 'quiescing',
+      progressPct: 0,
+      progressMessage: dryRun ? 'Starting fsck (dry-run)' : 'Starting fsck repair',
+      params: { dryRun },
+      triggeredByUserId: opts.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'quiescing', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  // Async — caller polls /admin/storage/operations/:id for progress.
+  void runFsckOp(ctx, opId, client.kubernetesNamespace, dryRun)
+    .catch((err) => { console.error(`[storage-lifecycle] runFsckOp pre-orchestrator throw for op ${opId}:`, err); });
+  return { operationId: opId };
+}
+
+async function runFsckOp(
+  ctx: ServiceCtx,
+  opId: string,
+  namespace: string,
+  dryRun: boolean,
+): Promise<void> {
+  const pvcName = `${namespace}-storage`;
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  const progress = async (state: typeof clients.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
+    await ctx.db.update(clients)
+      .set({ storageLifecycleState: state })
+      .where(eq(clients.activeStorageOpId, opId));
+  };
+
+  try {
+    // Locate the volume BEFORE quiesce so we know where to schedule
+    // the fsck Pod. The currentNodeID is captured while the volume
+    // is still attached; after detach, the device path goes away
+    // briefly, but the same node will re-attach when the fsck Pod
+    // claims the PVC.
+    const located = await locateTenantVolume(ctx, namespace, pvcName);
+    if (!located) {
+      throw new ApiError('FSCK_VOLUME_NOT_FOUND', `Tenant PVC ${pvcName} or its Longhorn volume not found`, 404);
+    }
+    if (located.fsType !== 'xfs' && located.fsType !== 'ext4' && located.fsType !== 'ext3' && located.fsType !== 'ext2') {
+      throw new ApiError('FSCK_UNSUPPORTED_FS', `Unsupported fsType '${located.fsType}' — only xfs and ext4 are supported`, 400);
+    }
+
+    await progress('quiescing', 5, 'Scaling workloads to zero');
+    quiesceSnap = await quiesce(ctx.k8s, namespace);
+    await waitForQuiesced(ctx.k8s, namespace);
+
+    await progress('quiescing', 30, dryRun ? `Running ${located.fsType} dry-run check` : `Running ${located.fsType} repair`);
+    const { runFsck } = await import('./fsck.js');
+    const result = await runFsck(ctx.k8s, {
+      namespace,
+      volumeName: located.volumeName,
+      clientId: (await currentClientId(ctx.db, opId))!,
+      fsType: located.fsType,
+      dryRun,
+      nodeName: located.nodeName,
+    });
+
+    await progress('unquiescing', 85, 'Scaling workloads back up');
+    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap);
+
+    // Persist the captured output. Clean → progressMessage; dirty →
+    // both progressMessage (summary) AND lastError (full output) so
+    // the UI's ErrorPanel can surface it without losing the data.
+    const summary = `${result.fsType} ${result.dryRun ? 'check' : 'repair'} exit=${result.exitCode} ${result.clean ? 'CLEAN' : 'ERRORS FOUND'}`;
+    if (result.clean) {
+      await updateOp(ctx.db, opId, {
+        state: 'idle',
+        progressPct: 100,
+        progressMessage: `${summary}\n\n${result.output}`.slice(0, 8000),
+        completedAt: new Date(),
+      });
+    } else {
+      await updateOp(ctx.db, opId, {
+        state: 'failed',
+        progressPct: 100,
+        progressMessage: summary,
+        lastError: result.output.slice(0, 16000),
+        completedAt: new Date(),
+      });
+    }
+
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, result.clean ? 'idle' : 'failed', null);
+  } catch (err) {
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(ctx.db, opId, {
+      state: 'failed', lastError: persisted, completedAt: new Date(),
+    });
+    if (quiesceSnap) {
+      await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
+    }
+    const cId = await currentClientId(ctx.db, opId);
+    if (cId) await markClientState(ctx.db, cId, 'failed', null);
+  }
+}
+
 // ─── Listing + housekeeping ────────────────────────────────────────────
 
 export async function listSnapshotsForClient(db: Database, clientId: string) {

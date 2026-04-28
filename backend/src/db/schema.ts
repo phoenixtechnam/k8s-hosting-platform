@@ -40,6 +40,10 @@ export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
 ]);
 export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   'snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore',
+  // 0059_storage_op_fsck.sql: filesystem check (xfs_repair -n /
+  // e2fsck -n) and repair (without -n). Both run via the
+  // storage-lifecycle quiesce orchestrator.
+  'fsck',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
   'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled',
