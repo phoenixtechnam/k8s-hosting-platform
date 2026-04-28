@@ -449,6 +449,16 @@ configure_firewall() {
     # Calico Typha (mTLS) + kubelet (mTLS)
     tcp dport 5473 accept
     tcp dport 10250 accept
+    # ingress-nginx admission webhook (TLS, validate.nginx.ingress.kubernetes.io).
+    # Runs on hostNetwork ingress-nginx pods, so the Service endpoints
+    # are host:8443. Without this, kube-apiserver can only reach the
+    # local node's webhook backend — cross-node attempts time out and
+    # cert-manager solver-Ingress creates fail with PresentError, slowing
+    # every fresh tenant cert issuance to 5-10 min as the request
+    # randomly retries against kube-proxy's load balance until it lands
+    # on the local node. cert-manager's own webhook (TCP/9443) runs in
+    # pod CIDR so it doesn't need a host firewall hole.
+    tcp dport 8443 accept
     # Calico WG handles encryption of pod traffic; VXLAN on UDP/4789
     # only ever flows INSIDE the WG tunnel, never on the public wire.
     # Still leave 4789 open for in-cluster Service VIPs that may

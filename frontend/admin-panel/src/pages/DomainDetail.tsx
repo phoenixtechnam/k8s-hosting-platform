@@ -13,6 +13,8 @@ import { useDeployments } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -703,10 +705,12 @@ function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
             </div>
 
             {deleteCert.error && (
-              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="delete-cert-error">
-                <AlertCircle size={14} />
-                {deleteCert.error instanceof Error ? deleteCert.error.message : 'Failed to delete certificate'}
-              </div>
+              <ErrorPanel
+                error={extractOperatorError(deleteCert.error)}
+                severity="error"
+                compact
+                testId="delete-cert-error"
+              />
             )}
           </div>
         )}
@@ -785,10 +789,12 @@ function SslTlsTab({ clientId, domainId, sslAutoRenew }: {
               </button>
             </div>
             {uploadCert.error && (
-              <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="upload-cert-error">
-                <AlertCircle size={14} />
-                {uploadCert.error instanceof Error ? uploadCert.error.message : 'Failed to upload certificate'}
-              </div>
+              <ErrorPanel
+                error={extractOperatorError(uploadCert.error)}
+                severity="error"
+                compact
+                testId="upload-cert-error"
+              />
             )}
           </form>
         )}

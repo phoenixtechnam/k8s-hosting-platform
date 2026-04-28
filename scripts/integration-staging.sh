@@ -275,14 +275,24 @@ scenario_https() {
 
   # 6. TLS cert subject must match the host (not "Kubernetes Ingress
   #    Controller Fake Certificate"). This is THE assertion that
-  #    catches the exact bug from 2026-04-27.
-  local subject
-  subject=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null \
-    | openssl x509 -noout -subject 2>/dev/null)
-  if echo "$subject" | grep -q "CN=$domain"; then
-    ok "TLS cert subject CN matches host: $subject"
+  #    catches the exact bug from 2026-04-27. Retry up to 60s — even
+  #    after the Certificate CR reaches Ready, ingress-nginx needs a
+  #    few seconds to re-load its TLS config from the new secret. The
+  #    cert IS issued; we're just waiting for the data plane to catch up.
+  local subject="" matched=0
+  local i=0
+  while (( i < 60 )); do
+    subject=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null \
+      | openssl x509 -noout -subject 2>/dev/null)
+    if echo "$subject" | grep -q "CN=$domain"; then
+      matched=1; break
+    fi
+    sleep 4; i=$((i+4))
+  done
+  if (( matched )); then
+    ok "TLS cert subject CN matches host (after ${i}s): $subject"
   else
-    fail "TLS cert subject does NOT match $domain — got: ${subject:-<no cert>}"
+    fail "TLS cert subject does NOT match $domain after 60s — got: ${subject:-<no cert>}"
     return 1
   fi
 

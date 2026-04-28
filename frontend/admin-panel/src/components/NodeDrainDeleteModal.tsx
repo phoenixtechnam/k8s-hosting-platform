@@ -11,6 +11,8 @@ import {
   useClusterNodes,
 } from '@/hooks/use-cluster-nodes';
 import type { ClusterNodeResponse, DrainImpact } from '@k8s-hosting/api-contracts';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 
 interface NodeDrainDeleteModalProps {
   readonly node: ClusterNodeResponse;
@@ -370,9 +372,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           )}
 
           {drainErr && (
-            <p className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
-              <AlertCircle size={12} /> {drainErr.message}
-            </p>
+            <ErrorPanel
+              error={extractOperatorError(drain.error)}
+              severity="error"
+              compact
+              testId="drain-error-panel"
+            />
           )}
           {drain.isSuccess && (drain.data?.data.failed.length ?? 0) > 0 && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
@@ -392,9 +397,12 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
             </p>
           )}
           {delErr && (
-            <p className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
-              <AlertCircle size={12} /> {delErr.message}
-            </p>
+            <ErrorPanel
+              error={extractOperatorError(del.error)}
+              severity="error"
+              compact
+              testId="delete-error-panel"
+            />
           )}
 
           {!drained && anyStayPinned && (

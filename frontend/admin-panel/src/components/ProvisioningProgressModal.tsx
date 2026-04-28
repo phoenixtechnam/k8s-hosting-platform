@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import { X, CheckCircle2, XCircle, Loader2, Circle, AlertTriangle, Trash2, RefreshCw } from 'lucide-react';
 import { useProvisioningStatus } from '@/hooks/use-provisioning';
 import type { ProvisioningStep } from '@/hooks/use-provisioning';
+import ErrorPanel from '@/components/ErrorPanel';
+import type { OperatorError } from '@k8s-hosting/api-contracts';
 
 interface ProvisioningProgressModalProps {
   readonly clientId: string;
@@ -153,12 +155,30 @@ export default function ProvisioningProgressModal({
           )}
         </div>
 
-        {/* Error message */}
-        {task?.errorMessage && (
-          <div className="mx-6 mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400" data-testid="provisioning-error">
-            {task.errorMessage}
-          </div>
-        )}
+        {/* Error message — render the OperatorError envelope when the
+            backend stored one (newer translated provisioning failures),
+            else fall back to the plain string for legacy rows. */}
+        {task?.errorMessage && (() => {
+          let envelope: OperatorError | null = null;
+          try {
+            const parsed = JSON.parse(task.errorMessage);
+            if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
+              envelope = parsed as OperatorError;
+            }
+          } catch { /* not JSON — fall through to plain string */ }
+          if (envelope) {
+            return (
+              <div className="mx-6 mb-4" data-testid="provisioning-error">
+                <ErrorPanel error={envelope} severity="error" />
+              </div>
+            );
+          }
+          return (
+            <div className="mx-6 mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400" data-testid="provisioning-error">
+              {task.errorMessage}
+            </div>
+          );
+        })()}
 
         {/* Footer */}
         <div className="flex flex-wrap justify-end gap-2 border-t border-gray-200 px-6 py-4 dark:border-gray-700">

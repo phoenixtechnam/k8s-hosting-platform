@@ -27,6 +27,8 @@ import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
+import ErrorPanel from '@/components/ErrorPanel';
+import type { OperatorError } from '@k8s-hosting/api-contracts';
 import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
@@ -372,17 +374,39 @@ export default function Files() {
   }
 
   if (fmStatus.data.phase === 'failed') {
+    // The status endpoint stores either a JSON OperatorError envelope
+    // (newer translated failures) or a raw string (legacy / boot-up
+    // diagnostics). Render the structured one when available so the
+    // user sees remediation steps instead of a single sentence.
+    let envelope: OperatorError | null = null;
+    const raw = fmStatus.data.message ?? '';
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.code && parsed.title) {
+        envelope = parsed as OperatorError;
+      }
+    } catch { /* not JSON */ }
     return (
       <div className="space-y-6">
         <FilePageHeader />
-        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 shadow-sm">
-          <div className="px-6 py-16 text-center">
-            <AlertTriangle size={48} className="mx-auto text-red-400" />
-            <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">File Manager Failed</h2>
-            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{fmStatus.data.message}</p>
-            <button onClick={() => startFm.mutate()} className="mt-4 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">Retry</button>
+        {envelope ? (
+          <ErrorPanel
+            error={envelope}
+            severity="error"
+            onRetry={envelope.retryable ? () => startFm.mutate() : undefined}
+            retryPending={startFm.isPending}
+            testId="fm-error-panel"
+          />
+        ) : (
+          <div className="rounded-xl border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 shadow-sm">
+            <div className="px-6 py-16 text-center">
+              <AlertTriangle size={48} className="mx-auto text-red-400" />
+              <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">File Manager Failed</h2>
+              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{raw || 'Unknown error'}</p>
+              <button onClick={() => startFm.mutate()} className="mt-4 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">Retry</button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     );
   }
