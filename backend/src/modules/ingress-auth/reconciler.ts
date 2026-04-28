@@ -50,6 +50,15 @@ const VALIDATOR_PORT = 4181;
 const CONFIGMAP_NAME = 'oauth2-proxy-config';
 const SECRET_NAME = 'oauth2-proxy-secrets';
 
+// Sibling Ingress that exposes /oauth2/* without the auth_request gate.
+// Required because the tenant Ingress carries `auth-url`/`auth-signin`
+// annotations that gate every path on the host — including the
+// /oauth2/start redirect target itself, which would otherwise loop.
+// NGINX Ingress merges Ingresses by host into separate location blocks,
+// each inheriting its OWN Ingress's annotations, so the path=/oauth2
+// rule on this passthrough Ingress is not gated by auth_request.
+const PASSTHROUGH_INGRESS_NAME = 'oauth2-proxy-passthrough';
+
 // Image tags. The claim-validator image is built+pushed by the GHA
 // workflow at .github/workflows/ci-claim-validator.yml. The
 // oauth2-proxy image is the upstream community release used elsewhere
@@ -264,6 +273,12 @@ async function ensureClientProxy(
   // Deployment — main container oauth2-proxy + sidecar claim-validator.
   const wasNew = await upsertDeployment(deps.k8s.apps, namespace);
 
+  // Passthrough Ingress — exposes /oauth2/* on every protected host
+  // without the auth_request gate, breaking the redirect loop where
+  // /oauth2/start would otherwise be gated by oauth2-proxy itself.
+  const hostnames = Array.from(new Set(enabled.map((e) => e.hostname)));
+  await upsertPassthroughIngress(deps.k8s.networking, namespace, hostnames);
+
   // Mark provisioned in DB.
   await deps.db
     .update(clientOauth2ProxyState)
@@ -294,6 +309,12 @@ async function tearDownClientProxy(
     .where(eq(clientOauth2ProxyState.clientId, clientId));
   if (!state?.provisioned) return false;
 
+  await deleteIfExists(() =>
+    deps.k8s.networking.deleteNamespacedIngress({
+      name: PASSTHROUGH_INGRESS_NAME,
+      namespace,
+    } as unknown as Parameters<typeof deps.k8s.networking.deleteNamespacedIngress>[0]),
+  );
   await deleteIfExists(() =>
     deps.k8s.apps.deleteNamespacedDeployment({
       name: PROXY_NAME,
@@ -498,6 +519,132 @@ async function upsertDeployment(apps: k8s.AppsV1Api, namespace: string): Promise
     await apps.createNamespacedDeployment({ namespace, body } as never);
     return true;
   }
+}
+
+/**
+ * Build/update the sibling Ingress that exposes `/oauth2/*` without the
+ * auth_request gate. NGINX Ingress merges multiple Ingress resources
+ * sharing a host into separate location blocks; each location inherits
+ * its OWN Ingress's annotations. Because this Ingress has NO `auth-url`
+ * annotation, NGINX serves `/oauth2/start`, `/oauth2/callback`, etc.
+ * without triggering the gate, so the redirect from oauth2-proxy
+ * actually reaches the IdP.
+ *
+ * TLS secrets are looked up from the tenant Ingress (`<ns>-ingress`)
+ * so HTTPS works out-of-the-box for already-certified hosts.
+ */
+async function upsertPassthroughIngress(
+  networking: k8s.NetworkingV1Api,
+  namespace: string,
+  hostnames: ReadonlyArray<string>,
+): Promise<void> {
+  if (hostnames.length === 0) {
+    // Nothing to gate → nothing to passthrough. Best-effort delete.
+    await deleteIfExists(() =>
+      networking.deleteNamespacedIngress({
+        name: PASSTHROUGH_INGRESS_NAME,
+        namespace,
+      } as unknown as Parameters<typeof networking.deleteNamespacedIngress>[0]),
+    );
+    return;
+  }
+
+  const tlsByHost = await readTenantTlsSecrets(networking, namespace, hostnames);
+  const secretToHosts = new Map<string, Set<string>>();
+  for (const [host, secret] of tlsByHost) {
+    if (!secretToHosts.has(secret)) secretToHosts.set(secret, new Set());
+    secretToHosts.get(secret)!.add(host);
+  }
+  const tls: Array<{ hosts: string[]; secretName: string }> = [];
+  for (const [secretName, hosts] of secretToHosts) {
+    tls.push({ secretName, hosts: Array.from(hosts).sort() });
+  }
+
+  const rules = hostnames.map((host) => ({
+    host,
+    http: {
+      paths: [
+        {
+          path: '/oauth2',
+          pathType: 'Prefix' as const,
+          backend: {
+            service: {
+              name: PROXY_NAME,
+              port: { number: PROXY_PORT },
+            },
+          },
+        },
+      ],
+    },
+  }));
+
+  const body: k8s.V1Ingress = {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'Ingress',
+    metadata: {
+      name: PASSTHROUGH_INGRESS_NAME,
+      namespace,
+      labels: {
+        'app.kubernetes.io/name': 'oauth2-proxy',
+        'app.kubernetes.io/managed-by': 'platform-api',
+      },
+      annotations: {
+        // Keep HTTPS-only; do NOT add auth-* annotations here.
+        'nginx.ingress.kubernetes.io/ssl-redirect': 'true',
+      },
+    },
+    spec: {
+      ingressClassName: 'nginx',
+      rules,
+      ...(tls.length > 0 ? { tls } : {}),
+    },
+  };
+
+  try {
+    const existing = await networking.readNamespacedIngress({
+      name: PASSTHROUGH_INGRESS_NAME,
+      namespace,
+    } as never);
+    body.metadata!.resourceVersion = (existing as k8s.V1Ingress).metadata?.resourceVersion;
+    await networking.replaceNamespacedIngress({
+      name: PASSTHROUGH_INGRESS_NAME,
+      namespace,
+      body,
+    } as never);
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    await networking.createNamespacedIngress({ namespace, body } as never);
+  }
+}
+
+/**
+ * Reads the tenant Ingress and returns a host→secretName map limited
+ * to the supplied hostname set. Tenant Ingress missing → empty map
+ * (passthrough Ingress is created without TLS, NGINX 308s to HTTPS
+ * still works because cert-manager terminates upstream).
+ */
+async function readTenantTlsSecrets(
+  networking: k8s.NetworkingV1Api,
+  namespace: string,
+  hostnames: ReadonlyArray<string>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const wanted = new Set(hostnames);
+  try {
+    const ing = (await networking.readNamespacedIngress({
+      name: `${namespace}-ingress`,
+      namespace,
+    } as never)) as k8s.V1Ingress;
+    for (const entry of ing.spec?.tls ?? []) {
+      if (!entry.secretName) continue;
+      for (const h of entry.hosts ?? []) {
+        if (wanted.has(h)) out.set(h, entry.secretName);
+      }
+    }
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  return out;
 }
 
 async function deleteIfExists(op: () => Promise<unknown>): Promise<void> {
