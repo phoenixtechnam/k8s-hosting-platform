@@ -20,6 +20,12 @@ RUN npx tsc
 
 FROM node:22-alpine
 
+# openssl is used by the mtls-providers module to generate self-signed
+# CAs and sign user certs (cert-ops.ts). Alpine's node image doesn't
+# include it by default. Pin nothing — track the alpine track so we
+# get security fixes.
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 COPY --from=builder /app/packages/api-contracts/ ./packages/api-contracts/
