@@ -95,46 +95,46 @@ parameters:
   # tagged server (not the worker, which is reserved for tenants).
   nodeSelector: "system"
 ---
+# Unified tenant StorageClass. Replaces the previous
+# longhorn-tenant-local + longhorn-tenant-ha pair.
+#
+# Rationale: PVC.spec.storageClassName is immutable on a bound PVC, so
+# splitting tier semantics across two SCs forced a snapshot+restore
+# migration to change a tenant's tier — not workable. Following the
+# system-tier pattern, we keep ONE SC and treat the local↔HA flip as a
+# live `Volume.spec.numberOfReplicas` patch on the Longhorn CR. The
+# k8s-provisioner sets the initial replica count at PVC create
+# (1 for Local, 2 for HA) by post-patching the freshly-bound Volume.
+#
+# dataLocality=best-effort means Longhorn places one replica on the
+# pod's node (= the operator's chosen worker), so reads/writes are
+# node-local. The second replica (HA tier) goes wherever Longhorn has
+# capacity. Local-tier failure = restore from backup. HA-tier failure =
+# automatic pod reschedule + attach to the surviving replica
+# (~30-90s outage), enabled by tier-aware nodeAffinity in the workload
+# spec (required for Local, preferred for HA).
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: longhorn-tenant-local
+  name: longhorn-tenant
   labels:
     app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: tenant-local
+    platform.phoenix-host.net/tier: tenant
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
 parameters:
+  # Initial value only. The k8s-provisioner patches Volume.spec.
+  # numberOfReplicas to the per-client tier setting after PVC binding.
+  # Subsequent tier changes also live-patch via applyTenantTier.
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
   fsType: "ext4"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
-  # M-NS-2: explicitly NO nodeSelector — tenant volumes can land on
-  # any schedulable node (workers AND servers when servers also opt
-  # into host-client-workloads=true). Listed here so a future edit
-  # doesn't accidentally inherit "system" from a copy-paste.
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: longhorn-tenant-ha
-  labels:
-    app.kubernetes.io/part-of: hosting-platform
-    platform.phoenix-host.net/tier: tenant-ha
-provisioner: driver.longhorn.io
-allowVolumeExpansion: true
-reclaimPolicy: Retain
-volumeBindingMode: Immediate
-parameters:
-  numberOfReplicas: "2"
-  staleReplicaTimeout: "30"
-  fsType: "ext4"
-  dataLocality: "disabled"
-  recurringJobSelector: '[{"name":"default","isGroup":true}]'
-  # M-NS-2: tenant volumes never carry the system nodeSelector.
+  # No nodeSelector — tenant volumes land on any host-client-workloads
+  # node. The `system` tag is reserved for platform PVCs.
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass

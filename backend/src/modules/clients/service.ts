@@ -359,12 +359,30 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     await validateWorkerPin(db, input.worker_node_name);
     updateValues.workerNodeName = input.worker_node_name;
   }
-  // M7: storage-tier flip. Field only — PVC migration is a separate
-  // orchestrated flow (to be added alongside M6 migration work).
-  if (input.storage_tier !== undefined) updateValues.storageTier = input.storage_tier;
+  // Storage tier flip is now LIVE — handled below via applyTenantTier
+  // after the row update. Capturing the intent here so the post-update
+  // step can read both the old (current row) and new (input) tier.
+  const tierChange: 'local' | 'ha' | undefined = input.storage_tier as 'local' | 'ha' | undefined;
+  if (tierChange !== undefined) updateValues.storageTier = tierChange;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(clients).set(updateValues).where(eq(clients.id, id));
+  }
+
+  // Live tier patch: flips Volume.spec.numberOfReplicas + each tenant
+  // Deployment's nodeAffinity (hard nodeSelector ↔ soft preferred).
+  // Best-effort: a Longhorn API hiccup is logged but doesn't roll back
+  // the DB write — operators can re-trigger via the Storage Placement
+  // card. Same DB-then-cluster pattern as the resource-quota sync below.
+  if (tierChange !== undefined) {
+    try {
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const { applyTenantTier } = await import('./storage-placement-service.js');
+      const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+      await applyTenantTier(db, k8s, id, tierChange);
+    } catch (err) {
+      console.warn(`[clients.updateClient] applyTenantTier failed for ${id}: ${(err as Error).message}`);
+    }
   }
 
   // Sync K8s ResourceQuota when resource limits change

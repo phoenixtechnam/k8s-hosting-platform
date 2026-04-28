@@ -335,8 +335,11 @@ export async function createDeployment(
         passwordEnvVar,
         timezone: client.timezone ?? undefined,
         // M5: pin tenant pods to the client's assigned worker if one is
-        // set; undefined lets the default scheduler choose.
+        // set; undefined lets the default scheduler choose. Tier (local
+        // vs ha) flips the pin between hard nodeSelector and soft
+        // preferred affinity (so HA can fail over).
         workerNodeName: client.workerNodeName ?? undefined,
+        storageTier: (client.storageTier ?? null) as 'local' | 'ha' | null,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
 

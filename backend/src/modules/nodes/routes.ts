@@ -37,6 +37,29 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     return success(rows);
   });
 
+  // GET /api/v1/admin/nodes/worker-usage-summary
+  //
+  // Worker selector dropdown data: free-vs-total per host-client-
+  // workloads node, in absolute bytes / millicores so the UI can show
+  // "3.25/6 CPUs available · 6.5/8 GB RAM available · 60/80 GB disk
+  // available". Driven by the create-client / placement-edit modal so
+  // the operator can pick the node with the most headroom — or accept
+  // Auto and let the platform choose.
+  app.get('/admin/nodes/worker-usage-summary', {
+    schema: {
+      tags: ['Nodes'],
+      summary: 'Free vs total CPU/RAM/Disk on tenant-capable nodes',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    let k8s: ReturnType<typeof createK8sClients> | undefined;
+    try { k8s = createK8sClients(kubeconfigPath); } catch { /* fall through */ }
+    const { listWorkerCandidatesWithUsage } = await import('../clients/storage-placement-service.js');
+    const summary = await listWorkerCandidatesWithUsage(app.db, k8s);
+    return success(summary);
+  });
+
   // GET /api/v1/admin/nodes/:name
   app.get('/admin/nodes/:name', {
     schema: {

@@ -19,6 +19,7 @@ import { useImpersonate } from '@/hooks/use-impersonate';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
 import { useMigrateClientToWorker } from '@/hooks/use-tenant-migration';
 import { useClientNamespaceIntegrity, useRepairClientNamespace, type IntegrityFinding } from '@/hooks/use-namespace-integrity';
 import { useEmailDomains, useMailboxes, useMailSubmitCredential, useRotateMailSubmitCredential, useImapSyncJobs, useCreateImapSyncJob, useCancelImapSyncJob, type MailSubmitRotateResult, type ImapSyncJob } from '@/hooks/use-email';
@@ -1926,6 +1927,34 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
  * deploys" (cheap, immediate) and "rebalance running workloads"
  * (intentional, has downtime).
  */
+/**
+ * Render "free / total" CPU + RAM + Disk for the worker selector
+ * dropdown. Returns an empty string when usage data is unavailable so
+ * the option still shows the bare node name. Examples:
+ *   " — 3.2/6 CPUs · 6.5/8 GB RAM · 60/80 GB disk available"
+ *   ""   (usage not yet loaded)
+ */
+function formatAvailability(usage: WorkerUsage | undefined): string {
+  if (!usage) return '';
+  const parts: string[] = [];
+  if (usage.cpuMillicoresAllocatable != null && usage.cpuMillicoresUsed != null) {
+    const total = usage.cpuMillicoresAllocatable / 1000;
+    const free = Math.max(0, (usage.cpuMillicoresAllocatable - usage.cpuMillicoresUsed) / 1000);
+    parts.push(`${free.toFixed(2)}/${total.toFixed(0)} CPUs`);
+  }
+  if (usage.memoryBytesAllocatable != null && usage.memoryBytesUsed != null) {
+    const total = usage.memoryBytesAllocatable / 1024 ** 3;
+    const free = Math.max(0, (usage.memoryBytesAllocatable - usage.memoryBytesUsed) / 1024 ** 3);
+    parts.push(`${free.toFixed(1)}/${total.toFixed(0)} GB RAM`);
+  }
+  if (usage.diskBytesTotal != null && usage.diskBytesFree != null) {
+    const total = usage.diskBytesTotal / 1024 ** 3;
+    const free = usage.diskBytesFree / 1024 ** 3;
+    parts.push(`${free.toFixed(0)}/${total.toFixed(0)} GB disk`);
+  }
+  return parts.length > 0 ? ` — ${parts.join(' · ')} available` : '';
+}
+
 function PlacementCard({ clientId, client }: {
   readonly clientId: string;
   readonly client: { workerNodeName?: string | null; storageTier?: 'local' | 'ha' };
@@ -1933,12 +1962,14 @@ function PlacementCard({ clientId, client }: {
   const update = useUpdateClient(clientId);
   const migrate = useMigrateClientToWorker(clientId);
   const { data: nodesData } = useClusterNodes();
+  const { data: usageData } = useWorkerUsageSummary();
   const nodes = (nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads);
+  const usageByName = new Map((usageData?.data ?? []).map((u) => [u.name, u]));
 
   const [pinTarget, setPinTarget] = useState<string>(client.workerNodeName ?? '');
   const [tierTarget, setTierTarget] = useState<'local' | 'ha'>(client.storageTier ?? 'local');
 
-  const currentWorker = client.workerNodeName ?? '(scheduler picks)';
+  const currentWorker = client.workerNodeName ?? '(Auto — scheduler picks)';
   const hasChanges = (pinTarget || null) !== (client.workerNodeName ?? null) || tierTarget !== (client.storageTier ?? 'local');
 
   const saveChanges = async () => {
@@ -1973,22 +2004,29 @@ function PlacementCard({ clientId, client }: {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Worker pin</label>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+            Worker node (primary data location)
+          </label>
           <select
             value={pinTarget}
             onChange={(e) => setPinTarget(e.target.value)}
             className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
             data-testid="placement-worker-select"
           >
-            <option value="">Default scheduler (any tenant-capable node)</option>
-            {nodes.map((n) => (
-              <option key={n.name} value={n.name}>
-                {n.name} — {n.role}
-                {n.cpuMillicores ? ` · ${(n.cpuMillicores / 1000).toFixed(1)} cores` : ''}
-                {n.memoryBytes ? ` · ${(n.memoryBytes / 1024 ** 3).toFixed(0)}GiB` : ''}
-              </option>
-            ))}
+            <option value="">Auto (recommended — scheduler picks based on capacity)</option>
+            {nodes.map((n) => {
+              const usage = usageByName.get(n.name);
+              return (
+                <option key={n.name} value={n.name}>
+                  {n.name}
+                  {formatAvailability(usage)}
+                </option>
+              );
+            })}
           </select>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Pod and primary Longhorn replica land on the chosen node. Auto picks the node with most free capacity at provisioning.
+          </p>
         </div>
 
         <div>
@@ -1999,12 +2037,12 @@ function PlacementCard({ clientId, client }: {
             className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
             data-testid="placement-tier-select"
           >
-            <option value="local">Local (1 replica)</option>
-            <option value="ha">HA (2 replicas)</option>
+            <option value="local">Local — 1 replica · cheaper · restore-from-backup on node loss</option>
+            <option value="ha">HA — 2 replicas · auto-failover ~30–90s · 2× storage</option>
           </select>
           {tierTarget !== (client.storageTier ?? 'local') && client.workerNodeName && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              Tier changes only affect new PVCs. Existing volume keeps its class until a storage migration runs.
+            <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
+              Tier changes are applied live. Replica rebuild runs in the background.
             </p>
           )}
         </div>
