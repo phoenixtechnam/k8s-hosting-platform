@@ -50,18 +50,72 @@ export const claimRuleSchema = z.object({
 });
 export type ClaimRule = z.infer<typeof claimRuleSchema>;
 
-export const ingressAuthConfigSchema = z.object({
-  enabled: z.boolean(),
+/**
+ * Per-client reusable OIDC provider config.
+ *
+ * Stored in client_oidc_providers; referenced by zero or more
+ * ingress_auth_configs.providerId. Operators manage these via the
+ * /clients/:cid/oidc-providers endpoints.
+ */
+export const oidcProviderInputSchema = z.object({
+  name: z.string().min(1).max(120),
   issuerUrl: z.string().url(),
-  clientId: z.string().min(1),
-  // On read responses this is OMITTED (never returned to the client).
-  // On write requests it's required when the row is being created
-  // and optional on update (omitted = keep existing).
-  clientSecret: z.string().min(1).optional(),
+  oauthClientId: z.string().min(1),
+  /** Plaintext. Required on create; optional on update (omitted = keep). */
+  oauthClientSecret: z.string().min(1).optional(),
   authMethod: oidcAuthMethodSchema.default('client_secret_basic'),
   responseType: oidcResponseTypeSchema.default('code'),
   usePkce: z.boolean().default(true),
-  scopes: z.string().default('openid profile email'),
+  defaultScopes: z.string().default('openid profile email'),
+});
+export type OidcProviderInput = z.infer<typeof oidcProviderInputSchema>;
+
+export const oidcProviderResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  issuerUrl: z.string(),
+  oauthClientId: z.string(),
+  secretSet: z.boolean(),
+  authMethod: oidcAuthMethodSchema,
+  responseType: oidcResponseTypeSchema,
+  usePkce: z.boolean(),
+  defaultScopes: z.string(),
+  /** Number of ingress_auth_configs referencing this provider. */
+  consumerCount: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type OidcProviderResponse = z.infer<typeof oidcProviderResponseSchema>;
+
+/**
+ * Per-ingress access policy. Two write paths:
+ *   - providerId: pick an existing provider for this client (preferred)
+ *   - inline OIDC fields: auto-create a provider on first write
+ *
+ * The inline path preserves the v1 UX where operators type credentials
+ * directly into the ingress form. After provider rows accumulate the
+ * UI prefers the dropdown.
+ */
+export const ingressAuthConfigSchema = z.object({
+  enabled: z.boolean(),
+  /** Preferred path: pick an existing provider. */
+  providerId: z.string().optional(),
+  /** Compat shim: inline OIDC fields auto-create a provider. */
+  issuerUrl: z.string().url().optional(),
+  clientId: z.string().min(1).optional(),
+  clientSecret: z.string().min(1).optional(),
+  authMethod: oidcAuthMethodSchema.optional(),
+  responseType: oidcResponseTypeSchema.optional(),
+  usePkce: z.boolean().optional(),
+  /** Per-ingress scope override; null/omitted = inherit provider default. */
+  scopes: z.string().optional(),
+  /**
+   * Optional fixed redirect URL after a successful login. When set,
+   * every login lands on this URL instead of the original request URI.
+   * Useful for forwarding into an app's own OIDC callback or a static
+   * post-login landing page.
+   */
+  postLoginRedirectUrl: z.string().url().nullable().optional(),
   allowedEmails: z.string().nullable().optional(),
   allowedEmailDomains: z.string().nullable().optional(),
   allowedGroups: z.string().nullable().optional(),
@@ -78,18 +132,43 @@ export const ingressAuthConfigSchema = z.object({
 export type IngressAuthConfigInput = z.infer<typeof ingressAuthConfigSchema>;
 
 /**
- * Server-rendered response. Client secret is replaced by a presence
- * marker so the UI can show "(secret set — clear to replace)".
+ * Server-rendered response. Provider fields are flattened from the
+ * joined provider row (issuer, clientId, etc.) for one-shot rendering.
+ * Client secret presence is exposed via secretSet on the provider
+ * shape; the secret itself is never returned.
  */
-export const ingressAuthConfigResponseSchema = ingressAuthConfigSchema
-  .omit({ clientSecret: true })
-  .extend({
-    clientSecretSet: z.boolean(),
-    /** OAuth callback URL the operator must register at the IdP. */
-    callbackUrl: z.string(),
-    lastError: z.string().nullable(),
-    lastReconciledAt: z.string().nullable(),
-  });
+export const ingressAuthConfigResponseSchema = z.object({
+  enabled: z.boolean(),
+  providerId: z.string(),
+  providerName: z.string(),
+  issuerUrl: z.string(),
+  clientId: z.string(),
+  clientSecretSet: z.boolean(),
+  authMethod: oidcAuthMethodSchema,
+  responseType: oidcResponseTypeSchema,
+  usePkce: z.boolean(),
+  /** Effective scopes (override OR provider default). */
+  scopes: z.string(),
+  /** Per-ingress override; null = inheriting from provider. */
+  scopesOverride: z.string().nullable(),
+  postLoginRedirectUrl: z.string().nullable(),
+  allowedEmails: z.string().nullable(),
+  allowedEmailDomains: z.string().nullable(),
+  allowedGroups: z.string().nullable(),
+  claimRules: z.array(claimRuleSchema).nullable(),
+  passAuthorizationHeader: z.boolean(),
+  passAccessToken: z.boolean(),
+  passIdToken: z.boolean(),
+  passUserHeaders: z.boolean(),
+  setXauthrequest: z.boolean(),
+  cookieDomain: z.string().nullable(),
+  cookieRefreshSeconds: z.number().int(),
+  cookieExpireSeconds: z.number().int(),
+  /** OAuth callback URL the operator must register at the IdP. */
+  callbackUrl: z.string(),
+  lastError: z.string().nullable(),
+  lastReconciledAt: z.string().nullable(),
+});
 export type IngressAuthConfigResponse = z.infer<
   typeof ingressAuthConfigResponseSchema
 >;
