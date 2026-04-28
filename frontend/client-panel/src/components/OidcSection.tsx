@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
-import { Lock, AlertCircle, CheckCircle, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Lock, AlertCircle, CheckCircle, Loader2, Plus, Trash2, ExternalLink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   useIngressAuth,
   useUpsertIngressAuth,
@@ -229,6 +230,19 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
           provider for this client and creating a new one inline. */}
       <fieldset className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
         <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 px-2">Identity Provider</legend>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Pick an existing provider or create one inline. Manage all providers (rename, rotate
+            secret, delete) on the dedicated settings page.
+          </p>
+          <Link
+            to="/settings/oidc-providers"
+            className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+            data-testid="oidc-manage-providers-link"
+          >
+            Manage providers <ExternalLink size={12} />
+          </Link>
+        </div>
         <div className="flex flex-wrap gap-3 text-sm">
           <label className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300">
             <input

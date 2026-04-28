@@ -1,4 +1,5 @@
-import { Settings as SettingsIcon, CreditCard, Bell, Loader2 } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Bell, Loader2, Lock, Network, Share2, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSubscription } from '@/hooks/use-subscription';
 
@@ -127,6 +128,66 @@ export default function Settings() {
         dropdown — email delivery is enabled globally via
         OIDC_ENCRYPTION_KEY + the SMTP relay config on the platform.
       */}
+      <div
+        className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+        data-testid="auth-providers-section"
+      >
+        <div className="mb-4 flex items-center gap-2">
+          <Lock size={20} className="text-gray-600 dark:text-gray-400" />
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Access &amp; Network Providers
+          </h2>
+        </div>
+        <p className="mb-4 text-sm text-gray-600 dark:text-gray-400">
+          Reusable providers used by the per-ingress Access Control tab and the per-app Network
+          Access tab.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Link
+            to="/settings/oidc-providers"
+            className="group flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+            data-testid="settings-link-oidc"
+          >
+            <div className="flex items-center gap-3">
+              <Lock size={18} className="text-gray-500 dark:text-gray-400 group-hover:text-blue-600" />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">OIDC Providers</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">OAuth2 / OpenID Connect</div>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-gray-400 group-hover:text-blue-600" />
+          </Link>
+          <Link
+            to="/settings/openziti-providers"
+            className="group flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+            data-testid="settings-link-openziti"
+          >
+            <div className="flex items-center gap-3">
+              <Network size={18} className="text-gray-500 dark:text-gray-400 group-hover:text-blue-600" />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">OpenZiti Providers</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Zero-trust mesh tunneler</div>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-gray-400 group-hover:text-blue-600" />
+          </Link>
+          <Link
+            to="/settings/zrok-providers"
+            className="group flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+            data-testid="settings-link-zrok"
+          >
+            <div className="flex items-center gap-3">
+              <Share2 size={18} className="text-gray-500 dark:text-gray-400 group-hover:text-blue-600" />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Zrok Providers</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">Private share controllers</div>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-gray-400 group-hover:text-blue-600" />
+          </Link>
+        </div>
+      </div>
+
       <div
         className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
         data-testid="notification-prefs-section"
