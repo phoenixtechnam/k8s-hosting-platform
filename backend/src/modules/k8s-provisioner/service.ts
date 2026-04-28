@@ -395,11 +395,22 @@ export async function patchTenantVolumeReplicas(
   targetReplicas: number,
 ): Promise<void> {
   const pvcName = `${namespace}-storage`;
-  // Step 1: PVC → bound PV name.
-  const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace }) as { spec?: { volumeName?: string } };
-  const pvName = pvc?.spec?.volumeName;
+  // Step 1: PVC → bound PV name. With volumeBindingMode=Immediate the
+  // PVC binds quickly, but Longhorn's PV provisioning is async — the
+  // spec.volumeName isn't populated until the bind completes. Poll up
+  // to 30s rather than failing on the first read; HA tier needs the
+  // replica count patched and dropping it leaves the volume at the
+  // SC's default of 1 replica.
+  let pvName: string | undefined;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace }) as { spec?: { volumeName?: string } };
+    pvName = pvc?.spec?.volumeName;
+    if (pvName) break;
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
   if (!pvName) {
-    throw new Error(`PVC ${namespace}/${pvcName} has no bound volume yet`);
+    throw new Error(`PVC ${namespace}/${pvcName} has no bound volume after 30s`);
   }
   // Step 2: JSON-patch the Volume CR. Use replace; Longhorn rebuilds
   // replicas async after the spec changes.
