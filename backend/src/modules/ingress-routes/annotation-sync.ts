@@ -421,7 +421,15 @@ export async function buildIngressAuthAnnotations(
   // returns the redirect to the IdP. The browser follows that
   // redirect, so it must hit the public-facing host. We expose
   // /oauth2/* via a sibling Ingress rule (see ingress reconciler).
-  const signinUrl = `https://${hostname}/oauth2/start?rd=$escaped_request_uri`;
+  //
+  // post_login_redirect_url, when set, becomes a fixed rd= parameter
+  // — every successful login lands on this URL instead of the
+  // originally-requested URI. Useful for forwarding into an app's
+  // own OIDC callback or a static post-login landing page.
+  const rdParam = cfg.postLoginRedirectUrl
+    ? encodeURIComponent(cfg.postLoginRedirectUrl)
+    : '$escaped_request_uri';
+  const signinUrl = `https://${hostname}/oauth2/start?rd=${rdParam}`;
 
   // Headers oauth2-proxy populates on a 200 auth-request response;
   // nginx-ingress will copy these into the upstream request thanks
