@@ -78,7 +78,7 @@ CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['dat
 
 # Wait for provisioning to settle (PVC bound, Volume CR present).
 NS=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
   [[ -n "$NS" ]] && break
   sleep 2
@@ -86,7 +86,7 @@ done
 [[ -n "$NS" ]] && ok "namespace=$NS" || { fail "no namespace within 60s"; exit 1; }
 
 # Wait for PVC bind + Longhorn Volume creation.
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   PVNAME=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.volumeName}'" 2>/dev/null || true)
   [[ -n "$PVNAME" ]] && break
   sleep 2
@@ -113,7 +113,7 @@ echo "$FLIP" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('
 
 # Volume.spec.numberOfReplicas should reach 2 within ~30s (live patch).
 REPL=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   REPL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jsonpath='{.spec.numberOfReplicas}'" 2>/dev/null || echo "")
   [[ "$REPL" == "2" ]] && break
   sleep 2
@@ -127,7 +127,7 @@ echo "$DEL" | tail -1 | grep -q "204" && ok "client deleted (204)" || { fail "de
 
 # Wait up to 90s for the orphan PV to disappear.
 GONE=0
-for i in $(seq 1 45); do
+for _ in $(seq 1 45); do
   PV_PHASE=$(ssh_cp "kubectl get pv $PVNAME -o jsonpath='{.status.phase}' 2>&1" || true)
   if [[ "$PV_PHASE" == *"NotFound"* || "$PV_PHASE" == *"not found"* ]]; then
     GONE=1; break
@@ -146,7 +146,7 @@ CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['da
 
 # Capture the namespace immediately so we can identify the PV later.
 NS2=""
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
   NS2=$(ssh_cp "kubectl get ns -l client=$CID2 -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
   [[ -n "$NS2" ]] && break
   sleep 1
@@ -162,7 +162,7 @@ echo "$DEL2" | tail -1 | grep -q "204" && ok "race delete 204" || fail "race del
 # After 90s, no PV should reference this namespace.
 sleep 3
 ORPHAN=0
-for i in $(seq 1 45); do
+for _ in $(seq 1 45); do
   ORPHAN=$(ssh_cp "kubectl get pv -o jsonpath='{range .items[*]}{.spec.claimRef.namespace}{\"\\n\"}{end}' 2>/dev/null | grep -c \"^$NS2\$\" || true")
   ORPHAN="${ORPHAN:-0}"
   [[ "$ORPHAN" -eq 0 ]] && break
