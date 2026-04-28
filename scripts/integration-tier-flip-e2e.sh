@@ -150,6 +150,24 @@ LOCAL_AFF=$(echo "$LOCAL_STATE" | cut -d'|' -f2)
 [[ -n "$LOCAL_NS" ]] && ok "local tier: nodeSelector set to $LOCAL_NS" || fail "local tier: nodeSelector not applied"
 [[ -z "$LOCAL_AFF" ]] && ok "local tier: affinity cleared" || fail "local tier: affinity still set ($LOCAL_AFF) — null-doesnt-clear bug"
 
+# ─── deployment uses Recreate strategy (RWO PVC requires it) ─────────
+log "── tenant deploy uses Recreate strategy ──"
+STRATEGY=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.strategy.type}'" 2>/dev/null || true)
+[[ "$STRATEGY" == "Recreate" ]] && ok "Deployment.spec.strategy.type=Recreate" || fail "strategy=$STRATEGY (expected Recreate — RollingUpdate causes Multi-Attach on tier flip)"
+
+# ─── FM colocation: same node as the tenant workload ────────────────
+log "── FM colocates with tenant workload (RWO sharing) ──"
+api POST "/clients/$CID/files/start" "" >/dev/null
+for _ in $(seq 1 30); do
+  R=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('ready'))" 2>/dev/null)
+  [[ "$R" == "True" ]] && break
+  sleep 4
+done
+[[ "$R" == "True" ]] && ok "FM ready" || fail "FM did not become ready"
+TENANT_NODE=$(ssh_cp "kubectl -n $NS get pod -l app=$DEPL_NAME -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null || true)
+FM_NODE=$(ssh_cp "kubectl -n $NS get pod -l app=file-manager -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null || true)
+[[ -n "$TENANT_NODE" && "$TENANT_NODE" == "$FM_NODE" ]] && ok "FM on $FM_NODE = tenant on $TENANT_NODE (no Multi-Attach risk)" || fail "FM on $FM_NODE, tenant on $TENANT_NODE — affinity bug"
+
 REPL2=""
 for _ in $(seq 1 15); do
   REPL2=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $PVNAME -o jsonpath='{.spec.numberOfReplicas}' 2>/dev/null" || echo "")
