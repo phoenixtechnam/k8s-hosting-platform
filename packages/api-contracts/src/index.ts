@@ -49,6 +49,7 @@ export * from './provisioning.js';
 export * from './files.js';
 export * from './tls-settings.js';
 export * from './ingress-routes.js';
+export * from './ingress-auth.js';
 export * from './ssh-keys.js';
 export * from './sftp-users.js';
 export * from './storage.js';
