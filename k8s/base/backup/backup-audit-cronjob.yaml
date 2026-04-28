@@ -60,6 +60,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: dr-audit
+    platform.phoenix-host.net/backup-health-watch: "true"
+    platform.phoenix-host.net/backup-category: "audit"
+    platform.phoenix-host.net/backup-severity: "warning"
+    platform.phoenix-host.net/depends-on: "backup-credentials"
+  annotations:
+    platform.phoenix-host.net/backup-display-name: "Backup coverage audit"
 spec:
   # Suspended by default. The audit checks whether Longhorn PVCs carry
   # the backup-group label — pointless when no backup target is active.
