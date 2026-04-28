@@ -1,10 +1,12 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import { Lock, AlertCircle, CheckCircle, Loader2, Plus, Trash2 } from 'lucide-react';
 import {
   useIngressAuth,
   useUpsertIngressAuth,
   useDeleteIngressAuth,
   useTestIngressAuth,
+  useOidcProviders,
+  useCreateOidcProvider,
 } from '@/hooks/use-ingress-auth';
 import type {
   ClaimRule,
@@ -43,6 +45,13 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
   const upsert = useUpsertIngressAuth(clientId, routeId);
   const remove = useDeleteIngressAuth(clientId, routeId);
   const test = useTestIngressAuth(clientId, routeId);
+  const { data: providers } = useOidcProviders(clientId);
+  const createProvider = useCreateOidcProvider(clientId);
+
+  // Provider mode: 'existing' picks from the dropdown; 'new' shows
+  // the inline issuer/client/secret form (auto-creates a provider on save).
+  const [providerMode, setProviderMode] = useState<'existing' | 'new'>('new');
+  const [selectedProviderId, setSelectedProviderId] = useState<string>('');
 
   // Local form state — populated from `existing` once loaded.
   const [enabled, setEnabled] = useState(false);
@@ -53,6 +62,7 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
   const [responseType, setResponseType] = useState<OidcResponseType>('code');
   const [usePkce, setUsePkce] = useState(true);
   const [scopes, setScopes] = useState('openid profile email');
+  const [postLoginRedirectUrl, setPostLoginRedirectUrl] = useState('');
   const [allowedEmails, setAllowedEmails] = useState('');
   const [allowedEmailDomains, setAllowedEmailDomains] = useState('');
   const [allowedGroups, setAllowedGroups] = useState('');
@@ -69,6 +79,8 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
   useEffect(() => {
     if (!existing) return;
     setEnabled(existing.enabled);
+    setSelectedProviderId(existing.providerId);
+    setProviderMode('existing');
     setIssuerUrl(existing.issuerUrl);
     setOidcClientId(existing.clientId);
     setClientSecret(''); // never prefill secrets
@@ -76,6 +88,7 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
     setResponseType(existing.responseType);
     setUsePkce(existing.usePkce);
     setScopes(existing.scopes);
+    setPostLoginRedirectUrl(existing.postLoginRedirectUrl ?? '');
     setAllowedEmails(existing.allowedEmails ?? '');
     setAllowedEmailDomains(existing.allowedEmailDomains ?? '');
     setAllowedGroups(existing.allowedGroups ?? '');
@@ -90,20 +103,38 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
     setCookieExpire(existing.cookieExpireSeconds);
   }, [existing]);
 
+  // When provider dropdown changes, auto-fill the inline form so the
+  // operator sees what's about to be applied.
+  const selectedProvider = useMemo(
+    () => providers?.find((p) => p.id === selectedProviderId),
+    [providers, selectedProviderId],
+  );
+  useEffect(() => {
+    if (providerMode !== 'existing' || !selectedProvider) return;
+    setIssuerUrl(selectedProvider.issuerUrl);
+    setOidcClientId(selectedProvider.oauthClientId);
+    setAuthMethod(selectedProvider.authMethod);
+    setResponseType(selectedProvider.responseType);
+    setUsePkce(selectedProvider.usePkce);
+    if (!existing?.scopesOverride) setScopes(selectedProvider.defaultScopes);
+  }, [selectedProvider, providerMode, existing?.scopesOverride]);
+
   const callbackUrl = existing?.callbackUrl ?? `https://${hostname}/oauth2/callback`;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const payload: IngressAuthConfigInput = {
+
+    // Build the payload. Two write paths:
+    //   - 'existing': send providerId; backend ignores inline OIDC fields
+    //   - 'new': send inline fields; backend auto-creates a per-hostname provider
+    const basePayload = {
       enabled,
-      issuerUrl,
-      clientId: oidcClientId,
-      // Send secret only when user typed one — empty string preserves existing.
-      ...(clientSecret ? { clientSecret } : {}),
-      authMethod,
-      responseType,
-      usePkce,
+      // scopes only sent when it differs from the provider's default —
+      // when 'existing' and equals the provider default, omit so the
+      // backend stores null (= inherit). For simplicity we always send;
+      // backend treats the value as scopesOverride.
       scopes,
+      postLoginRedirectUrl: postLoginRedirectUrl.trim() || null,
       allowedEmails: allowedEmails || null,
       allowedEmailDomains: allowedEmailDomains || null,
       allowedGroups: allowedGroups || null,
@@ -117,8 +148,26 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
       cookieRefreshSeconds: cookieRefresh,
       cookieExpireSeconds: cookieExpire,
     };
+
+    let payload: IngressAuthConfigInput;
+    if (providerMode === 'existing' && selectedProviderId) {
+      payload = { ...basePayload, providerId: selectedProviderId };
+    } else {
+      payload = {
+        ...basePayload,
+        issuerUrl,
+        clientId: oidcClientId,
+        ...(clientSecret ? { clientSecret } : {}),
+        authMethod,
+        responseType,
+        usePkce,
+      };
+    }
     await upsert.mutateAsync(payload);
     setClientSecret('');
+    // After save, the existing config will auto-populate via the
+    // useEffect above (provider mode flips to 'existing' if the
+    // backend created/picked one).
   };
 
   const handleDelete = async () => {
@@ -176,47 +225,102 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
         app receives identity headers (X-Auth-Request-User, -Email, etc.).
       </p>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label htmlFor="oidc-issuer" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Issuer URL</label>
-          <input
-            id="oidc-issuer"
-            className={`${INPUT_CLASS} mt-1`}
-            value={issuerUrl}
-            onChange={(e) => setIssuerUrl(e.target.value)}
-            placeholder="https://auth.example.com/"
-            data-testid="oidc-issuer"
-            required={enabled}
-          />
-        </div>
-        <div>
-          <label htmlFor="oidc-cid" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Client ID</label>
-          <input
-            id="oidc-cid"
-            className={`${INPUT_CLASS} mt-1`}
-            value={oidcClientId}
-            onChange={(e) => setOidcClientId(e.target.value)}
-            data-testid="oidc-client-id"
-            required={enabled}
-          />
-        </div>
-        <div className="sm:col-span-2">
-          <label htmlFor="oidc-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Client Secret
-            {existing?.clientSecretSet && (
-              <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">(set — leave blank to keep existing)</span>
+      {/* Provider selector — switch between picking an existing
+          provider for this client and creating a new one inline. */}
+      <fieldset className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
+        <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 px-2">Identity Provider</legend>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <label className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <input
+              type="radio"
+              checked={providerMode === 'existing'}
+              onChange={() => setProviderMode('existing')}
+              disabled={!providers || providers.length === 0}
+              data-testid="provider-mode-existing"
+            />
+            Use existing
+            {providers && providers.length > 0 && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">({providers.length} available)</span>
             )}
           </label>
-          <input
-            id="oidc-secret"
-            type="password"
-            className={`${INPUT_CLASS} mt-1`}
-            value={clientSecret}
-            onChange={(e) => setClientSecret(e.target.value)}
-            data-testid="oidc-client-secret"
-          />
+          <label className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <input
+              type="radio"
+              checked={providerMode === 'new'}
+              onChange={() => setProviderMode('new')}
+              data-testid="provider-mode-new"
+            />
+            New (inline)
+          </label>
         </div>
-      </div>
+
+        {providerMode === 'existing' ? (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Provider</label>
+            <select
+              className={`${INPUT_CLASS} mt-1`}
+              value={selectedProviderId}
+              onChange={(e) => setSelectedProviderId(e.target.value)}
+              data-testid="provider-select"
+              required={enabled}
+            >
+              <option value="">— pick a provider —</option>
+              {(providers ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.issuerUrl}) — used by {p.consumerCount} ingress{p.consumerCount === 1 ? '' : 'es'}
+                </option>
+              ))}
+            </select>
+            {selectedProvider && (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Issuer: {selectedProvider.issuerUrl} · Client: {selectedProvider.oauthClientId}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="oidc-issuer" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Issuer URL</label>
+              <input
+                id="oidc-issuer"
+                className={`${INPUT_CLASS} mt-1`}
+                value={issuerUrl}
+                onChange={(e) => setIssuerUrl(e.target.value)}
+                placeholder="https://auth.example.com/"
+                data-testid="oidc-issuer"
+                required={enabled}
+              />
+            </div>
+            <div>
+              <label htmlFor="oidc-cid" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Client ID</label>
+              <input
+                id="oidc-cid"
+                className={`${INPUT_CLASS} mt-1`}
+                value={oidcClientId}
+                onChange={(e) => setOidcClientId(e.target.value)}
+                data-testid="oidc-client-id"
+                required={enabled}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="oidc-secret" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Client Secret
+                {existing?.clientSecretSet && (
+                  <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">(set — leave blank to keep existing)</span>
+                )}
+              </label>
+              <input
+                id="oidc-secret"
+                type="password"
+                className={`${INPUT_CLASS} mt-1`}
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                data-testid="oidc-client-secret"
+              />
+            </div>
+          </div>
+        )}
+      </fieldset>
 
       <div className="rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/40 px-3 py-2">
         <p className="text-xs font-medium text-blue-900 dark:text-blue-200">
@@ -396,6 +500,29 @@ export default function OidcSection({ clientId, routeId, hostname }: Props) {
           Enable X-Auth-Request-* family (required for groups header)
         </label>
       </fieldset>
+
+      {/* Post-login redirect — optional fixed landing URL after a
+          successful login. When set, every login lands here instead
+          of the originally-requested URI. */}
+      <div>
+        <label htmlFor="oidc-post-login" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          Post-login redirect URL <span className="text-xs text-gray-500 dark:text-gray-400">(optional)</span>
+        </label>
+        <input
+          id="oidc-post-login"
+          type="url"
+          className={`${INPUT_CLASS} mt-1`}
+          value={postLoginRedirectUrl}
+          onChange={(e) => setPostLoginRedirectUrl(e.target.value)}
+          placeholder={`https://${hostname}/dashboard`}
+          data-testid="oidc-post-login"
+        />
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          Forward users to a fixed page after login (e.g. into your app's own
+          OIDC callback or a static landing page). Leave blank to honour the
+          original request URL.
+        </p>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>
