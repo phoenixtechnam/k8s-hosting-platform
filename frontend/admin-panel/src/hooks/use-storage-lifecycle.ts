@@ -193,7 +193,10 @@ export interface ClientPvcPlacement {
   readonly pvcName: string;
   readonly volumeName: string;
   readonly sizeBytes: number;
+  /** Filesystem-level user-file usage from kubelet stats. */
   readonly usedBytes: number;
+  /** Longhorn block-level allocation including ext4 + Longhorn overhead. */
+  readonly allocatedBytes: number;
   readonly state: string | null;
   readonly robustness: string | null;
   readonly replicaNodes: readonly string[];

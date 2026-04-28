@@ -2219,7 +2219,7 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
             <SortableHeader label="PVC" sortKey="pvcName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Volume" sortKey="volumeName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Requested" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
-            <SortableHeader label="Allocated" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
+            <SortableHeader label="Used" sortKey="usedBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="State" sortKey="state" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <SortableHeader label="Robustness" sortKey="robustness" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="!px-2 !py-1.5 !text-left" />
             <th className="px-2 py-1.5 text-left font-medium">Replica node(s)</th>
@@ -2231,7 +2231,12 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
               <td className="px-2 py-1.5 font-mono">{p.pvcName}</td>
               <td className="px-2 py-1.5 font-mono text-gray-500 dark:text-gray-400">{p.volumeName.slice(0, 12)}…</td>
               <td className="px-2 py-1.5">{p.sizeBytes > 0 ? formatBytes(p.sizeBytes) : '—'}</td>
-              <td className="px-2 py-1.5">{p.usedBytes > 0 ? formatBytes(p.usedBytes) : '—'}</td>
+              <td className="px-2 py-1.5">
+                {p.usedBytes > 0 ? formatBytes(p.usedBytes) : '0 B'}
+                {p.allocatedBytes > 0 && (
+                  <span className="ml-1 text-gray-500 dark:text-gray-400">({formatBytes(p.allocatedBytes)})</span>
+                )}
+              </td>
               <td className="px-2 py-1.5">{p.state ?? '—'}</td>
               <td className="px-2 py-1.5">
                 <span className={p.robustness === 'healthy'
@@ -2252,7 +2257,7 @@ function PvcPlacementSection({ clientId }: { readonly clientId: string }) {
         <p className="mt-2 text-xs text-gray-500 italic">No PVCs match &quot;{search.query}&quot;.</p>
       )}
       <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400 italic">
-        Allocated = Longhorn on-disk allocation (filesystem metadata + sparse blocks). Empty 10 GiB volumes report ~230 MiB; this is not user-file usage.
+        Used = filesystem-level user-file bytes from kubelet stats. Parenthetical = Longhorn block-level allocation including ext4 metadata + sparse blocks (~230 MiB on an empty 10 GiB volume).
       </p>
     </div>
   );

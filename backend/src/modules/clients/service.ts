@@ -137,7 +137,13 @@ export async function getClientStoragePlacement(
     pvcName: string;
     volumeName: string;
     sizeBytes: number;
+    /** Filesystem-level usage from kubelet stats/summary — real user-data
+     *  bytes ignoring ext4 metadata + Longhorn block overhead. 0 if no
+     *  pod currently mounts the PVC (no kubelet to report it). */
     usedBytes: number;
+    /** Longhorn Volume.status.actualSize — block-level allocation
+     *  including ~230 MiB of ext4 reserved blocks on a 10 GiB volume. */
+    allocatedBytes: number;
     state: string | null;
     robustness: string | null;
     replicaNodes: string[];
@@ -155,7 +161,7 @@ export async function getClientStoragePlacement(
 
   // Group running replicas by volume name, single LIST cluster-wide.
   const replicaNodesByVolume = new Map<string, string[]>();
-  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number; usedBytes: number }> = new Map();
+  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number; allocatedBytes: number }> = new Map();
   try {
     interface LhReplica {
       spec?: { volumeName?: string; nodeID?: string };
@@ -191,18 +197,78 @@ export async function getClientStoragePlacement(
         state: v.status?.state ?? null,
         robustness: v.status?.robustness ?? null,
         sizeBytes: Number(v.spec?.size ?? '0') || 0,
-        // Longhorn populates actualSize after the first attach + write.
-        // Fresh volumes report 0 — UI renders that as "—".
-        usedBytes: Number(v.status?.actualSize ?? '0') || 0,
+        // Block-level allocation including ext4 reserved blocks +
+        // Longhorn snapshot blocks. Empty 10 GiB volumes report
+        // ~230 MiB. Fresh detached volumes report 0.
+        allocatedBytes: Number(v.status?.actualSize ?? '0') || 0,
       },
     ]));
   } catch (err) {
     console.warn('[clients/storage-placement] longhorn list failed:', (err as Error).message);
   }
 
+  // Filesystem-level usage from kubelet stats/summary. The Longhorn
+  // actualSize includes ext4 metadata + reserved blocks (~230 MiB on
+  // a 10 GiB empty PVC); the operator wants to see the user-file size,
+  // which only kubelet reports. Walk pods in this namespace, map each
+  // to its node, hit /api/v1/nodes/{node}/proxy/stats/summary once per
+  // node, and pull usedBytes from the matching pvcRef entry.
+  const usedBytesByPvc = new Map<string, number>();
+  try {
+    const podsResp = await k8s.core.listNamespacedPod({ namespace })
+      .catch(() => ({ items: [] as Array<{ spec?: { nodeName?: string } }> }));
+    const nodes = new Set<string>();
+    for (const p of (podsResp.items ?? [])) {
+      const n = (p as { spec?: { nodeName?: string } }).spec?.nodeName;
+      if (n) nodes.add(n);
+    }
+    if (nodes.size > 0) {
+      const k8sNode = await import('@kubernetes/client-node');
+      const kc = new k8sNode.KubeConfig();
+      kc.loadFromCluster();
+      const cluster = kc.getCurrentCluster();
+      if (cluster) {
+        const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
+        await kc.applyToHTTPSOptions(httpsOpts);
+        interface KubeletVolume { name?: string; usedBytes?: number; pvcRef?: { name?: string; namespace?: string } }
+        interface KubeletPod { volume?: KubeletVolume[] }
+        interface KubeletSummary { pods?: KubeletPod[] }
+        await Promise.all(Array.from(nodes).map(async (node) => {
+          try {
+            const url = `${cluster.server}/api/v1/nodes/${encodeURIComponent(node)}/proxy/stats/summary`;
+            const ca = httpsOpts.ca, cert = httpsOpts.cert, key = httpsOpts.key;
+            const { Agent } = await import('https');
+            const agent = new Agent({ ca, cert, key });
+            const resp = await fetch(url, {
+              headers: httpsOpts.headers ?? {},
+              // @ts-expect-error node fetch supports agent
+              agent,
+            });
+            if (!resp.ok) return;
+            const summary = await resp.json() as KubeletSummary;
+            for (const p of summary.pods ?? []) {
+              for (const v of p.volume ?? []) {
+                if (v.pvcRef?.namespace === namespace && v.pvcRef.name && typeof v.usedBytes === 'number') {
+                  // Multiple pods may mount the same RWO PVC; usedBytes
+                  // is the same filesystem reading. Last write wins.
+                  usedBytesByPvc.set(v.pvcRef.name, v.usedBytes);
+                }
+              }
+            }
+          } catch {
+            // Best-effort. Falls back to 0 if kubelet proxy is unreachable.
+          }
+        }));
+      }
+    }
+  } catch (err) {
+    console.warn('[clients/storage-placement] kubelet stats failed:', (err as Error).message);
+  }
+
   const pvcs: Array<{
     namespace: string; pvcName: string; volumeName: string;
-    sizeBytes: number; usedBytes: number; state: string | null; robustness: string | null;
+    sizeBytes: number; usedBytes: number; allocatedBytes: number;
+    state: string | null; robustness: string | null;
     replicaNodes: string[];
   }> = [];
   for (const pvc of (pvcsResp.items ?? [])) {
@@ -215,7 +281,8 @@ export async function getClientStoragePlacement(
       pvcName,
       volumeName,
       sizeBytes: meta?.sizeBytes ?? 0,
-      usedBytes: meta?.usedBytes ?? 0,
+      usedBytes: usedBytesByPvc.get(pvcName) ?? 0,
+      allocatedBytes: meta?.allocatedBytes ?? 0,
       state: meta?.state ?? null,
       robustness: meta?.robustness ?? null,
       replicaNodes: (replicaNodesByVolume.get(volumeName) ?? []).slice().sort(),
