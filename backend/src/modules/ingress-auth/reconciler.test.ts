@@ -228,8 +228,11 @@ describe('reconcileClient — provisioning path', () => {
     )!;
     const cfg = cm.args.body.data['oauth2_proxy.cfg']!;
     expect(cfg).toContain('code_challenge_method="S256"');
-    expect(cfg).toContain('pass_authorization_header="true"');
-    expect(cfg).toContain('set_xauthrequest="true"');
+    // Booleans MUST be unquoted in TOML — quoting them makes
+    // oauth2-proxy crash with "toml: incomplete number".
+    expect(cfg).toContain('pass_authorization_header=true');
+    expect(cfg).toContain('set_xauthrequest=true');
+    expect(cfg).toContain('reverse_proxy=true');
     expect(cfg).toContain('client_id="oauth-client-id"');
     expect(cfg).toContain('client_secret="plaintext-secret"');
   });
