@@ -12,6 +12,7 @@ import Email from '@/pages/Email';
 import Files from '@/pages/Files';
 import Settings from '@/pages/Settings';
 import OidcProviders from '@/pages/settings/OidcProviders';
+import MtlsProviders from '@/pages/settings/MtlsProviders';
 import OpenZitiProviders from '@/pages/settings/OpenZitiProviders';
 import ZrokProviders from '@/pages/settings/ZrokProviders';
 import UserSettings from '@/pages/UserSettings';
@@ -61,6 +62,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="settings" element={<Settings />} />
             <Route path="settings/oidc-providers" element={<OidcProviders />} />
+            <Route path="settings/mtls-providers" element={<MtlsProviders />} />
             <Route path="settings/openziti-providers" element={<OpenZitiProviders />} />
             <Route path="settings/zrok-providers" element={<ZrokProviders />} />
             <Route path="resource-usage" element={<ResourceUsage />} />

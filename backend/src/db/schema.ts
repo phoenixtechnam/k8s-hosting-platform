@@ -40,6 +40,10 @@ export const storageLifecycleStateEnum = pgEnum('storage_lifecycle_state', [
 ]);
 export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   'snapshot', 'resize', 'suspend', 'resume', 'archive', 'restore',
+  // 0059_storage_op_fsck.sql: filesystem check (xfs_repair -n /
+  // e2fsck -n) and repair (without -n). Both run via the
+  // storage-lifecycle quiesce orchestrator.
+  'fsck',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
   'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled',
@@ -1394,6 +1398,27 @@ export const clientZrokAccounts = pgTable('client_zrok_accounts', {
 export type ClientZrokAccount = typeof clientZrokAccounts.$inferSelect;
 export type NewClientZrokAccount = typeof clientZrokAccounts.$inferInsert;
 
+export const clientMtlsProviders = pgTable('client_mtls_providers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  caCertPemEncrypted: text('ca_cert_pem_encrypted').notNull(),
+  caKeyPemEncrypted: text('ca_key_pem_encrypted'),
+  caCertFingerprint: varchar('ca_cert_fingerprint', { length: 64 }).notNull(),
+  caCertSubject: varchar('ca_cert_subject', { length: 500 }).notNull(),
+  caCertExpiresAt: timestamp('ca_cert_expires_at').notNull(),
+  canIssue: boolean('can_issue').notNull().default(false),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  clientIdx: index('client_mtls_providers_client_idx').on(table.clientId),
+}));
+
+export type ClientMtlsProvider = typeof clientMtlsProviders.$inferSelect;
+export type NewClientMtlsProvider = typeof clientMtlsProviders.$inferInsert;
+
 export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   ingressRouteId: varchar('ingress_route_id', { length: 36 })
@@ -1401,6 +1426,8 @@ export const ingressMtlsConfigs = pgTable('ingress_mtls_configs', {
     .unique()
     .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
   enabled: boolean('enabled').notNull().default(false),
+  providerId: varchar('provider_id', { length: 36 })
+    .references(() => clientMtlsProviders.id, { onDelete: 'restrict' }),
   caCertPemEncrypted: text('ca_cert_pem_encrypted'),
   caCertFingerprint: varchar('ca_cert_fingerprint', { length: 64 }),
   caCertSubject: varchar('ca_cert_subject', { length: 500 }),

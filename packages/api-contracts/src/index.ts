@@ -51,6 +51,7 @@ export * from './tls-settings.js';
 export * from './ingress-routes.js';
 export * from './ingress-auth.js';
 export * from './ingress-mtls.js';
+export * from './mtls-providers.js';
 export * from './ziti-providers.js';
 export * from './zrok-providers.js';
 export * from './deployment-network-access.js';

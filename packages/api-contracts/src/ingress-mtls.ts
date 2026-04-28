@@ -30,9 +30,16 @@ export type MtlsVerifyMode = z.infer<typeof mtlsVerifyModeSchema>;
 export const ingressMtlsConfigSchema = z.object({
   enabled: z.boolean(),
   /**
-   * PEM-encoded CA bundle. Required on create; optional on update
-   * (omitted = keep current). May contain multiple concatenated certs
-   * (root + intermediates).
+   * Preferred path: pick a reusable provider from /settings/mtls-providers.
+   * When set, the inline `caCertPem` is ignored and the reconciler
+   * pulls the CA cert from the provider row.
+   */
+  providerId: z.string().nullable().optional(),
+  /**
+   * Compat shim: PEM-encoded CA bundle uploaded inline. Optional on
+   * update (omitted = keep current). Use providerId instead for new
+   * configs — inline upload is kept for backwards compat with rows
+   * created before migration 0060.
    */
   caCertPem: z.string().min(1).optional(),
   /**
@@ -73,6 +80,8 @@ export type IngressMtlsConfigInput = z.infer<typeof ingressMtlsConfigSchema>;
  */
 export const ingressMtlsConfigResponseSchema = z.object({
   enabled: z.boolean(),
+  /** When non-null, this config sources its CA from a provider row. */
+  providerId: z.string().nullable(),
   caCertSet: z.boolean(),
   /** SHA-256 of the CA cert DER, hex-encoded. Null when no cert. */
   caCertFingerprint: z.string().nullable(),

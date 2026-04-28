@@ -22,6 +22,9 @@ import type { IngressMtlsConfig } from '../../db/schema.js';
 
 export interface IngressMtlsConfigInput {
   readonly enabled: boolean;
+  /** Preferred — references a row in client_mtls_providers. */
+  readonly providerId?: string | null;
+  /** Legacy inline upload path. Mutually exclusive with providerId. */
   readonly caCertPem?: string;
   readonly verifyMode?: 'on' | 'optional' | 'optional_no_ca';
   readonly subjectRegex?: string | null;
@@ -31,6 +34,7 @@ export interface IngressMtlsConfigInput {
 
 export interface IngressMtlsConfigResponse {
   readonly enabled: boolean;
+  readonly providerId: string | null;
   readonly caCertSet: boolean;
   readonly caCertFingerprint: string | null;
   readonly caCertSubject: string | null;
@@ -121,19 +125,20 @@ export async function upsertMtlsConfig(
     }
   }
 
-  // enabled=true requires a CA cert on file (either uploaded now or
-  // already stored). Otherwise we'd silently render an Ingress with
-  // an `auth-tls-secret` annotation pointing at an empty Secret.
+  // enabled=true requires a CA on file — either via providerId (new
+  // path) OR the legacy inline ca_cert_pem_encrypted column.
   const [existing] = await db
     .select()
     .from(ingressMtlsConfigs)
     .where(eq(ingressMtlsConfigs.ingressRouteId, routeId));
-  const willHaveCert = caCertEncrypted !== null
+  const effectiveProviderId =
+    input.providerId !== undefined ? input.providerId : existing?.providerId ?? null;
+  const willHaveInlineCert = caCertEncrypted !== null
     && (caCertEncrypted !== undefined || existing?.caCertPemEncrypted);
-  if (input.enabled && !willHaveCert) {
+  if (input.enabled && !effectiveProviderId && !willHaveInlineCert) {
     throw new ApiError(
       'CA_CERT_REQUIRED',
-      'CA bundle must be uploaded before enabling mTLS',
+      'Pick a provider or upload a CA bundle before enabling mTLS',
       422,
     );
   }
@@ -156,6 +161,7 @@ export async function upsertMtlsConfig(
       .update(ingressMtlsConfigs)
       .set({
         ...next,
+        ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
         ...(caCertEncrypted !== undefined ? { caCertPemEncrypted: caCertEncrypted } : {}),
         ...(caMetadata
           ? {
@@ -172,6 +178,7 @@ export async function upsertMtlsConfig(
     await db.insert(ingressMtlsConfigs).values({
       id: randomUUID(),
       ingressRouteId: routeId,
+      providerId: input.providerId ?? null,
       caCertPemEncrypted: caCertEncrypted ?? null,
       caCertFingerprint: caMetadata?.fingerprint ?? null,
       caCertSubject: caMetadata?.subject ?? null,
@@ -193,8 +200,12 @@ export async function deleteMtlsConfig(db: Database, routeId: string): Promise<v
 
 /**
  * Reconciler-facing: load an enabled config (with the decrypted CA
- * bundle ready for Secret materialisation). Returns null when no
- * config exists or the config is disabled.
+ * bundle ready for Secret materialisation). The CA cert is sourced
+ * from the linked provider when providerId is set, otherwise from the
+ * legacy inline ca_cert_pem_encrypted column.
+ *
+ * Returns null when no config exists, the config is disabled, or no
+ * CA material is available from either path.
  */
 export async function loadEnabledForRoute(
   db: Database,
@@ -205,7 +216,16 @@ export async function loadEnabledForRoute(
     .select()
     .from(ingressMtlsConfigs)
     .where(eq(ingressMtlsConfigs.ingressRouteId, routeId));
-  if (!row || !row.enabled || !row.caCertPemEncrypted) return null;
+  if (!row || !row.enabled) return null;
+  // Prefer provider-sourced CA (new path).
+  if (row.providerId) {
+    const { loadProviderCaCert } = await import('../mtls-providers/service.js');
+    const ca = await loadProviderCaCert(db, encryptionKey, row.providerId);
+    if (!ca) return null;
+    return { config: row, caCertPem: ca };
+  }
+  // Fall back to legacy inline upload.
+  if (!row.caCertPemEncrypted) return null;
   return {
     config: row,
     caCertPem: decrypt(row.caCertPemEncrypted, encryptionKey),
@@ -215,7 +235,10 @@ export async function loadEnabledForRoute(
 function rowToResponse(row: IngressMtlsConfig): IngressMtlsConfigResponse {
   return {
     enabled: row.enabled,
-    caCertSet: row.caCertPemEncrypted !== null,
+    providerId: row.providerId,
+    // True when EITHER a provider is linked OR the legacy inline cert
+    // is on file — both paths give the reconciler something to mount.
+    caCertSet: row.providerId !== null || row.caCertPemEncrypted !== null,
     caCertFingerprint: row.caCertFingerprint,
     caCertSubject: row.caCertSubject,
     caCertExpiresAt: row.caCertExpiresAt?.toISOString() ?? null,

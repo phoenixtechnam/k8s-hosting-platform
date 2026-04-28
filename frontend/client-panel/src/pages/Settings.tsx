@@ -1,4 +1,4 @@
-import { Settings as SettingsIcon, CreditCard, Bell, Loader2, Lock, Network, Share2, ChevronRight } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Bell, Loader2, Lock, Shield, Network, Share2, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useClientContext } from '@/hooks/use-client-context';
 import { useSubscription } from '@/hooks/use-subscription';
@@ -142,7 +142,7 @@ export default function Settings() {
           Reusable providers used by the per-ingress Access Control tab and the per-app Network
           Access tab.
         </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Link
             to="/settings/oidc-providers"
             className="group flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
@@ -153,6 +153,20 @@ export default function Settings() {
               <div>
                 <div className="text-sm font-medium text-gray-900 dark:text-gray-100">OIDC Providers</div>
                 <div className="text-xs text-gray-500 dark:text-gray-400">OAuth2 / OpenID Connect</div>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-gray-400 group-hover:text-blue-600" />
+          </Link>
+          <Link
+            to="/settings/mtls-providers"
+            className="group flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+            data-testid="settings-link-mtls"
+          >
+            <div className="flex items-center gap-3">
+              <Shield size={18} className="text-gray-500 dark:text-gray-400 group-hover:text-blue-600" />
+              <div>
+                <div className="text-sm font-medium text-gray-900 dark:text-gray-100">mTLS Providers</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">CA bundles + user certs</div>
               </div>
             </div>
             <ChevronRight size={16} className="text-gray-400 group-hover:text-blue-600" />

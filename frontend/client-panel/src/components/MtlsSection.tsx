@@ -1,10 +1,12 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { Shield, Loader2, Trash2, AlertCircle, CheckCircle } from 'lucide-react';
+import { Shield, Loader2, Trash2, AlertCircle, CheckCircle, ExternalLink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   useIngressMtls,
   useUpsertIngressMtls,
   useDeleteIngressMtls,
 } from '@/hooks/use-ingress-mtls';
+import { useMtlsProviders } from '@/hooks/use-mtls-providers';
 import type { IngressMtlsConfigInput } from '@k8s-hosting/api-contracts';
 
 const INPUT_CLASS =
@@ -26,10 +28,15 @@ interface Props {
  */
 export default function MtlsSection({ clientId, routeId }: Props) {
   const { data: existing, isLoading } = useIngressMtls(clientId, routeId);
+  const { data: providers } = useMtlsProviders(clientId);
   const upsert = useUpsertIngressMtls(clientId, routeId);
   const remove = useDeleteIngressMtls(clientId, routeId);
 
   const [enabled, setEnabled] = useState(false);
+  // Provider mode: 'provider' picks from dropdown; 'inline' is the
+  // legacy paste-PEM-here flow kept for compat with existing rows.
+  const [providerMode, setProviderMode] = useState<'provider' | 'inline'>('provider');
+  const [providerId, setProviderId] = useState<string>('');
   const [caCertPem, setCaCertPem] = useState('');
   const [verifyMode, setVerifyMode] = useState<'on' | 'optional' | 'optional_no_ca'>('on');
   const [subjectRegex, setSubjectRegex] = useState('');
@@ -43,6 +50,12 @@ export default function MtlsSection({ clientId, routeId }: Props) {
     setSubjectRegex(existing.subjectRegex ?? '');
     setPassCertToUpstream(existing.passCertToUpstream);
     setPassDnToUpstream(existing.passDnToUpstream);
+    if (existing.providerId) {
+      setProviderMode('provider');
+      setProviderId(existing.providerId);
+    } else if (existing.caCertSet) {
+      setProviderMode('inline');
+    }
     // Never prefill the cert field — uploads are write-only.
     setCaCertPem('');
   }, [existing]);
@@ -51,7 +64,9 @@ export default function MtlsSection({ clientId, routeId }: Props) {
     e.preventDefault();
     const input: IngressMtlsConfigInput = {
       enabled,
-      ...(caCertPem ? { caCertPem } : {}),
+      ...(providerMode === 'provider'
+        ? { providerId: providerId || null, caCertPem: undefined }
+        : { providerId: null, ...(caCertPem ? { caCertPem } : {}) }),
       verifyMode,
       subjectRegex: subjectRegex || null,
       passCertToUpstream,
@@ -98,34 +113,98 @@ export default function MtlsSection({ clientId, routeId }: Props) {
           <span className="text-sm text-gray-900 dark:text-gray-100">Enable mTLS on this ingress</span>
         </label>
 
-        {existing?.caCertSet && (
-          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 text-xs">
-            <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <CheckCircle size={14} className="text-green-600" />
-              <span className="font-medium">CA on file</span>
-            </div>
-            <div className="mt-1 text-gray-500 dark:text-gray-400">
-              <div>Subject: {existing.caCertSubject ?? '—'}</div>
-              <div>SHA-256: {existing.caCertFingerprint?.slice(0, 32) ?? '—'}…</div>
-              <div>Expires: {existing.caCertExpiresAt ? new Date(existing.caCertExpiresAt).toLocaleDateString() : '—'}</div>
-            </div>
+        <fieldset className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+          <legend className="px-1 text-xs font-medium text-gray-700 dark:text-gray-300">CA Source</legend>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Pick a reusable provider, or paste a CA bundle inline (legacy).
+            </p>
+            <Link
+              to="/settings/mtls-providers"
+              className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap"
+              data-testid="mtls-manage-providers-link"
+            >
+              Manage providers <ExternalLink size={12} />
+            </Link>
           </div>
-        )}
+          <div className="flex flex-wrap gap-3 text-sm">
+            <label className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <input
+                type="radio"
+                checked={providerMode === 'provider'}
+                onChange={() => setProviderMode('provider')}
+                disabled={!providers || providers.length === 0}
+                data-testid="mtls-mode-provider"
+              />
+              Use provider {providers && providers.length > 0 && (<span className="text-xs text-gray-500 dark:text-gray-400">({providers.length} available)</span>)}
+            </label>
+            <label className="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <input
+                type="radio"
+                checked={providerMode === 'inline'}
+                onChange={() => setProviderMode('inline')}
+                data-testid="mtls-mode-inline"
+              />
+              Paste inline (legacy)
+            </label>
+          </div>
 
-        <div>
-          <label className={LABEL_CLASS} htmlFor="mtls-ca-pem">
-            CA Bundle (PEM){existing?.caCertSet && <span className="ml-2 text-xs text-gray-400">leave empty to keep current</span>}
-          </label>
-          <textarea
-            id="mtls-ca-pem"
-            className={`${INPUT_CLASS} mt-1 font-mono text-xs`}
-            rows={6}
-            value={caCertPem}
-            onChange={(e) => setCaCertPem(e.target.value)}
-            placeholder={'-----BEGIN CERTIFICATE-----\nMIIDxzCCAq+gAwIBAgIUW…\n-----END CERTIFICATE-----'}
-            data-testid="mtls-ca-pem"
-          />
-        </div>
+          {providerMode === 'provider' ? (
+            <div>
+              <label className={LABEL_CLASS} htmlFor="mtls-provider-select">Provider</label>
+              <select
+                id="mtls-provider-select"
+                className={INPUT_CLASS}
+                value={providerId}
+                onChange={(e) => setProviderId(e.target.value)}
+                required={enabled && providerMode === 'provider'}
+                data-testid="mtls-provider-select"
+              >
+                <option value="">— pick a provider —</option>
+                {(providers ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {p.caCertSubject}{p.canIssue ? ' · can issue' : ''}
+                  </option>
+                ))}
+              </select>
+              {(!providers || providers.length === 0) && (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                  No providers yet. <Link to="/settings/mtls-providers" className="text-blue-600 hover:underline dark:text-blue-400">Create one →</Link>
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              {existing?.caCertSet && !existing.providerId && (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 text-xs">
+                  <div className="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                    <CheckCircle size={14} className="text-green-600" />
+                    <span className="font-medium">Inline CA on file</span>
+                  </div>
+                  <div className="mt-1 text-gray-500 dark:text-gray-400">
+                    <div>Subject: {existing.caCertSubject ?? '—'}</div>
+                    <div>SHA-256: {existing.caCertFingerprint?.slice(0, 32) ?? '—'}…</div>
+                    <div>Expires: {existing.caCertExpiresAt ? new Date(existing.caCertExpiresAt).toLocaleDateString() : '—'}</div>
+                  </div>
+                </div>
+              )}
+              <div>
+                <label className={LABEL_CLASS} htmlFor="mtls-ca-pem">
+                  CA Bundle (PEM){existing?.caCertSet && !existing.providerId && <span className="ml-2 text-xs text-gray-400">leave empty to keep current</span>}
+                </label>
+                <textarea
+                  id="mtls-ca-pem"
+                  className={`${INPUT_CLASS} font-mono text-xs`}
+                  rows={6}
+                  value={caCertPem}
+                  onChange={(e) => setCaCertPem(e.target.value)}
+                  placeholder={'-----BEGIN CERTIFICATE-----\nMIIDxzCCAq+gAwIBAgIUW…\n-----END CERTIFICATE-----'}
+                  data-testid="mtls-ca-pem"
+                />
+              </div>
+            </>
+          )}
+        </fieldset>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
