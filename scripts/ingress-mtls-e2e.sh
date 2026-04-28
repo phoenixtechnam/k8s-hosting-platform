@@ -79,7 +79,7 @@ ssh_run() {
 }
 
 run_scenario() {
-  local name="$1" pattern="$2"
+  local name="$1"
   if [[ "$SCENARIO" != "all" && "$SCENARIO" != "$name" ]]; then return 0; fi
   log "── scenario: $name ──"
   if "scenario_$name"; then
@@ -193,7 +193,8 @@ scenario_enable_renders_annotations() {
 }
 
 scenario_acme_path_still_open() {
-  local probe_token="acme-mtls-$(date +%s)"
+  local probe_token
+  probe_token="acme-mtls-$(date +%s)"
   local manifest
   manifest=$(cat <<YAML
 apiVersion: v1
