@@ -1263,6 +1263,34 @@ export interface IngressClaimRule {
   readonly value?: string | string[];
 }
 
+/**
+ * Per-client reusable OIDC provider configuration. One row per
+ * (clientId, IdP-OAuth-app); referenced by zero or more
+ * ingress_auth_configs via provider_id. ON DELETE RESTRICT ensures
+ * a provider in active use cannot be removed silently — the routes
+ * layer translates the FK violation into a 409 with the consumer
+ * count so the operator can decide.
+ */
+export const clientOidcProviders = pgTable('client_oidc_providers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
+  oauthClientId: varchar('oauth_client_id', { length: 255 }).notNull(),
+  oauthClientSecretEncrypted: text('oauth_client_secret_encrypted').notNull(),
+  authMethod: varchar('auth_method', { length: 32 }).notNull().default('client_secret_basic'),
+  responseType: varchar('response_type', { length: 32 }).notNull().default('code'),
+  usePkce: boolean('use_pkce').notNull().default(true),
+  defaultScopes: varchar('default_scopes', { length: 500 }).notNull().default('openid profile email'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type ClientOidcProvider = typeof clientOidcProviders.$inferSelect;
+export type NewClientOidcProvider = typeof clientOidcProviders.$inferInsert;
+
 export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
   ingressRouteId: varchar('ingress_route_id', { length: 36 })
@@ -1270,13 +1298,23 @@ export const ingressAuthConfigs = pgTable('ingress_auth_configs', {
     .unique()
     .references(() => ingressRoutes.id, { onDelete: 'cascade' }),
   enabled: boolean('enabled').notNull().default(false),
-  issuerUrl: varchar('issuer_url', { length: 500 }).notNull(),
-  clientId: varchar('client_id', { length: 255 }).notNull(),
-  clientSecretEncrypted: text('client_secret_encrypted').notNull(),
-  authMethod: varchar('auth_method', { length: 32 }).notNull().default('client_secret_basic'),
-  responseType: varchar('response_type', { length: 32 }).notNull().default('code'),
-  usePkce: boolean('use_pkce').notNull().default(true),
-  scopes: varchar('scopes', { length: 500 }).notNull().default('openid profile email'),
+  // FK to the reusable provider config. NOT NULL — every config must
+  // resolve to a provider before it can be enabled. Set to NOT NULL
+  // by migration 0057 after backfill.
+  providerId: varchar('provider_id', { length: 36 })
+    .notNull()
+    .references(() => clientOidcProviders.id, { onDelete: 'restrict' }),
+  // Optional override of the provider's default_scopes. NULL = use
+  // provider's value. Allows one provider to serve ingresses with
+  // different scope requirements (e.g. one ingress also wants
+  // 'groups' for claim-rule matching).
+  scopesOverride: varchar('scopes_override', { length: 500 }),
+  // Optional fixed redirect destination after a successful login.
+  // When NULL the user lands back at the URL they originally
+  // requested (oauth2-proxy default behaviour). When set, every
+  // login lands here — used for forwarding into an app's own
+  // OIDC callback or a static post-login landing page.
+  postLoginRedirectUrl: varchar('post_login_redirect_url', { length: 2048 }),
   allowedEmails: text('allowed_emails'),
   allowedEmailDomains: text('allowed_email_domains'),
   allowedGroups: text('allowed_groups'),
