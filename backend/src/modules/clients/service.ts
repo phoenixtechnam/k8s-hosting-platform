@@ -117,11 +117,58 @@ export async function getClientById(db: Database, id: string) {
   return client;
 }
 
+/** One row per PVC returned by getClientStoragePlacement. */
+export interface ClientPvcPlacementRow {
+  namespace: string;
+  pvcName: string;
+  volumeName: string;
+  sizeBytes: number;
+  /** Filesystem-level usage from kubelet stats/summary — real user-data
+   *  bytes ignoring filesystem metadata + Longhorn block overhead. 0
+   *  if no pod currently mounts the PVC (no kubelet to report it). */
+  usedBytes: number;
+  /** Longhorn Volume.status.actualSize — block-level allocation
+   *  including ~230 MiB of ext4 reserved blocks on a 10 GiB volume,
+   *  ~40 MiB on XFS. */
+  allocatedBytes: number;
+  /** Volume.status.state ("attached" | "detached" | "creating" | …). */
+  state: string | null;
+  /** Volume.status.robustness ("healthy" | "degraded" | "faulted" | …). */
+  robustness: string | null;
+  replicaNodes: string[];
+
+  // ── Storage health surface (added 2026-04-28) ──
+  /** Subset of Volume.status.conditions[] that the operator should
+   *  care about. Each entry is a condition type with status==="True"
+   *  — i.e. the abnormal/active state. Healthy steady-state volumes
+   *  have nearly all conditions at False, with `Scheduled`==True
+   *  being the *good* case (it just means "we found a slot for the
+   *  desired replica count") so it's filtered out. */
+  engineConditions: Array<{ type: string; reason: string | null; message: string | null }>;
+  /** Count of replicas currently in `running` state (this is what
+   *  replicaNodes already reflects — exposed as a number for symmetry). */
+  replicasHealthy: number;
+  /** Volume.spec.numberOfReplicas — the desired count. Diff from
+   *  replicasHealthy = "still rebuilding" or "stuck pending". */
+  replicasExpected: number;
+  /** Volume.status.lastBackupAt — RFC3339 string from Longhorn, or
+   *  null if this volume has never been backed up. */
+  lastBackupAt: string | null;
+  /** Filesystem type the PV was formatted with. Sourced from
+   *  PV.spec.csi.volumeAttributes.fsType (Longhorn copies the
+   *  StorageClass param through here). null on PVs not provisioned
+   *  by Longhorn / older installs that didn't surface it. */
+  fsType: string | null;
+  /** Volume.status.frontend ("blockdev" when attached to a pod,
+   *  empty string when detached). Distinct from `state` — frontend
+   *  tells you whether a workload currently has the device open. */
+  frontendState: string | null;
+}
+
 /**
- * Surface PVC node placement for the Storage Lifecycle card. Walks
- * the client's PVCs, joins each to its Longhorn Volume CR, then to
- * the running replicas. Returns one row per PVC with the list of
- * node IDs hosting a healthy replica.
+ * Surface PVC node placement + health for the Storage Lifecycle card.
+ * Walks the client's PVCs, joins each to its Longhorn Volume CR + PV,
+ * then to the running replicas.
  *
  * Best-effort: a missing Longhorn CRD (dev cluster) or transient
  * API blip yields an empty replicas list rather than failing the
@@ -131,24 +178,7 @@ export async function getClientStoragePlacement(
   db: Database,
   id: string,
   k8s: K8sClients,
-): Promise<{
-  pvcs: Array<{
-    namespace: string;
-    pvcName: string;
-    volumeName: string;
-    sizeBytes: number;
-    /** Filesystem-level usage from kubelet stats/summary — real user-data
-     *  bytes ignoring ext4 metadata + Longhorn block overhead. 0 if no
-     *  pod currently mounts the PVC (no kubelet to report it). */
-    usedBytes: number;
-    /** Longhorn Volume.status.actualSize — block-level allocation
-     *  including ~230 MiB of ext4 reserved blocks on a 10 GiB volume. */
-    allocatedBytes: number;
-    state: string | null;
-    robustness: string | null;
-    replicaNodes: string[];
-  }>;
-}> {
+): Promise<{ pvcs: ClientPvcPlacementRow[] }> {
   const [client] = await db.select().from(clients).where(eq(clients.id, id));
   if (!client) throw clientNotFound(id);
   if (!client.kubernetesNamespace) {
@@ -161,16 +191,39 @@ export async function getClientStoragePlacement(
 
   // Group running replicas by volume name, single LIST cluster-wide.
   const replicaNodesByVolume = new Map<string, string[]>();
-  let volumeIndex: Map<string, { state: string | null; robustness: string | null; sizeBytes: number; allocatedBytes: number }> = new Map();
+  interface VolumeMeta {
+    state: string | null;
+    robustness: string | null;
+    sizeBytes: number;
+    allocatedBytes: number;
+    numberOfReplicas: number;
+    lastBackupAt: string | null;
+    frontendState: string | null;
+    engineConditions: Array<{ type: string; reason: string | null; message: string | null }>;
+  }
+  let volumeIndex: Map<string, VolumeMeta> = new Map();
   try {
     interface LhReplica {
       spec?: { volumeName?: string; nodeID?: string };
       status?: { currentState?: string };
     }
+    interface LhVolumeCondition {
+      type?: string;
+      status?: string;
+      reason?: string;
+      message?: string;
+    }
     interface LhVolume {
       metadata?: { name?: string };
-      spec?: { size?: string };
-      status?: { state?: string; robustness?: string; actualSize?: string | number };
+      spec?: { size?: string; numberOfReplicas?: number; frontend?: string };
+      status?: {
+        state?: string;
+        robustness?: string;
+        actualSize?: string | number;
+        lastBackupAt?: string;
+        frontend?: string;
+        conditions?: LhVolumeCondition[];
+      };
     }
     const [reps, vols] = await Promise.all([
       k8s.custom.listNamespacedCustomObject({
@@ -191,20 +244,68 @@ export async function getClientStoragePlacement(
       arr.push(n);
       replicaNodesByVolume.set(v, arr);
     }
-    volumeIndex = new Map((vols.items ?? []).map((v) => [
-      v.metadata?.name ?? '',
-      {
-        state: v.status?.state ?? null,
-        robustness: v.status?.robustness ?? null,
-        sizeBytes: Number(v.spec?.size ?? '0') || 0,
-        // Block-level allocation including ext4 reserved blocks +
-        // Longhorn snapshot blocks. Empty 10 GiB volumes report
-        // ~230 MiB. Fresh detached volumes report 0.
-        allocatedBytes: Number(v.status?.actualSize ?? '0') || 0,
-      },
-    ]));
+    volumeIndex = new Map((vols.items ?? []).map((v) => {
+      // Surface only conditions whose status is "True". By Longhorn
+      // convention these are types like "Restore" and "OfflineRebuilding"
+      // — abnormal sub-states the operator should know about. Healthy
+      // steady-state volumes have nearly all conditions at False, with
+      // `Scheduled`==True being the *good* case (it just means "we
+      // found a slot for the desired replica count"). We deliberately
+      // filter out `Scheduled==True` so the UI doesn't show it as a
+      // warning.
+      const conds = (v.status?.conditions ?? [])
+        .filter((c) => c.status === 'True' && c.type && c.type !== 'Scheduled')
+        .map((c) => ({ type: c.type as string, reason: c.reason ?? null, message: c.message ?? null }));
+      return [
+        v.metadata?.name ?? '',
+        {
+          state: v.status?.state ?? null,
+          robustness: v.status?.robustness ?? null,
+          sizeBytes: Number(v.spec?.size ?? '0') || 0,
+          // Block-level allocation including filesystem metadata +
+          // Longhorn snapshot blocks. Empty 10 GiB ext4 volumes report
+          // ~230 MiB; XFS reports ~40 MiB. Fresh detached volumes
+          // report 0.
+          allocatedBytes: Number(v.status?.actualSize ?? '0') || 0,
+          // Desired replica count from spec — UI compares this to
+          // running replicas to flag a degraded volume even when
+          // status.robustness lags.
+          numberOfReplicas: Number(v.spec?.numberOfReplicas ?? 1) || 1,
+          // Longhorn-format ISO string ("2026-04-26T22:01:14Z") or null.
+          lastBackupAt: v.status?.lastBackupAt ?? null,
+          // status.frontend is the runtime view ("blockdev" when
+          // attached, empty when detached); spec.frontend is the
+          // desired type. We surface the live one.
+          frontendState: v.status?.frontend ?? null,
+          engineConditions: conds,
+        },
+      ];
+    }));
   } catch (err) {
     console.warn('[clients/storage-placement] longhorn list failed:', (err as Error).message);
+  }
+
+  // PV index — fsType lives on PV.spec.csi.volumeAttributes.fsType,
+  // not on the PVC. Single cluster-wide LIST, then look up by name
+  // (PV.metadata.name === PVC.spec.volumeName for bound PVCs).
+  // Best-effort; permission denial or transient API failure → empty
+  // map → fsType:null in the response.
+  const fsTypeByPvName = new Map<string, string>();
+  try {
+    interface PvItem {
+      metadata?: { name?: string };
+      spec?: { csi?: { volumeAttributes?: Record<string, string> } };
+    }
+    const pvList = await (k8s.core as unknown as {
+      listPersistentVolume: () => Promise<{ items?: PvItem[] }>;
+    }).listPersistentVolume();
+    for (const pv of pvList.items ?? []) {
+      const n = pv.metadata?.name;
+      const fs = pv.spec?.csi?.volumeAttributes?.fsType;
+      if (n && fs) fsTypeByPvName.set(n, fs);
+    }
+  } catch (err) {
+    console.warn('[clients/storage-placement] PV list failed:', (err as Error).message);
   }
 
   // Filesystem-level usage from kubelet stats/summary. The Longhorn
@@ -296,17 +397,13 @@ export async function getClientStoragePlacement(
     console.warn('[clients/storage-placement] kubelet stats failed:', (err as Error).message);
   }
 
-  const pvcs: Array<{
-    namespace: string; pvcName: string; volumeName: string;
-    sizeBytes: number; usedBytes: number; allocatedBytes: number;
-    state: string | null; robustness: string | null;
-    replicaNodes: string[];
-  }> = [];
+  const pvcs: ClientPvcPlacementRow[] = [];
   for (const pvc of (pvcsResp.items ?? [])) {
     const pvcName = pvc.metadata?.name ?? '';
     const volumeName = pvc.spec?.volumeName ?? '';
     if (!volumeName) continue;
     const meta = volumeIndex.get(volumeName);
+    const replicaNodes = (replicaNodesByVolume.get(volumeName) ?? []).slice().sort();
     pvcs.push({
       namespace,
       pvcName,
@@ -316,7 +413,13 @@ export async function getClientStoragePlacement(
       allocatedBytes: meta?.allocatedBytes ?? 0,
       state: meta?.state ?? null,
       robustness: meta?.robustness ?? null,
-      replicaNodes: (replicaNodesByVolume.get(volumeName) ?? []).slice().sort(),
+      replicaNodes,
+      engineConditions: meta?.engineConditions ?? [],
+      replicasHealthy: replicaNodes.length,
+      replicasExpected: meta?.numberOfReplicas ?? 1,
+      lastBackupAt: meta?.lastBackupAt ?? null,
+      fsType: fsTypeByPvName.get(volumeName) ?? null,
+      frontendState: meta?.frontendState ?? null,
     });
   }
   return { pvcs };
@@ -384,21 +487,28 @@ export async function listClients(
   };
 }
 
-export async function updateClient(db: Database, id: string, input: UpdateClientInput) {
+export async function updateClient(
+  db: Database,
+  id: string,
+  input: UpdateClientInput,
+  opts: { triggeredByUserId?: string | null; k8sClients?: K8sClients } = {},
+) {
   const existing = await getClientById(db, id); // throws if not found
 
-  // Storage safety: refuse to shrink `storage_limit_override` (or
-  // switch to a plan with smaller storage) through the plain update
-  // endpoint — a shrink requires `POST /storage/resize` which
-  // orchestrates quiesce → snapshot → PVC delete → recreate →
-  // restore. Silently writing a smaller quota row would leave the
-  // DB and the real PVC inconsistent.
+  // Storage policy:
+  //   • shrink (target < current MiB) → reject with STORAGE_RESIZE_REQUIRED.
+  //     Operator must call POST /storage/resize explicitly so the
+  //     destructive flow (snapshot+recreate+restore) is opt-in.
+  //   • grow  (target > current MiB) → accepted; we auto-trigger the
+  //     storage-lifecycle online-grow orchestrator AFTER the DB write
+  //     and surface the operation id so the UI can poll progress.
   //
   // Comparison is done in MiB (not GiB) so decimal-GiB overrides
   // (e.g. "2.44" for a 2500 MiB resize) don't silently round to the
   // plan's integer-GiB value and let a shrink slip through.
   const newOverride = input.storage_limit_override;
   const newPlanId = input.plan_id;
+  let pendingGrowMib: number | null = null;
   if (newOverride !== undefined || (newPlanId !== undefined && newPlanId !== existing.planId)) {
     const toMib = (gi: number) => Math.round(gi * 1024);
     const currentMib = existing.storageLimitOverride != null
@@ -433,6 +543,12 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
           remediation: 'Use the Resize Storage modal on the client detail page',
         },
       );
+    }
+    if (targetMib > currentMib) {
+      // Mark intent — resize call happens AFTER the DB write below so
+      // the persisted override matches what we ask the orchestrator
+      // to grow to.
+      pendingGrowMib = targetMib;
     }
   }
 
@@ -562,7 +678,38 @@ export async function updateClient(db: Database, id: string, input: UpdateClient
     }
   }
 
-  return getClientById(db, id);
+  // Auto-trigger online-grow when subscription/quota change asked for
+  // more storage. Done AFTER all other DB writes so the persisted
+  // override matches what the orchestrator targets. Failures here
+  // attach storageGrowOperationId=null to the response so the UI can
+  // surface the failure without rolling back the rest of the PATCH.
+  let storageGrowOperationId: string | null = null;
+  if (pendingGrowMib != null) {
+    try {
+      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+      const { resizeClient } = await import('../storage-lifecycle/service.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+      const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+      const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+      const { operationId } = await resizeClient(
+        { db, k8s, store, platformNamespace },
+        id,
+        { newMib: pendingGrowMib, triggeredByUserId: opts.triggeredByUserId ?? null },
+      );
+      storageGrowOperationId = operationId;
+    } catch (err) {
+      console.warn('[clients] Auto online-grow failed to start:', err instanceof Error ? err.message : String(err));
+      // Don't throw — the persisted override still applies to the
+      // ResourceQuota; operator can retry via the dedicated /storage/resize
+      // endpoint if the orchestrator startup itself failed.
+    }
+  }
+
+  const updated = await getClientById(db, id);
+  return storageGrowOperationId != null
+    ? { ...updated, storageGrowOperationId }
+    : updated;
 }
 
 export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {

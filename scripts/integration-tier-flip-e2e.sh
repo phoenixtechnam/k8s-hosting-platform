@@ -116,6 +116,73 @@ USED_OK=$(echo "$PLACEMENT" | python3 -c "import json,sys;d=json.load(sys.stdin)
 [[ "$HAS_ALLOC_FIELD" == "Y" ]] && ok "storage-placement.allocatedBytes field present" || fail "allocatedBytes field missing"
 [[ "$USED_OK" == "Y" ]] && ok "usedBytes is filesystem-level (not block-allocation overhead)" || fail "usedBytes looks like Longhorn allocation not kubelet — body: $(echo "$PLACEMENT" | head -c 400)"
 
+# ─── XFS migration assertions (2026-04-28) ───────────────────────────
+# longhorn-tenant SC was switched to fsType=xfs. Fresh tenants should
+# now report fsType=xfs in the placement endpoint AND a much smaller
+# empty-volume allocatedBytes (~40 MiB vs ~228 MiB on ext4).
+log "── XFS tenant filesystem assertions ──"
+FS_TYPE=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('fsType') or 'MISSING')" 2>/dev/null)
+[[ "$FS_TYPE" == "xfs" ]] && ok "fresh tenant PVC formatted as xfs" || fail "fsType=$FS_TYPE (expected xfs after SC migration)"
+
+ALLOC_BYTES=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('allocatedBytes') or 0)" 2>/dev/null)
+ALLOC_MIB=$(( ALLOC_BYTES / (1024*1024) ))
+# Threshold 60 MiB — XFS typical empty volume reports ~40 MiB. ext4
+# would report ~228 MiB so this firmly distinguishes the two. Cap at
+# 60 to leave headroom for filesystem variants.
+if [[ $ALLOC_BYTES -lt $((60*1024*1024)) ]]; then
+  ok "empty XFS volume allocatedBytes=${ALLOC_MIB} MiB < 60 MiB target"
+else
+  fail "allocatedBytes=${ALLOC_MIB} MiB — too high for empty XFS (suggests ext4)"
+fi
+
+# Health-metric fields (Phase 3 of the storage-health PR).
+HAS_REPL_HEALTHY=$(echo "$PLACEMENT" | python3 -c "import json,sys;print('Y' if 'replicasHealthy' in json.load(sys.stdin)['data']['pvcs'][0] else 'N')" 2>/dev/null)
+HAS_REPL_EXPECTED=$(echo "$PLACEMENT" | python3 -c "import json,sys;print('Y' if 'replicasExpected' in json.load(sys.stdin)['data']['pvcs'][0] else 'N')" 2>/dev/null)
+HAS_ENGINE_CONDS=$(echo "$PLACEMENT" | python3 -c "import json,sys;print('Y' if 'engineConditions' in json.load(sys.stdin)['data']['pvcs'][0] else 'N')" 2>/dev/null)
+[[ "$HAS_REPL_HEALTHY" == "Y" ]] && ok "storage-placement exposes replicasHealthy" || fail "replicasHealthy field missing"
+[[ "$HAS_REPL_EXPECTED" == "Y" ]] && ok "storage-placement exposes replicasExpected" || fail "replicasExpected field missing"
+[[ "$HAS_ENGINE_CONDS" == "Y" ]] && ok "storage-placement exposes engineConditions" || fail "engineConditions field missing"
+
+# Replica counts — this client was flipped to ha-tier above so we
+# expect 2 replicas desired and (eventually) 2 healthy.
+REPL_HEALTHY=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('replicasHealthy',0))" 2>/dev/null)
+REPL_EXPECTED=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('replicasExpected',0))" 2>/dev/null)
+[[ "$REPL_EXPECTED" == "2" ]] && ok "ha-tier replicasExpected=2" || fail "replicasExpected=$REPL_EXPECTED (expected 2 for ha)"
+# replicasHealthy may still be racing the rebuild — accept 1 or 2 here.
+if [[ "$REPL_HEALTHY" == "1" || "$REPL_HEALTHY" == "2" ]]; then
+  ok "ha-tier replicasHealthy=$REPL_HEALTHY (may race 1→2 during rebuild)"
+else
+  fail "replicasHealthy=$REPL_HEALTHY (expected 1 or 2)"
+fi
+
+# ─── fsck dry-run on a healthy fresh volume returns clean ──────────
+# The endpoint quiesces tenant + FM, runs xfs_repair -n, restores.
+# Total time ~30-60 s for a small volume on staging.
+log "── POST /storage/fsck (dry-run on healthy XFS volume) ──"
+FSCK_RESP=$(api POST "/clients/$CID/storage/fsck" "")
+FSCK_OP_ID=$(echo "$FSCK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
+if [[ -n "$FSCK_OP_ID" ]]; then
+  ok "fsck operation queued opId=${FSCK_OP_ID:0:8}"
+  # Poll the op until completedAt is set or timeout.
+  FSCK_STATE=""
+  for _ in $(seq 1 90); do
+    OP=$(api GET "/admin/storage/operations/$FSCK_OP_ID" 2>/dev/null || echo "{}")
+    FSCK_STATE=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('state','') if d.get('completedAt') else 'pending')" 2>/dev/null)
+    [[ "$FSCK_STATE" != "pending" ]] && break
+    sleep 3
+  done
+  case "$FSCK_STATE" in
+    idle) ok "fsck dry-run completed CLEAN on fresh XFS volume" ;;
+    failed)
+      FSCK_ERR=$(echo "$OP" | python3 -c "import json,sys;print((json.load(sys.stdin).get('data',{}).get('lastError') or '')[:300])" 2>/dev/null)
+      fail "fsck dry-run completed with errors: $FSCK_ERR"
+      ;;
+    *) fail "fsck dry-run state=$FSCK_STATE (expected idle/failed terminal)" ;;
+  esac
+else
+  fail "fsck endpoint did not return an operationId — body: $(echo "$FSCK_RESP" | head -c 300)"
+fi
+
 # ─── deploy a tenant workload, verify affinity patch on tier flip ────
 log "── deploy tenant workload + verify affinity flip ──"
 CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"

@@ -130,7 +130,34 @@ parameters:
   # Subsequent tier changes also live-patch via applyTenantTier.
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
-  fsType: "ext4"
+  # XFS on tenant volumes (was ext4 prior to 2026-04-28).
+  #
+  # Why: ext4 reserves ~5 % for the root user + writes a heavy
+  # static inode table at mkfs time, which is what makes a freshly
+  # formatted 10 GiB Longhorn volume already report ~228 MiB of
+  # `Volume.status.actualSize`. XFS allocates inodes dynamically as
+  # files are created, so a fresh empty 10 GiB volume reports
+  # ~40 MiB instead — a visible win on the per-client storage page
+  # when tenants only store a few MB of code + assets.
+  #
+  # Why this is safe for us specifically:
+  #   - Resize is ALWAYS destroy+recreate via
+  #     storage-lifecycle/service.ts:runResize (snapshot → delete
+  #     PVC → recreate at new size → restore). XFS's lack of
+  #     online-shrink would normally be a reason to prefer ext4,
+  #     but we never online-shrink.
+  #   - XFS grow (xfs_growfs) IS supported, but we don't grow
+  #     online either — same destroy+recreate path.
+  #   - Repair tooling (xfs_repair) is shipped with the host's
+  #     xfsprogs package; bootstrap.sh installs it.
+  #
+  # Existing ext4 PVCs are kept as-is — no migration. The platform
+  # is heterogeneous (some ext4, some xfs); the storage-placement
+  # endpoint surfaces fsType so operators can see which is which.
+  # System and mail tiers stay on ext4 — those volumes get fully
+  # populated quickly, so the empty-volume win doesn't apply, and
+  # we keep ext4 there to limit the change footprint.
+  fsType: "xfs"
   dataLocality: "best-effort"
   recurringJobSelector: '[{"name":"default","isGroup":true}]'
   # No nodeSelector — tenant volumes land on any host-client-workloads
