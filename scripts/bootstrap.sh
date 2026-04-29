@@ -198,15 +198,24 @@ PRIVATE-NETWORK UNDERLAY (recommended for HA):
                          false to scope to --cluster-network-cidr.
 
 PRE-REQUISITES (sysadmin, BEFORE running this script):
-  Bootstrap does NOT install or enrol any VPN/mesh tooling. If you want
-  a private-network underlay (recommended for HA — closes :6443/:8443/
-  etc. from the public internet), bring it up FIRST:
+  Bootstrap does NOT install or enrol VPN/mesh CLIENTS (NetBird,
+  Tailscale, etc.). It DOES install kernel WireGuard userland
+  (wireguard-tools) since Calico's pod-traffic encryption needs it.
+  If you want a private-network underlay (recommended for HA — closes
+  :6443/:8443/etc. from the public internet), bring it up FIRST:
     NetBird:    netbird up --management-url <url> --setup-key <KEY>
     Tailscale:  tailscale up --auth-key tskey-...
     Hetzner / cloud VLAN: attach VLAN at provider level
     Generic:   any private interface giving the host an IP in the CIDR
-  Then either pass --cluster-network-cidr <CIDR> explicitly, or rely on
-  auto-detect for wt0 / tailscale0 (defaults 100.64.0.0/10).
+
+  AUTO-DETECT: when bootstrap starts, configure_firewall checks for
+  wt0 (NetBird) or tailscale0 with an IP in 100.64.0.0/10. If found,
+  --cluster-network-cidr defaults to 100.64.0.0/10 and v6 is derived
+  from the interface's announced route prefix. No flag needed.
+
+  For non-mesh underlays (cloud VLAN, raw WireGuard, ZeroTier, etc.)
+  pass --cluster-network-cidr <CIDR> explicitly — bootstrap can't
+  auto-detect arbitrary interface names.
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
@@ -443,10 +452,18 @@ install_packages() {
   # privileged Pod. Hetzner Debian 13 images ship these by default
   # but we pin them explicitly so a minimal base image doesn't break
   # tenant provisioning.
+  # wireguard-tools: kernel WireGuard userland (wg, wg-quick). Installed
+  # unconditionally because Calico-managed WireGuard relies on the kernel
+  # module + tooling for pod-traffic encryption (UDP/51821), and many
+  # operator-side mesh underlays (NetBird, Tailscale, raw WG) also need
+  # `wg`/`wg-quick` available. We do NOT install or configure NetBird/
+  # Tailscale clients themselves — sysadmin brings the mesh up before
+  # running bootstrap (see docs/04-deployment/CLUSTER_NETWORK.md).
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
+    wireguard-tools \
     age \
     >/dev/null 2>&1
 
