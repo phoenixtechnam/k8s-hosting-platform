@@ -67,11 +67,11 @@ PLAN_ID=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);
 SMALLER_PLAN_ID=$(api GET "/plans" | python3 -c "
 import json, sys
 plans = json.load(sys.stdin)['data']
-plans_sorted = sorted(plans, key=lambda p: int(p.get('storageLimit', 0)))
+plans_sorted = sorted(plans, key=lambda p: int(float(p.get('storageLimit') or 0)))
 # Pick a plan that's strictly smaller than Starter; fall back to '' if Starter is smallest.
 starter = next((p for p in plans if p['name'] == 'Starter'), None)
 if starter:
-    smaller = [p for p in plans if int(p.get('storageLimit', 0)) < int(starter.get('storageLimit', 0))]
+    smaller = [p for p in plans if int(float(p.get('storageLimit') or 0)) < int(float(starter.get('storageLimit') or 0))]
     print(smaller[0]['id'] if smaller else '')
 else:
     print('')

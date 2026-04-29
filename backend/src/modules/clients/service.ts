@@ -704,6 +704,10 @@ export async function updateClient(
   // cascade at the right point (after snapshot, before/after PVC swap).
   let storageArchiveOperationId: string | null = null;
   let storageRestoreOperationId: string | null = null;
+  // Suspend/resume return op-id from the lifecycle orchestrator (which
+  // creates an op row and runs quiesce/unquiesce). Distinct from the
+  // archive/restore ids so the UI can decide which modal to open.
+  let storageOperationId: string | null = null;
   if (input.status === 'archived') {
     if (existing.status !== 'archived') {
       try {
@@ -749,22 +753,36 @@ export async function updateClient(
       throw new ApiError('RESTORE_FAILED', `Failed to start restore: ${msg}`, 502, undefined, 'Verify pre-archive snapshot still exists (retention may have expired) and retry');
     }
   } else if (input.status === 'suspended' || input.status === 'active') {
-    // Non-archive transitions: synchronous cascade path (no
-    // storage_operations row). applySuspended/applyActive handle
-    // ingress swap, mailbox disable, scaled-replica restore, etc.
+    // Non-archive transitions: dispatch to the storage-lifecycle
+    // suspend/resume orchestrators. They quiesce K8s deployments
+    // (scale to 0 / restore pre-suspend replicas) AND run the
+    // applySuspended/applyActive cascades for ingress swap, mailbox
+    // disable, etc. Operation row is created so the UI can track
+    // progress; storageOperationId is returned to the caller.
     try {
-      const { applySuspended, applyActive } = await import('../client-lifecycle/cascades.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-      const client = await getClientById(db, id);
+      const { suspendClient, resumeClient } = await import('../storage-lifecycle/service.js');
+      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
       const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
-      const ctx = { db, k8s };
+      const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+      const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+      const ctx = { db, k8s, store, platformNamespace };
       if (input.status === 'suspended') {
-        await applySuspended(ctx, id, client.kubernetesNamespace);
+        const { operationId } = await suspendClient(ctx, id, { triggeredByUserId: opts.triggeredByUserId ?? null });
+        storageOperationId = operationId;
       } else {
-        await applyActive(ctx, id, client.kubernetesNamespace);
+        const { operationId } = await resumeClient(ctx, id, { triggeredByUserId: opts.triggeredByUserId ?? null });
+        storageOperationId = operationId;
       }
     } catch (err) {
-      console.warn('[clients] Lifecycle cascade failed:', err instanceof Error ? err.message : String(err));
+      // ALREADY_SUSPENDED / NOT_SUSPENDED idempotency errors are
+      // benign — the row is already in the requested state. Other
+      // errors surface to the caller so the UI can show them.
+      if (err instanceof ApiError && (err.code === 'ALREADY_SUSPENDED' || err.code === 'NOT_SUSPENDED')) {
+        console.warn(`[clients.updateClient] suspend/resume idempotent: ${err.message}`);
+      } else {
+        throw err;
+      }
     }
   }
 
@@ -820,10 +838,12 @@ export async function updateClient(
     storageGrowOperationId?: string;
     storageArchiveOperationId?: string;
     storageRestoreOperationId?: string;
+    storageOperationId?: string;
   } = {};
   if (storageGrowOperationId != null) sideEffects.storageGrowOperationId = storageGrowOperationId;
   if (storageArchiveOperationId != null) sideEffects.storageArchiveOperationId = storageArchiveOperationId;
   if (storageRestoreOperationId != null) sideEffects.storageRestoreOperationId = storageRestoreOperationId;
+  if (storageOperationId != null) sideEffects.storageOperationId = storageOperationId;
   return Object.keys(sideEffects).length > 0
     ? { ...updated, ...sideEffects }
     : updated;
