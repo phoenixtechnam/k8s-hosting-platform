@@ -1,0 +1,24 @@
+# platform-tenant-ops — single namespace for short-lived platform-managed
+# Pods that act on behalf of a tenant but DON'T need to mount a tenant
+# PVC. Storage-lifecycle Jobs (fsck / snapshot / restore) and
+# mail-imapsync Jobs live here.
+#
+# Pods access tenant Longhorn volumes via hostPath /dev/longhorn/<pvc>
+# pinned to the volume's attached node — no PVC mount, no namespace
+# constraint.
+#
+# No ResourceQuota — these Pods MUST NOT count against any tenant quota.
+# PSA = privileged because fsck pods need block-device access (privileged
+# securityContext + hostPath).
+#
+# RBAC: platform-api ServiceAccount already has cluster-wide create/list/
+# watch/delete on Jobs and Pods; no extra binding needed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-tenant-ops
+  labels:
+    platform.io/purpose: tenant-ops
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

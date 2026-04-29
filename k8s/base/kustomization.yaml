@@ -3,6 +3,8 @@ kind: Kustomization
 
 resources:
   - namespaces.yaml
+  - priority-classes.yaml
+  - platform-tenant-ops/namespace.yaml
   - rbac.yaml
   - network-policies.yaml
   - resource-quotas.yaml

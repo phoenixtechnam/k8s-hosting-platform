@@ -133,11 +133,30 @@ export function updateStepStatus(
   });
 }
 
-// ─── System Service Reserves ────────────────────────────────────────────────
-// Extra CPU/memory headroom added to ResourceQuota to accommodate system pods
-// (file-manager) so they don't count against the client's plan limits.
-export const SYSTEM_CPU_RESERVE = 0.25;   // 250m for file-manager
-export const SYSTEM_MEMORY_RESERVE = 0.25; // 256Mi
+// ─── System Service Reserves (DEPRECATED) ───────────────────────────────────
+//
+// Originally we padded each client ResourceQuota by a SYSTEM_*_RESERVE so
+// file-manager (running in the client namespace) wouldn't eat into plan
+// limits. That guesswork is replaced by the two-tier placement model:
+//
+//   - Storage-lifecycle Jobs (fsck) run in `platform-tenant-ops` namespace
+//     (no quota at all).
+//   - file-manager (must stay in client namespace because of PVC mount) is
+//     tagged `priorityClassName: platform-tenant-overhead`. The quota's
+//     `scopeSelector` matches only `tenant-default` priority — file-manager
+//     is exempt.
+//
+// Constants are kept exported (= 0) for backwards compat with any caller
+// computing plan-vs-quota, but applyResourceQuota no longer adds them.
+export const SYSTEM_CPU_RESERVE = 0;
+export const SYSTEM_MEMORY_RESERVE = 0;
+
+/** PriorityClass that tenant ResourceQuotas count against (every Pod
+ *  without an explicit priorityClassName gets this via globalDefault). */
+export const TENANT_DEFAULT_PRIORITY_CLASS = 'tenant-default';
+/** PriorityClass for platform-managed Pods that live in tenant
+ *  namespaces but should NOT count against the tenant ResourceQuota. */
+export const TENANT_OVERHEAD_PRIORITY_CLASS = 'platform-tenant-overhead';
 
 // ─── K8s Resource Creators ───────────────────────────────────────────────────
 
@@ -174,18 +193,27 @@ export async function applyResourceQuota(
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
 ): Promise<void> {
-  // Add system service headroom so file-manager doesn't eat into the client's quota
-  const totalCpu = (parseFloat(limits.cpu) + SYSTEM_CPU_RESERVE).toFixed(2);
-  const totalMemoryGi = (parseFloat(limits.memory) + SYSTEM_MEMORY_RESERVE).toFixed(2);
-
+  // Quota = plan limits exactly (no padding). The scopeSelector below
+  // makes the quota count ONLY tenant-default Pods, so file-manager
+  // (priorityClassName=platform-tenant-overhead) and any future system
+  // Pod in this namespace are naturally exempt.
   const quotaName = `${namespace}-quota`;
   const body = {
     metadata: { name: quotaName, namespace },
     spec: {
       hard: {
-        'limits.cpu': totalCpu,
-        'limits.memory': `${totalMemoryGi}Gi`,
+        'limits.cpu': limits.cpu,
+        'limits.memory': `${limits.memory}Gi`,
         'requests.storage': `${limits.storage}Gi`,
+      },
+      scopeSelector: {
+        matchExpressions: [
+          {
+            scopeName: 'PriorityClass',
+            operator: 'In',
+            values: [TENANT_DEFAULT_PRIORITY_CLASS],
+          },
+        ],
       },
     },
   };
@@ -193,13 +221,27 @@ export async function applyResourceQuota(
   try {
     await k8s.core.createNamespacedResourceQuota({ namespace, body });
   } catch (err: unknown) {
-    // Already exists — replace with updated values
-    if (isK8s409(err)) {
+    // Already exists — replace with updated values. Note: ResourceQuota
+    // scope/scopeSelector is IMMUTABLE after creation. If the existing
+    // quota lacks our scopeSelector, the replace will 422; we handle
+    // that by deleting + recreating (only when the scope is missing).
+    if (!isK8s409(err)) throw err;
+    try {
       await k8s.core.replaceNamespacedResourceQuota({ name: quotaName, namespace, body } as Parameters<typeof k8s.core.replaceNamespacedResourceQuota>[0]);
-    } else {
-      throw err;
+    } catch (replaceErr: unknown) {
+      if (!isQuotaScopeImmutable(replaceErr)) throw replaceErr;
+      // Delete + recreate to add the scope selector. Brief window
+      // (~ms) where the namespace is unbounded, acceptable on a
+      // one-shot upgrade.
+      await k8s.core.deleteNamespacedResourceQuota({ name: quotaName, namespace } as never);
+      await k8s.core.createNamespacedResourceQuota({ namespace, body });
     }
   }
+}
+
+function isQuotaScopeImmutable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /scope.*immutable|scopeSelector.*immutable/i.test(err.message);
 }
 
 export async function applyNetworkPolicy(

@@ -69,9 +69,13 @@ export async function restoreTenantPVC(
       backoffLimit: 0,
       ttlSecondsAfterFinished: 600,
       template: {
-        metadata: { labels: { 'platform.io/component': 'restore' } },
+        metadata: { labels: { 'platform.io/component': 'restore', 'platform.io/client-id': opts.clientId } },
         spec: {
           restartPolicy: 'Never',
+          // Restore Jobs MUST run in the client namespace because they
+          // mount the tenant PVC. Tag with the overhead priority class
+          // so they don't count against the client's ResourceQuota.
+          priorityClassName: 'platform-tenant-overhead',
           containers: [{
             name: 'tar',
             image: jobImage,

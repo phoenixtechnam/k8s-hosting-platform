@@ -1,0 +1,52 @@
+# Cluster-wide PriorityClasses for the multi-tenant platform.
+#
+# Three classes implement the two-tier system-pod placement model:
+#
+#   tenant-default            (priority 0, globalDefault=true)
+#     Default for every Pod that doesn't set priorityClassName explicitly.
+#     The per-client ResourceQuota counts these Pods.
+#
+#   platform-tenant-overhead  (priority 100)
+#     For platform-managed Pods that LIVE IN a client namespace because
+#     they need to mount a client PVC (file-manager). Tenant ResourceQuota
+#     EXEMPTS this class via scopeSelector — eliminates the previous
+#     SYSTEM_CPU_RESERVE/SYSTEM_MEMORY_RESERVE padding.
+#     Priority > tenant-default so file-manager survives cluster
+#     contention before tenant pods are evicted.
+#
+#   platform-storage-ops      (priority 1000)
+#     For storage-lifecycle Jobs (fsck / snapshot / restore) and other
+#     short-lived recovery operations that run in `platform-tenant-ops`
+#     namespace. Highest of the three because these are recovery
+#     actions — losing them mid-flight risks data integrity.
+#
+# Cluster-system / node-critical Pods retain their own existing
+# PriorityClasses (system-cluster-critical 2_000_000_000 etc.); those
+# are unaffected by globalDefault since K8s only applies the default
+# when priorityClassName is unset.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tenant-default
+value: 0
+globalDefault: true
+description: "Default priority for tenant workloads. Counts against the client ResourceQuota."
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-tenant-overhead
+value: 100
+globalDefault: false
+description: "Platform-managed Pods running inside a tenant namespace (file-manager etc.). Exempt from client ResourceQuota."
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-storage-ops
+value: 1000
+globalDefault: false
+description: "Short-lived storage-lifecycle Jobs (fsck / snapshot / restore) running in the platform-tenant-ops namespace."
+preemptionPolicy: PreemptLowerPriority

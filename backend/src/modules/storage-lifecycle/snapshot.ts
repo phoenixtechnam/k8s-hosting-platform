@@ -97,9 +97,13 @@ export async function snapshotTenantPVC(
       backoffLimit: 0, // don't retry on failure — fail fast, orchestrator decides
       ttlSecondsAfterFinished: 600, // auto-delete after 10 min regardless of outcome
       template: {
-        metadata: { labels: { 'platform.io/component': 'snapshot' } },
+        metadata: { labels: { 'platform.io/component': 'snapshot', 'platform.io/client-id': opts.clientId } },
         spec: {
           restartPolicy: 'Never',
+          // Snapshot Jobs MUST run in the client namespace because they
+          // mount the tenant PVC. Tag with the overhead priority class
+          // so they don't count against the client's ResourceQuota.
+          priorityClassName: 'platform-tenant-overhead',
           containers: [{
             name: 'tar',
             image: jobImage,

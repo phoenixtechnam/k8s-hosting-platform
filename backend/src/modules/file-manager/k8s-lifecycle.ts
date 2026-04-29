@@ -84,6 +84,13 @@ export async function ensureFileManagerRunning(
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
+              // file-manager runs in the client namespace because it
+              // mounts the client's RWO PVC, but it is platform infra,
+              // not tenant workload — so it MUST NOT count against the
+              // client's ResourceQuota. The `platform-tenant-overhead`
+              // PriorityClass is exempted by the quota's scopeSelector
+              // (see applyResourceQuota in k8s-provisioner/service.ts).
+              priorityClassName: 'platform-tenant-overhead',
               // Co-locate FM with tenant workload pods that mount the
               // shared RWO `client-storage` PVC. Use platform.io/managed=true
               // — that label is on tenant deployments but NOT on system

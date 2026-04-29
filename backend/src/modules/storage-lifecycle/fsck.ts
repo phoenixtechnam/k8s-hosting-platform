@@ -1,4 +1,5 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { PLATFORM_TENANT_OPS_NS, STORAGE_OPS_PRIORITY_CLASS } from './platform-ns.js';
 
 /**
  * Filesystem check / repair helpers — run xfs_repair (XFS) or e2fsck
@@ -51,6 +52,11 @@ const DEFAULT_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
 interface FsckOpts {
+  /**
+   * Client's own namespace. The fsck Job DOES NOT run here anymore —
+   * it runs in PLATFORM_TENANT_OPS_NS — but we keep the field as a
+   * label for filtering by client and for log messages.
+   */
   readonly namespace: string;
   /** PV name (NOT the PVC name) — Longhorn names its block device
    *  /dev/longhorn/<pv-name>. Caller looks this up via PVC.spec.volumeName. */
@@ -128,6 +134,11 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
   const jobName = `fsck-${opts.dryRun ? 'check' : 'repair'}-${opts.volumeName.slice(-12)}-${Date.now().toString(36)}`.slice(0, 63);
   const script = buildFsckScript(opts.fsType, opts.dryRun);
 
+  // Job runs in the platform-tenant-ops namespace (no quota), NOT in
+  // the client namespace. The client's namespace is preserved as a
+  // label only, so cancel-by-client and progress UIs still work.
+  const jobNamespace = PLATFORM_TENANT_OPS_NS;
+
   // Longhorn block device path on the host. Created by the engine pod
   // when the volume is attached; remains until next detach.
   const devPath = `/dev/longhorn/${opts.volumeName}`;
@@ -135,10 +146,11 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
   const jobBody = {
     metadata: {
       name: jobName,
-      namespace: opts.namespace,
+      namespace: jobNamespace,
       labels: {
         'platform.io/component': 'fsck',
         'platform.io/client-id': opts.clientId,
+        'platform.io/client-namespace': opts.namespace,
         'platform.io/fsck-mode': opts.dryRun ? 'check' : 'repair',
       },
     },
@@ -146,12 +158,21 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
       backoffLimit: 0,
       ttlSecondsAfterFinished: 1800,
       template: {
-        metadata: { labels: { 'platform.io/component': 'fsck' } },
+        metadata: {
+          labels: {
+            'platform.io/component': 'fsck',
+            'platform.io/client-id': opts.clientId,
+          },
+        },
         spec: {
           restartPolicy: 'Never',
           // Pin to the node currently holding the Longhorn volume —
           // /dev/longhorn/<vol> only exists on that node.
           nodeName: opts.nodeName,
+          // Higher than tenant-default so storage recovery preempts
+          // tenant pods on cluster contention. Defined cluster-wide
+          // in k8s/base/priority-classes.yaml.
+          priorityClassName: STORAGE_OPS_PRIORITY_CLASS,
           containers: [{
             name: 'fsck',
             image: jobImage,
@@ -188,7 +209,7 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
 
   await (k8s.batch as unknown as {
     createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: opts.namespace, body: jobBody });
+  }).createNamespacedJob({ namespace: jobNamespace, body: jobBody });
 
   // Poll for completion
   const start = Date.now();
@@ -199,7 +220,7 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
       readNamespacedJob: (args: { name: string; namespace: string }) => Promise<{
         status?: { conditions?: Array<{ type: string; status: string }>; succeeded?: number; failed?: number };
       }>;
-    }).readNamespacedJob({ name: jobName, namespace: opts.namespace });
+    }).readNamespacedJob({ name: jobName, namespace: jobNamespace });
     const status = job.status ?? {};
     const completed = (status.conditions ?? []).find((c) => c.type === 'Complete' && c.status === 'True');
     const failed = (status.conditions ?? []).find((c) => c.type === 'Failed' && c.status === 'True');
@@ -208,7 +229,7 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
       break;
     }
     if (failed || (status.failed ?? 0) > 0) {
-      finalExitCode = await readPodExitCode(k8s, opts.namespace, jobName);
+      finalExitCode = await readPodExitCode(k8s, jobNamespace, jobName);
       break;
     }
     if (Date.now() - start > timeoutMs) {
@@ -216,19 +237,19 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
     }
     if (opts.onProgress) {
       const { tailJobLog } = await import('./job-log-tail.js');
-      const tail = await tailJobLog(k8s, opts.namespace, jobName);
+      const tail = await tailJobLog(k8s, jobNamespace, jobName);
       if (tail) await opts.onProgress(`${opts.fsType}: ${tail}`);
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
 
-  const output = await readPodLogs(k8s, opts.namespace, jobName);
+  const output = await readPodLogs(k8s, jobNamespace, jobName);
 
   // Best-effort delete; ttlSecondsAfterFinished GCs anyway.
   try {
     await (k8s.batch as unknown as {
       deleteNamespacedJob: (args: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
-    }).deleteNamespacedJob({ name: jobName, namespace: opts.namespace, propagationPolicy: 'Background' });
+    }).deleteNamespacedJob({ name: jobName, namespace: jobNamespace, propagationPolicy: 'Background' });
   } catch { /* fine */ }
 
   // "clean" heuristic: exit 0 AND no obvious error keyword.
