@@ -55,12 +55,15 @@ K3S_TOKEN=""
 K3S_VERSION="v1.33.10+k3s1"
 CALICO_VERSION="v3.31.5"
 
-# Private-network underlay (M12). When --cluster-network-cidr is set,
-# every cross-node K8s flow (etcd peer, apiserver, kubelet, Calico
-# Typha + VXLAN) is pinned to the IP picked from that CIDR on the host.
-# Public TCP/2379-2380, TCP/5473, TCP/10250, UDP/4789 stay closed —
-# the CIDR-restricted nft allow IS the allowlist. See doc examples
-# below (NetBird / Tailscale / generic).
+# Private-network underlay. When --cluster-network-cidr is set (or
+# auto-detected from a wt0/tailscale0 interface that the sysadmin
+# brought up before bootstrap), every cross-node K8s flow (etcd peer,
+# apiserver, kubelet, Calico Typha + VXLAN, ingress-nginx admission)
+# is pinned to the IP picked from that CIDR on the host. Public
+# TCP/2379-2380, TCP/5473, TCP/10250, TCP/8443, TCP/6443, UDP/4789
+# stay closed — the CIDR-restricted nft allow IS the allowlist.
+# Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
+# does that beforehand. See docs/04-deployment/CLUSTER_NETWORK.md.
 CLUSTER_NETWORK_CIDR=""
 # IPv6 sibling of CLUSTER_NETWORK_CIDR. Auto-detected from wt0/tailscale0
 # scope-global v6 if not set explicitly. Empty → no v6 cluster-allow rule
@@ -73,8 +76,6 @@ CLUSTER_NETWORK_CIDR_V6=""
 # Calico's WG endpoint is announced as the underlay (eth0) IP, not the
 # mesh IP, so scoping to the mesh CIDR would block legitimate handshakes.
 CALICO_WG_PUBLIC="true"
-NETBIRD_MANAGEMENT_URL=""
-NETBIRD_SETUP_KEY=""
 
 # ─── Pinned component versions ────────────────────────────────────────────────
 # Updated 2026-04-21. When bumping, verify:
@@ -92,7 +93,6 @@ ACME_EMAIL=""
 ENABLE_MONITORING=false
 SKIP_FLUX=false
 SKIP_HARDENING=false
-SKIP_VPN=false
 SKIP_LONGHORN=false
 SKIP_SMOKE=false               # --skip-smoke disables the post-install smoke run
 REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI use)
@@ -133,7 +133,6 @@ OPTIONS:
   --with-monitoring      Install Prometheus + Loki
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
-  --skip-vpn             Skip WireGuard + NetBird
   --skip-longhorn        Skip Longhorn storage (use local-path)
   --skip-cnpg            Skip CloudNative-PG operator install (M10).
   --skip-smoke           Skip the post-install cluster-network smoke run.
@@ -198,15 +197,16 @@ PRIVATE-NETWORK UNDERLAY (recommended for HA):
                          reliably. Persona B (real cloud VLAN) may set
                          false to scope to --cluster-network-cidr.
 
-NETBIRD CONVENIENCE (optional, brings up wt0 before k3s):
-  --netbird-management-url <url>
-                         e.g. https://vpn.phoenix-host.net
-  --netbird-setup-key <uuid>
-                         Setup key from the NetBird admin console.
-                         When both are set, bootstrap runs `netbird up`
-                         and waits for wt0 in 100.64.0.0/10 before
-                         installing k3s. If --cluster-network-cidr is
-                         not given, defaults to 100.64.0.0/10.
+PRE-REQUISITES (sysadmin, BEFORE running this script):
+  Bootstrap does NOT install or enrol any VPN/mesh tooling. If you want
+  a private-network underlay (recommended for HA — closes :6443/:8443/
+  etc. from the public internet), bring it up FIRST:
+    NetBird:    netbird up --management-url <url> --setup-key <KEY>
+    Tailscale:  tailscale up --auth-key tskey-...
+    Hetzner / cloud VLAN: attach VLAN at provider level
+    Generic:   any private interface giving the host an IP in the CIDR
+  Then either pass --cluster-network-cidr <CIDR> explicitly, or rely on
+  auto-detect for wt0 / tailscale0 (defaults 100.64.0.0/10).
 
 REMOTE MODE:
   --remote <host>        Run on remote server via SSH
@@ -216,49 +216,46 @@ REMOTE MODE:
 EXAMPLES:
 
   # ─ NetBird-private 3-server HA cluster ─────────────────────────────
+  # SYSADMIN, on each node, BEFORE running bootstrap:
+  #   netbird up --management-url https://vpn.example.com --setup-key <UUID>
+  # Then bootstrap auto-detects wt0 and uses 100.64.0.0/10 as the underlay.
+
   # First server (creates the cluster):
   ./bootstrap.sh --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
-    --netbird-management-url https://vpn.phoenix-host.net \
-    --netbird-setup-key <UUID>
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net
 
   # Second & third servers (join over NetBird wt0 IP, NOT public IP):
   ./bootstrap.sh --join-as server \
     --server 100.64.1.5 --token K10abc...:server:def... \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
-    --netbird-management-url https://vpn.phoenix-host.net \
-    --netbird-setup-key <UUID>
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net
 
-  # Worker (over NetBird):
+  # Worker:
   ./bootstrap.sh --join-as worker \
-    --server 100.64.1.5 --token K10abc...:server:def... \
-    --netbird-management-url https://vpn.phoenix-host.net \
-    --netbird-setup-key <UUID>
+    --server 100.64.1.5 --token K10abc...:server:def...
 
-  # ─ Tailscale-private cluster (operator brings tailscale up first) ──
-  # Tailscale's tailnet IP becomes the cluster underlay. tailscale also
-  # uses 100.64.0.0/10 by default; the operator runs `tailscale up
-  # --auth-key tskey-...` before bootstrap.
+  # ─ Tailscale-private cluster ───────────────────────────────────────
+  # SYSADMIN: tailscale up --auth-key tskey-... (before bootstrap)
+  # Auto-detect picks tailscale0 → 100.64.0.0/10.
   ./bootstrap.sh --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
-    --cluster-network-cidr 100.64.0.0/10
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net
 
   # ─ Generic private network (Hetzner Cloud private net, VLAN, ZeroTier) ─
+  # SYSADMIN: attach the host to the private network at provider level.
+  # No auto-detect for non-mesh interfaces — pass --cluster-network-cidr.
   ./bootstrap.sh --join-as server \
     --domain phoenix-host.net --acme-email ops@phoenix-host.net \
     --cluster-network-cidr 10.0.0.0/16
 
-  # ─ Public underlay (single server, no HA) ──────────────────────────
-  # No --cluster-network-cidr. Cross-node k8s flows would be blocked
-  # by the firewall — only single-server installs should use this.
+  # ─ Single server, no HA, no underlay ───────────────────────────────
+  # Set mode auto-engages; reconciler DaemonSet idles since there's
+  # only one node. Adding peers later requires peer-firewall-add.
   ./bootstrap.sh --join-as server \
     --domain phoenix-host.net --acme-email ops@phoenix-host.net
 
   # ─ Remote bootstrap from workstation ───────────────────────────────
   ./bootstrap.sh --remote 1.2.3.4 --ssh-key ~/hosting-platform.key \
     --join-as server \
-    --domain phoenix-host.net --acme-email ops@phoenix-host.net \
-    --cluster-network-cidr 100.64.0.0/10
+    --domain phoenix-host.net --acme-email ops@phoenix-host.net
 HELPTEXT
   exit 0
 }
@@ -283,13 +280,14 @@ parse_args() {
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
-      --netbird-management-url) NETBIRD_MANAGEMENT_URL="$2"; shift 2 ;;
-      --netbird-setup-key) NETBIRD_SETUP_KEY="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
-      --skip-vpn)        SKIP_VPN=true; shift ;;
+      --skip-vpn)        shift ;; # Deprecated — bootstrap no longer installs VPN tools; sysadmin responsibility
+      --netbird-management-url|--netbird-setup-key)
+                         warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/04-deployment/CLUSTER_NETWORK.md."
+                         shift 2 ;;
       --skip-longhorn)   SKIP_LONGHORN=true; shift ;;
       --skip-cnpg)       SKIP_CNPG=true; shift ;;
       --skip-smoke)      SKIP_SMOKE=true; shift ;;
@@ -353,14 +351,6 @@ parse_args() {
   fi
   if [[ "$NODE_ROLE" == "server" && -z "$K3S_SERVER_IP" && -n "$K3S_TOKEN" ]]; then
     error "--join-as server with --token requires --server (joining existing cluster)"
-  fi
-
-  # NetBird convenience flags must be paired.
-  if [[ -n "$NETBIRD_MANAGEMENT_URL" && -z "$NETBIRD_SETUP_KEY" ]]; then
-    error "--netbird-management-url requires --netbird-setup-key"
-  fi
-  if [[ -z "$NETBIRD_MANAGEMENT_URL" && -n "$NETBIRD_SETUP_KEY" ]]; then
-    error "--netbird-setup-key requires --netbird-management-url"
   fi
 
   # Validate CLUSTER_NETWORK_CIDR shape if set. Tight regex: 4 octets +
@@ -793,66 +783,30 @@ EOF
   log "fail2ban configured."
 }
 
-install_vpn_tools() {
-  if [[ "$SKIP_VPN" == true ]]; then
-    log "Skipping VPN tools (--skip-vpn)."
-    return 0
-  fi
-
-  # WireGuard
-  if command -v wg &>/dev/null; then
-    log "WireGuard already installed."
-  else
-    log "Installing WireGuard..."
-    apt-get install -y -qq wireguard-tools >/dev/null 2>&1
-    log "WireGuard installed (not configured — run 'wg-quick up <iface>' when ready)."
-  fi
-
-  # NetBird — install client if missing.
-  if command -v netbird &>/dev/null; then
-    log "NetBird already installed."
-  else
-    log "Installing NetBird client..."
-    curl -fsSL https://pkgs.netbird.io/install.sh | sh >/dev/null 2>&1
-    systemctl enable netbird 2>/dev/null || true
-  fi
-
-  # M12: when --netbird-management-url + --netbird-setup-key are set,
-  # bring NetBird up + wait for wt0 to come online BEFORE install_k3s
-  # runs. Default-inject CLUSTER_NETWORK_CIDR=100.64.0.0/10 if the
-  # operator didn't override it (NetBird CGNAT default).
-  if [[ -n "$NETBIRD_MANAGEMENT_URL" && -n "$NETBIRD_SETUP_KEY" ]]; then
-    log "Bringing NetBird up (mgmt: ${NETBIRD_MANAGEMENT_URL})..."
-    # `netbird up` is idempotent — re-running with --setup-key on an
-    # already-connected node is a no-op.
-    netbird up \
-      --management-url "$NETBIRD_MANAGEMENT_URL" \
-      --setup-key "$NETBIRD_SETUP_KEY" \
-      >/dev/null 2>&1 \
-      || error "netbird up failed — check management URL + setup key."
-
-    log "Waiting for NetBird interface (wt0) to acquire an IP..."
-    local _attempt
-    for _attempt in $(seq 1 30); do
-      if ip -4 -o addr show wt0 2>/dev/null | grep -q 'inet '; then
-        local wt0_ip
-        wt0_ip=$(ip -4 -o addr show wt0 | awk '{print $4}' | head -1)
-        log "NetBird up: wt0 = ${wt0_ip}"
-        break
-      fi
-      sleep 2
-    done
-    if ! ip -4 -o addr show wt0 2>/dev/null | grep -q 'inet '; then
-      error "NetBird interface wt0 did not come up within 60 seconds."
+verify_underlay() {
+  # Bootstrap does NOT install or enrol any VPN/mesh tooling — that's a
+  # sysadmin responsibility, performed before this script runs. This
+  # function only verifies the underlay state the operator told us
+  # about, so we fail loud rather than half-configuring a node that
+  # silently falls back to public-internet control-plane traffic.
+  #
+  # Three operator paths:
+  #   (a) --cluster-network-cidr <CIDR>: a private/mesh network is
+  #       already in place; verify the host has an IP inside that CIDR.
+  #   (b) wt0 / tailscale0 interface present: auto-detect picks
+  #       100.64.0.0/10 in configure_firewall; nothing to enforce here.
+  #   (c) neither — operator gets set mode (HA) or single mode. No
+  #       underlay to verify.
+  if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
+    local ip
+    ip=$(resolve_cluster_network_ip)
+    if [[ -z "$ip" ]]; then
+      error "No host IP found inside --cluster-network-cidr ${CLUSTER_NETWORK_CIDR}.
+       Bring up your VPN (NetBird/Tailscale: 'netbird up' / 'tailscale up')
+       or attach the host to its private VLAN BEFORE running bootstrap.
+       This script does not install or enrol VPN tooling."
     fi
-
-    # Default-inject CIDR if operator didn't override.
-    if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
-      CLUSTER_NETWORK_CIDR="100.64.0.0/10"
-      log "Defaulting --cluster-network-cidr to ${CLUSTER_NETWORK_CIDR} (NetBird CGNAT)."
-    fi
-  else
-    log "NetBird installed but not configured. Run 'netbird up --setup-key <KEY>' when ready, or pass --netbird-management-url + --netbird-setup-key to bootstrap.sh."
+    log "Underlay OK: host IP ${ip} is inside ${CLUSTER_NETWORK_CIDR}."
   fi
 }
 
@@ -2724,7 +2678,6 @@ print_summary() {
   log "    - Sealed Secrets"
   [[ "$ENABLE_MONITORING" == true ]] && log "    - Prometheus + Grafana + Loki"
   [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
-  [[ "$SKIP_VPN" != true ]]        && log "    - WireGuard + NetBird (installed, not configured)"
   log "    - Platform namespaces + RBAC + network policies"
   log ""
   log "  To use kubectl from another machine:"
@@ -2830,16 +2783,14 @@ main() {
   log ""
 
   # Phase 1: Server hardening (both roles).
-  # Order matters: install_vpn_tools may default-inject CLUSTER_NETWORK_CIDR
-  # (NetBird convenience), so it must run BEFORE configure_firewall, which
-  # embeds the CIDR into nft rules. configure_fail2ban runs LAST so that an
-  # error inside install_vpn_tools (failed `netbird up`) leaves the node
-  # with the firewall already locked down by `policy drop` rather than
-  # half-hardened.
+  # Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
+  # responsibility, performed before this script runs. verify_underlay
+  # asserts the operator-claimed underlay is actually up; configure_firewall
+  # then auto-detects wt0/tailscale0 and renders cidr-mode rules.
   log "── Phase 1: Server Hardening ──"
   harden_ssh
   install_packages
-  install_vpn_tools
+  verify_underlay
   configure_firewall
   configure_fail2ban
 
