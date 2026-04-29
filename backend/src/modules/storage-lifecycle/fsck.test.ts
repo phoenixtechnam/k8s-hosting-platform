@@ -50,3 +50,49 @@ describe('buildFsckScript', () => {
     expect(script).toMatch(/exit 65/); // missing-device sentinel
   });
 });
+
+describe('platform-ns constants', () => {
+  it('exports the platform-tenant-ops namespace + storage-ops priority class', async () => {
+    const { PLATFORM_TENANT_OPS_NS, STORAGE_OPS_PRIORITY_CLASS } = await import('./platform-ns.js');
+    expect(PLATFORM_TENANT_OPS_NS).toBe('platform-tenant-ops');
+    expect(STORAGE_OPS_PRIORITY_CLASS).toBe('platform-storage-ops');
+  });
+});
+
+describe('runFsck — Job placement', () => {
+  it('creates Jobs in the platform-tenant-ops namespace with the storage-ops priority class', async () => {
+    const { runFsck } = await import('./fsck.js');
+    interface JobBody {
+      metadata?: { labels?: Record<string, string> };
+      spec?: { template?: { spec?: { priorityClassName?: string } } };
+    }
+    const calls: Array<{ kind: string; namespace: string; body?: JobBody }> = [];
+    const k8s = {
+      batch: {
+        createNamespacedJob: async (args: { namespace: string; body: JobBody }) => {
+          calls.push({ kind: 'createJob', namespace: args.namespace, body: args.body });
+        },
+        readNamespacedJob: async () => ({ status: { conditions: [{ type: 'Complete', status: 'True' }], succeeded: 1 } }),
+        deleteNamespacedJob: async () => undefined,
+      },
+      core: {
+        listNamespacedPod: async () => ({ items: [{ metadata: { name: 'fsck-pod' }, status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] } }] }),
+        readNamespacedPodLog: async () => '[fsck] exit=0\nfilesystem clean',
+      },
+    } as never;
+    await runFsck(k8s, {
+      namespace: 'client-tester',
+      volumeName: 'pvc-abc12345',
+      clientId: 'c-1',
+      fsType: 'ext4',
+      dryRun: true,
+      nodeName: 'node-a',
+    });
+    const jobCall = calls.find((c) => c.kind === 'createJob');
+    expect(jobCall).toBeDefined();
+    expect(jobCall!.namespace).toBe('platform-tenant-ops');
+    expect(jobCall!.body!.metadata!.labels!['platform.io/client-id']).toBe('c-1');
+    expect(jobCall!.body!.metadata!.labels!['platform.io/client-namespace']).toBe('client-tester');
+    expect(jobCall!.body!.spec!.template!.spec!.priorityClassName).toBe('platform-storage-ops');
+  });
+});
