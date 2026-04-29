@@ -238,7 +238,19 @@ First-time login uses the seeded admin credentials printed at the end of `bootst
 
 #### Extended post-bootstrap sanity
 
-Run these from your workstation after fetching the kubeconfig (`scp <user>@<server>:/etc/rancher/k3s/k3s.yaml ~/.kube/staging-config && sed -i.bak "s/127.0.0.1/<server-ip>/" ~/.kube/staging-config && export KUBECONFIG=~/.kube/staging-config`):
+Run these from your workstation after fetching the kubeconfig. **Important:** `:6443` is scoped to the cluster's private/mesh CIDR (see [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md)) — your laptop must reach the cluster via the mesh (NetBird/Tailscale) or be on the same VPC/VLAN. Substitute `<mesh-or-private-ip>` (e.g. the node's `wt0` IP) for the public address:
+
+```bash
+scp <user>@<server>:/etc/rancher/k3s/k3s.yaml ~/.kube/staging-config
+sed -i.bak "s/127.0.0.1/<mesh-or-private-ip>/" ~/.kube/staging-config
+export KUBECONFIG=~/.kube/staging-config
+```
+
+If your laptop isn't on the cluster's network, SSH-tunnel and use the in-server kubeconfig instead:
+```bash
+ssh -L 6443:127.0.0.1:6443 root@<server>      # in one shell
+KUBECONFIG=~/.kube/staging-config kubectl get nodes
+```
 
 ```bash
 # 1. Cluster health

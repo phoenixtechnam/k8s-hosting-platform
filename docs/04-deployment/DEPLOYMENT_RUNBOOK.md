@@ -109,13 +109,19 @@ Retrieve the join token from the control plane: `cat /var/lib/rancher/k3s/server
 
 ### Copy kubeconfig to your local machine
 
-After bootstrap completes, copy the kubeconfig for remote `kubectl` access:
+After bootstrap completes, copy the kubeconfig for remote `kubectl` access. **Important:** `:6443` is firewalled to the cluster's private/mesh CIDR — see [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md). Substitute the **mesh / private** IP (NetBird `wt0`, Tailscale, VLAN), not the public IP:
 
 ```bash
 scp root@<VPS_IP>:/etc/rancher/k3s/k3s.yaml ./kubeconfig.yaml
-sed -i "s/127.0.0.1/<VPS_IP>/g" kubeconfig.yaml
+sed -i "s/127.0.0.1/<MESH_OR_PRIVATE_IP>/g" kubeconfig.yaml
 export KUBECONFIG=./kubeconfig.yaml
 kubectl get nodes
+```
+
+If your workstation isn't on the cluster's network, SSH-tunnel instead:
+```bash
+ssh -L 6443:127.0.0.1:6443 root@<VPS_IP>   # in one shell
+KUBECONFIG=./kubeconfig.yaml kubectl get nodes
 ```
 
 ---

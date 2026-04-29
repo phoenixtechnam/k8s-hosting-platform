@@ -25,6 +25,11 @@ resources:
   - ingress.yaml
   - sftp-gateway.yaml
   - sftp-gateway-netpol.yaml
+  # peer-firewall-reconciler — keeps host nft sets cluster_peers_v{4,6}
+  # in sync with kube-API node InternalIPs. Idles on clusters in cidr or
+  # single firewall mode (the nft sets don't exist there). See
+  # docs/04-deployment/CLUSTER_NETWORK.md for the three-mode design.
+  - peer-firewall-reconciler/
   - oauth2-proxy/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml

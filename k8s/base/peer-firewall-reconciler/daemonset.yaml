@@ -1,0 +1,66 @@
+# peer-firewall-reconciler DaemonSet — set-mode firewall (Persona C).
+#
+# When CLUSTER_NETWORK_CIDR is unset and no NetBird/Tailscale mesh
+# interface is detected, scripts/bootstrap.sh declares nft sets
+# `cluster_peers_v4` and `cluster_peers_v6` and scopes cluster-internal
+# control-plane ports (6443, 8443, 10250, 5473, 2379-2380) to those
+# sets. This DaemonSet keeps the sets in sync with kube-API node
+# InternalIPs.
+#
+# In cidr or single mode, the sets do not exist; the reconciler detects
+# this at startup and idles. Same manifest ships everywhere — no
+# per-cluster configuration drift.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: peer-firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: peer-firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    matchLabels:
+      app: peer-firewall-reconciler
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: peer-firewall-reconciler
+    spec:
+      serviceAccountName: peer-firewall-reconciler
+      # Share the host's network namespace so in-container nft talks
+      # directly to the host's netfilter ruleset. Without this, the
+      # container would maintain its own (empty) ruleset.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Tolerate every node, including control-plane and any platform
+      # taints — the reconciler must run on every node whose firewall
+      # holds a cluster_peers set (i.e. every cluster node in set mode).
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      containers:
+        - name: reconciler
+          image: ghcr.io/phoenixtechnam/hosting-platform/peer-firewall-reconciler:latest # {"$imagepolicy": "flux-system:peer-firewall-reconciler"}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # nft talks to netfilter via netlink — needs CAP_NET_ADMIN.
+            # Drop everything else; no privileged, no host PID/IPC.
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN"]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
