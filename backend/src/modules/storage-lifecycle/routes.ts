@@ -248,6 +248,23 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
   // 'idle' so the next op can proceed. The failed operation's DB row is
   // NOT removed so the original error is still auditable.
 
+  // Force-cancel an in-progress storage operation. Works on ANY
+  // non-idle state (quiescing/snapshotting/resizing/restoring/fsck).
+  // Useful when the underlying K8s Job is wedged (quota / image-pull
+  // / orphaned). Best-effort deletes the Job(s) and resets the
+  // client's storage state to idle so subsequent ops can proceed.
+  app.post('/admin/clients/:clientId/storage/cancel', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: "Force-cancel a client's in-progress storage operation and reset state to idle",
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    return success(await service.cancelStorageOperation(await ctx(), clientId));
+  });
+
   app.post('/admin/clients/:clientId/storage/clear-failed', {
     onRequest: adminGate,
     schema: {

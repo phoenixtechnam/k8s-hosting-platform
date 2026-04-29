@@ -861,6 +861,73 @@ export async function clearFailedStorageState(
   return { previousState: c.state };
 }
 
+/**
+ * Force-cancel an in-progress storage operation. Works on ANY non-idle
+ * state. Best-effort deletes the underlying Job(s) and resets the
+ * client's storage state to idle so subsequent ops can proceed.
+ * Idempotent — calling on state=idle returns deletedJobs=0.
+ */
+export async function cancelStorageOperation(
+  ctx: ServiceCtx,
+  clientId: string,
+): Promise<{ previousState: string; deletedJobs: number; cancelledOpId: string | null }> {
+  const [c] = await ctx.db
+    .select({
+      state: clients.storageLifecycleState,
+      activeOpId: clients.activeStorageOpId,
+      namespace: clients.kubernetesNamespace,
+    })
+    .from(clients)
+    .where(eq(clients.id, clientId));
+  if (!c) throw new ApiError('CLIENT_NOT_FOUND', `Client ${clientId} not found`, 404);
+  if (c.state === 'idle') {
+    return { previousState: 'idle', deletedJobs: 0, cancelledOpId: null };
+  }
+
+  // Best-effort delete K8s Jobs in both namespaces because Tier-1
+  // (fsck) lives in platform-tenant-ops while Tier-2 (snapshot /
+  // restore) lives in the client namespace.
+  const labelSelector = `platform.io/client-id=${clientId}`;
+  let deletedJobs = 0;
+  for (const ns of ['platform-tenant-ops', c.namespace ?? '']) {
+    if (!ns) continue;
+    try {
+      const list = await (ctx.k8s.batch as unknown as {
+        listNamespacedJob: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }>;
+      }).listNamespacedJob({ namespace: ns, labelSelector });
+      for (const job of list.items ?? []) {
+        const name = job.metadata?.name;
+        if (!name) continue;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await (ctx.k8s.batch as unknown as {
+            deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+          }).deleteNamespacedJob({ name, namespace: ns, propagationPolicy: 'Background' });
+          deletedJobs++;
+        } catch { /* tolerate already-gone */ }
+      }
+    } catch { /* tolerate listing failures (RBAC, ns-missing) */ }
+  }
+
+  if (c.activeOpId) {
+    await ctx.db
+      .update(storageOperations)
+      .set({
+        state: 'failed',
+        completedAt: new Date(),
+        lastError: `Cancelled by operator (was state='${c.state}')`,
+      })
+      .where(eq(storageOperations.id, c.activeOpId));
+  }
+
+  await ctx.db
+    .update(clients)
+    .set({ storageLifecycleState: 'idle', activeStorageOpId: null })
+    .where(eq(clients.id, clientId));
+
+  return { previousState: c.state, deletedJobs, cancelledOpId: c.activeOpId };
+}
+
 // ─── Suspend / Resume ──────────────────────────────────────────────────
 
 export async function suspendClient(
