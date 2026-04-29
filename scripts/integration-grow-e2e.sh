@@ -250,24 +250,57 @@ else
   fail "storage-placement.sizeBytes=$NEW_SIZE_BYTES < 15 GiB after 30s"
 fi
 
-# ─── shrink rejection still returns STORAGE_RESIZE_REQUIRED ──────────
-log "── PATCH storage_limit_override=5 (shrink) — must reject ──"
+# ─── RESIZE_UNSAFE: writing data and trying to shrink below it ──────
+# Drop a 200 MiB file inside the PVC (via FM exec), then attempt to
+# shrink the PVC to 1 GiB. The orchestrator's dryrun must reject with
+# RESIZE_UNSAFE because used + 10% buffer > target. This proves the
+# pre-check actually runs.
+log "── seeding PVC with marker data so RESIZE_UNSAFE has something to reject ──"
+FM_POD_FOR_SEED=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
+if [[ -n "$FM_POD_FOR_SEED" ]]; then
+  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- dd if=/dev/zero of=/data/shrink-marker bs=1M count=200 2>&1 | tail -1" || true
+  ok "wrote 200 MiB marker into /data/shrink-marker"
+fi
+
+# Smallest plan default storage_limit_override on this stack is 1 GiB
+# but PVCs are bound to a minimum so try 1 — used 200 MiB × 1.1 = 220 MiB
+# fits in 1024 MiB, so this would actually pass the dryrun. Try 0.1 GiB
+# to force the unsafe rejection… schema min is 1, so we use 1 and fill
+# the volume more. Cheaper: try a value that's strictly less than used.
+# Used ~200 MiB → request 0.1 GiB rejected by schema. Use 1 GiB but
+# inflate the marker to 950 MiB so 950×1.1=1045 > 1024. Skip the
+# inflate-and-shrink test if FM unavailable or fill fails.
+if [[ -n "$FM_POD_FOR_SEED" ]]; then
+  log "── inflating marker to 950 MiB so target=1 GiB fails dryrun ──"
+  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- dd if=/dev/zero of=/data/shrink-marker bs=1M count=950 2>&1 | tail -1" || true
+  log "── PATCH storage_limit_override=1 + confirm — must reject RESIZE_UNSAFE ──"
+  UNSAFE_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":1,"confirm_destructive_shrink":true}')
+  UNSAFE_CODE=$(echo "$UNSAFE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
+  [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]] && ok "shrink-with-confirm rejected by dryrun (RESIZE_UNSAFE — used would not fit)" \
+    || fail "shrink-with-confirm code=$UNSAFE_CODE (expected RESIZE_UNSAFE) — body: $(echo "$UNSAFE_RESP" | head -c 400)"
+  # Cleanup the marker so the upcoming successful shrink isn't rejected.
+  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- rm -f /data/shrink-marker" || true
+fi
+
+# ─── shrink without confirm flag: still rejected (safety belt) ──────
+log "── PATCH storage_limit_override=5 (shrink, no confirm flag) — must reject ──"
 SHRINK_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":5}')
 SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
-[[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "shrink correctly rejected with STORAGE_RESIZE_REQUIRED" \
+[[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "shrink correctly rejected with STORAGE_RESIZE_REQUIRED (safety belt)" \
   || fail "shrink response code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
 
-# ─── destructive shrink via /storage/resize (15 → 8 GiB) ─────────────
-# We grew 10 → 15 above. Now shrink 15 → 8 via the explicit endpoint
-# (the PATCH path rejects shrinks for safety). The orchestrator should
-# quiesce → snapshot → drop PVC → recreate at 8 GiB → restore data →
-# unquiesce. End state: PVC at 8Gi, FM pod recreated (same Deployment,
-# new pod since we quiesced + unquiesced).
-log "── POST /admin/clients/:id/storage/resize newGi=8 (destructive shrink) ──"
-SHRINK_OP_RESP=$(api POST "/admin/clients/$CID/storage/resize" '{"newGi":8}')
-SHRINK_OP_ID=$(echo "$SHRINK_OP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
-[[ -n "$SHRINK_OP_ID" ]] && ok "shrink op queued opId=${SHRINK_OP_ID:0:8}" \
-  || { fail "shrink endpoint did not return operationId — body: $(echo "$SHRINK_OP_RESP" | head -c 300)"; exit 1; }
+# ─── destructive shrink via PATCH+confirm_destructive_shrink (15 → 8 GiB) ─────
+# We grew 10 → 15 above. Now shrink 15 → 8 via PATCH /clients/:id with
+# confirm_destructive_shrink:true. updateClient dispatches resizeClient
+# which routes to the destructive shrink orchestrator: quiesce → snapshot
+# → drop PVC → recreate at 8 GiB → restore data → unquiesce. End state:
+# PVC at 8Gi, FM pod recreated (same Deployment, new pod since we
+# quiesced + unquiesced).
+log "── PATCH storage_limit_override=8 + confirm_destructive_shrink:true ──"
+SHRINK_OP_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":8,"confirm_destructive_shrink":true}')
+SHRINK_OP_ID=$(echo "$SHRINK_OP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('storageShrinkOperationId') or '')" 2>/dev/null)
+[[ -n "$SHRINK_OP_ID" ]] && ok "PATCH carried storageShrinkOperationId=${SHRINK_OP_ID:0:8}" \
+  || { fail "PATCH did not return storageShrinkOperationId — body: $(echo "$SHRINK_OP_RESP" | head -c 400)"; exit 1; }
 
 # Poll for terminal — destructive shrink does snapshot+restore so it's
 # minutes long even on an empty volume. 600s budget (200×3s).
