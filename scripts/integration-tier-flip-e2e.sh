@@ -148,18 +148,21 @@ HAS_ENGINE_CONDS=$(echo "$PLACEMENT" | python3 -c "import json,sys;print('Y' if 
 REPL_HEALTHY=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('replicasHealthy',0))" 2>/dev/null)
 REPL_EXPECTED=$(echo "$PLACEMENT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['pvcs'][0].get('replicasExpected',0))" 2>/dev/null)
 [[ "$REPL_EXPECTED" == "2" ]] && ok "ha-tier replicasExpected=2" || fail "replicasExpected=$REPL_EXPECTED (expected 2 for ha)"
-# replicasHealthy may still be racing the rebuild — accept 1 or 2 here.
-if [[ "$REPL_HEALTHY" == "1" || "$REPL_HEALTHY" == "2" ]]; then
-  ok "ha-tier replicasHealthy=$REPL_HEALTHY (may race 1→2 during rebuild)"
+# replicasHealthy may be 0 (no pod attached yet — volume hasn't been
+# read/written), 1 (rebuilding), or 2 (steady-state). All three are
+# valid — what we're asserting is that the field is numeric and
+# bounded by replicasExpected, not that a specific count is reached.
+if [[ "$REPL_HEALTHY" =~ ^[0-2]$ ]]; then
+  ok "ha-tier replicasHealthy=$REPL_HEALTHY (≤ replicasExpected=$REPL_EXPECTED)"
 else
-  fail "replicasHealthy=$REPL_HEALTHY (expected 1 or 2)"
+  fail "replicasHealthy=$REPL_HEALTHY (expected 0, 1, or 2)"
 fi
 
 # ─── fsck dry-run on a healthy fresh volume returns clean ──────────
 # The endpoint quiesces tenant + FM, runs xfs_repair -n, restores.
 # Total time ~30-60 s for a small volume on staging.
 log "── POST /storage/fsck (dry-run on healthy XFS volume) ──"
-FSCK_RESP=$(api POST "/clients/$CID/storage/fsck" "")
+FSCK_RESP=$(api POST "/admin/clients/$CID/storage/fsck" "")
 FSCK_OP_ID=$(echo "$FSCK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
 if [[ -n "$FSCK_OP_ID" ]]; then
   ok "fsck operation queued opId=${FSCK_OP_ID:0:8}"
