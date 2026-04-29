@@ -97,36 +97,30 @@ describe('K8s Provisioner Service', () => {
       expect(mockK8s.core.createNamespace).not.toHaveBeenCalled();
     });
 
-    it('should create ResourceQuota with plan-exact limits + scopeSelector matching tenant-default', async () => {
+    it('should create TWO ResourceQuotas: a Pod-scoped one (CPU/memory) + an unscoped storage one', async () => {
       const { applyResourceQuota } = await import('./service.js');
       await applyResourceQuota(mockK8s, 'test-ns', { cpu: '2', memory: '4', storage: '50' });
-      // No more SYSTEM_*_RESERVE padding — quota = plan exactly. The
-      // scopeSelector makes it count only tenant-default Pods, so
-      // file-manager (priorityClassName=platform-tenant-overhead) and
-      // any future system Pod in this namespace are exempt naturally.
-      expect(mockK8s.core.createNamespacedResourceQuota).toHaveBeenCalledWith(
-        expect.objectContaining({
-          namespace: 'test-ns',
-          body: expect.objectContaining({
-            spec: expect.objectContaining({
-              hard: {
-                'limits.cpu': '2',
-                'limits.memory': '4Gi',
-                'requests.storage': '50Gi',
-              },
-              scopeSelector: {
-                matchExpressions: [
-                  {
-                    scopeName: 'PriorityClass',
-                    operator: 'In',
-                    values: ['tenant-default'],
-                  },
-                ],
-              },
-            }),
-          }),
-        }),
-      );
+      // K8s rejects requests.storage under a PriorityClass scope
+      // ("unsupported scope applied to resource"), so we split:
+      //   - <ns>-quota          : PriorityClass=tenant-default → counts cpu/memory of tenant Pods
+      //   - <ns>-storage-quota  : unscoped → namespace-wide PVC budget
+      const calls = (mockK8s.core.createNamespacedResourceQuota as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBe(2);
+      const podCall = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-quota');
+      const storageCall = calls.find((c) => (c[0] as { body: { metadata: { name: string } } }).body.metadata.name === 'test-ns-storage-quota');
+      expect(podCall).toBeDefined();
+      expect(storageCall).toBeDefined();
+      expect((podCall![0] as { body: { spec: { hard: Record<string, string>; scopeSelector: object } } }).body.spec).toMatchObject({
+        hard: { 'limits.cpu': '2', 'limits.memory': '4Gi' },
+        scopeSelector: {
+          matchExpressions: [
+            { scopeName: 'PriorityClass', operator: 'In', values: ['tenant-default'] },
+          ],
+        },
+      });
+      expect((storageCall![0] as { body: { spec: { hard: Record<string, string> } } }).body.spec.hard).toEqual({
+        'requests.storage': '50Gi',
+      });
     });
 
     it('should create two NetworkPolicies: deny cross-ns + allow intra-ns', async () => {
