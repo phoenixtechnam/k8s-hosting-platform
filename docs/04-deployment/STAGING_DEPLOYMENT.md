@@ -39,6 +39,22 @@ lsmod | grep -E 'iscsi|nfs'
 apt-get install -y open-iscsi nfs-common  # Debian/Ubuntu — bootstrap.sh installs this but ensure no SELinux blocks
 ```
 
+### Mesh / VPN underlay (sysadmin step BEFORE bootstrap)
+
+`bootstrap.sh` does NOT install or enrol VPN/mesh **clients**. It DOES install kernel `wireguard-tools` (Calico needs it). Bring up your underlay first, then bootstrap auto-detects it:
+
+```bash
+# NetBird (sysadmin installs the client + enrols)
+curl -fsSL https://pkgs.netbird.io/install.sh | sh
+netbird up --management-url https://vpn.example.com --setup-key <UUID>
+
+# OR Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --auth-key tskey-...
+```
+
+When `wt0` (NetBird) or `tailscale0` is up at install time with an IP in `100.64.0.0/10`, bootstrap defaults `--cluster-network-cidr=100.64.0.0/10` and pins k3s `--node-ip` to the mesh IP — no flag required. For non-mesh underlays (Hetzner Cloud VLAN, AWS VPC, raw WireGuard, ZeroTier), pass `--cluster-network-cidr <CIDR>` explicitly. See [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md) for the three-mode firewall design.
+
 ### DNS
 
 Point your apex domain (e.g. `staging.example.com`) and wildcards at the server's public IP:

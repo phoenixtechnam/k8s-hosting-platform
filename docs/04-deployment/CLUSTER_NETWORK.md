@@ -23,14 +23,39 @@ Cluster-internal control-plane ports — `6443` (kube-API), `8443`
 `2379-2380` (etcd peers), and CIDR-trusted `4789` (Calico VXLAN) — are
 **scoped** to peers via one of the three modes below.
 
+## Sysadmin responsibility (before bootstrap)
+
+`bootstrap.sh` does NOT install or enrol VPN/mesh **clients** (NetBird,
+Tailscale, etc.) — that's a sysadmin step performed beforehand. It DOES
+install kernel `wireguard-tools` since Calico's pod-traffic encryption
+relies on the WireGuard userland.
+
+The bootstrap **auto-detects** a mesh underlay at firewall-config time:
+
+- If `wt0` (NetBird) or `tailscale0` has an IPv4 in `100.64.0.0/10`, the
+  firewall enters **cidr mode** with `--cluster-network-cidr=100.64.0.0/10`
+  by default — **no flag required**.
+- The IPv6 sibling is derived from the interface's announced route prefix
+  (Tailscale's `/48`, NetBird's ULA range), again no flag required.
+- For non-mesh underlays (Hetzner Cloud VLAN, AWS VPC, raw WireGuard,
+  ZeroTier, etc.), pass `--cluster-network-cidr <CIDR>` explicitly —
+  bootstrap can't auto-detect arbitrary interface names.
+
+If the mesh isn't up when bootstrap runs and no CIDR is passed, the
+firewall enters **set mode** instead and a peer-firewall-reconciler
+DaemonSet maintains the allowlist from kube-API. Adding a new node in
+that mode requires one `peer-firewall-add <new-IP>` call on an existing
+peer (see below).
+
 ## Mode selection
 
 ```
 operator passes --cluster-network-cidr ──────┐
                                              │
-operator brings up wt0 / tailscale0 ────► auto-detect mesh ─┐
-                                             │              │
-HA install (--join-as server|worker) ────────┴──┬───────────┴──► CIDR mode
+sysadmin brought up wt0 / tailscale0 ────► auto-detect mesh ─┐
+(BEFORE running bootstrap)                   │               │
+                                             │               │
+HA install (--join-as server|worker) ────────┴──┬────────────┴──► CIDR mode
                                                  │
                                                  ▼
                                             Set mode (Persona C)

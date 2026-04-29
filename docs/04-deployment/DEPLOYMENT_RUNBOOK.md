@@ -67,6 +67,22 @@ tar -xvzf kubeseal-*.tar.gz kubeseal && sudo mv kubeseal /usr/local/bin/
 
 Run `./scripts/bootstrap.sh --help` for the full list of options.
 
+### Pre-flight: mesh / VPN underlay (sysadmin)
+
+`bootstrap.sh` does **not** install or enrol VPN/mesh clients (NetBird, Tailscale, etc.). It does install kernel `wireguard-tools` (Calico's pod-traffic encryption needs it). Bring up your underlay **before** running bootstrap:
+
+```bash
+# NetBird
+curl -fsSL https://pkgs.netbird.io/install.sh | sh
+netbird up --management-url https://vpn.example.com --setup-key <UUID>
+
+# Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --auth-key tskey-...
+```
+
+If `wt0` / `tailscale0` is up with an IP in `100.64.0.0/10` when bootstrap runs, the firewall **auto-detects** the mesh and defaults `--cluster-network-cidr=100.64.0.0/10` — no flag required. For non-mesh underlays (cloud VLAN, raw WireGuard, ZeroTier), pass `--cluster-network-cidr <CIDR>` explicitly. See [CLUSTER_NETWORK.md](./CLUSTER_NETWORK.md).
+
 ### Option A: Run directly on the server
 
 ```bash
