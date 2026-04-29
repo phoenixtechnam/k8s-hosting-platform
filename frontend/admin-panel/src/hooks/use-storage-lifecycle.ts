@@ -217,6 +217,33 @@ export function useClearFailedState() {
   });
 }
 
+/**
+ * Force-cancel an in-progress storage operation. Works on any non-idle
+ * state (quiescing/snapshotting/resizing/restoring/fsck). Best-effort
+ * deletes the underlying K8s Job(s) and resets the client's lifecycle
+ * state. Useful when the operation is wedged on quota / image-pull /
+ * orphaned-Job conditions.
+ */
+export interface CancelStorageResult {
+  readonly previousState: string;
+  readonly deletedJobs: number;
+  readonly cancelledOpId: string | null;
+}
+
+export function useCancelStorageOperation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (clientId: string): Promise<CancelStorageResult> => {
+      const res = await apiFetch<{ data: CancelStorageResult }>(
+        `/api/v1/admin/clients/${clientId}/storage/cancel`,
+        { method: 'POST' },
+      );
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
 // ─── PVC node placement (Storage Lifecycle node-host column) ───
 //
 // Backend joins the client's PVC → Longhorn volume → running replicas
