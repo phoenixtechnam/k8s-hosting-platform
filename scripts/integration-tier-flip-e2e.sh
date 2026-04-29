@@ -176,9 +176,12 @@ FSCK_RESP=$(api POST "/admin/clients/$CID/storage/fsck" "")
 FSCK_OP_ID=$(echo "$FSCK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
 if [[ -n "$FSCK_OP_ID" ]]; then
   ok "fsck operation queued opId=${FSCK_OP_ID:0:8}"
-  # Poll the op until completedAt is set or timeout.
+  # 600s budget — fsck quiesces FM + tenant, schedules a privileged
+  # Job that pulls xfsprogs, runs xfs_repair -n, then unquiesces.
+  # Cold image pull on a fresh node + replica scheduling on a tenant
+  # that hasn't been mounted yet takes a few minutes. 200 iters × 3s.
   FSCK_STATE=""
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 200); do
     OP=$(api GET "/admin/storage/operations/$FSCK_OP_ID" 2>/dev/null || echo "{}")
     FSCK_STATE=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print(d.get('state','') if d.get('completedAt') else 'pending')" 2>/dev/null)
     [[ "$FSCK_STATE" != "pending" ]] && break
