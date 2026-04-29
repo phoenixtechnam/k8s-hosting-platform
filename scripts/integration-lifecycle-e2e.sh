@@ -190,7 +190,7 @@ ARCH_SNAP_ID=$(echo "$ARCH_FINAL" | python3 -c "import json,sys;print(json.load(
   || fail "no snapshotId on archive op (no rollback insurance)"
 
 # Snapshot row should be 'ready'.
-SNAP_STATUS=$(api GET "/clients/$CID/storage/snapshots" 2>/dev/null \
+SNAP_STATUS=$(api GET "/admin/clients/$CID/storage/snapshots" 2>/dev/null \
   | python3 -c "
 import json,sys
 data=json.load(sys.stdin).get('data',[])

@@ -594,12 +594,15 @@ export async function updateClient(
   // Detect status transitions that hand control over to a
   // storage-lifecycle orchestrator. Those orchestrators read
   // client.status to decide what to do (archive: must be non-archived;
-  // restore-from-archive: must be archived) and then write the new
-  // status themselves at the right point in the snapshot/PVC dance —
-  // so we MUST NOT pre-write the new status here.
+  // restore-from-archive: must be archived; suspend: must be
+  // non-suspended; resume: must be suspended) and then write the new
+  // status themselves at the right point — so we MUST NOT pre-write
+  // the new status here.
   const statusOwnedByLifecycle = (
     (input.status === 'archived' && existing.status !== 'archived')
     || (input.status === 'active' && existing.status === 'archived')
+    || (input.status === 'suspended' && existing.status !== 'suspended')
+    || (input.status === 'active' && existing.status === 'suspended')
   );
 
   const updateValues: Record<string, unknown> = {};
