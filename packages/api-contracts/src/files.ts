@@ -134,7 +134,7 @@ export type ChownInput = z.infer<typeof chownInputSchema>;
 
 export const fileManagerStatusSchema = z.object({
   ready: z.boolean(),
-  phase: z.enum(['not_deployed', 'starting', 'ready', 'failed']),
+  phase: z.enum(['not_deployed', 'starting', 'ready', 'failed', 'stopping']),
   message: z.string().optional(),
 });
 
