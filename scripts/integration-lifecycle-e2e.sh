@@ -145,7 +145,8 @@ FM_READY_AFTER_SUSPEND=$(api GET "/clients/$CID/files/status" | python3 -c "impo
 # Tenant Deployments should all be at replicas=0 (or just gone).
 # Best-effort: a brand-new client may have no deployments other than fm.
 DEP_REPLICAS=$(ssh_cp "kubectl -n $NS get deployments -o jsonpath='{range .items[*]}{.spec.replicas}{\"\\n\"}{end}' 2>/dev/null" || echo "")
-NONZERO_REPLICAS=$(echo "$DEP_REPLICAS" | grep -v -E '^(0|)$' | wc -l | tr -d ' ')
+# grep -v exits 1 when no matches — tolerate that under pipefail
+NONZERO_REPLICAS=$(echo "$DEP_REPLICAS" | { grep -v -E '^(0|)$' || true; } | wc -l | tr -d ' ')
 [[ "$NONZERO_REPLICAS" == "0" ]] && ok "all tenant deployments scaled to 0" \
   || fail "$NONZERO_REPLICAS deployment(s) still have non-zero replicas: $DEP_REPLICAS"
 
