@@ -75,7 +75,11 @@ api_status() {
 }
 
 ssh_run() {
-  ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@" 2>&1
+  ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"
+}
+
+psql_q() {
+  ssh_run "kubectl -n platform exec -i postgres-1 -c postgres -- psql -U postgres -d hosting_platform -t -A -F '|' -c \"$1\"" 2>/dev/null | tr -d '\r'
 }
 
 run_scenario() {
@@ -91,35 +95,29 @@ run_scenario() {
 
 prereq_resolve_target() {
   log "── prereq: discover target ingress ──"
+  local row
   if [[ -n "$ROUTE_ID" ]]; then
-    ok "ROUTE_ID provided: $ROUTE_ID"
+    row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+                  FROM ingress_routes ir
+                  JOIN domains d ON d.id = ir.domain_id
+                  JOIN clients c ON c.id = d.client_id
+                  WHERE ir.id='${ROUTE_ID}';" | head -1)
+    [[ -z "$row" ]] && { fail "ROUTE_ID=$ROUTE_ID not found in DB"; return 1; }
   else
-    local rows
-    rows=$(api GET '/ingress-routes?limit=1' | python3 -c "
-import json, sys
-data = json.load(sys.stdin).get('data', [])
-for r in data:
-    if r.get('hostname','').endswith('.${HTTPS_TEST_DOMAIN_BASE}'):
-        print(f\"{r['id']}|{r['hostname']}\")
-        break
-" 2>/dev/null)
-    if [[ -z "$rows" ]]; then
-      fail "no ingress route under .${HTTPS_TEST_DOMAIN_BASE} found — run ingress-auth-e2e.sh first to provision one"
-      return 1
-    fi
-    ROUTE_ID="${rows%%|*}"
-    HOSTNAME="${rows#*|}"
+    row=$(psql_q "SELECT ir.id, ir.hostname, d.client_id, c.kubernetes_namespace
+                  FROM ingress_routes ir
+                  JOIN domains d ON d.id = ir.domain_id
+                  JOIN clients c ON c.id = d.client_id
+                  WHERE ir.hostname LIKE '%${HTTPS_TEST_DOMAIN_BASE}'
+                    AND ir.status = 'active'
+                  ORDER BY ir.created_at DESC
+                  LIMIT 1;" | head -1)
+    [[ -z "$row" ]] && { fail "no ingress route under .${HTTPS_TEST_DOMAIN_BASE} — run ingress-auth-e2e.sh first to provision one"; return 1; }
   fi
-  # Resolve hostname + clientId via the API
-  local route
-  route=$(api GET "/ingress-routes/$ROUTE_ID")
-  HOSTNAME=$(echo "$route" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['hostname'])" 2>/dev/null)
-  local domain_id
-  domain_id=$(echo "$route" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['domainId'])" 2>/dev/null)
-  CLIENT_ID=$(api GET "/domains/$domain_id" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['clientId'])" 2>/dev/null)
-  NAMESPACE="client-$(echo "$CLIENT_ID" | tr -d '-' | cut -c1-15)"
-  # Resolve real namespace via API
-  NAMESPACE=$(api GET "/clients/$CLIENT_ID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['kubernetesNamespace'])" 2>/dev/null)
+  ROUTE_ID=$(echo "$row" | cut -d'|' -f1)
+  HOSTNAME=$(echo "$row" | cut -d'|' -f2)
+  CLIENT_ID=$(echo "$row" | cut -d'|' -f3)
+  NAMESPACE=$(echo "$row" | cut -d'|' -f4)
   ok "discovered route=$ROUTE_ID host=$HOSTNAME ns=$NAMESPACE"
 }
 

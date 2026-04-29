@@ -1,11 +1,10 @@
 import { Fragment, useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
-import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Edit, Pause, Play, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EditClientModal from '@/components/EditClientModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
-import ResizeStorageModal from '@/components/ResizeStorageModal';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import ClientUsersTab from '@/components/ClientUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
@@ -32,12 +31,14 @@ import { useClientMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 import {
   useCreateSnapshot,
-  useResizeDryRun,
+  // useResizeClient: still wired into ResourceLimitsCard so the
+  // destructive-shrink confirmation can fire POST /storage/resize
+  // when the operator confirms the dialog. Suspend/Resume/Archive/
+  // Restore hooks are intentionally NOT imported here — those
+  // transitions are now driven exclusively by the status dropdown
+  // (PATCH /clients/:id with status=…), which dispatches into the
+  // same orchestrators on the backend.
   useResizeClient,
-  useSuspendClient as useStorageSuspend,
-  useResumeClient as useStorageResume,
-  useArchiveClient as useStorageArchive,
-  useRestoreClient as useStorageRestore,
   useStorageOperations,
   useClearFailedState,
   useClientStoragePlacement,
@@ -69,6 +70,12 @@ export default function ClientDetail() {
 
   const [provisioningOpen, setProvisioningOpen] = useState(false);
   const [decommissionOpen, setDecommissionOpen] = useState(false);
+  // Op id surfaced when a status PATCH triggered a storage-lifecycle
+  // orchestrator (archive, restore-from-archive). Quiesce/unquiesce
+  // for plain suspend/active is synchronous today and won't return
+  // an op id; the StorageLifecycleCard's local progress strip still
+  // shows that path.
+  const [statusOpId, setStatusOpId] = useState<string | null>(null);
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
@@ -91,7 +98,11 @@ export default function ClientDetail() {
   const handleSuspend = async () => {
     if (!id) return;
     try {
-      await updateClient.mutateAsync({ status: 'suspended' });
+      const res = await updateClient.mutateAsync({ status: 'suspended' });
+      const opId = res?.data?.storageArchiveOperationId
+        ?? res?.data?.storageRestoreOperationId
+        ?? null;
+      if (opId) setStatusOpId(opId);
     } catch {
       // silently handled — status badge will reflect current state
     }
@@ -99,8 +110,23 @@ export default function ClientDetail() {
 
   const handleReactivate = async () => {
     if (!id) return;
+    // From archived → active is a destructive restore. Confirm explicitly.
+    if (client?.status === 'archived') {
+      const ok = confirm(
+        'Restore this client from the pre-archive snapshot?\n\n'
+        + 'Workloads were deleted at archive time and will need to be redeployed after restore. '
+        + 'The PVC will be recreated and data restored from the snapshot. '
+        + 'Estimated time: a few minutes per GiB of stored data.\n\n'
+        + 'Continue?',
+      );
+      if (!ok) return;
+    }
     try {
-      await updateClient.mutateAsync({ status: 'active' });
+      const res = await updateClient.mutateAsync({ status: 'active' });
+      const opId = res?.data?.storageRestoreOperationId
+        ?? res?.data?.storageArchiveOperationId
+        ?? null;
+      if (opId) setStatusOpId(opId);
     } catch {
       // silently handled — status badge will reflect current state
     }
@@ -302,7 +328,11 @@ export default function ClientDetail() {
             <div>
               <dt className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Status</dt>
               <dd className="mt-1">
-                <StatusBadge status={client.status} />
+                <LifecycleStatusControl
+                  client={client}
+                  clientId={id!}
+                  onOpStarted={(opId) => setStatusOpId(opId)}
+                />
               </dd>
             </div>
             <div>
@@ -443,6 +473,189 @@ export default function ClientDetail() {
           isPending={triggerDecommission.isPending}
         />
       )}
+
+      {/* Shared progress modal for status-driven lifecycle ops
+          (archive, restore-from-archive). Suspend/resume run a
+          synchronous cascade today and don't return an op id. */}
+      <OperationProgressModal
+        operationId={statusOpId}
+        onClose={() => setStatusOpId(null)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Editable status dropdown that drives the full client lifecycle.
+ *
+ * Status transitions:
+ *   active   ↔ suspended         — synchronous cascade (no op id today)
+ *   *        →  archived         — archiveClient orchestrator
+ *                                  (final snapshot then delete workloads/PVC).
+ *                                  Inline retention input controls how long
+ *                                  the pre-archive snapshot is kept.
+ *   archived →  active           — restoreArchivedClient orchestrator
+ *                                  (recreate PVC + restore data from snapshot).
+ *
+ * The orchestrator paths return an opId via PATCH response; the parent
+ * surfaces it in OperationProgressModal so the operator can watch
+ * progress live. Suspend/resume flips remain a fire-and-forget cascade.
+ */
+function LifecycleStatusControl({
+  client,
+  clientId,
+  onOpStarted,
+}: {
+  readonly client: import('@/types/api').Client;
+  readonly clientId: string;
+  readonly onOpStarted: (opId: string) => void;
+}) {
+  const updateClient = useUpdateClient(clientId);
+  const [editing, setEditing] = useState(false);
+  // Selected next status. Stays in local state so the operator can
+  // type a retention value before confirming.
+  const [pending, setPending] = useState<'active' | 'suspended' | 'archived'>(client.status as 'active' | 'suspended' | 'archived');
+  const [retentionDays, setRetentionDays] = useState<number>(90);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const startEdit = () => {
+    setPending(client.status as 'active' | 'suspended' | 'archived');
+    setRetentionDays(90);
+    setSubmitError(null);
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setSubmitError(null);
+  };
+
+  const apply = async () => {
+    setSubmitError(null);
+
+    // Restoring from archived is destructive (pre-archive snapshot
+    // restore, workloads need redeploy). Confirm explicitly.
+    if (client.status === 'archived' && pending === 'active') {
+      const ok = confirm(
+        'Restore this client from the pre-archive snapshot?\n\n'
+        + 'Workloads were deleted at archive time and will need to be redeployed after restore. '
+        + 'The PVC will be recreated and data restored from the snapshot. '
+        + 'Estimated time: a few minutes per GiB of stored data.\n\n'
+        + 'Continue?',
+      );
+      if (!ok) return;
+    }
+
+    // Archiving is destructive (mailboxes, aliases, deployments, PVC).
+    // Confirm explicitly.
+    if (pending === 'archived' && client.status !== 'archived') {
+      const ok = confirm(
+        `Archive this client?\n\n`
+        + `A final pre-archive snapshot will be taken and retained for ${retentionDays} day(s). `
+        + `All mailboxes, aliases, deployments, and the live PVC will be deleted. `
+        + `The client can be restored from the snapshot any time before retention expires.\n\n`
+        + 'Continue?',
+      );
+      if (!ok) return;
+    }
+
+    try {
+      const payload: import('@k8s-hosting/api-contracts').UpdateClientInput = { status: pending };
+      if (pending === 'archived' && client.status !== 'archived') {
+        payload.archive_retention_days = retentionDays;
+      }
+      const res = await updateClient.mutateAsync(payload);
+      const opId = res?.data?.storageArchiveOperationId
+        ?? res?.data?.storageRestoreOperationId
+        ?? null;
+      if (opId) onOpStarted(opId);
+      setEditing(false);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <StatusBadge status={client.status} />
+        <button
+          type="button"
+          onClick={startEdit}
+          className="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          data-testid="lifecycle-status-edit"
+          title="Change client lifecycle status"
+        >
+          Change…
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2" data-testid="lifecycle-status-editor">
+      <select
+        value={pending}
+        onChange={(e) => setPending(e.target.value as 'active' | 'suspended' | 'archived')}
+        className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+        data-testid="lifecycle-status-select"
+      >
+        <option value="active">Active</option>
+        <option value="suspended">Suspended</option>
+        <option value="archived">Archived</option>
+      </select>
+
+      {pending === 'archived' && client.status !== 'archived' && (
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+            Snapshot retention (days)
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={retentionDays}
+            onChange={(e) => setRetentionDays(Math.max(1, Math.min(365, Number(e.target.value) || 90)))}
+            className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+            data-testid="lifecycle-archive-retention-input"
+          />
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            Days to retain the pre-archive snapshot for restore. After this window, restore is no longer possible.
+          </p>
+        </div>
+      )}
+
+      {pending === 'active' && client.status === 'archived' && (
+        <p className="text-[11px] text-blue-700 dark:text-blue-300">
+          This restores the client from the pre-archive snapshot. Workloads were deleted at archive time and will need to be redeployed after restore.
+        </p>
+      )}
+
+      {submitError && (
+        <p className="text-xs text-red-600 dark:text-red-400" role="alert" data-testid="lifecycle-status-error">{submitError}</p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={apply}
+          disabled={updateClient.isPending || pending === client.status}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="lifecycle-status-apply"
+        >
+          {updateClient.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+          Apply
+        </button>
+        <button
+          type="button"
+          onClick={cancel}
+          disabled={updateClient.isPending}
+          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+          data-testid="lifecycle-status-cancel"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -1125,6 +1338,18 @@ function ResourceLimitsCard({
   // includes storageGrowOperationId. Open the shared progress modal so
   // the operator can watch growing_pvc → growing_filesystem → idle live.
   const [growOpId, setGrowOpId] = useState<string | null>(null);
+  // Shrink path: PATCH rejects with STORAGE_RESIZE_REQUIRED. We surface
+  // a confirmation dialog with the OperatorError remediation, then call
+  // the explicit destructive resize endpoint when the operator confirms.
+  // shrinkPending captures the target MiB while the dialog is open so
+  // we can fire the resize call on confirm without re-prompting.
+  const [shrinkPending, setShrinkPending] = useState<{
+    targetMib: number;
+    targetGi: number;
+    currentGi: number;
+    remediation: string;
+  } | null>(null);
+  const resizeStorage = useResizeClient();
 
   const effectiveCpu = client.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
   const effectiveMem = client.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
@@ -1171,7 +1396,38 @@ function ResourceLimitsCard({
       const opId = (result as { data?: { storageGrowOperationId?: string | null } })?.data?.storageGrowOperationId;
       if (opId) setGrowOpId(opId);
       setEditing(false);
-    } catch { /* error via updateClient.error */ }
+    } catch (err) {
+      // Shrink-path: backend rejects with STORAGE_RESIZE_REQUIRED. We
+      // surface a destructive-resize confirmation; on Confirm we fire
+      // the dedicated /storage/resize endpoint (no PATCH retry, since
+      // the destructive flow is opt-in by design).
+      const apiErr = err as { code?: string; details?: { targetMib?: number; targetGi?: number; currentGi?: number; remediation?: string } };
+      if (apiErr?.code === 'STORAGE_RESIZE_REQUIRED' && apiErr.details?.targetMib != null) {
+        setShrinkPending({
+          targetMib: apiErr.details.targetMib,
+          targetGi: apiErr.details.targetGi ?? Math.round(apiErr.details.targetMib / 102.4) / 10,
+          currentGi: apiErr.details.currentGi ?? Number(client.storageLimitOverride ?? 0),
+          remediation: apiErr.details.remediation ?? 'This is a destructive resize: the platform takes a snapshot, drops the PVC, recreates at the smaller size, and restores from the snapshot.',
+        });
+        // Keep the form open so the operator sees the value they typed.
+      }
+      // Other errors render via updateClient.error below.
+    }
+  };
+
+  const confirmDestructiveShrink = async () => {
+    if (!shrinkPending) return;
+    try {
+      const res = await resizeStorage.mutateAsync({ clientId, newMib: shrinkPending.targetMib });
+      setGrowOpId(res.data.operationId);
+      setShrinkPending(null);
+      setEditing(false);
+    } catch (err) {
+      // Surface inline — the dialog stays open so the operator can read
+      // the failure (e.g. orchestrator already busy, no snapshot store).
+      const msg = err instanceof Error ? err.message : String(err);
+      setShrinkPending({ ...shrinkPending, remediation: `${shrinkPending.remediation}\n\nFailed: ${msg}` });
+    }
   };
 
   const INPUT_CLS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100';
@@ -1337,6 +1593,60 @@ function ResourceLimitsCard({
         title="Storage grow"
         onClose={() => setGrowOpId(null)}
       />
+
+      {/* Destructive shrink confirmation. Opens when PATCH rejected
+          the storage_limit_override write with STORAGE_RESIZE_REQUIRED.
+          Confirm fires POST /admin/clients/:id/storage/resize, which
+          quiesces, snapshots, drops the PVC, recreates at the smaller
+          size, and restores. The shrink op id then opens the existing
+          OperationProgressModal so the operator can watch the dance. */}
+      {shrinkPending && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+          data-testid="shrink-confirm-modal"
+          onClick={(e) => { if (e.target === e.currentTarget && !resizeStorage.isPending) setShrinkPending(null); }}
+        >
+          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl">
+            <div className="border-b border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/20 px-5 py-3">
+              <h3 className="text-base font-semibold text-red-800 dark:text-red-200 flex items-center gap-2">
+                <AlertCircle size={18} />
+                Destructive storage shrink
+              </h3>
+            </div>
+            <div className="p-5 space-y-3 text-sm text-gray-700 dark:text-gray-300">
+              <p>
+                You are shrinking storage from <strong>{shrinkPending.currentGi} GiB</strong> to <strong>{shrinkPending.targetGi} GiB</strong>.
+              </p>
+              <p className="whitespace-pre-wrap">{shrinkPending.remediation}</p>
+              <p>
+                This is destructive: the platform takes a snapshot, drops the PVC, recreates at the smaller size, and restores from the snapshot.
+                <strong> Estimated downtime: a few minutes per GiB.</strong>
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 dark:border-gray-700 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setShrinkPending(null)}
+                disabled={resizeStorage.isPending}
+                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+                data-testid="shrink-confirm-cancel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDestructiveShrink}
+                disabled={resizeStorage.isPending}
+                className="inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="shrink-confirm-button"
+              >
+                {resizeStorage.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+                Continue with destructive resize
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1675,25 +1985,31 @@ function DecommissionConfirmDialog({
 }
 
 function StorageLifecycleCard({ clientId, client }: { readonly clientId: string; readonly client: { status?: string; storageLifecycleState?: string; storageLimitOverride?: string | null } }) {
+  // Storage Operations card (formerly "Storage Lifecycle"). After the
+  // collapse, lifecycle transitions (suspend / resume / archive /
+  // restore / resize) are driven from the client row itself: status
+  // dropdown for suspend/archive/restore, ResourceLimitsCard for grow,
+  // ResourceLimitsCard's destructive-shrink dialog for shrink. The
+  // standalone buttons that lived here were redundant — they all
+  // hit the same orchestrators.
+  //
+  // What stays here:
+  //   • PVC placement table (read-only health surface)
+  //   • Active / recent op progress (live readout while a lifecycle
+  //     transition started elsewhere is running)
+  //   • Manual snapshot button (orthogonal to lifecycle — operator
+  //     wants ad-hoc backups without a status flip)
+  //   • Reset-to-idle (recovery valve when an op left state=failed)
   const opsQuery = useStorageOperations(clientId);
-  const dryRun = useResizeDryRun();
-  const resize = useResizeClient();
   const snapshot = useCreateSnapshot();
-  const suspend = useStorageSuspend();
-  const resume = useStorageResume();
-  const archive = useStorageArchive();
-  const restore = useStorageRestore();
   const clearFailed = useClearFailedState();
 
   const ops = opsQuery.data?.data ?? [];
   const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
   const recentOp = ops[0];
   const lifecycleState = client.storageLifecycleState ?? 'idle';
-  const isBusy = lifecycleState !== 'idle' || !!activeOp
-    || resize.isPending || snapshot.isPending || suspend.isPending
-    || resume.isPending || archive.isPending || restore.isPending;
+  const isBusy = lifecycleState !== 'idle' || !!activeOp || snapshot.isPending;
 
-  const [resizeOpen, setResizeOpen] = useState(false);
   const [trackedOpId, setTrackedOpId] = useState<string | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
 
@@ -1702,48 +2018,6 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
     setOpError(err instanceof Error ? err.message : String(err));
   };
 
-  // Parse current storage in MiB from override (GiB decimal) or plan.
-  const currentMib = client.storageLimitOverride != null
-    ? Math.round(Number(client.storageLimitOverride) * 1024)
-    : 10 * 1024; // fallback until we have plan info
-
-  const onResize = () => { setOpError(null); setResizeOpen(true); };
-
-  const onSuspend = async () => {
-    if (!confirm('Suspend this client? All workloads will scale to 0 and the site will show a suspension page.')) return;
-    try {
-      const res = await suspend.mutateAsync(clientId);
-      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
-      if (opId) trackOp(opId);
-    } catch (err) { surfaceError(err); }
-  };
-  const onResume = async () => {
-    if (!confirm('Resume this client? Workloads will be restored to their pre-suspend replica counts.')) return;
-    try {
-      const res = await resume.mutateAsync(clientId);
-      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
-      if (opId) trackOp(opId);
-    } catch (err) { surfaceError(err); }
-  };
-  const onArchive = async () => {
-    const raw = prompt('Archive retention (days) — how long to keep the final snapshot:', '90');
-    if (!raw) return;
-    const retentionDays = parseInt(raw, 10);
-    if (!confirm(`Archive client — take final snapshot (retained ${retentionDays}d), delete mailboxes, aliases, and all live workloads?`)) return;
-    try {
-      const res = await archive.mutateAsync({ clientId, retentionDays });
-      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
-      if (opId) trackOp(opId);
-    } catch (err) { surfaceError(err); }
-  };
-  const onRestore = async () => {
-    if (!confirm('Restore this archived client from the pre-archive snapshot?')) return;
-    try {
-      const res = await restore.mutateAsync({ clientId });
-      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
-      if (opId) trackOp(opId);
-    } catch (err) { surfaceError(err); }
-  };
   const onSnapshot = async () => {
     const label = prompt('Snapshot label (optional):', `Manual ${new Date().toISOString().slice(0, 16)}`);
     if (label === null) return;
@@ -1758,9 +2032,13 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Lifecycle</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Operations</h2>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Snapshot, resize, suspend, or archive this client. Snapshots live in the platform's snapshot store (hostPath in dev, S3 in prod).
+            PVC placement and live op status. Lifecycle transitions
+            (suspend / archive / restore) are driven by the client
+            <span className="font-medium"> Status</span> dropdown above;
+            grow/shrink by the
+            <span className="font-medium"> Resource Limits</span> card.
           </p>
         </div>
         <div className="text-right text-xs">
@@ -1855,53 +2133,9 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
         >
           Take snapshot
         </button>
-        <button
-          onClick={onResize}
-          disabled={isBusy || client.status === 'archived' || client.status === 'suspended'}
-          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-          data-testid="lifecycle-resize-button"
-        >
-          Resize storage…
-        </button>
-        {client.status !== 'suspended' && client.status !== 'archived' && (
-          <button
-            onClick={onSuspend}
-            disabled={isBusy}
-            className="rounded-md border border-orange-200 dark:border-orange-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-orange-700 dark:text-orange-300 hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50"
-          >
-            Suspend
-          </button>
-        )}
-        {client.status === 'suspended' && (
-          <button
-            onClick={onResume}
-            disabled={isBusy}
-            className="rounded-md border border-green-200 dark:border-green-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-green-700 dark:text-green-300 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
-          >
-            Resume
-          </button>
-        )}
-        {client.status !== 'archived' && (
-          <button
-            onClick={onArchive}
-            disabled={isBusy}
-            className="rounded-md border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
-          >
-            Archive
-          </button>
-        )}
-        {client.status === 'archived' && (
-          <button
-            onClick={onRestore}
-            disabled={isBusy}
-            className="rounded-md border border-blue-200 dark:border-blue-800 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50"
-          >
-            Restore
-          </button>
-        )}
       </div>
 
-      {/* Inline error banner — shown when a lifecycle op rejects synchronously. */}
+      {/* Inline error banner — shown when the snapshot op rejects synchronously. */}
       {opError && (
         <div
           role="alert"
@@ -1919,16 +2153,7 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
         </div>
       )}
 
-      {/* Resize modal — replaces the legacy prompt()+confirm() chain. */}
-      <ResizeStorageModal
-        clientId={clientId}
-        open={resizeOpen}
-        initialMib={currentMib}
-        onClose={() => setResizeOpen(false)}
-        onStarted={trackOp}
-      />
-
-      {/* Shared progress modal — mounts once per op started from this card. */}
+      {/* Shared progress modal — opens for the manual snapshot started here. */}
       <OperationProgressModal
         operationId={trackedOpId}
         onClose={() => setTrackedOpId(null)}

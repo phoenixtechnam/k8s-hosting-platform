@@ -51,6 +51,13 @@ export const updateClientSchema = z.object({
   // M7: toggle tenant HA. Flipping 'local' → 'ha' on a provisioned
   // client marks the intent but doesn't move existing data.
   storage_tier: z.enum(['local', 'ha']).optional(),
+  // Status-driven lifecycle (collapse phase): when status flips to
+  // 'archived' we dispatch the storage-lifecycle archiveClient
+  // orchestrator (final snapshot + workload+PVC delete) and use this
+  // value for the snapshot retention. Falls back to platform setting
+  // `storage.retention.pre_archive_days` (default 90) when omitted.
+  // Ignored on every status that isn't 'archived'.
+  archive_retention_days: z.number().int().min(1).max(365).optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -89,6 +96,20 @@ export const clientResponseSchema = z.object({
   // orchestrator and surfaces the operation id here so the UI can
   // open a progress modal. Absent on every other update.
   storageGrowOperationId: z.string().nullable().optional(),
+  // Status-driven lifecycle side-effects (collapse phase). When the
+  // PATCH transitions client.status, the storage-lifecycle orchestrator
+  // attached to that transition emits an op id here so the UI can
+  // poll progress. Each is mutually exclusive with the others on a
+  // single PATCH:
+  //   * status=archived (when not currently archived) → archiveClient
+  //     returns storageArchiveOperationId
+  //   * status=active (from archived) → restoreArchivedClient returns
+  //     storageRestoreOperationId
+  //   * status=suspended/active (non-archive) → operations are
+  //     synchronous today (cascades, not orchestrators), so the
+  //     response normally omits these fields
+  storageArchiveOperationId: z.string().nullable().optional(),
+  storageRestoreOperationId: z.string().nullable().optional(),
 });
 
 export const clientListResponseSchema = paginatedResponseSchema(clientResponseSchema);

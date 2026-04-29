@@ -431,6 +431,24 @@ async function getPlanStorageGi(db: Database, planId: string): Promise<number> {
   return Number(plan?.storageLimit ?? 10);
 }
 
+/**
+ * Resolve the pre-archive snapshot retention from storage-lifecycle
+ * settings (defaults to 90d). Used when a PATCH status:archived omits
+ * archive_retention_days. Best-effort: a settings load failure falls
+ * back to 90 rather than blocking the archive — operators can still
+ * re-take a manual snapshot if needed.
+ */
+async function loadPreArchiveRetentionDays(db: Database): Promise<number> {
+  try {
+    const { loadStorageLifecycleSettings } = await import('../storage-lifecycle/settings.js');
+    const s = await loadStorageLifecycleSettings(db);
+    return s.retentionPreArchiveDays;
+  } catch (err) {
+    console.warn('[clients] loadPreArchiveRetentionDays failed, defaulting to 90d:', err instanceof Error ? err.message : String(err));
+    return 90;
+  }
+}
+
 export async function listClients(
   db: Database,
   params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
@@ -552,11 +570,43 @@ export async function updateClient(
     }
   }
 
+  // Reject nonsensical archived → suspended/pending transitions early.
+  // Archived clients have no PVC, no workloads, no mailboxes — going
+  // straight to "suspended" would leave the row in a degenerate state.
+  // The valid exits from archived are:
+  //   archived → active   (restoreArchivedClient orchestrator)
+  //   archived → deleted  (DELETE /clients/:id, hard cascade)
+  if (
+    input.status !== undefined
+    && existing.status === 'archived'
+    && input.status !== 'archived'
+    && input.status !== 'active'
+  ) {
+    throw new ApiError(
+      'INVALID_LIFECYCLE_TRANSITION',
+      `Cannot transition archived client to '${input.status}' — only 'active' (restore) or 'archived' (no-op) are valid`,
+      409,
+      { from: 'archived', to: input.status },
+      'Restore the client first (PATCH status: active) and then suspend if needed',
+    );
+  }
+
+  // Detect status transitions that hand control over to a
+  // storage-lifecycle orchestrator. Those orchestrators read
+  // client.status to decide what to do (archive: must be non-archived;
+  // restore-from-archive: must be archived) and then write the new
+  // status themselves at the right point in the snapshot/PVC dance —
+  // so we MUST NOT pre-write the new status here.
+  const statusOwnedByLifecycle = (
+    (input.status === 'archived' && existing.status !== 'archived')
+    || (input.status === 'active' && existing.status === 'archived')
+  );
+
   const updateValues: Record<string, unknown> = {};
   if (input.company_name !== undefined) updateValues.companyName = input.company_name;
   if (input.company_email !== undefined) updateValues.companyEmail = input.company_email;
   if (input.contact_email !== undefined) updateValues.contactEmail = input.contact_email;
-  if (input.status !== undefined) updateValues.status = input.status;
+  if (input.status !== undefined && !statusOwnedByLifecycle) updateValues.status = input.status;
   if (input.plan_id !== undefined) updateValues.planId = input.plan_id;
   if (input.subscription_expires_at !== undefined) {
     updateValues.subscriptionExpiresAt = input.subscription_expires_at
@@ -645,7 +695,63 @@ export async function updateClient(
   // so suspend / reactivate go through the same path as the subscription
   // expiry cron and storage-lifecycle ops. Includes ingress swap,
   // mailbox disable, etc.
-  if (input.status === 'suspended' || input.status === 'active') {
+  //
+  // Archive + restore-from-archive are full storage-lifecycle
+  // orchestrators (snapshot, then delete workloads + PVC, OR recreate
+  // PVC from snapshot). They write storage_operations rows so the UI
+  // can poll progress; the simple cascade path is bypassed for those
+  // transitions because the orchestrators internally invoke the right
+  // cascade at the right point (after snapshot, before/after PVC swap).
+  let storageArchiveOperationId: string | null = null;
+  let storageRestoreOperationId: string | null = null;
+  if (input.status === 'archived') {
+    if (existing.status !== 'archived') {
+      try {
+        const { archiveClient } = await import('../storage-lifecycle/service.js');
+        const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+        const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+        const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+        const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+        const retentionDays = input.archive_retention_days
+          ?? (await loadPreArchiveRetentionDays(db));
+        const { operationId } = await archiveClient(
+          { db, k8s, store, platformNamespace },
+          id,
+          { retentionDays, triggeredByUserId: opts.triggeredByUserId ?? null },
+        );
+        storageArchiveOperationId = operationId;
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new ApiError('ARCHIVE_FAILED', `Failed to start archive: ${msg}`, 502, undefined, 'Check storage-lifecycle settings (snapshot backend) and retry');
+      }
+    }
+    // PATCH status:archived on already-archived client is a no-op —
+    // we already updated the DB row above. Don't re-archive.
+  } else if (input.status === 'active' && existing.status === 'archived') {
+    try {
+      const { restoreArchivedClient } = await import('../storage-lifecycle/service.js');
+      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+      const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+      const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+      const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+      const { operationId } = await restoreArchivedClient(
+        { db, k8s, store, platformNamespace },
+        id,
+        { triggeredByUserId: opts.triggeredByUserId ?? null },
+      );
+      storageRestoreOperationId = operationId;
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new ApiError('RESTORE_FAILED', `Failed to start restore: ${msg}`, 502, undefined, 'Verify pre-archive snapshot still exists (retention may have expired) and retry');
+    }
+  } else if (input.status === 'suspended' || input.status === 'active') {
+    // Non-archive transitions: synchronous cascade path (no
+    // storage_operations row). applySuspended/applyActive handle
+    // ingress swap, mailbox disable, scaled-replica restore, etc.
     try {
       const { applySuspended, applyActive } = await import('../client-lifecycle/cascades.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
@@ -707,8 +813,19 @@ export async function updateClient(
   }
 
   const updated = await getClientById(db, id);
-  return storageGrowOperationId != null
-    ? { ...updated, storageGrowOperationId }
+  // Attach lifecycle op ids when set so the UI can open progress
+  // modals. Each transition only fires its own orchestrator so at most
+  // one of these is non-null per PATCH.
+  const sideEffects: {
+    storageGrowOperationId?: string;
+    storageArchiveOperationId?: string;
+    storageRestoreOperationId?: string;
+  } = {};
+  if (storageGrowOperationId != null) sideEffects.storageGrowOperationId = storageGrowOperationId;
+  if (storageArchiveOperationId != null) sideEffects.storageArchiveOperationId = storageArchiveOperationId;
+  if (storageRestoreOperationId != null) sideEffects.storageRestoreOperationId = storageRestoreOperationId;
+  return Object.keys(sideEffects).length > 0
+    ? { ...updated, ...sideEffects }
     : updated;
 }
 
