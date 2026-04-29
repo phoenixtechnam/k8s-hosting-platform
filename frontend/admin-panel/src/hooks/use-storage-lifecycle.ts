@@ -18,7 +18,7 @@ export interface StorageSnapshot {
 export interface StorageOperation {
   readonly id: string;
   readonly clientId: string;
-  readonly opType: 'snapshot' | 'resize' | 'suspend' | 'resume' | 'archive' | 'restore';
+  readonly opType: 'snapshot' | 'resize' | 'suspend' | 'resume' | 'archive' | 'restore' | 'fsck';
   readonly state: 'idle' | 'snapshotting' | 'quiescing' | 'replacing' | 'restoring' | 'unquiescing' | 'failed';
   readonly progressPct: number;
   readonly progressMessage: string | null;
@@ -167,6 +167,41 @@ export function useRestoreClient() {
   });
 }
 
+// ─── Filesystem check / repair ───────────────────────────────────────
+//
+// Both endpoints kick off an async storage-lifecycle op. The mutation
+// returns the operationId; UI polls /admin/storage/operations/:id (via
+// useStorageOperations) until completedAt is set, then reads
+// progressMessage (clean) or lastError (errors found) for the report.
+
+export function useFsckCheck() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (clientId: string) =>
+      apiFetch<{ data: { operationId: string } }>(
+        `/api/v1/admin/clients/${clientId}/storage/fsck`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_, clientId) => {
+      qc.invalidateQueries({ queryKey: ['storage-operations', clientId] });
+    },
+  });
+}
+
+export function useFsckRepair() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (clientId: string) =>
+      apiFetch<{ data: { operationId: string } }>(
+        `/api/v1/admin/clients/${clientId}/storage/fsck-repair`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_, clientId) => {
+      qc.invalidateQueries({ queryKey: ['storage-operations', clientId] });
+    },
+  });
+}
+
 /**
  * Force-clear a client's stuck 'failed' storage-lifecycle state. Only
  * callable when the client is actually in 'failed' (the backend
@@ -195,11 +230,24 @@ export interface ClientPvcPlacement {
   readonly sizeBytes: number;
   /** Filesystem-level user-file usage from kubelet stats. */
   readonly usedBytes: number;
-  /** Longhorn block-level allocation including ext4 + Longhorn overhead. */
+  /** Longhorn block-level allocation including filesystem metadata
+   *  + Longhorn overhead (~230 MiB on ext4, ~40 MiB on XFS). */
   readonly allocatedBytes: number;
   readonly state: string | null;
   readonly robustness: string | null;
   readonly replicaNodes: readonly string[];
+  /** Abnormal Longhorn Volume conditions (status===True, filtered to
+   *  exclude the always-True "Scheduled" healthy case). */
+  readonly engineConditions: ReadonlyArray<{
+    readonly type: string;
+    readonly reason: string | null;
+    readonly message: string | null;
+  }>;
+  readonly replicasHealthy: number;
+  readonly replicasExpected: number;
+  readonly lastBackupAt: string | null;
+  readonly fsType: string | null;
+  readonly frontendState: string | null;
 }
 
 export function useClientStoragePlacement(clientId: string | undefined) {

@@ -292,7 +292,9 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const updated = await service.updateClient(app.db, id, parsed.data);
+    const userId = ((request.user as { id?: string; sub?: string } | undefined)?.id)
+      ?? ((request.user as { sub?: string } | undefined)?.sub) ?? null;
+    const updated = await service.updateClient(app.db, id, parsed.data, { triggeredByUserId: userId });
     return success(updated);
   });
 

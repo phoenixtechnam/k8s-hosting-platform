@@ -199,6 +199,47 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     return success(await service.storageAuditReport(await ctx()));
   });
 
+  // ─── Filesystem check / repair ──────────────────────────────────────
+  //
+  // Two modes:
+  //   /storage/fsck         → dry run (xfs_repair -n / e2fsck -n)
+  //   /storage/fsck-repair  → real repair (xfs_repair / e2fsck -y)
+  //
+  // BOTH require quiesce because xfs_repair refuses to operate on a
+  // mounted filesystem even with -n. The orchestrator handles
+  // scale-to-zero + scale-back. The Pod runs privileged on the node
+  // where Longhorn has the volume attached so it can hit
+  // /dev/longhorn/<pvname> directly.
+  //
+  // Output is captured into the operation row's progressMessage
+  // (clean) or lastError (errors found). Frontend polls the op id
+  // and renders the full report in a modal.
+  app.post('/admin/clients/:clientId/storage/fsck', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Run a dry-run filesystem check (xfs_repair -n / e2fsck -n) on a client PVC',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    return success(await service.fsckCheckClient(await ctx(), clientId, { triggeredByUserId: userId }));
+  });
+
+  app.post('/admin/clients/:clientId/storage/fsck-repair', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Run a repair-mode filesystem check on a client PVC (writes to disk; quiesces tenant)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { clientId } = request.params as { clientId: string };
+    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    return success(await service.fsckRepairClient(await ctx(), clientId, { triggeredByUserId: userId }));
+  });
+
   // ─── Operator recovery ──────────────────────────────────────────────
   //
   // When an op fails partway through (e.g. PVC delete times out), the
