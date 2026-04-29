@@ -92,6 +92,7 @@ import { ingressMtlsRoutes } from './modules/ingress-mtls/routes.js';
 import { mtlsProvidersRoutes } from './modules/mtls-providers/routes.js';
 import { zitiProvidersRoutes } from './modules/ziti-providers/routes.js';
 import { zrokProvidersRoutes } from './modules/zrok-providers/routes.js';
+import { deploymentNetworkAccessRoutes } from './modules/deployment-network-access/routes.js';
 import { sqliteRoutes } from './modules/sqlite/routes.js';
 import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
@@ -321,6 +322,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mtlsProvidersRoutes, { prefix: '/api/v1' });
   await app.register(zitiProvidersRoutes, { prefix: '/api/v1' });
   await app.register(zrokProvidersRoutes, { prefix: '/api/v1' });
+  await app.register(deploymentNetworkAccessRoutes, { prefix: '/api/v1' });
   await app.register(sqliteRoutes, { prefix: '/api/v1' });
 
   const { systemSettingsRoutes } = await import('./modules/system-settings/routes.js');

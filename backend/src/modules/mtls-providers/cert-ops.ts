@@ -45,6 +45,14 @@ interface CertKeyPair {
   readonly keyPem: string;
 }
 
+interface BundlePkcs12Input {
+  readonly certPem: string;
+  readonly keyPem: string;
+  readonly caCertPem: string;
+  readonly password: string;
+  readonly friendlyName: string;
+}
+
 function buildSubject(opts: { commonName: string; organization?: string; organizationalUnit?: string }): string {
   const parts: string[] = [];
   if (opts.organization) parts.push(`O=${opts.organization.replace(/\//g, '\\/')}`);
@@ -75,6 +83,48 @@ export async function generateSelfSignedCa(input: GenerateCaInput): Promise<Cert
       readFile(certPath, 'utf-8'),
     ]);
     return { keyPem, certPem };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Bundle a cert+key+ca into a PKCS#12 (.p12) file. Windows + macOS
+ * keychain + most browsers expect this format for client-cert import.
+ *
+ * The password is mandatory — Windows refuses to import a .p12 with
+ * an empty password, and a passwordless .p12 leaks the private key
+ * if the file is intercepted in transit.
+ *
+ * Returns raw bytes (caller base64-encodes for JSON transport).
+ */
+export async function bundlePkcs12(input: BundlePkcs12Input): Promise<Uint8Array> {
+  const dir = await mkdtemp(join(tmpdir(), 'mtls-p12-'));
+  try {
+    const certPath = join(dir, 'cert.pem');
+    const keyPath = join(dir, 'key.pem');
+    const caPath = join(dir, 'ca.pem');
+    const outPath = join(dir, 'bundle.p12');
+    await Promise.all([
+      writeFile(certPath, input.certPem, { mode: 0o600 }),
+      writeFile(keyPath, input.keyPem, { mode: 0o600 }),
+      writeFile(caPath, input.caCertPem, { mode: 0o600 }),
+    ]);
+    // -macalg sha256 + -keypbe AES-256-CBC + -certpbe AES-256-CBC use
+    // modern algorithms; legacy compat (Windows 7) would need
+    // -legacy. Default Windows 10/11 + macOS 11+ accept these fine.
+    await execFileAsync('openssl', [
+      'pkcs12', '-export',
+      '-in', certPath,
+      '-inkey', keyPath,
+      '-certfile', caPath,
+      '-out', outPath,
+      '-name', input.friendlyName,
+      '-passout', `pass:${input.password}`,
+      '-macalg', 'sha256',
+    ], { timeout: 15_000 });
+    const buf = await readFile(outPath);
+    return new Uint8Array(buf);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
