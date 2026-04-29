@@ -128,14 +128,16 @@ log "── polling grow op until terminal ──"
 FINAL_STATE=""
 FINAL_OP=""
 PROGRESS_MESSAGES=()
+LAST_MSG=""
 for _ in $(seq 1 60); do
   FINAL_OP=$(api GET "/admin/storage/operations/$GROW_OP_ID" 2>/dev/null || echo "{}")
   COMPLETED=$(echo "$FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
   # Capture the progress message at each poll so we can verify the
   # orchestrator publishes live updates (not stuck on a single line).
   CUR_MSG=$(echo "$FINAL_OP" | python3 -c "import json,sys;print((json.load(sys.stdin).get('data',{}).get('progressMessage') or '')[:120])" 2>/dev/null)
-  if [[ -n "$CUR_MSG" && "$CUR_MSG" != "${PROGRESS_MESSAGES[-1]:-}" ]]; then
+  if [[ -n "$CUR_MSG" && "$CUR_MSG" != "$LAST_MSG" ]]; then
     PROGRESS_MESSAGES+=("$CUR_MSG")
+    LAST_MSG="$CUR_MSG"
   fi
   if [[ "$COMPLETED" == "Y" ]]; then
     FINAL_STATE=$(echo "$FINAL_OP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('state',''))" 2>/dev/null)
@@ -156,8 +158,10 @@ if (( ${#PROGRESS_MESSAGES[@]} >= 2 )); then
 else
   fail "progress is static — only ${#PROGRESS_MESSAGES[@]} distinct progressMessage(s); operator UI shows stuck percentage"
 fi
-# Surface the last few for the run log
-for m in "${PROGRESS_MESSAGES[@]: -4}"; do log "  • $m"; done
+# Surface a few for the run log (avoid bash 4.3+ negative slicing)
+total=${#PROGRESS_MESSAGES[@]}
+start=$(( total > 4 ? total - 4 : 0 ))
+for ((i=start; i<total; i++)); do log "  • ${PROGRESS_MESSAGES[$i]}"; done
 
 # Assert params.mode === 'grow_online'
 GROW_MODE=$(echo "$FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'].get('params',{}) or {};print(d.get('mode',''))" 2>/dev/null)
