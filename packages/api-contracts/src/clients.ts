@@ -58,6 +58,14 @@ export const updateClientSchema = z.object({
   // `storage.retention.pre_archive_days` (default 90) when omitted.
   // Ignored on every status that isn't 'archived'.
   archive_retention_days: z.number().int().min(1).max(365).optional(),
+  // Destructive shrink consent. Reducing storage_limit_override or
+  // switching to a smaller-storage plan_id requires snapshot →
+  // recreate-PVC → restore (filesystems can't shrink in place safely).
+  // Default-false safety belt: PATCH that lowers storage without this
+  // flag is rejected with STORAGE_RESIZE_REQUIRED. Setting true opts
+  // into the destructive path; the orchestrator still verifies the
+  // current usedBytes fits in the new size with a 10% buffer.
+  confirm_destructive_shrink: z.boolean().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -110,6 +118,11 @@ export const clientResponseSchema = z.object({
   //     response normally omits these fields
   storageArchiveOperationId: z.string().nullable().optional(),
   storageRestoreOperationId: z.string().nullable().optional(),
+  // Destructive shrink side-effect: present when PATCH lowers storage
+  // and includes confirm_destructive_shrink:true. Orchestrator runs
+  // snapshot → recreate-PVC → restore; UI polls this id like the grow
+  // op id and renders the same progress modal.
+  storageShrinkOperationId: z.string().nullable().optional(),
 });
 
 export const clientListResponseSchema = paginatedResponseSchema(clientResponseSchema);

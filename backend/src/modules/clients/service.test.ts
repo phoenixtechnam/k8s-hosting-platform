@@ -323,6 +323,21 @@ describe('updateClient', () => {
       });
     });
 
+    it('shrink with confirm_destructive_shrink:true: bypasses STORAGE_RESIZE_REQUIRED reject', async () => {
+      const { db } = makeStorageMockDb(10, 10);
+      // 10 GiB → 5 GiB is a shrink. Without the flag this throws
+      // STORAGE_RESIZE_REQUIRED; with the flag the early reject is
+      // skipped and the dispatch falls through to resizeClient (which
+      // in unit tests fails to import/connect, but the catch swallows
+      // RESIZE_UNSAFE-only re-throws so the PATCH itself doesn't error).
+      // We only assert "doesn't throw STORAGE_RESIZE_REQUIRED" here.
+      const result = await updateClient(db, 'c1', {
+        storage_limit_override: 5,
+        confirm_destructive_shrink: true,
+      });
+      expect(result).toBeDefined();
+    });
+
     it('grow path: lets PATCH succeed without throwing (auto-resize is best-effort and offline test env skips it)', async () => {
       const { db } = makeStorageMockDb(10, 10);
 

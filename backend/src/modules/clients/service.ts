@@ -527,6 +527,7 @@ export async function updateClient(
   const newOverride = input.storage_limit_override;
   const newPlanId = input.plan_id;
   let pendingGrowMib: number | null = null;
+  let pendingShrinkMib: number | null = null;
   if (newOverride !== undefined || (newPlanId !== undefined && newPlanId !== existing.planId)) {
     const toMib = (gi: number) => Math.round(gi * 1024);
     const currentMib = existing.storageLimitOverride != null
@@ -548,21 +549,29 @@ export async function updateClient(
     }
 
     if (targetMib < currentMib) {
-      const { ApiError } = await import('../../shared/errors.js');
-      throw new ApiError(
-        'STORAGE_RESIZE_REQUIRED',
-        `Shrinking storage from ${currentMib} MiB to ${targetMib} MiB requires a resize operation (POST /api/v1/admin/clients/${id}/storage/resize)`,
-        409,
-        {
-          currentMib,
-          targetMib,
-          currentGi: Math.round(currentMib / 102.4) / 10,
-          targetGi: Math.round(targetMib / 102.4) / 10,
-          remediation: 'Use the Resize Storage modal on the client detail page',
-        },
-      );
-    }
-    if (targetMib > currentMib) {
+      // Shrink is destructive (snapshot → recreate PVC → restore).
+      // Default-safe: reject unless caller explicitly opts in via
+      // confirm_destructive_shrink:true. The orchestrator (resizeClient
+      // → resizeDestructive) runs its own pre-check that current
+      // usedBytes × 1.1 buffer fits in target — if it doesn't, the
+      // dispatch below throws RESIZE_UNSAFE before any data is touched.
+      if (input.confirm_destructive_shrink !== true) {
+        const { ApiError } = await import('../../shared/errors.js');
+        throw new ApiError(
+          'STORAGE_RESIZE_REQUIRED',
+          `Shrinking storage from ${currentMib} MiB to ${targetMib} MiB is destructive and requires confirmation`,
+          409,
+          {
+            currentMib,
+            targetMib,
+            currentGi: Math.round(currentMib / 102.4) / 10,
+            targetGi: Math.round(targetMib / 102.4) / 10,
+            remediation: 'Re-send the PATCH with confirm_destructive_shrink:true. The UI plan-edit modal handles this with a confirmation step.',
+          },
+        );
+      }
+      pendingShrinkMib = targetMib;
+    } else if (targetMib > currentMib) {
       // Mark intent — resize call happens AFTER the DB write below so
       // the persisted override matches what we ask the orchestrator
       // to grow to.
@@ -805,13 +814,17 @@ export async function updateClient(
     }
   }
 
-  // Auto-trigger online-grow when subscription/quota change asked for
-  // more storage. Done AFTER all other DB writes so the persisted
-  // override matches what the orchestrator targets. Failures here
-  // attach storageGrowOperationId=null to the response so the UI can
-  // surface the failure without rolling back the rest of the PATCH.
+  // Auto-trigger online-grow / destructive-shrink when subscription
+  // change asked for more or less storage. Done AFTER all other DB
+  // writes so the persisted override matches what the orchestrator
+  // targets. resizeClient internally dispatches grow vs shrink based
+  // on (newMib vs PVC current). Failures here attach a null op id to
+  // the response so the UI can surface the failure without rolling
+  // back the rest of the PATCH.
   let storageGrowOperationId: string | null = null;
-  if (pendingGrowMib != null) {
+  let storageShrinkOperationId: string | null = null;
+  const pendingResizeMib = pendingGrowMib ?? pendingShrinkMib;
+  if (pendingResizeMib != null) {
     try {
       const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
       const { resizeClient } = await import('../storage-lifecycle/service.js');
@@ -822,14 +835,27 @@ export async function updateClient(
       const { operationId } = await resizeClient(
         { db, k8s, store, platformNamespace },
         id,
-        { newMib: pendingGrowMib, triggeredByUserId: opts.triggeredByUserId ?? null },
+        { newMib: pendingResizeMib, triggeredByUserId: opts.triggeredByUserId ?? null },
       );
-      storageGrowOperationId = operationId;
+      if (pendingGrowMib != null) {
+        storageGrowOperationId = operationId;
+      } else {
+        storageShrinkOperationId = operationId;
+      }
     } catch (err) {
-      console.warn('[clients] Auto online-grow failed to start:', err instanceof Error ? err.message : String(err));
-      // Don't throw — the persisted override still applies to the
-      // ResourceQuota; operator can retry via the dedicated /storage/resize
-      // endpoint if the orchestrator startup itself failed.
+      // For shrink we re-throw RESIZE_UNSAFE so the operator sees a
+      // real error envelope (the dryrun rejected the target as too
+      // small for current contents). For grow we keep the
+      // best-effort behavior — the override is already persisted, the
+      // ResourceQuota will reflect it, and the operator can retry.
+      const code = (err as { code?: string }).code;
+      if (pendingShrinkMib != null && code === 'RESIZE_UNSAFE') {
+        throw err;
+      }
+      console.warn(
+        `[clients] Auto ${pendingGrowMib != null ? 'grow' : 'shrink'} failed to start:`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
@@ -839,11 +865,13 @@ export async function updateClient(
   // one of these is non-null per PATCH.
   const sideEffects: {
     storageGrowOperationId?: string;
+    storageShrinkOperationId?: string;
     storageArchiveOperationId?: string;
     storageRestoreOperationId?: string;
     storageOperationId?: string;
   } = {};
   if (storageGrowOperationId != null) sideEffects.storageGrowOperationId = storageGrowOperationId;
+  if (storageShrinkOperationId != null) sideEffects.storageShrinkOperationId = storageShrinkOperationId;
   if (storageArchiveOperationId != null) sideEffects.storageArchiveOperationId = storageArchiveOperationId;
   if (storageRestoreOperationId != null) sideEffects.storageRestoreOperationId = storageRestoreOperationId;
   if (storageOperationId != null) sideEffects.storageOperationId = storageOperationId;

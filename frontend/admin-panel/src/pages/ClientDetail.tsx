@@ -1350,7 +1350,6 @@ function ResourceLimitsCard({
     currentGi: number;
     remediation: string;
   } | null>(null);
-  const resizeStorage = useResizeClient();
 
   const effectiveCpu = client.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
   const effectiveMem = client.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
@@ -1619,7 +1618,7 @@ function ResourceLimitsCard({
         <div
           className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
           data-testid="shrink-confirm-modal"
-          onClick={(e) => { if (e.target === e.currentTarget && !resizeStorage.isPending) setShrinkPending(null); }}
+          onClick={(e) => { if (e.target === e.currentTarget && !updateClient.isPending) setShrinkPending(null); }}
         >
           <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl">
             <div className="border-b border-red-200 dark:border-red-700/40 bg-red-50 dark:bg-red-900/20 px-5 py-3">
@@ -1642,7 +1641,7 @@ function ResourceLimitsCard({
               <button
                 type="button"
                 onClick={() => setShrinkPending(null)}
-                disabled={resizeStorage.isPending}
+                disabled={updateClient.isPending}
                 className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
                 data-testid="shrink-confirm-cancel"
               >
@@ -1651,11 +1650,11 @@ function ResourceLimitsCard({
               <button
                 type="button"
                 onClick={confirmDestructiveShrink}
-                disabled={resizeStorage.isPending}
+                disabled={updateClient.isPending}
                 className="inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                 data-testid="shrink-confirm-button"
               >
-                {resizeStorage.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+                {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
                 Continue with destructive resize
               </button>
             </div>
