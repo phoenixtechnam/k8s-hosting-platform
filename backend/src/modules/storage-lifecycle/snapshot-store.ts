@@ -170,33 +170,135 @@ export class LocalHostPathStore implements SnapshotStore {
  * NOT_IMPLEMENTED error so operators aren't misled into thinking their
  * snapshots are being written remotely.
  */
+/**
+ * S3 backend. The snapshot Job tars to a local emptyDir then uploads
+ * via a presigned PUT URL — keeping the tenant Job's permissions
+ * limited to that single object key + its sidecar. Server-side ops
+ * (stat, delete, readSidecar) use AWS SDK directly.
+ *
+ * Job script needs `curl` and an emptyDir for the temp tarball; both
+ * are available in the default `alpine` image which we set as the
+ * snapshot Job image whenever the store is S3.
+ */
 export class S3Store implements SnapshotStore {
-  constructor(private readonly _config: {
+  constructor(private readonly config: {
     readonly bucket: string;
     readonly region: string;
     readonly endpoint?: string;
     readonly accessKeyId: string;
     readonly secretAccessKey: string;
+    readonly pathPrefix?: string;
   }) {}
+
+  /** Return an S3 client. Lazy-loaded so the AWS SDK isn't imported on
+   *  every server boot when only LocalHostPathStore is used. */
+  private async client() {
+    const { S3Client } = await import('@aws-sdk/client-s3');
+    return new S3Client({
+      region: this.config.region,
+      endpoint: this.config.endpoint,
+      // Hetzner / Cloudflare / Backblaze need path-style addressing.
+      forcePathStyle: !!this.config.endpoint,
+      credentials: {
+        accessKeyId: this.config.accessKeyId,
+        secretAccessKey: this.config.secretAccessKey,
+      },
+    });
+  }
+
+  /** Strip leading slashes and double-slashes, prepend pathPrefix. */
+  private key(archivePath: string): string {
+    const prefix = (this.config.pathPrefix ?? '').replace(/^\/+|\/+$/g, '');
+    const path = archivePath.replace(/^\/+/, '');
+    return prefix ? `${prefix}/${path}` : path;
+  }
 
   reservePath(clientId: string, snapshotId: string): string {
     return `${clientId}/${snapshotId}.tar.gz`;
   }
 
-  mountTarget(_archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
-    throw new Error('S3Store: not yet implemented — configure hostpath backend or wait for the S3 MVP');
+  /**
+   * For S3 the Job tars to /snapshots/<rel> (an emptyDir) and uploads
+   * via a presigned URL. We can't return presigned URLs here because
+   * the interface is sync — the snapshot.ts Job-spec builder calls
+   * `getUploadEnvelope` separately. mountTarget returns just the
+   * scratch volume.
+   */
+  mountTarget(archivePath: string): { readonly volumeSpec: Record<string, unknown>; readonly mountPath: string; readonly relativePath: string } {
+    return {
+      volumeSpec: { name: 'platform-snapshots-scratch', emptyDir: { sizeLimit: '50Gi' } },
+      mountPath: '/snapshots',
+      relativePath: archivePath,
+    };
   }
 
-  async stat(_archivePath: string): Promise<{ sizeBytes: number } | null> {
-    throw new Error('S3Store: not yet implemented');
+  /**
+   * Generate presigned URLs for the snapshot Job — the tarball PUT
+   * and the .sha256 sidecar PUT. Called by snapshotTenantPVC for S3
+   * stores so the Job uploads via a credential-less curl PUT.
+   */
+  async getUploadUrls(archivePath: string): Promise<{ archiveUrl: string; sha256Url: string }> {
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+    const c = await this.client();
+    const archiveCmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath), ContentType: 'application/gzip' });
+    const sha256Cmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}.sha256`), ContentType: 'text/plain' });
+    const [archiveUrl, sha256Url] = await Promise.all([
+      getSignedUrl(c, archiveCmd, { expiresIn: 3600 }),
+      getSignedUrl(c, sha256Cmd, { expiresIn: 3600 }),
+    ]);
+    return { archiveUrl, sha256Url };
   }
 
-  async delete(_archivePath: string): Promise<boolean> {
-    throw new Error('S3Store: not yet implemented');
+  async getDownloadUrl(archivePath: string): Promise<string> {
+    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+    const c = await this.client();
+    return getSignedUrl(c, new GetObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }), { expiresIn: 3600 });
   }
 
-  async readSidecar(_archivePath: string, _suffix: string): Promise<string | null> {
-    return null;
+  async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
+    const { HeadObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
+    const c = await this.client();
+    try {
+      const r = await c.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }));
+      return { sizeBytes: Number(r.ContentLength ?? 0) };
+    } catch (err) {
+      if (err instanceof S3ServiceException && (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404)) return null;
+      throw err;
+    }
+  }
+
+  async delete(archivePath: string): Promise<boolean> {
+    const { DeleteObjectCommand, HeadObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
+    const c = await this.client();
+    let existed = false;
+    try {
+      await c.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }));
+      existed = true;
+    } catch (err) {
+      if (err instanceof S3ServiceException && (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404)) {
+        return false;
+      }
+      throw err;
+    }
+    await c.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }));
+    // Best-effort sidecar delete — sha256 sibling.
+    try { await c.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}.sha256`) })); } catch { /* ignore */ }
+    return existed;
+  }
+
+  async readSidecar(archivePath: string, suffix: string): Promise<string | null> {
+    const { GetObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
+    const c = await this.client();
+    try {
+      const r = await c.send(new GetObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}${suffix}`) }));
+      const text = await r.Body?.transformToString();
+      return text?.trim() ?? null;
+    } catch (err) {
+      if (err instanceof S3ServiceException && (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404)) return null;
+      throw err;
+    }
   }
 }
 
@@ -277,6 +379,27 @@ export async function resolveSnapshotStore(
   const s = await loadStorageLifecycleSettings(db);
 
   if (s.backend === 'hostpath') {
+    // Fallback: when no explicit storage-lifecycle config exists but
+    // the operator has configured an active S3 backup target, use that.
+    // This unifies the two config surfaces — operators expect "I set
+    // up S3" to mean both cluster backups AND tenant snapshots.
+    try {
+      const { getActiveBackupConfig } = await import('../backup-config/service.js');
+      const key = process.env.OIDC_ENCRYPTION_KEY ?? '0'.repeat(64);
+      const active = await getActiveBackupConfig(db, key);
+      if (active && active.kind === 's3') {
+        return new S3Store({
+          bucket: active.bucket,
+          region: active.region,
+          endpoint: active.endpoint || undefined,
+          accessKeyId: active.accessKeyId,
+          secretAccessKey: active.secretAccessKey,
+          pathPrefix: active.pathPrefix ? `${active.pathPrefix.replace(/\/+$/, '')}/snapshots` : 'snapshots',
+        });
+      }
+    } catch (err) {
+      console.warn(`[snapshot-store] backup_configurations fallback skipped: ${(err as Error).message}`);
+    }
     return new LocalHostPathStore(
       s.hostpathRoot,
       envConfig.STORAGE_SNAPSHOT_LOCAL_ROOT ?? '/snapshots',

@@ -234,6 +234,57 @@ SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(
 [[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "shrink correctly rejected with STORAGE_RESIZE_REQUIRED" \
   || fail "shrink response code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
 
+# ─── destructive shrink via /storage/resize (15 → 8 GiB) ─────────────
+# We grew 10 → 15 above. Now shrink 15 → 8 via the explicit endpoint
+# (the PATCH path rejects shrinks for safety). The orchestrator should
+# quiesce → snapshot → drop PVC → recreate at 8 GiB → restore data →
+# unquiesce. End state: PVC at 8Gi, FM pod recreated (same Deployment,
+# new pod since we quiesced + unquiesced).
+log "── POST /admin/clients/:id/storage/resize newGi=8 (destructive shrink) ──"
+SHRINK_OP_RESP=$(api POST "/admin/clients/$CID/storage/resize" '{"newGi":8}')
+SHRINK_OP_ID=$(echo "$SHRINK_OP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
+[[ -n "$SHRINK_OP_ID" ]] && ok "shrink op queued opId=${SHRINK_OP_ID:0:8}" \
+  || { fail "shrink endpoint did not return operationId — body: $(echo "$SHRINK_OP_RESP" | head -c 300)"; exit 1; }
+
+# Poll for terminal — destructive shrink does snapshot+restore so it's
+# minutes long even on an empty volume. 600s budget (200×3s).
+log "── polling shrink op until terminal ──"
+SHRINK_FINAL_STATE=""
+SHRINK_FINAL_OP=""
+for _ in $(seq 1 200); do
+  SHRINK_FINAL_OP=$(api GET "/admin/storage/operations/$SHRINK_OP_ID" 2>/dev/null || echo "{}")
+  SC=$(echo "$SHRINK_FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
+  if [[ "$SC" == "Y" ]]; then
+    SHRINK_FINAL_STATE=$(echo "$SHRINK_FINAL_OP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('state',''))" 2>/dev/null)
+    break
+  fi
+  sleep 3
+done
+[[ "$SHRINK_FINAL_STATE" == "idle" ]] && ok "shrink op reached idle terminal" \
+  || { fail "shrink op did not reach idle (last state=$SHRINK_FINAL_STATE) — body: $(echo "$SHRINK_FINAL_OP" | head -c 500)"; }
+
+# Verify mode === 'destructive' (NOT 'grow_online')
+SHRINK_MODE=$(echo "$SHRINK_FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'].get('params',{}) or {};print(d.get('mode',''))" 2>/dev/null)
+[[ "$SHRINK_MODE" == "destructive" ]] && ok "op.params.mode=destructive (snapshot+restore path)" \
+  || fail "op.params.mode=$SHRINK_MODE (expected destructive)"
+
+# PVC must be at 8Gi after recreate.
+PVC_SHRUNK=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.resources.requests.storage}'")
+[[ "$PVC_SHRUNK" == "8Gi" ]] && ok "PVC.spec.resources.requests.storage=8Gi after destructive shrink" \
+  || fail "PVC.spec.resources.requests.storage=$PVC_SHRUNK (expected 8Gi)"
+
+# Snapshot must have been recorded as a pre-resize artifact.
+SNAP_ID=$(echo "$SHRINK_FINAL_OP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('snapshotId') or '')" 2>/dev/null)
+[[ -n "$SNAP_ID" ]] && ok "pre-resize snapshot recorded id=${SNAP_ID:0:8}" \
+  || fail "no snapshotId on destructive op (rollback insurance missing)"
+
+# storage_limit_override must reflect the shrunk size.
+NEW_OVERRIDE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageLimitOverride') or '')" 2>/dev/null)
+case "$NEW_OVERRIDE" in
+  8|8.0|8.00) ok "storageLimitOverride=$NEW_OVERRIDE persists (shrink committed)" ;;
+  *) fail "storageLimitOverride=$NEW_OVERRIDE (expected 8.00)" ;;
+esac
+
 # ─── summary ─────────────────────────────────────────────────────────
 echo
 log "── done ──"

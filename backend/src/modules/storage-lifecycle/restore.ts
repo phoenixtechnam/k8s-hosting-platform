@@ -31,26 +31,35 @@ export async function restoreTenantPVC(
 ): Promise<void> {
   const mount = opts.store.mountTarget(opts.archivePath);
   const jobName = `restore-${opts.snapshotId}`.slice(0, 63);
-  const jobImage = opts.jobImage ?? DEFAULT_JOB_IMAGE;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
 
-  // Extract into /target. The tarball was written relative to /source
-  // so its entries are `./applications/...`, `./databases/...`, etc.
-  const script = [
+  // S3 detection — use a presigned GET URL for the download instead
+  // of mounting a hostPath that doesn't exist on this node.
+  interface S3StoreLike { getDownloadUrl(p: string): Promise<string> }
+  const s3 = (opts.store as unknown as S3StoreLike);
+  const isS3 = typeof s3.getDownloadUrl === 'function';
+  const s3DownloadUrl = isS3 ? await s3.getDownloadUrl(opts.archivePath) : null;
+  const jobImage = opts.jobImage ?? (isS3 ? 'alpine:3.20' : DEFAULT_JOB_IMAGE);
+
+  // Extract into /target. For S3 we curl the archive into the scratch
+  // emptyDir first, then tar. For hostpath the mount already provides
+  // the file at $ARCHIVE.
+  const baseScript = [
     'set -e',
+    ...(isS3 ? [
+      'apk add --no-cache curl >/dev/null',
+      'mkdir -p "$(dirname "$ARCHIVE")"',
+      'echo "Downloading archive from S3 via presigned URL..."',
+      'curl --fail-with-body -o "$ARCHIVE" "$S3_DOWNLOAD_URL"',
+    ] : []),
     '[ -f "$ARCHIVE" ] || { echo "archive not found: $ARCHIVE"; exit 1; }',
     'cd /target',
-    // tar verbosity left off by default to keep logs small; enable via
-    // VERBOSE=1 env if debugging. Using --numeric-owner preserves the
-    // uid/gid mapping exactly as the source pods wrote (www-data, mysql,
-    // postgres, ...), which matters because platform containers run as
-    // those same uids and the orchestrator sets the target PVC perms
-    // from init-dirs at next pod start.
     'tar xzf "$ARCHIVE" --numeric-owner 2>/tmp/tar.err',
     'TAR_RC=$?',
     '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
     'echo "RESTORE_DONE"',
-  ].join('\n');
+  ];
+  const script = baseScript.join('\n');
 
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'restore', 'platform.io/client-id': opts.clientId } },
@@ -68,6 +77,7 @@ export async function restoreTenantPVC(
             command: ['sh', '-c', script],
             env: [
               { name: 'ARCHIVE', value: `${mount.mountPath}/${mount.relativePath}` },
+              ...(s3DownloadUrl ? [{ name: 'S3_DOWNLOAD_URL', value: s3DownloadUrl }] : []),
             ],
             resources: {
               requests: { cpu: '100m', memory: '128Mi' },
@@ -75,7 +85,9 @@ export async function restoreTenantPVC(
             },
             volumeMounts: [
               { name: 'target', mountPath: '/target' },
-              { name: mount.volumeSpec.name as string, mountPath: mount.mountPath, readOnly: true },
+              // S3 mode: scratch emptyDir, must be writable so curl can
+              // download. hostpath: shared store mounted RO.
+              { name: mount.volumeSpec.name as string, mountPath: mount.mountPath, readOnly: !isS3 },
             ],
           }],
           volumes: [

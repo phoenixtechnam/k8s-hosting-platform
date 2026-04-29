@@ -38,8 +38,21 @@ export async function snapshotTenantPVC(
   const archivePath = opts.store.reservePath(opts.clientId, opts.snapshotId);
   const mount = opts.store.mountTarget(archivePath);
   const jobName = `snap-${opts.snapshotId}`.slice(0, 63);
-  const jobImage = opts.jobImage ?? DEFAULT_JOB_IMAGE;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+
+  // S3Store needs presigned PUT URLs + a Job image with curl. Detect
+  // by duck-typing on the optional getUploadUrls method so we don't
+  // have to import the concrete class.
+  interface S3StoreLike { getUploadUrls(p: string): Promise<{ archiveUrl: string; sha256Url: string }> }
+  const s3 = (opts.store as unknown as S3StoreLike);
+  const isS3 = typeof s3.getUploadUrls === 'function';
+  let s3Urls: { archiveUrl: string; sha256Url: string } | null = null;
+  if (isS3) {
+    s3Urls = await s3.getUploadUrls(archivePath);
+  }
+  // Default Job image: busybox for hostpath (just tar+gzip+sha256sum),
+  // alpine for S3 (also needs curl).
+  const jobImage = opts.jobImage ?? (isS3 ? 'alpine:3.20' : DEFAULT_JOB_IMAGE);
 
   // `tar` streams to stdout, piped through `gzip -1` (speed over ratio —
   // we're not shipping these to users), then written via `tee` so we get
@@ -49,20 +62,29 @@ export async function snapshotTenantPVC(
   //
   // The archive is written to $MOUNT/$REL where MOUNT is the Store's
   // mount path inside the Job (/snapshots for the hostpath store).
-  const script = [
+  const baseScript = [
     'set -e',
     'mkdir -p "$(dirname "$ARCHIVE")"',
-    // tar from /source, filtering out lost+found and any nested mount points
     'cd /source',
-    // `tar cf - .` writes to stdout → gzip → destination file. tee's the
-    // stream through sha256sum too for a content hash we store.
     'tar cf - . 2>/tmp/tar.err | gzip -1 > "$ARCHIVE"',
     'TAR_RC=$?',
     '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
     'sha256sum "$ARCHIVE" | awk \'{print $1}\' > "$ARCHIVE.sha256"',
     'ls -l "$ARCHIVE"',
     'echo "SNAPSHOT_DONE sha256=$(cat "$ARCHIVE.sha256")"',
-  ].join('\n');
+  ];
+  // S3 mode: after tar, upload via curl PUT against presigned URLs.
+  // Both archive and sha256 sidecar go up; the platform-api side reads
+  // the sidecar via the SDK to record the hash on storage_snapshots.
+  const s3Upload = isS3 ? [
+    'apk add --no-cache curl >/dev/null',
+    'echo "Uploading archive to S3 via presigned URL..."',
+    'curl --fail-with-body -X PUT -H "Content-Type: application/gzip" --data-binary @"$ARCHIVE" "$S3_ARCHIVE_URL"',
+    'echo "Uploading sha256 sidecar..."',
+    'curl --fail-with-body -X PUT -H "Content-Type: text/plain" --data-binary @"$ARCHIVE.sha256" "$S3_SHA256_URL"',
+    'echo "S3 upload complete"',
+  ] : [];
+  const script = [...baseScript, ...s3Upload].join('\n');
 
   const jobBody = {
     metadata: { name: jobName, namespace: opts.namespace, labels: { 'platform.io/component': 'snapshot', 'platform.io/client-id': opts.clientId } },
@@ -80,6 +102,10 @@ export async function snapshotTenantPVC(
             command: ['sh', '-c', script],
             env: [
               { name: 'ARCHIVE', value: `${mount.mountPath}/${mount.relativePath}` },
+              ...(s3Urls ? [
+                { name: 'S3_ARCHIVE_URL', value: s3Urls.archiveUrl },
+                { name: 'S3_SHA256_URL', value: s3Urls.sha256Url },
+              ] : []),
             ],
             resources: {
               requests: { cpu: '100m', memory: '128Mi' },
