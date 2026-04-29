@@ -65,6 +65,11 @@ interface FsckOpts {
   readonly nodeName: string;
   readonly jobImage?: string;
   readonly timeoutMs?: number;
+  /** Live progress callback — fed the latest log line from the
+   *  fsck Job pod every poll cycle (~3s). Wired into
+   *  storage_operations.progressMessage so the operator sees
+   *  xfs_repair pass output instead of a stuck percentage. */
+  readonly onProgress?: (msg: string) => Promise<void> | void;
 }
 
 /**
@@ -208,6 +213,11 @@ export async function runFsck(k8s: K8sClients, opts: FsckOpts): Promise<FsckResu
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`fsck Job ${jobName} timed out after ${timeoutMs}ms`);
+    }
+    if (opts.onProgress) {
+      const { tailJobLog } = await import('./job-log-tail.js');
+      const tail = await tailJobLog(k8s, opts.namespace, jobName);
+      if (tail) await opts.onProgress(`${opts.fsType}: ${tail}`);
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
