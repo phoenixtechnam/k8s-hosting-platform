@@ -124,12 +124,15 @@ NEW_OVERRIDE=$(echo "$PATCH_RESP" | python3 -c "import json,sys;d=json.load(sys.
   || fail "storageLimitOverride not persisted on PATCH"
 
 # ─── poll the grow op until terminal ─────────────────────────────────
+# Budget 600s total — Longhorn rebuild + xfs_growfs on a 10→15 GiB volume
+# can take 3-4 min on the staging cluster (constrained CPU after the
+# split-quota change). 300×2s = 600s.
 log "── polling grow op until terminal ──"
 FINAL_STATE=""
 FINAL_OP=""
 PROGRESS_MESSAGES=()
 LAST_MSG=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 300); do
   FINAL_OP=$(api GET "/admin/storage/operations/$GROW_OP_ID" 2>/dev/null || echo "{}")
   COMPLETED=$(echo "$FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
   # Capture the progress message at each poll so we can verify the
