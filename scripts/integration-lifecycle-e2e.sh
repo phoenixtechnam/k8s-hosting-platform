@@ -63,18 +63,23 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 
-PLAN_ID=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
-SMALLER_PLAN_ID=$(api GET "/plans" | python3 -c "
+# For the shrink-rejection scenario we want a non-smallest plan as the starting
+# plan so we can attempt to PATCH it down to a smaller one. Pick the second-smallest
+# by storageLimit; fall back to the smallest (which will skip Scenario 6).
+PLANS_JSON=$(api GET "/plans")
+PLAN_ID=$(echo "$PLANS_JSON" | python3 -c "
 import json, sys
 plans = json.load(sys.stdin)['data']
 plans_sorted = sorted(plans, key=lambda p: int(float(p.get('storageLimit') or 0)))
-# Pick a plan that's strictly smaller than Starter; fall back to '' if Starter is smallest.
-starter = next((p for p in plans if p['name'] == 'Starter'), None)
-if starter:
-    smaller = [p for p in plans if int(float(p.get('storageLimit') or 0)) < int(float(starter.get('storageLimit') or 0))]
-    print(smaller[0]['id'] if smaller else '')
-else:
-    print('')
+# Prefer the second-smallest so a shrink target exists; fall back to smallest.
+print((plans_sorted[1] if len(plans_sorted) > 1 else plans_sorted[0])['id'])
+")
+SMALLER_PLAN_ID=$(echo "$PLANS_JSON" | python3 -c "
+import json, sys
+plans = json.load(sys.stdin)['data']
+plans_sorted = sorted(plans, key=lambda p: int(float(p.get('storageLimit') or 0)))
+# Smallest plan — used as the shrink target.
+print(plans_sorted[0]['id'] if len(plans_sorted) > 1 else '')
 ")
 REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
 [[ -n "$PLAN_ID" && -n "$REGION_ID" ]] || { echo "no plan/region"; exit 1; }
