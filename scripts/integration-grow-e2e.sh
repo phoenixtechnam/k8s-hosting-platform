@@ -91,7 +91,22 @@ NS=$(ssh_cp "kubectl get ns -l client=$CID -o jsonpath='{.items[0].metadata.name
 PVC_SIZE_INITIAL=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.resources.requests.storage}'")
 log "initial PVC size = $PVC_SIZE_INITIAL"
 
-# Capture the file-manager pod name before the grow. After the grow,
+# Longhorn requires a volume to have ready replicas before it accepts
+# expansion requests — fresh tenants whose PVC hasn't been mounted yet
+# get rejected by the validator.longhorn.io webhook with "cannot find
+# the corresponding ready node and disk". Start the file-manager so a
+# pod attaches the volume and Longhorn schedules a replica.
+log "── starting file-manager to attach the volume before grow ──"
+api POST "/clients/$CID/files/start" "" >/dev/null
+FM_READY="false"
+for _ in $(seq 1 30); do
+  FM_READY=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+  [[ "$FM_READY" == "true" ]] && break
+  sleep 4
+done
+[[ "$FM_READY" == "true" ]] && ok "FM ready — volume now attached" || { fail "FM did not become ready before grow"; exit 1; }
+
+# Capture the file-manager pod name AFTER it's running. After the grow,
 # the pod must still be Running with the SAME name — that's how we
 # prove the orchestrator did NOT quiesce/replace.
 FM_POD_BEFORE=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")

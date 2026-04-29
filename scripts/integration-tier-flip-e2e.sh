@@ -161,6 +161,16 @@ fi
 # ─── fsck dry-run on a healthy fresh volume returns clean ──────────
 # The endpoint quiesces tenant + FM, runs xfs_repair -n, restores.
 # Total time ~30-60 s for a small volume on staging.
+# Longhorn requires currentNodeID set on the Volume CR for fsck to
+# locate it — that's only populated when something attaches the
+# volume. Start FM briefly so the volume gets attached, then run
+# fsck (which will quiesce/attach again with its own pod).
+api POST "/clients/$CID/files/start" "" >/dev/null
+for _ in $(seq 1 30); do
+  R=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
+  [[ "$R" == "true" ]] && break
+  sleep 3
+done
 log "── POST /storage/fsck (dry-run on healthy XFS volume) ──"
 FSCK_RESP=$(api POST "/admin/clients/$CID/storage/fsck" "")
 FSCK_OP_ID=$(echo "$FSCK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('operationId',''))" 2>/dev/null)
