@@ -11,7 +11,7 @@ import {
 } from '../../db/schema.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { ApiError } from '../../shared/errors.js';
-import { generateSelfSignedCa, signClientCert } from './cert-ops.js';
+import { generateSelfSignedCa, signClientCert, bundlePkcs12 } from './cert-ops.js';
 import type { Database } from '../../db/index.js';
 import type {
   MtlsProviderInput,
@@ -229,12 +229,27 @@ export async function issueUserCert(
     validityDays: input.validityDays,
   });
   const meta = parseCaMetadata(certPem);
+
+  // Optional PKCS#12 bundle for Windows / macOS keychain import.
+  let pkcs12Base64: string | null = null;
+  if (input.pkcs12Password) {
+    const bundle = await bundlePkcs12({
+      certPem,
+      keyPem,
+      caCertPem,
+      password: input.pkcs12Password,
+      friendlyName: input.commonName,
+    });
+    pkcs12Base64 = Buffer.from(bundle).toString('base64');
+  }
+
   return {
     certPem,
     keyPem,
     caCertPem,
     subject: meta.subject,
     expiresAt: meta.expiresAt.toISOString(),
+    pkcs12Base64,
   };
 }
 

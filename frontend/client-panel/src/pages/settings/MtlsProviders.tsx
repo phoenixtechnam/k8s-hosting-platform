@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Shield, Loader2, ArrowLeft, Upload, Sparkles, FileKey, Copy, CheckCircle } from 'lucide-react';
+import { Shield, Loader2, ArrowLeft, Upload, Sparkles, FileKey, Copy, CheckCircle, Download } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useClientContext } from '@/hooks/use-client-context';
 import {
@@ -377,6 +377,7 @@ function IssueCertModal({
   const [organization, setOrganization] = useState('');
   const [organizationalUnit, setOrganizationalUnit] = useState('');
   const [validityDays, setValidityDays] = useState(365);
+  const [pkcs12Password, setPkcs12Password] = useState('');
   const [issued, setIssued] = useState<MtlsIssueCertResponse | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -387,8 +388,25 @@ function IssueCertModal({
       validityDays,
       ...(organization ? { organization } : {}),
       ...(organizationalUnit ? { organizationalUnit } : {}),
+      ...(pkcs12Password ? { pkcs12Password } : {}),
     });
     setIssued(result);
+  }
+
+  function downloadPkcs12() {
+    if (!issued?.pkcs12Base64) return;
+    const bin = atob(issued.pkcs12Base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/x-pkcs12' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${commonName.replace(/[^a-zA-Z0-9._-]/g, '_')}.p12`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   function copy(text: string, label: string) {
@@ -431,6 +449,22 @@ function IssueCertModal({
               <input type="number" min={1} max={365} className={INPUT_CLASS} value={validityDays} onChange={(e) => setValidityDays(Number(e.target.value))} required />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Capped at 365 days for user certs.</p>
             </div>
+            <div>
+              <label className={LABEL_CLASS}>PKCS#12 Password (optional)</label>
+              <input
+                type="password"
+                className={INPUT_CLASS}
+                value={pkcs12Password}
+                onChange={(e) => setPkcs12Password(e.target.value)}
+                placeholder="set a password to also receive a .p12 download"
+                minLength={4}
+                data-testid="mtls-issue-p12-password"
+              />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                When set, the response includes a Windows / macOS keychain-friendly PKCS#12
+                bundle. End users will need this password to import the .p12. Min 4 characters.
+              </p>
+            </div>
 
             {issueMut.error != null && (
               <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
@@ -460,6 +494,22 @@ function IssueCertModal({
               cannot be retrieved later. Subject: <code className="font-mono text-xs">{issued.subject}</code> ·
               Expires: {new Date(issued.expiresAt).toLocaleDateString()}
             </div>
+            {issued.pkcs12Base64 && (
+              <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 flex items-center justify-between">
+                <div className="text-sm text-blue-900 dark:text-blue-200">
+                  <strong>PKCS#12 bundle ready</strong> — Windows / macOS keychain / browser-friendly format.
+                  Import using the password you set above.
+                </div>
+                <button
+                  type="button"
+                  onClick={downloadPkcs12}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                  data-testid="mtls-download-p12"
+                >
+                  <Download size={14} /> Download .p12
+                </button>
+              </div>
+            )}
             <CertBlock label="User Cert (PEM)" pem={issued.certPem} testid="issued-cert" copied={copied === 'cert'} onCopy={() => copy(issued.certPem, 'cert')} />
             <CertBlock label="User Private Key (PEM)" pem={issued.keyPem} testid="issued-key" copied={copied === 'key'} onCopy={() => copy(issued.keyPem, 'key')} />
             <CertBlock label="CA Cert (PEM, for trust chain)" pem={issued.caCertPem} testid="issued-ca" copied={copied === 'ca'} onCopy={() => copy(issued.caCertPem, 'ca')} />

@@ -87,6 +87,13 @@ export const mtlsIssueCertInputSchema = z.object({
   organization: z.string().max(255).optional(),
   /** Optional OU written into the user cert Subject. */
   organizationalUnit: z.string().max(255).optional(),
+  /**
+   * PKCS#12 export password. When provided, the response also
+   * includes a base64-encoded .p12 bundle containing cert + key + CA
+   * — the format Windows / macOS keychain / most browsers expect for
+   * client-cert import. Mandatory if the operator wants the .p12.
+   */
+  pkcs12Password: z.string().min(4).max(255).optional(),
 });
 export type MtlsIssueCertInput = z.infer<typeof mtlsIssueCertInputSchema>;
 
@@ -101,5 +108,11 @@ export const mtlsIssueCertResponseSchema = z.object({
   subject: z.string(),
   /** Expires-at (ISO-8601). */
   expiresAt: z.string(),
+  /**
+   * Base64-encoded PKCS#12 bundle. Present only when the request
+   * supplied a `pkcs12Password`. Decode + offer as a download for
+   * Windows-friendly cert import.
+   */
+  pkcs12Base64: z.string().nullable(),
 });
 export type MtlsIssueCertResponse = z.infer<typeof mtlsIssueCertResponseSchema>;

@@ -198,8 +198,20 @@ export async function reconcileIngress(
 
   // Re-fetch routes after migration
   const updatedAllRoutes = await db.select().from(ingressRoutes);
+  // Exclude routes whose domain has suppress_public_ingress=true. The
+  // deployment-network-access reconciler sets this flag for domains
+  // pointing at deployments in mesh-only modes (mode='tunneler'). The
+  // public Ingress is then never created for that hostname — true
+  // zero-trust on the network layer.
+  const suppressedDomainIds = new Set(
+    clientDomains.filter((d) => d.suppressPublicIngress).map((d) => d.id),
+  );
   const updatedRoutes = updatedAllRoutes.filter(
-    r => domainIds.includes(r.domainId) && r.deploymentId && r.status === 'active',
+    r =>
+      domainIds.includes(r.domainId)
+      && r.deploymentId
+      && r.status === 'active'
+      && !suppressedDomainIds.has(r.domainId),
   );
 
   if (updatedRoutes.length === 0) {

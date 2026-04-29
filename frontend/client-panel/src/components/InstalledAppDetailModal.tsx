@@ -4,6 +4,7 @@ import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import NetworkAccessSection from '@/components/NetworkAccessSection';
 import { useCatalogEntryVersions } from '@/hooks/use-catalog';
 import clsx from 'clsx';
 import DatabaseManagementModal from './DatabaseManagementModal';
@@ -704,6 +705,17 @@ export default function InstalledAppDetailModal({
             </div>
           )}
         </div>
+
+        {/* Network Access (deployment-level: public/tunneler/zrok) */}
+        {clientId && (
+          <div className="mb-6">
+            <NetworkAccessSection
+              clientId={clientId}
+              deploymentId={deployment.id}
+              deploymentName={deployment.name}
+            />
+          </div>
+        )}
 
         {/* Unified Logs (static snapshot default, with Stream Live toggle) */}
         {showLogs && deployment && (
