@@ -33,6 +33,11 @@ export async function snapshotTenantPVC(
     readonly store: SnapshotStore;
     readonly jobImage?: string;
     readonly timeoutMs?: number;
+    /** Optional callback fired every poll cycle (~3s) with the latest
+     *  log line from the snapshot Job pod. Used to surface live
+     *  tar/curl progress into storage_operations.progressMessage so
+     *  the UI shows real movement instead of a stuck percentage. */
+    readonly onProgress?: (msg: string) => Promise<void> | void;
   },
 ): Promise<SnapshotResult> {
   const archivePath = opts.store.reservePath(opts.clientId, opts.snapshotId);
@@ -152,6 +157,11 @@ export async function snapshotTenantPVC(
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`snapshotTenantPVC: Job ${jobName} timed out after ${timeoutMs}ms`);
+    }
+    if (opts.onProgress) {
+      const { tailJobLog } = await import('./job-log-tail.js');
+      const tail = await tailJobLog(k8s, opts.namespace, jobName);
+      if (tail) await opts.onProgress(`snapshot: ${tail}`);
     }
     await new Promise((r) => setTimeout(r, 3000));
   }

@@ -154,6 +154,7 @@ export async function snapshotClient(
       clientId,
       snapshotId: snapId,
       store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
     await ctx.db.update(storageSnapshots).set({
@@ -553,7 +554,8 @@ async function runGrowOnline(
     //    for a slow Longhorn rebuild on a contended cluster while
     //    still bounding indefinite hangs.
     await progress('resizing', 50, 'Extending Longhorn volume + xfs_growfs/resize2fs (kubelet)');
-    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 180_000);
+    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 180_000,
+      async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); });
 
     // 4. Persist the new size on the client row so the ResourceQuota
     //    and any subsequent quota recompute see the same value.
@@ -594,6 +596,7 @@ async function waitForPvcCapacity(
   pvcName: string,
   targetBytes: number,
   timeoutMs: number,
+  onProgress?: (msg: string) => Promise<void> | void,
 ): Promise<void> {
   const start = Date.now();
   while (true) {
@@ -607,6 +610,12 @@ async function waitForPvcCapacity(
     if (cap) {
       const capBytes = parseQuantityToBytes(cap);
       if (capBytes >= targetBytes) return;
+      if (onProgress) {
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        const capGi = (capBytes / (1024 ** 3)).toFixed(2);
+        const targetGi = (targetBytes / (1024 ** 3)).toFixed(2);
+        await onProgress(`Extending volume — ${capGi} / ${targetGi} GiB after ${elapsed}s (Longhorn rebuild + xfs_growfs)`);
+      }
     }
     if (Date.now() - start > timeoutMs) {
       throw new ApiError(
@@ -694,6 +703,7 @@ async function runResizeDestructive(
     await progress('snapshotting', 15, 'Creating pre-resize snapshot');
     const snap = await snapshotTenantPVC(ctx.k8s, {
       namespace, pvcName, clientId: (await currentClientId(ctx.db, opId))!, snapshotId: snapId, store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
     await ctx.db.update(storageSnapshots).set({
       status: 'ready', sizeBytes: String(snap.sizeBytes), sha256: snap.sha256,
@@ -722,6 +732,7 @@ async function runResizeDestructive(
     await restoreTenantPVC(ctx.k8s, {
       namespace, pvcName, clientId: (await currentClientId(ctx.db, opId))!,
       snapshotId: snapId, archivePath, store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
     await progress('unquiescing', 90, 'Scaling workloads back up');
@@ -1026,6 +1037,7 @@ async function runArchive(
     const pvcName = `${namespace}-storage`;
     const result = await snapshotTenantPVC(ctx.k8s, {
       namespace, pvcName, clientId, snapshotId: snapId, store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
     await ctx.db.update(storageSnapshots).set({
       status: 'ready', sizeBytes: String(result.sizeBytes), sha256: result.sha256,
@@ -1153,6 +1165,7 @@ async function runRestoreArchive(
     const clientId = (await currentClientId(ctx.db, opId))!;
     await restoreTenantPVC(ctx.k8s, {
       namespace, pvcName, clientId, snapshotId: snapId, archivePath, store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
     await updateOp(ctx.db, opId, {
@@ -1330,6 +1343,7 @@ async function runFsckOp(
       fsType: located.fsType,
       dryRun,
       nodeName: located.nodeName,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
     await progress('unquiescing', 85, 'Scaling workloads back up');

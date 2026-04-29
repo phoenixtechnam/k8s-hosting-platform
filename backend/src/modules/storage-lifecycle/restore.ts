@@ -27,6 +27,8 @@ export async function restoreTenantPVC(
     readonly store: SnapshotStore;
     readonly jobImage?: string;
     readonly timeoutMs?: number;
+    /** Live progress callback — see snapshot.ts for rationale. */
+    readonly onProgress?: (msg: string) => Promise<void> | void;
   },
 ): Promise<void> {
   const mount = opts.store.mountTarget(opts.archivePath);
@@ -131,6 +133,11 @@ export async function restoreTenantPVC(
     }
     if (failed || (status.failed ?? 0) > 0) throw new Error(`restoreTenantPVC: Job ${jobName} failed`);
     if (Date.now() - start > timeoutMs) throw new Error(`restoreTenantPVC: Job ${jobName} timed out after ${timeoutMs}ms`);
+    if (opts.onProgress) {
+      const { tailJobLog } = await import('./job-log-tail.js');
+      const tail = await tailJobLog(k8s, opts.namespace, jobName);
+      if (tail) await opts.onProgress(`restore: ${tail}`);
+    }
     await new Promise((r) => setTimeout(r, 3000));
   }
 }
