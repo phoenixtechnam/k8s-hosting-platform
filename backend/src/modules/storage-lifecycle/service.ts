@@ -543,16 +543,17 @@ async function runGrowOnline(
     }
 
     // 2. Poll PVC.status.capacity.storage until it reflects the new size.
-    //    Longhorn marks PVC capacity once the block device is extended.
-    //    Timeout: 60s.
-    await progress('resizing', 35, 'Waiting for Longhorn to extend the volume');
-    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 60_000);
-
-    // 3. Poll PVC.status.conditions[type=FileSystemResizePending] until
-    //    it's gone. kubelet runs xfs_growfs (XFS) / resize2fs (ext4)
-    //    on the live mount. Timeout: 120s.
-    await progress('restoring', 70, 'Waiting for kubelet to grow the filesystem (xfs_growfs / resize2fs)');
-    await waitForFileSystemResizeCleared(ctx.k8s, namespace, pvcName, 120_000);
+    //    K8s + Longhorn flow: ControllerExpandVolume extends the block
+    //    device → kubelet sets FileSystemResizePending condition →
+    //    kubelet runs xfs_growfs/resize2fs on the live mount → kubelet
+    //    clears the condition AND propagates the new capacity. PVC
+    //    .status.capacity does not update until the whole sequence
+    //    completes, so a single capacity-poll covers both the block-
+    //    device extend AND the filesystem grow. Timeout 180s — enough
+    //    for a slow Longhorn rebuild on a contended cluster while
+    //    still bounding indefinite hangs.
+    await progress('resizing', 50, 'Extending Longhorn volume + xfs_growfs/resize2fs (kubelet)');
+    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 180_000);
 
     // 4. Persist the new size on the client row so the ResourceQuota
     //    and any subsequent quota recompute see the same value.
