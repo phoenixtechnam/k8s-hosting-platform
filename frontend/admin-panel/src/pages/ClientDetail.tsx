@@ -41,6 +41,7 @@ import {
   useResizeClient,
   useStorageOperations,
   useClearFailedState,
+  useCancelStorageOperation,
   useClientStoragePlacement,
   useFsckCheck,
   useFsckRepair,
@@ -1418,13 +1419,27 @@ function ResourceLimitsCard({
   const confirmDestructiveShrink = async () => {
     if (!shrinkPending) return;
     try {
-      const res = await resizeStorage.mutateAsync({ clientId, newMib: shrinkPending.targetMib });
-      setGrowOpId(res.data.operationId);
+      // Re-send the PATCH with confirm_destructive_shrink:true so the
+      // backend dispatches resizeClient (which routes to the destructive
+      // shrink orchestrator). Same payload as the original save attempt
+      // — values are still in state because the form was kept open.
+      const result = await updateClient.mutateAsync({
+        cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
+        memory_limit_override: memCustom ? Number(memOverride) : null,
+        storage_limit_override: storageCustom ? Number(storageOverride) : null,
+        max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
+        max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
+        monthly_price_override: priceCustom ? Number(priceOverride) : null,
+        confirm_destructive_shrink: true,
+      });
+      const opId = (result as { data?: { storageShrinkOperationId?: string | null } })?.data?.storageShrinkOperationId;
+      if (opId) setGrowOpId(opId);
       setShrinkPending(null);
       setEditing(false);
     } catch (err) {
       // Surface inline — the dialog stays open so the operator can read
-      // the failure (e.g. orchestrator already busy, no snapshot store).
+      // the failure (e.g. RESIZE_UNSAFE: current usedBytes won't fit in
+      // target with 10% safety buffer).
       const msg = err instanceof Error ? err.message : String(err);
       setShrinkPending({ ...shrinkPending, remediation: `${shrinkPending.remediation}\n\nFailed: ${msg}` });
     }
@@ -2003,6 +2018,7 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
   const opsQuery = useStorageOperations(clientId);
   const snapshot = useCreateSnapshot();
   const clearFailed = useClearFailedState();
+  const cancelOp = useCancelStorageOperation();
 
   const ops = opsQuery.data?.data ?? [];
   const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
@@ -2060,6 +2076,33 @@ function StorageLifecycleCard({ clientId, client }: { readonly clientId: string;
           {activeOp.progressMessage && <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">{activeOp.progressMessage}</p>}
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900/40">
             <div className="h-full bg-amber-600 transition-all" style={{ width: `${activeOp.progressPct}%` }} />
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <p className="text-[11px] text-amber-700 dark:text-amber-200">
+              Stuck? Cancel deletes the underlying Job(s) and resets the client to idle.
+            </p>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!confirm('Force-cancel this storage operation?\n\n' +
+                  'This will delete the underlying K8s Job(s) and reset the client storage state to idle. ' +
+                  'For an fsck-repair currently writing to disk, e2fsck checkpoints between inode passes — ' +
+                  'cancel between passes is safe; cancel mid-write may leave the filesystem partially repaired.\n\n' +
+                  'Continue?')) return;
+                try {
+                  const result = await cancelOp.mutateAsync(clientId);
+                  setOpError(null);
+                  alert(`Cancelled. Previous state: ${result.previousState}; deleted ${result.deletedJobs} Job(s).`);
+                } catch (err) {
+                  surfaceError(err);
+                }
+              }}
+              disabled={cancelOp.isPending}
+              className="rounded-md border border-amber-400 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-1 text-xs font-medium text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+              data-testid="storage-cancel-op"
+            >
+              {cancelOp.isPending ? 'Cancelling…' : 'Cancel operation'}
+            </button>
           </div>
         </div>
       )}
