@@ -63,23 +63,16 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
 [[ -n "$TOKEN" ]] || { echo "login failed"; exit 1; }
 
-# For the shrink-rejection scenario we want a non-smallest plan as the starting
-# plan so we can attempt to PATCH it down to a smaller one. Pick the second-smallest
-# by storageLimit; fall back to the smallest (which will skip Scenario 6).
+# Use the smallest plan so a brand-new client can be provisioned even on
+# resource-constrained CI clusters. Scenario 6 exercises shrink rejection via
+# storage_limit_override (purely a DB-level reject path that doesn't depend
+# on having a smaller plan in the catalog).
 PLANS_JSON=$(api GET "/plans")
 PLAN_ID=$(echo "$PLANS_JSON" | python3 -c "
 import json, sys
 plans = json.load(sys.stdin)['data']
 plans_sorted = sorted(plans, key=lambda p: int(float(p.get('storageLimit') or 0)))
-# Prefer the second-smallest so a shrink target exists; fall back to smallest.
-print((plans_sorted[1] if len(plans_sorted) > 1 else plans_sorted[0])['id'])
-")
-SMALLER_PLAN_ID=$(echo "$PLANS_JSON" | python3 -c "
-import json, sys
-plans = json.load(sys.stdin)['data']
-plans_sorted = sorted(plans, key=lambda p: int(float(p.get('storageLimit') or 0)))
-# Smallest plan — used as the shrink target.
-print(plans_sorted[0]['id'] if len(plans_sorted) > 1 else '')
+print(plans_sorted[0]['id'])
 ")
 REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
 [[ -n "$PLAN_ID" && -n "$REGION_ID" ]] || { echo "no plan/region"; exit 1; }
@@ -279,16 +272,26 @@ RESTORE_STATUS_DB=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(
 [[ "$RESTORE_STATUS_DB" == "active" ]] && ok "client.status=active after restore" \
   || fail "client.status=$RESTORE_STATUS_DB (expected active)"
 
-# ─── Scenario 6: shrink rejection via plan_id ────────────────────────
-if [[ -n "$SMALLER_PLAN_ID" ]]; then
-  log "── Scenario 6: PATCH plan_id to smaller plan — must reject ──"
-  SHRINK_RESP=$(api PATCH "/clients/$CID" "{\"plan_id\":\"$SMALLER_PLAN_ID\"}")
-  SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
-  [[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "smaller-plan PATCH rejected with STORAGE_RESIZE_REQUIRED" \
-    || fail "smaller-plan PATCH code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
-else
-  log "── Scenario 6: skipped (no plan smaller than Starter on this cluster) ──"
-fi
+# ─── Scenario 6: shrink rejection via storage_limit_override ─────────
+# Set override < current plan storage → must reject with STORAGE_RESIZE_REQUIRED.
+# Direct exercise of the same reject path that plan_id-shrink hits, but
+# without needing a smaller plan in the catalog or extra cluster capacity.
+log "── Scenario 6: PATCH storage_limit_override below current size — must reject ──"
+CURRENT_GI=$(api GET "/clients/$CID" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)['data']
+ovr = d.get('storageLimitOverride')
+if ovr not in (None, ''):
+    print(int(float(ovr)))
+else:
+    plan = d.get('plan') or {}
+    print(int(float(plan.get('storageLimit') or 0)))
+")
+SHRINK_TARGET=$((CURRENT_GI > 1 ? CURRENT_GI - 1 : 1))
+SHRINK_RESP=$(api PATCH "/clients/$CID" "{\"storage_limit_override\":$SHRINK_TARGET}")
+SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
+[[ "$SHRINK_CODE" == "STORAGE_RESIZE_REQUIRED" ]] && ok "shrink (override $CURRENT_GI→$SHRINK_TARGET GiB) rejected with STORAGE_RESIZE_REQUIRED" \
+  || fail "shrink override code=$SHRINK_CODE (expected STORAGE_RESIZE_REQUIRED) — body: $(echo "$SHRINK_RESP" | head -c 300)"
 
 # ─── summary ─────────────────────────────────────────────────────────
 echo
