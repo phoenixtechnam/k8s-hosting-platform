@@ -320,20 +320,33 @@ export async function getFileManagerStatus(
     labelSelector: `app=${FM_NAME}`,
   });
 
-  const podList = (pods as { items?: Array<{ status?: { phase?: string; conditions?: Array<{ type?: string; status?: string }> } }> }).items ?? [];
+  const podList = (pods as { items?: Array<{
+    metadata?: { deletionTimestamp?: string };
+    status?: { phase?: string; conditions?: Array<{ type?: string; status?: string }> };
+  }> }).items ?? [];
 
   if (podList.length === 0) {
     return { ready: false, phase: 'starting', message: 'Pod is being created' };
   }
 
-  const pod = podList[0];
+  // Skip pods that are being deleted — kubelet keeps Ready=True on the
+  // pod until termination actually completes, but the operator should
+  // see "stopping" not "ready" once a delete has been requested
+  // (e.g. quiesce scaled the Deployment to 0). A non-deleting pod
+  // takes precedence when both exist mid-rollout.
+  const live = podList.find((p) => !p.metadata?.deletionTimestamp);
+  const pod = live ?? podList[0];
+  const isDeleting = !!pod.metadata?.deletionTimestamp;
   const phase = pod.status?.phase;
   const readyCondition = pod.status?.conditions?.find(
     (c: { type?: string; status?: string }) => c.type === 'Ready' && c.status === 'True'
   );
 
-  if (readyCondition) {
+  if (readyCondition && !isDeleting) {
     return { ready: true, phase: 'ready' };
+  }
+  if (isDeleting) {
+    return { ready: false, phase: 'stopping', message: 'Pod is terminating' };
   }
 
   if (phase === 'Failed') {
