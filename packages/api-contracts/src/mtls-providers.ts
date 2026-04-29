@@ -88,12 +88,25 @@ export const mtlsIssueCertInputSchema = z.object({
   /** Optional OU written into the user cert Subject. */
   organizationalUnit: z.string().max(255).optional(),
   /**
-   * PKCS#12 export password. When provided, the response also
-   * includes a base64-encoded .p12 bundle containing cert + key + CA
-   * — the format Windows / macOS keychain / most browsers expect for
-   * client-cert import. Mandatory if the operator wants the .p12.
+   * Set to true to also receive a base64-encoded PKCS#12 bundle
+   * (cert + key + CA) — the format Windows / macOS keychain / most
+   * browsers expect for client-cert import.
+   *
+   * When omitted (or false), no .p12 bundle is generated.
    */
-  pkcs12Password: z.string().min(4).max(255).optional(),
+  pkcs12: z.boolean().optional(),
+  /**
+   * Optional PKCS#12 export password. When non-empty AND `pkcs12` is
+   * true, the bundle is encrypted with this password. Empty / omitted
+   * = passwordless .p12 (no password prompt during import — Windows
+   * 10/11 + macOS 11+ accept empty passwords; some legacy clients
+   * still prompt and accept "" as the answer).
+   *
+   * Backwards compat: supplying `pkcs12Password` alone (without
+   * `pkcs12: true`) is treated as `pkcs12: true` so existing callers
+   * keep working.
+   */
+  pkcs12Password: z.string().max(255).optional(),
 });
 export type MtlsIssueCertInput = z.infer<typeof mtlsIssueCertInputSchema>;
 
