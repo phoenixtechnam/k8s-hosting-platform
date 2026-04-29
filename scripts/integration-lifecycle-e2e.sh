@@ -117,14 +117,27 @@ done
 log "── Scenario 2: PATCH status:suspended ──"
 SUSP_RESP=$(api PATCH "/clients/$CID" '{"status":"suspended"}')
 SUSP_STATUS=$(echo "$SUSP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
+SUSP_OP_ID=$(echo "$SUSP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageOperationId') or '')" 2>/dev/null)
 [[ "$SUSP_STATUS" == "suspended" ]] && ok "status=suspended in PATCH response" \
   || fail "status=$SUSP_STATUS (expected suspended) — body: $(echo "$SUSP_RESP" | head -c 300)"
+[[ -n "$SUSP_OP_ID" ]] && ok "PATCH carried storageOperationId=${SUSP_OP_ID:0:8}" \
+  || fail "PATCH did not return storageOperationId — orchestrator may not have fired"
 
-# Wait for cascades to land. applySuspended runs synchronously inside
-# the PATCH but the FM Deployment scale-down is async: the request
-# returns once the Deployment.spec.replicas=0 patch is accepted by
-# kube-apiserver, but kubelet still needs to terminate the pod.
-sleep 6
+# Poll the suspend op until terminal — quiesce + cascade can take 30-60s
+# while kubelet drains the FM pod and tenant Deployments scale to 0.
+SUSP_FINAL=""
+for _ in $(seq 1 60); do
+  OP=$(api GET "/admin/storage/operations/$SUSP_OP_ID" 2>/dev/null || echo "{}")
+  C=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
+  if [[ "$C" == "Y" ]]; then
+    SUSP_FINAL=$(echo "$OP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('state',''))" 2>/dev/null)
+    break
+  fi
+  sleep 3
+done
+[[ "$SUSP_FINAL" == "idle" ]] && ok "suspend op reached idle terminal" \
+  || fail "suspend op state=$SUSP_FINAL (expected idle)"
+
 FM_READY_AFTER_SUSPEND=$(api GET "/clients/$CID/files/status" | python3 -c "import json,sys;print(str(json.load(sys.stdin)['data'].get('ready','false')).lower())" 2>/dev/null || echo false)
 [[ "$FM_READY_AFTER_SUSPEND" == "false" ]] && ok "file-manager scaled down on suspend" \
   || fail "file-manager still ready after suspend (status=$FM_READY_AFTER_SUSPEND)"
@@ -140,15 +153,26 @@ NONZERO_REPLICAS=$(echo "$DEP_REPLICAS" | grep -v -E '^(0|)$' | wc -l | tr -d ' 
 log "── Scenario 3: PATCH status:active (resume) ──"
 RES_RESP=$(api PATCH "/clients/$CID" '{"status":"active"}')
 RES_STATUS=$(echo "$RES_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
+RES_OP_ID=$(echo "$RES_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('storageOperationId') or '')" 2>/dev/null)
 [[ "$RES_STATUS" == "active" ]] && ok "status=active in PATCH response" \
   || fail "status=$RES_STATUS (expected active) — body: $(echo "$RES_RESP" | head -c 300)"
+[[ -n "$RES_OP_ID" ]] && ok "PATCH carried storageOperationId=${RES_OP_ID:0:8}" \
+  || fail "PATCH did not return storageOperationId for resume"
 
-# applyActive scales workloads back via the file-manager service hook.
-# Wait briefly for FM pod to come back. We don't strictly require FM
-# to be ready (operator may have closed the file manager before suspend);
-# the relevant assertion is that the cascade ran cleanly and the row
-# is back to active.
-sleep 6
+# Poll the resume op until terminal.
+RES_FINAL=""
+for _ in $(seq 1 60); do
+  OP=$(api GET "/admin/storage/operations/$RES_OP_ID" 2>/dev/null || echo "{}")
+  C=$(echo "$OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
+  if [[ "$C" == "Y" ]]; then
+    RES_FINAL=$(echo "$OP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('state',''))" 2>/dev/null)
+    break
+  fi
+  sleep 3
+done
+[[ "$RES_FINAL" == "idle" ]] && ok "resume op reached idle terminal" \
+  || fail "resume op state=$RES_FINAL (expected idle)"
+
 ACT_STATUS_DB=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
 [[ "$ACT_STATUS_DB" == "active" ]] && ok "client.status=active after resume" \
   || fail "client.status=$ACT_STATUS_DB (expected active)"
