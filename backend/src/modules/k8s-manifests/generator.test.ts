@@ -157,28 +157,40 @@ describe('generateClientManifests', () => {
     });
   });
 
-  it('should generate ResourceQuota with plan limits plus system reserve', async () => {
+  it('should generate split ResourceQuotas: Pod-scoped (cpu/memory) + storage-only', async () => {
     const db = createMockDb();
     const result = await generateClientManifests(db, 'client-001');
 
+    // Pod-scoped quota — counts only tenant-default Pods so file-manager
+    // (priorityClassName=platform-tenant-overhead) is exempt.
     const rqFile = result.find(f => f.filename === 'resource-quota.yaml');
     expect(rqFile).toBeDefined();
-
     const rq = yaml.load(rqFile!.content) as Record<string, unknown>;
-    // Plan: 2 CPU / 4Gi memory + system reserve: 0.25 CPU / 0.25 Gi
     expect(rq).toMatchObject({
       apiVersion: 'v1',
       kind: 'ResourceQuota',
-      metadata: {
-        name: 'acme-corp-quota',
-        namespace: 'acme-corp',
-      },
+      metadata: { name: 'acme-corp-quota', namespace: 'acme-corp' },
       spec: {
-        hard: {
-          'limits.cpu': '2.25',
-          'limits.memory': '4.25Gi',
-          'requests.storage': '20Gi',
+        hard: { 'limits.cpu': '2', 'limits.memory': '4Gi' },
+        scopeSelector: {
+          matchExpressions: [
+            { scopeName: 'PriorityClass', operator: 'In', values: ['tenant-default'] },
+          ],
         },
+      },
+    });
+
+    // Storage quota — unscoped (K8s rejects requests.storage under
+    // a PriorityClass scope), namespace-wide PVC budget.
+    const sqFile = result.find(f => f.filename === 'resource-quota-storage.yaml');
+    expect(sqFile).toBeDefined();
+    const sq = yaml.load(sqFile!.content) as Record<string, unknown>;
+    expect(sq).toMatchObject({
+      apiVersion: 'v1',
+      kind: 'ResourceQuota',
+      metadata: { name: 'acme-corp-storage-quota', namespace: 'acme-corp' },
+      spec: {
+        hard: { 'requests.storage': '20Gi' },
       },
     });
   });
@@ -467,12 +479,21 @@ describe('generateClientManifests', () => {
 
     const rqFile = result.find(f => f.filename === 'resource-quota.yaml');
     const rq = yaml.load(rqFile!.content) as Record<string, unknown>;
-    // Overrides: 4 CPU / 8 Gi + system reserve: 0.25 CPU / 0.25 Gi
+    // Overrides: 4 CPU / 8 Gi (plan-exact; no SYSTEM_RESERVE padding)
     expect(rq).toMatchObject({
       spec: {
         hard: {
-          'limits.cpu': '4.25',
-          'limits.memory': '8.25Gi',
+          'limits.cpu': '4',
+          'limits.memory': '8Gi',
+        },
+      },
+    });
+    // Storage in the separate unscoped quota.
+    const sqFile = result.find(f => f.filename === 'resource-quota-storage.yaml');
+    const sq = yaml.load(sqFile!.content) as Record<string, unknown>;
+    expect(sq).toMatchObject({
+      spec: {
+        hard: {
           'requests.storage': '50Gi',
         },
       },

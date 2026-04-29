@@ -5,7 +5,8 @@ import { ApiError } from '../../shared/errors.js';
 import { getDefaultStorageClass } from '../storage-settings/service.js';
 import { getClusterIssuerName, isAutoTlsEnabled } from '../tls-settings/service.js';
 import { domainToSecretName } from '../ssl-certs/cert-manager.js';
-import { SYSTEM_CPU_RESERVE, SYSTEM_MEMORY_RESERVE } from '../k8s-provisioner/service.js';
+// SYSTEM_CPU_RESERVE / SYSTEM_MEMORY_RESERVE removed — quota is now
+// plan-exact and file-manager is exempt via priorityClassName.
 import type { GenerateManifestInput } from '@k8s-hosting/api-contracts';
 
 export interface ManifestFile {
@@ -79,10 +80,13 @@ export async function generateClientManifests(
     },
   }));
 
-  // 2. ResourceQuota (includes system service headroom for file-manager)
-  const totalCpu = (parseFloat(cpuLimit) + SYSTEM_CPU_RESERVE).toFixed(2);
-  const totalMemoryGi = (parseFloat(memoryLimit) + SYSTEM_MEMORY_RESERVE).toFixed(2);
-
+  // 2. ResourceQuotas — split into Pod-scoped (cpu/memory, counts only
+  //    tenant-default Pods → file-manager + snapshot/restore Pods are
+  //    exempt via priorityClassName=platform-tenant-overhead) and
+  //    storage-only (unscoped, namespace-wide PVC budget). K8s rejects
+  //    requests.storage under a PriorityClass scope with HTTP 422
+  //    "unsupported scope applied to resource", so they MUST be
+  //    separate quotas. Plan-exact limits (no SYSTEM_*_RESERVE padding).
   manifests.push(buildManifest('resource-quota.yaml', {
     apiVersion: 'v1',
     kind: 'ResourceQuota',
@@ -92,8 +96,30 @@ export async function generateClientManifests(
     },
     spec: {
       hard: {
-        'limits.cpu': totalCpu,
-        'limits.memory': `${totalMemoryGi}Gi`,
+        'limits.cpu': cpuLimit,
+        'limits.memory': `${memoryLimit}Gi`,
+      },
+      scopeSelector: {
+        matchExpressions: [
+          {
+            scopeName: 'PriorityClass',
+            operator: 'In',
+            values: ['tenant-default'],
+          },
+        ],
+      },
+    },
+  }));
+
+  manifests.push(buildManifest('resource-quota-storage.yaml', {
+    apiVersion: 'v1',
+    kind: 'ResourceQuota',
+    metadata: {
+      name: `${namespace}-storage-quota`,
+      namespace,
+    },
+    spec: {
+      hard: {
         'requests.storage': `${storageLimit}Gi`,
       },
     },
