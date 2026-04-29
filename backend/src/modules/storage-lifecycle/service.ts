@@ -520,17 +520,13 @@ async function runGrowOnline(
     //    patch — strategic-merge isn't supported on PVCs and a JSON
     //    patch with `op:replace` would fail if the path doesn't exist.
     try {
-      await (ctx.k8s.core as unknown as {
-        patchNamespacedPersistentVolumeClaim: (a: {
-          name: string;
-          namespace: string;
-          body: unknown;
-        }) => Promise<unknown>;
-      }).patchNamespacedPersistentVolumeClaim({
+      const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+      await ctx.k8s.core.patchNamespacedPersistentVolumeClaim({
         name: pvcName,
         namespace,
         body: { spec: { resources: { requests: { storage: newSizeStr } } } },
-      });
+      } as unknown as Parameters<typeof ctx.k8s.core.patchNamespacedPersistentVolumeClaim>[0],
+        MERGE_PATCH);
     } catch (err) {
       const code = (err as { statusCode?: number; code?: number }).statusCode
         ?? (err as { code?: number }).code;
