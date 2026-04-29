@@ -377,6 +377,7 @@ function IssueCertModal({
   const [organization, setOrganization] = useState('');
   const [organizationalUnit, setOrganizationalUnit] = useState('');
   const [validityDays, setValidityDays] = useState(365);
+  const [wantPkcs12, setWantPkcs12] = useState(true);
   const [pkcs12Password, setPkcs12Password] = useState('');
   const [issued, setIssued] = useState<MtlsIssueCertResponse | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -388,7 +389,9 @@ function IssueCertModal({
       validityDays,
       ...(organization ? { organization } : {}),
       ...(organizationalUnit ? { organizationalUnit } : {}),
-      ...(pkcs12Password ? { pkcs12Password } : {}),
+      ...(wantPkcs12
+        ? { pkcs12: true, ...(pkcs12Password ? { pkcs12Password } : {}) }
+        : {}),
     });
     setIssued(result);
   }
@@ -449,22 +452,39 @@ function IssueCertModal({
               <input type="number" min={1} max={365} className={INPUT_CLASS} value={validityDays} onChange={(e) => setValidityDays(Number(e.target.value))} required />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Capped at 365 days for user certs.</p>
             </div>
-            <div>
-              <label className={LABEL_CLASS}>PKCS#12 Password (optional)</label>
-              <input
-                type="password"
-                className={INPUT_CLASS}
-                value={pkcs12Password}
-                onChange={(e) => setPkcs12Password(e.target.value)}
-                placeholder="set a password to also receive a .p12 download"
-                minLength={4}
-                data-testid="mtls-issue-p12-password"
-              />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                When set, the response includes a Windows / macOS keychain-friendly PKCS#12
-                bundle. End users will need this password to import the .p12. Min 4 characters.
-              </p>
-            </div>
+            <fieldset className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+              <legend className="px-1 text-xs font-medium text-gray-700 dark:text-gray-300">PKCS#12 Bundle</legend>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={wantPkcs12}
+                  onChange={(e) => setWantPkcs12(e.target.checked)}
+                  className="h-4 w-4 rounded"
+                  data-testid="mtls-issue-want-p12"
+                />
+                <span className="text-sm text-gray-900 dark:text-gray-100">
+                  Also generate a <code>.p12</code> bundle (Windows / macOS keychain / browser-friendly)
+                </span>
+              </label>
+              {wantPkcs12 && (
+                <div>
+                  <label className={LABEL_CLASS}>Password (optional)</label>
+                  <input
+                    type="password"
+                    className={INPUT_CLASS}
+                    value={pkcs12Password}
+                    onChange={(e) => setPkcs12Password(e.target.value)}
+                    placeholder="leave empty for a passwordless .p12"
+                    data-testid="mtls-issue-p12-password"
+                  />
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Optional — leave empty to skip password protection. Windows 10/11 + macOS 11+
+                    accept passwordless .p12 imports; older clients may prompt and accept an
+                    empty answer. End users will need this password (when set) to import the cert.
+                  </p>
+                </div>
+              )}
+            </fieldset>
 
             {issueMut.error != null && (
               <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
@@ -498,7 +518,7 @@ function IssueCertModal({
               <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 flex items-center justify-between">
                 <div className="text-sm text-blue-900 dark:text-blue-200">
                   <strong>PKCS#12 bundle ready</strong> — Windows / macOS keychain / browser-friendly format.
-                  Import using the password you set above.
+                  {pkcs12Password ? ' Import using the password you set above.' : ' No import password required.'}
                 </div>
                 <button
                   type="button"

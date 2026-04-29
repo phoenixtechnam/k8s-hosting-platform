@@ -231,13 +231,18 @@ export async function issueUserCert(
   const meta = parseCaMetadata(certPem);
 
   // Optional PKCS#12 bundle for Windows / macOS keychain import.
+  // Triggered by `pkcs12: true` OR (legacy compat) a non-empty
+  // pkcs12Password. Password is optional — empty string produces a
+  // passwordless .p12 which Windows 10/11 + macOS 11+ accept.
   let pkcs12Base64: string | null = null;
-  if (input.pkcs12Password) {
+  const wantPkcs12 = input.pkcs12 === true
+    || (typeof input.pkcs12Password === 'string' && input.pkcs12Password.length > 0);
+  if (wantPkcs12) {
     const bundle = await bundlePkcs12({
       certPem,
       keyPem,
       caCertPem,
-      password: input.pkcs12Password,
+      password: input.pkcs12Password ?? '',
       friendlyName: input.commonName,
     });
     pkcs12Base64 = Buffer.from(bundle).toString('base64');
