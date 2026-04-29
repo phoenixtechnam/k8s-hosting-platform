@@ -218,6 +218,55 @@ export async function applyTenantTier(
     }
   }
 
+  // Mirror the tenant placement onto the file-manager Deployment so
+  // FM lands (or stays) on the same node as the tenant pod. Without
+  // this, a local-tier flip pins tenant to client.workerNodeName but
+  // FM keeps running on whatever node it was originally scheduled on,
+  // and the RWO `client-storage` PVC mount races into a Multi-Attach
+  // error. preferred podAffinity on FM is too soft to win against the
+  // residual placement of a Running pod, so we patch FM explicitly:
+  //   • local tier  → nodeSelector pins FM to client.workerNodeName
+  //                   (matches the hard pin on tenant deployments)
+  //   • ha tier     → clear FM nodeSelector (preferred podAffinity
+  //                   handles the soft colocation when FM scales up)
+  // Also force strategy.type=Recreate on the same patch — FM mounts
+  // the same RWO PVC as tenant, so a RollingUpdate during a node move
+  // would surge a second pod that hits Multi-Attach against the
+  // tenant pod's mount. Recreate terminates first, schedules second.
+  // Patch is best-effort: FM Deployment doesn't exist until first
+  // /files/start. 404 is benign.
+  if (k8s && client.workerNodeName) {
+    const ns = client.kubernetesNamespace;
+    const fmNodeSelector = newTier === 'local'
+      ? { 'kubernetes.io/hostname': client.workerNodeName }
+      : null;
+    try {
+      await k8s.apps.patchNamespacedDeployment({
+        name: 'file-manager',
+        namespace: ns,
+        body: {
+          spec: {
+            // Recreate (not RollingUpdate) — FM mounts the same RWO
+            // PVC as tenant, so a surge pod would race into Multi-Attach.
+            // rollingUpdate must be null when type=Recreate (k8s
+            // validation will reject the combination otherwise).
+            strategy: { type: 'Recreate', rollingUpdate: null },
+            template: {
+              spec: { nodeSelector: fmNodeSelector },
+            },
+          },
+        },
+      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        MERGE_PATCH);
+    } catch (err) {
+      const status = (err as { code?: number; statusCode?: number }).code
+        ?? (err as { statusCode?: number }).statusCode;
+      if (status !== 404) {
+        console.warn(`[applyTenantTier] failed to patch FM nodeSelector in ${ns}: ${(err as Error).message}`);
+      }
+    }
+  }
+
   // The caller's pre-write of storageTier is the durable record. We
   // refresh updated_at here so the row's mtime reflects the cluster
   // sync attempt (UI sorts on it). Idempotent.

@@ -80,6 +80,13 @@ export async function ensureFileManagerRunning(
         metadata: { name: FM_NAME, namespace, labels: FM_LABELS },
         spec: {
           replicas: initialReplicas,
+          // Recreate (not the default RollingUpdate) — FM mounts the
+          // same RWO `client-storage` PVC as tenant pods, so a surge
+          // pod during a node move would race into Multi-Attach. The
+          // applyTenantTier flow patches FM's nodeSelector when tier
+          // changes, which triggers a rollout — Recreate guarantees
+          // the old pod terminates before the new one schedules.
+          strategy: { type: 'Recreate' },
           selector: { matchLabels: FM_LABELS },
           template: {
             metadata: { labels: FM_LABELS },
