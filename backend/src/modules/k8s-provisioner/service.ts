@@ -193,18 +193,29 @@ export async function applyResourceQuota(
   namespace: string,
   limits: { cpu: string; memory: string; storage: string },
 ): Promise<void> {
-  // Quota = plan limits exactly (no padding). The scopeSelector below
-  // makes the quota count ONLY tenant-default Pods, so file-manager
-  // (priorityClassName=platform-tenant-overhead) and any future system
-  // Pod in this namespace are naturally exempt.
+  // K8s ResourceQuota constraint: PriorityClass scope applies ONLY to
+  // Pod-level resources (cpu, memory, pods). Resource counts like
+  // `requests.storage` (the per-namespace PVC budget) are NOT
+  // scoped-selector-eligible and the API server returns 422
+  // "unsupported scope applied to resource" if they appear in a
+  // scoped quota. So we split into TWO quotas:
+  //
+  //   <ns>-quota          (scoped, counts only tenant-default Pods)
+  //     limits.cpu, limits.memory
+  //
+  //   <ns>-storage-quota  (unscoped, namespace-wide)
+  //     requests.storage
+  //
+  // Both quotas are sized to plan limits exactly (no padding).
   const quotaName = `${namespace}-quota`;
-  const body = {
+  const storageQuotaName = `${namespace}-storage-quota`;
+
+  const podBody = {
     metadata: { name: quotaName, namespace },
     spec: {
       hard: {
         'limits.cpu': limits.cpu,
         'limits.memory': `${limits.memory}Gi`,
-        'requests.storage': `${limits.storage}Gi`,
       },
       scopeSelector: {
         matchExpressions: [
@@ -218,22 +229,38 @@ export async function applyResourceQuota(
     },
   };
 
+  const storageBody = {
+    metadata: { name: storageQuotaName, namespace },
+    spec: {
+      hard: {
+        'requests.storage': `${limits.storage}Gi`,
+      },
+    },
+  };
+
+  await upsertQuota(k8s, namespace, quotaName, podBody);
+  await upsertQuota(k8s, namespace, storageQuotaName, storageBody);
+}
+
+async function upsertQuota(
+  k8s: K8sClients,
+  namespace: string,
+  name: string,
+  body: { metadata: { name: string; namespace: string }; spec: object },
+): Promise<void> {
   try {
     await k8s.core.createNamespacedResourceQuota({ namespace, body });
   } catch (err: unknown) {
-    // Already exists — replace with updated values. Note: ResourceQuota
-    // scope/scopeSelector is IMMUTABLE after creation. If the existing
-    // quota lacks our scopeSelector, the replace will 422; we handle
-    // that by deleting + recreating (only when the scope is missing).
     if (!isK8s409(err)) throw err;
     try {
-      await k8s.core.replaceNamespacedResourceQuota({ name: quotaName, namespace, body } as Parameters<typeof k8s.core.replaceNamespacedResourceQuota>[0]);
+      await k8s.core.replaceNamespacedResourceQuota({ name, namespace, body } as Parameters<typeof k8s.core.replaceNamespacedResourceQuota>[0]);
     } catch (replaceErr: unknown) {
       if (!isQuotaScopeImmutable(replaceErr)) throw replaceErr;
-      // Delete + recreate to add the scope selector. Brief window
-      // (~ms) where the namespace is unbounded, acceptable on a
-      // one-shot upgrade.
-      await k8s.core.deleteNamespacedResourceQuota({ name: quotaName, namespace } as never);
+      // ResourceQuota scope/scopeSelector is immutable after creation.
+      // For pre-PR 2 quotas that lack our scopeSelector, drop+recreate
+      // is the only way to add it. ~ms window where the namespace is
+      // unbounded — acceptable on a one-shot upgrade.
+      await k8s.core.deleteNamespacedResourceQuota({ name, namespace } as never);
       await k8s.core.createNamespacedResourceQuota({ namespace, body });
     }
   }
@@ -241,7 +268,7 @@ export async function applyResourceQuota(
 
 function isQuotaScopeImmutable(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  return /scope.*immutable|scopeSelector.*immutable/i.test(err.message);
+  return /scope.*immutable|scopeSelector.*immutable|spec\.scope/i.test(err.message);
 }
 
 export async function applyNetworkPolicy(
