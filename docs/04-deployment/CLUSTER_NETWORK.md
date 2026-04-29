@@ -66,11 +66,16 @@ control-plane traffic falls through to default-drop (safe).
 
 ### Persona-A example: NetBird mesh
 
+Bootstrap does NOT install or enrol NetBird / Tailscale / any VPN
+tooling — that's a sysadmin responsibility, performed BEFORE running
+this script. Once the mesh is up, bootstrap auto-detects it.
+
 ```bash
-# Bring NetBird up first
+# Sysadmin (BEFORE bootstrap):
+apt-get install -y netbird   # or curl -fsSL https://pkgs.netbird.io/install.sh | sh
 netbird up --management-url https://vpn.example.com --setup-key <UUID>
 
-# Auto-detect picks up wt0 → defaults to 100.64.0.0/10
+# Then run bootstrap — auto-detect picks wt0 → 100.64.0.0/10:
 ./scripts/bootstrap.sh --join-as server \
   --domain example.com --acme-email ops@example.com
 ```
