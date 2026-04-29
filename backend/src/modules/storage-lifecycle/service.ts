@@ -227,8 +227,32 @@ export async function resizeDryRunMib(
   newMib: number,
 ): Promise<ResizeDryRun> {
   const client = await mustGetClient(ctx.db, clientId);
-  const currentGi = Math.round(Number(client.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, client.planId);
-  const currentMib = currentGi * 1024;
+  // Read current size from the live PVC, not from clients.storage_limit_override.
+  // updateClient writes the new override BEFORE dispatching to the resize
+  // orchestrator, so reading the override would always return the target
+  // size and short-circuit every grow as a no-op. The PVC's
+  // spec.resources.requests.storage is the source of truth for what's
+  // actually provisioned.
+  const namespace = client.kubernetesNamespace;
+  const pvcName = `${namespace}-storage`;
+  let currentMib: number;
+  try {
+    const pvc = await ctx.k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace }) as { spec?: { resources?: { requests?: { storage?: string } } } };
+    const sizeStr = pvc.spec?.resources?.requests?.storage;
+    if (sizeStr) {
+      currentMib = Math.round(parseQuantityToBytes(sizeStr) / (1024 * 1024));
+    } else {
+      throw new Error('PVC has no requests.storage');
+    }
+  } catch (err) {
+    // PVC may not exist yet (provisioning still in flight) — fall back
+    // to override / plan default. Logged as a warning; dryrun caller
+    // should treat this as best-effort.
+    console.warn(`[resizeDryRunMib] PVC read failed for ${namespace}/${pvcName}, falling back to override: ${(err as Error).message}`);
+    const currentGi = Math.round(Number(client.storageLimitOverride ?? 0)) || await getPlanStorageGi(ctx.db, client.planId);
+    currentMib = currentGi * 1024;
+  }
+  const currentGi = Math.ceil(currentMib / 1024);
 
   const usedBytes = await measurePvcUsed(ctx, client.kubernetesNamespace);
   const newBytes = newMib * 1024 * 1024;
