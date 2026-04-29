@@ -570,6 +570,32 @@ export async function updateClient(
           },
         );
       }
+      // Pre-flight dryrun BEFORE writing the new override to DB. The
+      // grow path can write-then-dispatch because grow is idempotent
+      // and a stale override is benign. Shrink is destructive and a
+      // RESIZE_UNSAFE rejection from the orchestrator AFTER a DB write
+      // leaves the override at the new (smaller) value while the PVC
+      // stays at the old size — subsequent PATCHes would mis-classify
+      // grow vs shrink. Run the dryrun here so we throw the
+      // RESIZE_UNSAFE envelope before mutating anything.
+      try {
+        const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+        const { resizeDryRunMib } = await import('../storage-lifecycle/service.js');
+        const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+        const k8s = opts.k8sClients ?? createK8sClients(process.env.KUBECONFIG_PATH);
+        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+        const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+        const dry = await resizeDryRunMib({ db, k8s, store, platformNamespace }, id, targetMib);
+        if (!dry.willFit) {
+          const { ApiError } = await import('../../shared/errors.js');
+          throw new ApiError('RESIZE_UNSAFE', dry.rejectReason ?? 'Shrink target too small for current usage', 400, { dryRun: dry });
+        }
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        // resolveSnapshotStore / k8s import failure: fall through to
+        // dispatch path which will surface the same error to the operator.
+        console.warn('[clients.updateClient] shrink pre-flight dryrun failed:', err instanceof Error ? err.message : String(err));
+      }
       pendingShrinkMib = targetMib;
     } else if (targetMib > currentMib) {
       // Mark intent — resize call happens AFTER the DB write below so

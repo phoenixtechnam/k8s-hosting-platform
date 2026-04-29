@@ -124,12 +124,15 @@ NEW_OVERRIDE=$(echo "$PATCH_RESP" | python3 -c "import json,sys;d=json.load(sys.
   || fail "storageLimitOverride not persisted on PATCH"
 
 # ─── poll the grow op until terminal ─────────────────────────────────
+# Budget 600s total — Longhorn rebuild + xfs_growfs on a 10→15 GiB volume
+# can take 3-4 min on the staging cluster (constrained CPU after the
+# split-quota change). 300×2s = 600s.
 log "── polling grow op until terminal ──"
 FINAL_STATE=""
 FINAL_OP=""
 PROGRESS_MESSAGES=()
 LAST_MSG=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 300); do
   FINAL_OP=$(api GET "/admin/storage/operations/$GROW_OP_ID" 2>/dev/null || echo "{}")
   COMPLETED=$(echo "$FINAL_OP" | python3 -c "import json,sys;d=json.load(sys.stdin).get('data',{});print('Y' if d.get('completedAt') else 'N')" 2>/dev/null)
   # Capture the progress message at each poll so we can verify the
@@ -250,33 +253,20 @@ else
   fail "storage-placement.sizeBytes=$NEW_SIZE_BYTES < 15 GiB after 30s"
 fi
 
-# ─── RESIZE_UNSAFE: writing data and trying to shrink below it ──────
-# Drop a 200 MiB file inside the PVC (via FM exec), then attempt to
-# shrink the PVC to 1 GiB. The orchestrator's dryrun must reject with
-# RESIZE_UNSAFE because used + 10% buffer > target. This proves the
-# pre-check actually runs.
-log "── seeding PVC with marker data so RESIZE_UNSAFE has something to reject ──"
+# ─── RESIZE_UNSAFE: marker bigger than shrink target ────────────────
+# Use truncate (sparse) so we don't burn FM container RAM with
+# /dev/zero — dd was getting OOM-killed under the new split-quota
+# memory caps. measurePvcUsed() runs `du -sb /data` which reports
+# apparent size (sums file sizes), not actual block usage, so a sparse
+# 950 MiB file is enough to trip RESIZE_UNSAFE for a 1 GiB target.
+log "── seeding PVC with sparse 950 MiB marker so RESIZE_UNSAFE has something to reject ──"
 FM_POD_FOR_SEED=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
 if [[ -n "$FM_POD_FOR_SEED" ]]; then
-  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- dd if=/dev/zero of=/data/shrink-marker bs=1M count=200 2>&1 | tail -1" || true
-  ok "wrote 200 MiB marker into /data/shrink-marker"
-fi
-
-# Smallest plan default storage_limit_override on this stack is 1 GiB
-# but PVCs are bound to a minimum so try 1 — used 200 MiB × 1.1 = 220 MiB
-# fits in 1024 MiB, so this would actually pass the dryrun. Try 0.1 GiB
-# to force the unsafe rejection… schema min is 1, so we use 1 and fill
-# the volume more. Cheaper: try a value that's strictly less than used.
-# Used ~200 MiB → request 0.1 GiB rejected by schema. Use 1 GiB but
-# inflate the marker to 950 MiB so 950×1.1=1045 > 1024. Skip the
-# inflate-and-shrink test if FM unavailable or fill fails.
-if [[ -n "$FM_POD_FOR_SEED" ]]; then
-  log "── inflating marker to 950 MiB so target=1 GiB fails dryrun ──"
-  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- dd if=/dev/zero of=/data/shrink-marker bs=1M count=950 2>&1 | tail -1" || true
+  ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- truncate -s 950M /data/shrink-marker" || true
   log "── PATCH storage_limit_override=1 + confirm — must reject RESIZE_UNSAFE ──"
   UNSAFE_RESP=$(api PATCH "/clients/$CID" '{"storage_limit_override":1,"confirm_destructive_shrink":true}')
   UNSAFE_CODE=$(echo "$UNSAFE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
-  [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]] && ok "shrink-with-confirm rejected by dryrun (RESIZE_UNSAFE — used would not fit)" \
+  [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]] && ok "shrink-with-confirm rejected by pre-flight dryrun (RESIZE_UNSAFE — used would not fit)" \
     || fail "shrink-with-confirm code=$UNSAFE_CODE (expected RESIZE_UNSAFE) — body: $(echo "$UNSAFE_RESP" | head -c 400)"
   # Cleanup the marker so the upcoming successful shrink isn't rejected.
   ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- rm -f /data/shrink-marker" || true
