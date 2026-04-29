@@ -550,11 +550,12 @@ async function runGrowOnline(
     //    clears the condition AND propagates the new capacity. PVC
     //    .status.capacity does not update until the whole sequence
     //    completes, so a single capacity-poll covers both the block-
-    //    device extend AND the filesystem grow. Timeout 180s — enough
-    //    for a slow Longhorn rebuild on a contended cluster while
-    //    still bounding indefinite hangs.
+    //    device extend AND the filesystem grow. Timeout 600s — enough
+    //    for a slow Longhorn rebuild on a contended cluster (e.g.
+    //    integration suites running back-to-back, leaving residual
+    //    detach/replicate work) while still bounding indefinite hangs.
     await progress('resizing', 50, 'Extending Longhorn volume + xfs_growfs/resize2fs (kubelet)');
-    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 180_000,
+    await waitForPvcCapacity(ctx.k8s, namespace, pvcName, newBytes, 600_000,
       async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); });
 
     // 4. Persist the new size on the client row so the ResourceQuota
