@@ -66,6 +66,14 @@ jobs:
       - name: Verify admin-only Ingresses have an auth gate
         run: ./scripts/ci-admin-auth-check.sh
 
+  firewall-check:
+    name: Firewall-rule guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify bootstrap.sh firewall rules
+        run: ./scripts/ci-firewall-check.sh
+
   system-affinity-check:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest

@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: peer-firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: peer-firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+---
+# Read-only on Node objects — the reconciler watches InternalIPs and
+# rebuilds host nft sets. No write access is needed; firewall changes
+# happen via the host's nft binary (CAP_NET_ADMIN), not via the API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: peer-firewall-reconciler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: peer-firewall-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: peer-firewall-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: peer-firewall-reconciler
+    namespace: platform-system

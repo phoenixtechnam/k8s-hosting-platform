@@ -115,6 +115,8 @@ packages/api-contracts/src/
 
 **HA mode**: Postgres is CNPG-managed from the first install (`Cluster` CR, default `instances: 1`). Apply HA scales CNPG instances 1↔3 + Longhorn volumes 1↔3 replicas + stateless Deployments 2↔3 with topologySpread — single-button, reversible. Redis was removed M14 (in-memory LRU). See [docs/05-storage/HA_MODE.md](docs/05-storage/HA_MODE.md).
 
+**Cluster firewall**: bootstrap.sh ships a three-mode firewall — `cidr` (mesh/VLAN auto-detected or explicit `--cluster-network-cidr`), `set` (HA install with no private network; reconciled from kube-API by `peer-firewall-reconciler` DaemonSet + `/usr/local/bin/peer-firewall-add` for new-peer pre-authorisation), `single` (no peers). All control-plane ports — `:6443` `:8443` `:10250` `:5473` `:2379-2380` — are scoped, never open to `0.0.0.0/0`. Dual-stack v4+v6. Calico WG (51821) stays public (public-key auth). See [docs/04-deployment/CLUSTER_NETWORK.md](docs/04-deployment/CLUSTER_NETWORK.md). CI guard `scripts/ci-firewall-check.sh` rejects regressions.
+
 ## Conventions
 
 - **API prefix:** `/api/v1/`

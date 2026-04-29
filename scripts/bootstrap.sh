@@ -62,6 +62,17 @@ CALICO_VERSION="v3.31.5"
 # the CIDR-restricted nft allow IS the allowlist. See doc examples
 # below (NetBird / Tailscale / generic).
 CLUSTER_NETWORK_CIDR=""
+# IPv6 sibling of CLUSTER_NETWORK_CIDR. Auto-detected from wt0/tailscale0
+# scope-global v6 if not set explicitly. Empty → no v6 cluster-allow rule
+# emitted (v6 control-plane traffic falls through to default-drop).
+CLUSTER_NETWORK_CIDR_V6=""
+# Calico-managed WireGuard (UDP/51821): public by default. Public-key
+# auth makes the surface effectively zero. Operators on a real private
+# VLAN (Persona B) may opt-in to scope it to CLUSTER_NETWORK_CIDR via
+# --calico-wg-public=false. Not recommended on NetBird/Tailscale meshes:
+# Calico's WG endpoint is announced as the underlay (eth0) IP, not the
+# mesh IP, so scoping to the mesh CIDR would block legitimate handshakes.
+CALICO_WG_PUBLIC="true"
 NETBIRD_MANAGEMENT_URL=""
 NETBIRD_SETUP_KEY=""
 
@@ -158,12 +169,34 @@ JOINING (server #2+ or worker):
 PRIVATE-NETWORK UNDERLAY (recommended for HA):
   --cluster-network-cidr <cidr>
                          Pin every cross-node k8s flow (etcd peer,
-                         apiserver, kubelet, Calico Typha + VXLAN) to
-                         the host IP in this CIDR. Public 2379-2380/
-                         5473/10250/4789 stay closed; only TCP/22, 80,
-                         443, 6443 face the internet. Choose this once
-                         at first-server bootstrap — switching later
-                         requires a full cluster rebuild.
+                         apiserver, kubelet, Calico Typha + VXLAN,
+                         apiserver 6443, ingress-nginx admission 8443)
+                         to peers in this CIDR. Public 2379-2380/5473/
+                         10250/4789/6443/8443 stay closed; only TCP/22,
+                         80, 443 face the internet. Auto-detected from
+                         wt0 / tailscale0 if either is up at install
+                         time. Three-mode firewall:
+                         * cidr  — explicit flag or auto-detected mesh
+                         * set   — HA install with no CIDR; uses nft
+                                   sets reconciled by a server-side
+                                   DaemonSet. New peers must be pre-
+                                   authorised on existing peers via
+                                   /usr/local/bin/peer-firewall-add
+                                   <new-IP>
+                         * single — standalone first server, no peers
+                         Choose underlay once at first-server bootstrap;
+                         switching later requires a full cluster rebuild.
+  --cluster-network-cidr-v6 <cidr>
+                         IPv6 sibling of --cluster-network-cidr. Auto-
+                         detected from mesh interface if not set.
+                         Optional — without it, v6 control-plane traffic
+                         falls through to default-drop (safe).
+  --calico-wg-public <true|false>
+                         Calico WireGuard (UDP/51821). Default true:
+                         public-key auth makes exposure safe AND mesh
+                         underlays can't carry Calico's WG endpoint
+                         reliably. Persona B (real cloud VLAN) may set
+                         false to scope to --cluster-network-cidr.
 
 NETBIRD CONVENIENCE (optional, brings up wt0 before k3s):
   --netbird-management-url <url>
@@ -248,6 +281,8 @@ parse_args() {
       --token)           K3S_TOKEN="$2"; shift 2 ;;
       --k3s-version)     K3S_VERSION="$2"; shift 2 ;;
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; shift 2 ;;
+      --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; shift 2 ;;
+      --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
       --netbird-management-url) NETBIRD_MANAGEMENT_URL="$2"; shift 2 ;;
       --netbird-setup-key) NETBIRD_SETUP_KEY="$2"; shift 2 ;;
       --with-monitoring) ENABLE_MONITORING=true; shift ;;
@@ -334,6 +369,19 @@ parse_args() {
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]] \
      && [[ ! "$CLUSTER_NETWORK_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
     error "Invalid --cluster-network-cidr: '${CLUSTER_NETWORK_CIDR}'. Must be IPv4 CIDR (e.g. 100.64.0.0/10)."
+  fi
+
+  # Validate CLUSTER_NETWORK_CIDR_V6 shape if set. Permissive regex —
+  # nft will reject malformed values at apply time; we only block shell-
+  # injection-shaped input.
+  if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]] \
+     && [[ ! "$CLUSTER_NETWORK_CIDR_V6" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+    error "Invalid --cluster-network-cidr-v6: '${CLUSTER_NETWORK_CIDR_V6}'. Must be IPv6 CIDR (e.g. fd7a:115c:a1e0::/48)."
+  fi
+
+  # Validate CALICO_WG_PUBLIC.
+  if [[ "$CALICO_WG_PUBLIC" != "true" && "$CALICO_WG_PUBLIC" != "false" ]]; then
+    error "Invalid --calico-wg-public: '${CALICO_WG_PUBLIC}'. Must be 'true' or 'false'."
   fi
 
   # Validate K3S_SERVER_IP shape if set. Same defence-in-depth — the
@@ -423,56 +471,104 @@ configure_firewall() {
 
   log "Configuring nftables firewall..."
 
-  # M12: when --cluster-network-cidr is set, every cross-node k8s flow
-  # (etcd peer 2379-2380, Calico Typha 5473, kubelet 10250, Calico
-  # VXLAN 4789) is allowed ONLY from peers inside that CIDR. Public
-  # interfaces never see those ports — closed by `policy drop`.
-  # Without the flag, we keep the legacy "private RFC1918+CGNAT" allow
-  # for UDP/4789 (single-server installs only — HA is not supported on
-  # public underlay; document recovery via `nft insert` if you need it).
-  local cluster_allow=""
+  # ─── Resolve firewall mode ────────────────────────────────────────────
+  # Three modes, all dual-stack v4+v6:
+  #   cidr   — CLUSTER_NETWORK_CIDR is set (explicit flag, NetBird
+  #            convenience block, or auto-detected wt0/tailscale0).
+  #            Every cluster-internal flow is allowed only from peers
+  #            inside that CIDR.
+  #   set    — HA install (--join-as server|worker) without a CIDR.
+  #            Cluster-internal ports are scoped to nft sets
+  #            cluster_peers_v{4,6} reconciled by the peer-firewall-
+  #            reconciler DaemonSet from kube-API node InternalIPs.
+  #            New peers must be pre-authorised on existing peers via
+  #            /usr/local/bin/peer-firewall-add <new-IP>.
+  #   single — Standalone first server with no plan to add peers; no
+  #            cluster-internal ports needed open at all.
+  if [[ -z "$CLUSTER_NETWORK_CIDR" ]]; then
+    if detected=$(detect_mesh_v4_cidr 2>/dev/null); then
+      CLUSTER_NETWORK_CIDR="$detected"
+      log "Auto-detected mesh interface; defaulting --cluster-network-cidr=${CLUSTER_NETWORK_CIDR}"
+      if [[ -z "$CLUSTER_NETWORK_CIDR_V6" ]]; then
+        CLUSTER_NETWORK_CIDR_V6=$(detect_mesh_v6_cidr 2>/dev/null || true)
+        [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]] \
+          && log "  + auto-detected v6: --cluster-network-cidr-v6=${CLUSTER_NETWORK_CIDR_V6}"
+      fi
+    fi
+  fi
+
+  local mode="single"
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]]; then
-    # Trust the entire private CIDR for ALL cluster-internal flows.
-    # Enumerating well-known ports (4789/5473/2379-2380/10250) misses
-    # admission-webhook ports — ingress-nginx uses TCP/8443, cert-manager
-    # uses TCP/9443, and any future Helm chart can pick its own. Since
-    # CLUSTER_NETWORK_CIDR is operator-trusted by definition (it's the
-    # private mesh you bootstrapped the cluster onto), allowing all TCP
-    # + UDP from peers in that CIDR is the right default.
-    cluster_allow="    # Cluster-internal k8s flows — trusted private CIDR ${CLUSTER_NETWORK_CIDR}
-    # (covers etcd peer 2379-2380, Calico Typha 5473, kubelet 10250,
-    # Calico VXLAN 4789, ingress-nginx admission 8443, cert-manager
-    # webhook 9443, and any future webhook port we don't pre-enumerate)
+    mode="cidr"
+  elif [[ "$NODE_ROLE" == "server" || "$NODE_ROLE" == "worker" ]]; then
+    # HA-shaped install without a CIDR → set mode (Persona C). First
+    # server in this mode has only itself in the peer set; subsequent
+    # joins require pre-authorisation via peer-firewall-add helper.
+    mode="set"
+  fi
+  log "Firewall mode: ${mode}"
+
+  # ─── Render mode-specific cluster-allow rules ─────────────────────────
+  local cluster_allow
+  case "$mode" in
+    cidr)
+      cluster_allow="    # Cluster-internal k8s flows — trusted private CIDR ${CLUSTER_NETWORK_CIDR}
+    # (covers apiserver 6443, etcd peer 2379-2380, Calico Typha 5473,
+    # kubelet 10250, Calico VXLAN 4789, ingress-nginx admission 8443,
+    # cert-manager webhook 9443, and any future webhook port).
     ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol tcp accept
     ip saddr ${CLUSTER_NETWORK_CIDR} ip protocol udp accept"
-  else
-    # Public-underlay HA: every cluster-internal flow is mutually-
-    # TLS-authenticated (etcd peers, k8s API, kubelet, Typha) OR
-    # public-key-authenticated (Calico WireGuard). Opening these
-    # ports to the world is safe — auth happens at the application
-    # layer. Pod-to-pod traffic itself is encrypted by Calico WG
-    # (port 51821) so the VXLAN-on-the-wire path is encrypted by
-    # WireGuard before it leaves the host.
-    cluster_allow="    # etcd peer (mTLS)
-    tcp dport 2379-2380 accept
-    # Calico Typha (mTLS) + kubelet (mTLS)
-    tcp dport 5473 accept
-    tcp dport 10250 accept
-    # ingress-nginx admission webhook (TLS, validate.nginx.ingress.kubernetes.io).
-    # Runs on hostNetwork ingress-nginx pods, so the Service endpoints
-    # are host:8443. Without this, kube-apiserver can only reach the
-    # local node's webhook backend — cross-node attempts time out and
-    # cert-manager solver-Ingress creates fail with PresentError, slowing
-    # every fresh tenant cert issuance to 5-10 min as the request
-    # randomly retries against kube-proxy's load balance until it lands
-    # on the local node. cert-manager's own webhook (TCP/9443) runs in
-    # pod CIDR so it doesn't need a host firewall hole.
-    tcp dport 8443 accept
-    # Calico WG handles encryption of pod traffic; VXLAN on UDP/4789
-    # only ever flows INSIDE the WG tunnel, never on the public wire.
-    # Still leave 4789 open for in-cluster Service VIPs that may
-    # bypass WG (none today, but harmless to allow).
-    udp dport 4789 accept"
+      if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
+        cluster_allow="${cluster_allow}
+    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} meta l4proto tcp accept
+    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} meta l4proto udp accept"
+      fi
+      ;;
+    set)
+      cluster_allow="    # Cluster-internal k8s flows — peer-set scoped (Persona C, no
+    # private network). Sets are reconciled by the peer-firewall-
+    # reconciler DaemonSet from kube-API. New peers MUST be pre-
+    # authorised on every existing peer before joining via:
+    #   /usr/local/bin/peer-firewall-add <new-public-IP>
+    # See docs/04-deployment/CLUSTER_NETWORK.md for the join workflow.
+    ip  saddr @cluster_peers_v4 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
+    ip6 saddr @cluster_peers_v6 tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept"
+      ;;
+    single)
+      cluster_allow="    # Single-server install: no peers expected, no cluster-internal
+    # ports opened. To add a second node later, re-run bootstrap with
+    # --cluster-network-cidr OR bring up a NetBird/Tailscale mesh
+    # interface first."
+      ;;
+  esac
+
+  # ─── Calico WireGuard scoping (default: public) ───────────────────────
+  local calico_wg_rule="    # Calico WireGuard (UDP/51821) — public-key auth makes exposure safe.
+    # Calico's WG endpoint is the underlay (eth0) IP, so scoping to a
+    # mesh CIDR would block legitimate handshakes. Override with
+    # --calico-wg-public=false on cidr-mode Persona B (real VLAN) only.
+    udp dport 51821 accept"
+  if [[ "$CALICO_WG_PUBLIC" == "false" && "$mode" == "cidr" ]]; then
+    calico_wg_rule="    # Calico WireGuard (UDP/51821) — scoped to private CIDR (Persona B opt-in)
+    ip saddr ${CLUSTER_NETWORK_CIDR} udp dport 51821 accept"
+    if [[ -n "$CLUSTER_NETWORK_CIDR_V6" ]]; then
+      calico_wg_rule="${calico_wg_rule}
+    ip6 saddr ${CLUSTER_NETWORK_CIDR_V6} udp dport 51821 accept"
+    fi
+  fi
+
+  # ─── nft set declarations (set mode only) ─────────────────────────────
+  local set_decls=""
+  if [[ "$mode" == "set" ]]; then
+    set_decls="  set cluster_peers_v4 {
+    type ipv4_addr
+    flags interval
+  }
+  set cluster_peers_v6 {
+    type ipv6_addr
+    flags interval
+  }
+"
   fi
 
   cat > /etc/nftables.conf <<NFT
@@ -481,6 +577,7 @@ configure_firewall() {
 flush ruleset
 
 table inet filter {
+${set_decls}
   chain input {
     type filter hook input priority filter; policy drop;
 
@@ -490,18 +587,18 @@ table inet filter {
     ip protocol icmp accept
     ip6 nexthdr icmpv6 accept
 
+    # Public-facing — tenants and operators must always reach these.
     tcp dport 80 accept      # HTTP
     tcp dport 443 accept     # HTTPS
-    tcp dport 6443 accept    # k8s API
     tcp dport 22 accept      # SSH
-    udp dport 51820 accept   # WireGuard (NetBird)
+
+    # Public-key-authenticated UDP — exposure is safe.
+    udp dport 51820 accept   # NetBird WireGuard
     udp dport 29899 accept   # NetBird direct connection
 
 ${cluster_allow}
 
-    # Calico WireGuard (UDP/51821) — authenticated by public-key crypto,
-    # safe to expose like NetBird's 51820.
-    udp dport 51821 accept
+${calico_wg_rule}
 
     # Stalwart mail server ports — required for a node carrying the
     # mail StatefulSet's pod (the staging + production overlays pin
@@ -535,7 +632,134 @@ NFT
 
   systemctl enable nftables
   nft -f /etc/nftables.conf
-  log "Firewall configured."
+  log "Firewall configured (mode=${mode})."
+
+  # In set mode, seed the peer set with this node's public IP + the
+  # join-target's IP (if any). The reconciler DaemonSet converges
+  # the rest from kube-API after the cluster is up.
+  if [[ "$mode" == "set" ]]; then
+    seed_peer_set
+    install_peer_firewall_helpers
+  fi
+}
+
+# Seed cluster_peers_v{4,6} sets in set mode. Adds:
+#   - this node's primary outbound IPv4 + IPv6 (so the reconciler can
+#     reach itself before kube-API knows about us)
+#   - the join target's IP from --server, if joining (so we can hit its
+#     :6443 to register; the existing peer must have already added our
+#     IP to its set via peer-firewall-add — handled by operator)
+seed_peer_set() {
+  log "Seeding cluster_peers nft sets (set mode)..."
+  local local_v4 local_v6
+  local_v4=$(detect_local_ipv4 || true)
+  local_v6=$(detect_local_ipv6 || true)
+  # Each `nft add element` is wrapped in an explicit if/then/else so a
+  # non-zero exit (set element already present, or set undeclared on a
+  # re-run with mode flip) doesn't abort under `set -e` via an
+  # unbalanced `&&` chain. Failures are logged but non-fatal — the
+  # reconciler DaemonSet will repopulate the set from kube-API anyway.
+  if [[ -n "$local_v4" ]]; then
+    if nft add element inet filter cluster_peers_v4 "{ ${local_v4} }" 2>/dev/null; then
+      log "  + ${local_v4} (self, v4)"
+    else
+      warn "  failed to seed self v4 ${local_v4}; reconciler will repopulate"
+    fi
+  fi
+  if [[ -n "$local_v6" ]]; then
+    if nft add element inet filter cluster_peers_v6 "{ ${local_v6} }" 2>/dev/null; then
+      log "  + ${local_v6} (self, v6)"
+    else
+      warn "  failed to seed self v6 ${local_v6}; reconciler will repopulate"
+    fi
+  fi
+  if [[ -n "$K3S_SERVER_IP" ]]; then
+    if nft add element inet filter cluster_peers_v4 "{ ${K3S_SERVER_IP} }" 2>/dev/null; then
+      log "  + ${K3S_SERVER_IP} (join target, v4)"
+    else
+      warn "  failed to seed join target ${K3S_SERVER_IP}; manual intervention may be required"
+    fi
+    log ""
+    log "  IMPORTANT — set mode requires per-peer pre-authorisation."
+    log "  On the existing peer at ${K3S_SERVER_IP}, run BEFORE this bootstrap:"
+    log "    /usr/local/bin/peer-firewall-add ${local_v4}"
+    log "  Otherwise this node cannot reach :6443 and the join will hang."
+    log ""
+  fi
+}
+
+# Install the /usr/local/bin/peer-firewall-{add,remove} helpers used
+# during set-mode joins. The peer-firewall-reconciler DaemonSet handles
+# ongoing membership; these helpers cover the bootstrap-time window
+# before the new node appears in kube-API.
+install_peer_firewall_helpers() {
+  log "Installing /usr/local/bin/peer-firewall-{add,remove}..."
+
+  cat > /usr/local/bin/peer-firewall-add <<'HELPER'
+#!/usr/bin/env bash
+# peer-firewall-add — Authorise a cluster peer in the local nft set.
+# Usage: peer-firewall-add <ipv4-or-ipv6>
+# Run on each existing cluster peer BEFORE bootstrapping a new node in
+# set mode (Persona C). The peer-firewall-reconciler DaemonSet converges
+# membership from kube-API once the new node has registered, so this
+# helper only fills the bootstrap-time window.
+set -euo pipefail
+[[ $# -eq 1 ]] || { echo "usage: $0 <ip>" >&2; exit 2; }
+ip="$1"
+# Strict IP validation BEFORE handing the value to nft. The element
+# expression is concatenated into an nft grammar string downstream;
+# without this guard a value like "1.2.3.4 }; flush ruleset" would
+# inject arbitrary nft commands at root.
+v4_re='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+v6_re='^[0-9a-fA-F:]+$'
+if [[ "$ip" =~ $v4_re ]]; then
+  set_name=cluster_peers_v4
+elif [[ "$ip" =~ $v6_re && "$ip" == *:* ]]; then
+  set_name=cluster_peers_v6
+else
+  echo "error: '$ip' is not a valid IPv4 or IPv6 address" >&2
+  exit 2
+fi
+if ! nft list set inet filter "$set_name" >/dev/null 2>&1; then
+  echo "error: nft set '$set_name' does not exist." >&2
+  echo "       This node is not in set firewall mode (likely cidr or single)." >&2
+  exit 1
+fi
+nft add element inet filter "$set_name" "{ ${ip} }"
+echo "Added ${ip} to ${set_name}."
+HELPER
+  chmod +x /usr/local/bin/peer-firewall-add
+
+  cat > /usr/local/bin/peer-firewall-remove <<'HELPER'
+#!/usr/bin/env bash
+# peer-firewall-remove — Revoke a cluster peer from the local nft set.
+# The reconciler normally handles departures by removing nodes that no
+# longer appear in kube-API. Use this only to manually purge an IP
+# that won't reappear (abandoned join, decommissioned host).
+set -euo pipefail
+[[ $# -eq 1 ]] || { echo "usage: $0 <ip>" >&2; exit 2; }
+ip="$1"
+v4_re='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+v6_re='^[0-9a-fA-F:]+$'
+if [[ "$ip" =~ $v4_re ]]; then
+  set_name=cluster_peers_v4
+elif [[ "$ip" =~ $v6_re && "$ip" == *:* ]]; then
+  set_name=cluster_peers_v6
+else
+  echo "error: '$ip' is not a valid IPv4 or IPv6 address" >&2
+  exit 2
+fi
+if ! nft list set inet filter "$set_name" >/dev/null 2>&1; then
+  echo "error: nft set '$set_name' does not exist." >&2
+  exit 1
+fi
+if nft delete element inet filter "$set_name" "{ ${ip} }" 2>/dev/null; then
+  echo "Removed ${ip} from ${set_name}."
+else
+  echo "${ip} was not in ${set_name} (no-op)."
+fi
+HELPER
+  chmod +x /usr/local/bin/peer-firewall-remove
 }
 
 configure_fail2ban() {
@@ -968,6 +1192,77 @@ detect_public_ipv4() {
   done < <(ip -4 -o addr show 2>/dev/null)
 
   return 1
+}
+
+# Auto-detect a NetBird/Tailscale mesh interface and its CIDR. Both
+# default to the CGNAT range 100.64.0.0/10. Returns the CIDR on stdout
+# and 0 on success; returns 1 (no output) when no recognised mesh
+# interface is up. Called by configure_firewall when CLUSTER_NETWORK_CIDR
+# is unset, so operators don't have to repeat the flag when their host
+# already has wt0 / tailscale0 up.
+detect_mesh_v4_cidr() {
+  local ifname
+  for ifname in wt0 tailscale0; do
+    if ip -4 -o addr show "$ifname" 2>/dev/null \
+         | grep -qE 'inet 100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'; then
+      echo "100.64.0.0/10"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Auto-detect IPv6 CIDR from a mesh interface. Reads the announced
+# route prefix off the interface (NetBird advertises a ULA range,
+# Tailscale advertises 'fd7a:115c:a1e0::/48'); the per-interface
+# address itself is /128 host route on both, which would be useless
+# as a peer-allow CIDR. Falls back to the host's /64 only when no
+# scoped route is announced — better than nothing on bare deployments.
+detect_mesh_v6_cidr() {
+  local ifname route_prefix addr
+  for ifname in wt0 tailscale0; do
+    # Skip interfaces that don't exist.
+    ip link show "$ifname" >/dev/null 2>&1 || continue
+
+    # Prefer the route-announced prefix — the actual peer-reachable range.
+    route_prefix=$(ip -6 route show dev "$ifname" scope global 2>/dev/null \
+                     | awk 'NR==1 && $1 ~ /^[0-9a-fA-F:]+\/[0-9]+$/ {print $1; exit}')
+    if [[ -n "$route_prefix" ]]; then
+      echo "$route_prefix"
+      return 0
+    fi
+
+    # Fallback: derive a /64 from the interface's first scope-global
+    # address. May be wrong for wider meshes; operator can override.
+    addr=$(ip -6 -o addr show "$ifname" scope global 2>/dev/null \
+             | awk '/inet6/ {print $4; exit}')
+    if [[ -n "$addr" ]]; then
+      python3 -c "import ipaddress, sys
+try:
+    n = ipaddress.ip_interface(sys.argv[1])
+    print(ipaddress.ip_network(f'{n.network.network_address}/64', strict=False))
+except Exception:
+    sys.exit(1)" "$addr" 2>/dev/null && return 0
+    fi
+  done
+  return 1
+}
+
+# This node's primary IPv4 used to reach the public internet (default
+# route's source). In set mode, this IP is what every other peer in the
+# cluster needs to allow. Empty when no v4 default route — bare metal
+# without IPv4 is unsupported.
+detect_local_ipv4() {
+  ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '/src/ {for (i=1;i<=NF;i++) if ($i=="src") { print $(i+1); exit }}'
+}
+
+# This node's primary global IPv6, derived the same way as
+# detect_local_ipv4. Empty when no v6 default route — that's fine,
+# v6 control-plane simply isn't seeded.
+detect_local_ipv6() {
+  ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+    | awk '/src/ {for (i=1;i<=NF;i++) if ($i=="src") { print $(i+1); exit }}'
 }
 
 resolve_cluster_network_ip() {
