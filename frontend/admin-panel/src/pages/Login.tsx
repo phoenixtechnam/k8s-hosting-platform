@@ -1,8 +1,9 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { Loader2, Server, Shield, KeyRound } from 'lucide-react';
+import { Loader2, Server, Shield, KeyRound, Fingerprint } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-import { apiFetch, API_BASE } from '@/lib/api-client';
+import { usePasskey } from '@/hooks/use-passkey';
+import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
 import { sanitizeRedirect } from '@/lib/sanitize-redirect';
 
 // Apex is the admin panel's hostname with its first label stripped.
@@ -54,7 +55,9 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
 
-  const { login, error, setTokenAndUser, token: existingToken } = useAuth();
+  const { login, error, setTokenAndUser, token: existingToken, passkeyChallenge, clearPasskeyChallenge } = useAuth();
+  const passkey = usePasskey();
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -110,10 +113,63 @@ export default function Login() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setPasskeyError(null);
     try {
       await login(email, password);
-      goToTarget(redirectTarget, navigate);
+      // If 2FA was required, the auth store now holds passkeyChallenge
+      // and the UI re-renders into the passkey-verify view. Don't
+      // navigate yet.
+      if (!useAuth.getState().passkeyChallenge) {
+        goToTarget(redirectTarget, navigate);
+      }
     } catch { /* error in store */ } finally { setSubmitting(false); }
+  };
+
+  /** "Sign in with passkey" — userless flow. No email field needed. */
+  const handlePasskeyLogin = async () => {
+    setSubmitting(true);
+    setPasskeyError(null);
+    try {
+      const result = await passkey.loginUserless();
+      setTokenAndUser(result.token, result.user);
+      // Browser navigation pattern: setTokenAndUser doesn't store the
+      // refresh token (it expects setTokenAndUser callers from OIDC).
+      // Stash it manually so the silent refresh keeps working.
+      localStorage.setItem('auth_refresh_token', result.refreshToken);
+      goToTarget(redirectTarget, navigate);
+    } catch (err) {
+      // DOM exception (user cancelled the prompt) → reset cleanly.
+      const msg = err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? (err.name === 'NotAllowedError' || err.name === 'AbortError'
+            ? 'Passkey login cancelled. Try again or use email + password.'
+            : err.message)
+          : 'Passkey login failed.';
+      setPasskeyError(msg);
+    } finally { setSubmitting(false); }
+  };
+
+  /** 2FA step 2: prompt the user for their passkey to finish login. */
+  const handle2FA = async () => {
+    if (!passkeyChallenge) return;
+    setSubmitting(true);
+    setPasskeyError(null);
+    try {
+      const result = await passkey.complete2FA(passkeyChallenge.preAuthToken);
+      setTokenAndUser(result.token, result.user);
+      localStorage.setItem('auth_refresh_token', result.refreshToken);
+      goToTarget(redirectTarget, navigate);
+    } catch (err) {
+      const msg = err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? (err.name === 'NotAllowedError' || err.name === 'AbortError'
+            ? 'Passkey verification cancelled.'
+            : err.message)
+          : '2FA verification failed.';
+      setPasskeyError(msg);
+    } finally { setSubmitting(false); }
   };
 
   const handleBreakGlass = async (e: FormEvent) => {
@@ -183,11 +239,39 @@ export default function Login() {
             {providers.length > 0 && showLocalAuth && (
               <div className="my-4 flex items-center gap-3"><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /><span className="text-xs text-gray-400">or</span><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /></div>
             )}
-            {showLocalAuth && (
+            {showLocalAuth && passkeyChallenge && (
+              // 2FA step 2: password verified, awaiting passkey assertion.
+              <div className="space-y-4" data-testid="passkey-2fa-prompt">
+                <div className="rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-900 dark:text-blue-100">
+                  Almost there. Verify with your passkey to complete sign-in for <strong>{passkeyChallenge.user.email}</strong>.
+                </div>
+                {passkeyError && (
+                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="passkey-2fa-error">{passkeyError}</div>
+                )}
+                <button type="button" onClick={handle2FA} disabled={submitting || !passkey.supported} className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="passkey-2fa-button">
+                  {submitting ? <Loader2 size={16} className="animate-spin" /> : <Fingerprint size={16} />} Verify with passkey
+                </button>
+                <button type="button" onClick={() => { clearPasskeyChallenge(); setPasskeyError(null); }} className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid="passkey-2fa-cancel">
+                  Cancel
+                </button>
+              </div>
+            )}
+            {showLocalAuth && !passkeyChallenge && (
               <form onSubmit={handleSubmit} className="space-y-4" data-testid="login-form">
-                <div><label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="email" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" placeholder="admin@k8s-platform.test" data-testid="email-input" /></div>
+                <div><label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label><input id="email" type="email" required autoComplete="email webauthn" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" placeholder="admin@k8s-platform.test" data-testid="email-input" /></div>
                 <div><label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label><input id="password" type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm" placeholder="Enter your password" data-testid="password-input" /></div>
                 <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="login-button">{submitting && <Loader2 size={16} className="animate-spin" />} Sign In</button>
+                {passkey.supported && (
+                  <>
+                    <div className="my-3 flex items-center gap-3"><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /><span className="text-xs text-gray-400">or</span><div className="flex-1 border-t border-gray-200 dark:border-gray-700" /></div>
+                    <button type="button" onClick={handlePasskeyLogin} disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50" data-testid="passkey-login-button">
+                      <Fingerprint size={16} /> Sign in with passkey
+                    </button>
+                  </>
+                )}
+                {passkeyError && (
+                  <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-2 text-xs text-red-700 dark:text-red-300" data-testid="passkey-login-error">{passkeyError}</div>
+                )}
               </form>
             )}
           </>

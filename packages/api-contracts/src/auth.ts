@@ -36,6 +36,69 @@ export const loginResponseSchema = z.object({
   }),
 });
 
+// ─── Passkey (WebAuthn) ──────────────────────────────────────────────────────
+
+export const passkeyModeSchema = z.union([z.literal('alternative'), z.literal('second_factor'), z.null()]);
+export type PasskeyMode = z.infer<typeof passkeyModeSchema>;
+
+// Per-passkey row returned to the UI. Never exposes credentialId or
+// publicKey — the client only needs display + lifecycle info.
+export const passkeySummarySchema = z.object({
+  id: z.string(),
+  nickname: z.string(),
+  aaguid: z.string().nullable(),
+  backedUp: z.boolean(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+});
+export type PasskeySummary = z.infer<typeof passkeySummarySchema>;
+
+export const passkeyRegistrationCompleteSchema = z.object({
+  response: z.unknown(), // Browser-issued AttestationResponseJSON; opaque to us.
+  nickname: z.string().min(1).max(100),
+});
+export type PasskeyRegistrationCompleteInput = z.infer<typeof passkeyRegistrationCompleteSchema>;
+
+export const passkeyLoginOptionsRequestSchema = z.object({
+  panel: z.union([z.literal('admin'), z.literal('client')]).optional(),
+  pre_auth_token: z.string().optional(),
+});
+export type PasskeyLoginOptionsRequest = z.infer<typeof passkeyLoginOptionsRequestSchema>;
+
+export const passkeyLoginVerifyRequestSchema = z.object({
+  panel: z.union([z.literal('admin'), z.literal('client')]).optional(),
+  response: z.unknown(),
+  pre_auth_token: z.string().optional(),
+});
+export type PasskeyLoginVerifyRequest = z.infer<typeof passkeyLoginVerifyRequestSchema>;
+
+export const passkeyModeUpdateSchema = z.object({
+  mode: passkeyModeSchema,
+});
+export type PasskeyModeUpdateInput = z.infer<typeof passkeyModeUpdateSchema>;
+
+// 2FA-step-1 response: when the password login succeeded but the
+// user opted into 'second_factor' mode, the server returns this
+// instead of session tokens. The frontend transitions to a passkey
+// prompt and calls /auth/passkey/login/{options,verify} with the
+// pre_auth_token attached.
+export const loginPasskeyRequiredResponseSchema = z.object({
+  data: z.object({
+    requires_passkey: z.literal(true),
+    pre_auth_token: z.string(),
+    expires_in: z.number(),
+    user: z.object({
+      id: z.string(),
+      email: z.string(),
+      fullName: z.string(),
+      role: z.string(),
+      panel: z.string().optional(),
+      clientId: z.string().nullable().optional(),
+    }),
+  }),
+});
+export type LoginPasskeyRequiredResponse = z.infer<typeof loginPasskeyRequiredResponseSchema>;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type LoginInput = z.infer<typeof loginSchema>;

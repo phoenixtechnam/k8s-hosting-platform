@@ -10,16 +10,33 @@ interface AuthUser {
   readonly clientId?: string | null;
 }
 
+/**
+ * 2FA challenge state. When a password login succeeds for a user that
+ * has passkey_mode='second_factor', the backend returns
+ * `requires_passkey` instead of session tokens. The Login UI uses this
+ * state to render the passkey-prompt step.
+ */
+export interface PasskeyChallenge {
+  readonly preAuthToken: string;
+  readonly expiresIn: number;
+  readonly user: AuthUser;
+}
+
 interface AuthState {
   readonly token: string | null;
   readonly user: AuthUser | null;
   readonly isAuthenticated: boolean;
   readonly isLoading: boolean;
   readonly error: string | null;
+  /** Set after step 1 (password) when the user is in 2FA mode. The
+   *  Login page transitions to the passkey-verify view. Cleared on
+   *  successful 2FA, on cancel, and on every fresh password login. */
+  readonly passkeyChallenge: PasskeyChallenge | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   initialize: () => void;
   setTokenAndUser: (token: string, user: AuthUser) => void;
+  clearPasskeyChallenge: () => void;
 }
 
 export const useAuth = create<AuthState>((set) => ({
@@ -28,6 +45,7 @@ export const useAuth = create<AuthState>((set) => ({
   isAuthenticated: false,
   isLoading: true,
   error: null,
+  passkeyChallenge: null,
 
   initialize: () => {
     const token = localStorage.getItem('auth_token');
@@ -64,20 +82,42 @@ export const useAuth = create<AuthState>((set) => ({
   },
 
   login: async (email: string, password: string) => {
-    set({ isLoading: true, error: null });
+    set({ isLoading: true, error: null, passkeyChallenge: null });
     try {
       const res = await apiFetch<{
-        data: {
-          token: string;
-          refreshToken: string;
-          expiresIn: number;
-          refreshExpiresIn: number;
-          user: AuthUser;
-        };
+        data:
+          | {
+              // Normal login (mode = NULL or 'alternative').
+              token: string;
+              refreshToken: string;
+              expiresIn: number;
+              refreshExpiresIn: number;
+              user: AuthUser;
+            }
+          | {
+              // 2FA branch (mode = 'second_factor'). UI transitions
+              // to the passkey-verify step before issuing tokens.
+              requires_passkey: true;
+              pre_auth_token: string;
+              expires_in: number;
+              user: AuthUser;
+            };
       }>('/api/v1/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       });
+
+      if ('requires_passkey' in res.data) {
+        set({
+          isLoading: false,
+          passkeyChallenge: {
+            preAuthToken: res.data.pre_auth_token,
+            expiresIn: res.data.expires_in,
+            user: res.data.user,
+          },
+        });
+        return;
+      }
 
       const { token, refreshToken, user } = res.data;
       localStorage.setItem('auth_token', token);
@@ -118,6 +158,8 @@ export const useAuth = create<AuthState>((set) => ({
   setTokenAndUser: (token: string, user: AuthUser) => {
     localStorage.setItem('auth_token', token);
     localStorage.setItem('auth_user', JSON.stringify(user));
-    set({ token, user, isAuthenticated: true, isLoading: false, error: null });
+    set({ token, user, isAuthenticated: true, isLoading: false, error: null, passkeyChallenge: null });
   },
+
+  clearPasskeyChallenge: () => set({ passkeyChallenge: null }),
 }));
