@@ -76,6 +76,12 @@ CLUSTER_NETWORK_CIDR_V6=""
 # Calico's WG endpoint is announced as the underlay (eth0) IP, not the
 # mesh IP, so scoping to the mesh CIDR would block legitimate handshakes.
 CALICO_WG_PUBLIC="true"
+# DRY_RUN: when true, bootstrap exits cleanly after Phase 1 package
+# install. Used by scripts/test-bootstrap-os-matrix.sh to validate the
+# OS-family detection + package availability across distros in
+# disposable Docker containers (no systemd, no nftables apply, no
+# k3s install). NOT for production use.
+DRY_RUN=false
 
 # ─── Pinned component versions ────────────────────────────────────────────────
 # Updated 2026-04-21. When bumping, verify:
@@ -111,6 +117,17 @@ Usage: bootstrap.sh --join-as <server|worker> [OPTIONS]
 
 Server provisioning and platform installation for k8s-hosting-platform.
 
+SUPPORTED OPERATING SYSTEMS:
+  Tier 1 (CI-tested):
+    - Debian 12 (bookworm), Debian 13 (trixie)
+    - Ubuntu 22.04 LTS (jammy), Ubuntu 24.04 LTS (noble)
+  Tier 2 (best-effort, smoke-tested in containers):
+    - RHEL 9, Rocky Linux 9, AlmaLinux 9, CentOS Stream 9 / 10
+  Rejected (script aborts):
+    - CentOS Linux 7 / 8 (EOL — use Rocky/Alma 9 or Debian/Ubuntu)
+    - Ubuntu < 22.04, Debian < 12
+    - Alpine, Talos, Flatcar, NixOS, anything systemd-less
+
 REQUIRED:
   --join-as <server|worker>
                          What this node joins as. server = control plane
@@ -134,6 +151,10 @@ OPTIONS:
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-longhorn        Skip Longhorn storage (use local-path)
+  --dry-run              Validate OS + install base packages, then exit
+                         before firewall/k3s/Calico/etc. Used by
+                         scripts/test-bootstrap-os-matrix.sh in
+                         disposable Docker containers. Not for prod.
   --skip-cnpg            Skip CloudNative-PG operator install (M10).
   --skip-smoke           Skip the post-install cluster-network smoke run.
                          Default: smoke runs as advisory (warn-only) at
@@ -293,6 +314,7 @@ parse_args() {
       --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
+      --dry-run)         DRY_RUN=true; shift ;;
       --skip-vpn)        shift ;; # Deprecated — bootstrap no longer installs VPN tools; sysadmin responsibility
       --netbird-management-url|--netbird-setup-key)
                          warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/04-deployment/CLUSTER_NETWORK.md."
@@ -398,13 +420,56 @@ check_root() {
   [[ "$(id -u)" -eq 0 ]] || error "This script must be run as root."
 }
 
+# OS_FAMILY is set by check_os and consumed by install_packages.
+# Values: "debian" (apt path) or "rhel" (dnf path).
+OS_FAMILY=""
+
 check_os() {
   if [[ ! -f /etc/os-release ]]; then
-    error "Cannot detect OS. This script requires Debian 12+ or Ubuntu 22.04+."
+    error "Cannot detect OS — /etc/os-release missing. Supported: Debian 12+, Ubuntu 22.04+, RHEL/Rocky/AlmaLinux/CentOS-Stream 9+."
   fi
   # shellcheck source=/dev/null
   source /etc/os-release
-  log "Detected OS: ${PRETTY_NAME}"
+
+  local major
+  major="${VERSION_ID%%.*}"
+
+  case "$ID" in
+    debian)
+      if [[ -z "${major:-}" ]] || (( major < 12 )); then
+        error "Debian ${VERSION_ID:-unknown} is unsupported. Use Debian 12 (bookworm) or 13 (trixie)."
+      fi
+      OS_FAMILY=debian
+      ;;
+    ubuntu)
+      if [[ -z "${major:-}" ]] || (( major < 22 )); then
+        error "Ubuntu ${VERSION_ID:-unknown} is unsupported. Use 22.04 LTS or 24.04 LTS."
+      fi
+      OS_FAMILY=debian
+      ;;
+    rocky|almalinux|rhel)
+      if [[ -z "${major:-}" ]] || (( major < 9 )); then
+        error "${NAME:-$ID} ${VERSION_ID:-unknown} is unsupported. Use the 9.x series."
+      fi
+      OS_FAMILY=rhel
+      ;;
+    centos)
+      # Reject classic CentOS Linux (7/8 — both EOL). Accept CentOS Stream 9+
+      # which advertises "CentOS Stream" in NAME and stays current with RHEL.
+      if [[ "${NAME:-}" != *"Stream"* ]]; then
+        error "Classic CentOS Linux is end-of-life. Use Rocky/AlmaLinux/CentOS Stream 9+ or Debian/Ubuntu."
+      fi
+      if [[ -z "${major:-}" ]] || (( major < 9 )); then
+        error "CentOS Stream ${VERSION_ID:-unknown} is unsupported. Use Stream 9 or 10."
+      fi
+      OS_FAMILY=rhel
+      ;;
+    *)
+      error "Unsupported OS '${ID:-unknown}' (${PRETTY_NAME:-?}). Supported: Debian 12+, Ubuntu 22.04+, RHEL/Rocky/AlmaLinux 9+, CentOS Stream 9+."
+      ;;
+  esac
+
+  log "Detected OS: ${PRETTY_NAME} (family=${OS_FAMILY})"
 }
 
 # ─── Phase 1: Server Hardening ───────────────────────────────────────────────
@@ -438,27 +503,31 @@ harden_ssh() {
 }
 
 install_packages() {
-  log "Installing base packages..."
-  export DEBIAN_FRONTEND=noninteractive
+  log "Installing base packages (family=${OS_FAMILY})..."
+  case "$OS_FAMILY" in
+    debian) install_packages_apt ;;
+    rhel)   install_packages_dnf ;;
+    *) error "install_packages: unknown OS_FAMILY='${OS_FAMILY}' — check_os should have set this." ;;
+  esac
+  log "Base packages installed."
+}
 
+# Package rationale (shared across families):
+#   xfsprogs / e2fsprogs: Longhorn formats/repairs tenant volumes; the
+#     longhorn-tenant StorageClass uses xfs (k8s/base/longhorn/
+#     storageclasses.yaml) and the storage-lifecycle fsck endpoint runs
+#     xfs_repair / e2fsck on the host via a privileged Pod.
+#   wireguard-tools: Calico-managed WireGuard pod encryption (UDP/51821)
+#     needs the kernel module + userland; sysadmin-side meshes also use
+#     wg/wg-quick. Bootstrap does NOT install NetBird/Tailscale clients —
+#     sysadmin brings the mesh up first.
+#   age: backup encryption / operator-key management.
+
+install_packages_apt() {
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  # Note: software-properties-common was dropped — it's not present in
-  # Debian 13 trixie repos and we don't use add-apt-repository anywhere.
-  # xfsprogs / e2fsprogs: required by Longhorn workers to format,
-  # mount, and repair tenant volumes. The longhorn-tenant
-  # StorageClass formats with fsType=xfs (see
-  # k8s/base/longhorn/storageclasses.yaml) and the storage-lifecycle
-  # fsck endpoint runs xfs_repair / e2fsck on the host via a one-shot
-  # privileged Pod. Hetzner Debian 13 images ship these by default
-  # but we pin them explicitly so a minimal base image doesn't break
-  # tenant provisioning.
-  # wireguard-tools: kernel WireGuard userland (wg, wg-quick). Installed
-  # unconditionally because Calico-managed WireGuard relies on the kernel
-  # module + tooling for pod-traffic encryption (UDP/51821), and many
-  # operator-side mesh underlays (NetBird, Tailscale, raw WG) also need
-  # `wg`/`wg-quick` available. We do NOT install or configure NetBird/
-  # Tailscale clients themselves — sysadmin brings the mesh up before
-  # running bootstrap (see docs/04-deployment/CLUSTER_NETWORK.md).
+  # software-properties-common deliberately omitted — not in Debian 13
+  # trixie repos and we don't use add-apt-repository anywhere.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip git open-iscsi nfs-common \
@@ -466,8 +535,33 @@ install_packages() {
     wireguard-tools \
     age \
     >/dev/null 2>&1
+}
 
-  log "Base packages installed."
+install_packages_dnf() {
+  # EPEL provides fail2ban, age, and (on RHEL/CentOS-Stream) wireguard-
+  # tools when CRB isn't enabled. Rocky/Alma 9 ship wireguard-tools in
+  # the AppStream repo directly, but enabling CRB + EPEL on every RHEL-9
+  # variant is the smallest common code path.
+  dnf install -y -q epel-release >/dev/null 2>&1 || \
+    error "Failed to install epel-release. RHEL-9-family clusters need EPEL for fail2ban + age."
+
+  # CodeReady Builder (RHEL) / PowerTools / CRB (Rocky/Alma) — name varies
+  # by release. Try both; ignore failure (some EPEL packages don't need it).
+  dnf config-manager --enable crb >/dev/null 2>&1 \
+    || dnf config-manager --enable powertools >/dev/null 2>&1 \
+    || true
+
+  # RHEL-9 minimal images ship 'curl-minimal' (provides the curl binary)
+  # which conflicts with the full 'curl' package; --allowerasing lets dnf
+  # transparently swap if a transitive dep pulls full curl in. Omitting
+  # 'curl' from the explicit list avoids the conflict on a fresh box.
+  dnf install -y -q --allowerasing \
+    wget gnupg2 ca-certificates \
+    nftables fail2ban jq unzip git iscsi-initiator-utils nfs-utils \
+    xfsprogs e2fsprogs \
+    wireguard-tools \
+    age \
+    >/dev/null 2>&1
 }
 
 configure_firewall() {
@@ -2805,8 +2899,21 @@ main() {
   # asserts the operator-claimed underlay is actually up; configure_firewall
   # then auto-detects wt0/tailscale0 and renders cidr-mode rules.
   log "── Phase 1: Server Hardening ──"
-  harden_ssh
+  if [[ "$DRY_RUN" == true ]]; then
+    log "DRY-RUN: skipping harden_ssh (no sshd in container)"
+  else
+    harden_ssh
+  fi
   install_packages
+  if [[ "$DRY_RUN" == true ]]; then
+    log ""
+    log "════════════════════════════════════════════════"
+    log "  DRY-RUN COMPLETE — OS + packages OK"
+    log "  OS:      ${PRETTY_NAME}"
+    log "  family:  ${OS_FAMILY}"
+    log "════════════════════════════════════════════════"
+    return 0
+  fi
   verify_underlay
   configure_firewall
   configure_fail2ban

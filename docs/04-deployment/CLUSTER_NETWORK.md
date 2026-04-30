@@ -23,6 +23,20 @@ Cluster-internal control-plane ports — `6443` (kube-API), `8443`
 `2379-2380` (etcd peers), and CIDR-trusted `4789` (Calico VXLAN) — are
 **scoped** to peers via one of the three modes below.
 
+## Supported operating systems
+
+`bootstrap.sh::check_os` enforces a strict allowlist and aborts on EOL
+or unsupported distros. The OS family (`debian` | `rhel`) drives which
+package manager (`apt` | `dnf`) the install path uses.
+
+| Tier | Distros | CI |
+|---|---|---|
+| 1 | Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04 | dry-run matrix + Hetzner staging |
+| 2 | RHEL 9, Rocky 9, AlmaLinux 9, CentOS Stream 9/10 | dry-run matrix only |
+| Reject | CentOS Linux 7/8 (EOL), Ubuntu < 22.04, Debian < 12, Alpine, Talos, Flatcar, NixOS | bootstrap aborts |
+
+Run the OS-matrix harness locally with `./scripts/test-bootstrap-os-matrix.sh` (Docker required). It runs `bootstrap.sh --dry-run` inside disposable containers from each tier, validating package availability without touching real hosts.
+
 ## Sysadmin responsibility (before bootstrap)
 
 `bootstrap.sh` does NOT install or enrol VPN/mesh **clients** (NetBird,

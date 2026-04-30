@@ -1504,17 +1504,23 @@ async function runFsckOp(
  * device file on any node and fsck fails with exit 65.
  */
 async function patchLonghornVolumeNode(k8s: K8sClients, volumeName: string, nodeID: string): Promise<void> {
+  // @kubernetes/client-node v1.4 sends application/json-patch+json
+  // unless we use the middleware override. The shared MERGE_PATCH
+  // helper installs the right Content-Type for object-shaped bodies.
+  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
   await (k8s.custom as unknown as {
-    patchNamespacedCustomObject: (a: {
-      group: string; version: string; namespace: string; plural: string; name: string;
-      body: unknown; headers?: Record<string, string>;
-    }) => Promise<unknown>;
-  }).patchNamespacedCustomObject({
-    group: 'longhorn.io', version: 'v1beta2',
-    namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
-    body: { spec: { nodeID } },
-    headers: { 'Content-Type': 'application/merge-patch+json' },
-  });
+    patchNamespacedCustomObject: (
+      a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+      mw: typeof MERGE_PATCH,
+    ) => Promise<unknown>;
+  }).patchNamespacedCustomObject(
+    {
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'volumes', name: volumeName,
+      body: { spec: { nodeID } },
+    },
+    MERGE_PATCH,
+  );
 }
 
 /** Convenience: look up volumeName from the client's PVC, then patch. */

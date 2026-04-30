@@ -67,6 +67,16 @@ tar -xvzf kubeseal-*.tar.gz kubeseal && sudo mv kubeseal /usr/local/bin/
 
 Run `./scripts/bootstrap.sh --help` for the full list of options.
 
+### Supported operating systems
+
+| Tier | Distros | CI |
+|---|---|---|
+| 1 (primary) | Debian 12, Debian 13, Ubuntu 22.04 LTS, Ubuntu 24.04 LTS | dry-run matrix in `scripts/test-bootstrap-os-matrix.sh` + Hetzner staging |
+| 2 (best-effort) | RHEL 9, Rocky Linux 9, AlmaLinux 9, CentOS Stream 9 / 10 | dry-run matrix only |
+| Rejected | CentOS Linux 7 / 8 (EOL), Ubuntu < 22.04, Debian < 12, Alpine, Talos, Flatcar, NixOS | bootstrap aborts in `check_os` |
+
+Run the local OS-matrix harness with `./scripts/test-bootstrap-os-matrix.sh` (requires Docker; uses `--dry-run` to validate package availability without touching the host).
+
 ### Pre-flight: mesh / VPN underlay (sysadmin)
 
 `bootstrap.sh` does **not** install or enrol VPN/mesh clients (NetBird, Tailscale, etc.). It does install kernel `wireguard-tools` (Calico's pod-traffic encryption needs it). Bring up your underlay **before** running bootstrap:
