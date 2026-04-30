@@ -568,33 +568,22 @@ export async function fileManagerRequest(
   // Phase 1: hot path — if we recently saw FM ready in this namespace,
   // skip ensureFileManagerRunning + waitForReady entirely.
   const hot = recentlySeenReady(namespace);
-  const t0 = Date.now();
   const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
-  let probeMs = 0;
-  let ensureMs = 0;
-  let waitMs = 0;
 
   if (!hot) {
     // Phase 5: probe-first. With N platform-api replicas, the per-
     // process cache only helps 1/N of requests. Probing FM /health
     // via cluster DNS catches the common case (FM healthy, just not
-    // observed by this replica yet) in ~5-30ms instead of ~1.5-3s.
-    let probedOk = false;
-    if (directUrl) {
-      const tp0 = Date.now();
-      probedOk = await probeFmHealth(directUrl);
-      probeMs = Date.now() - tp0;
-      if (probedOk) cacheReady(namespace);
-    }
-
-    if (!probedOk) {
-      // Slow path: FM not reachable — reconcile (deploy/scale/wait).
-      const t1 = Date.now();
+    // observed by this replica yet) in ~5-150ms instead of ~1.5-3s
+    // of K8s API reads + readiness polling. Falls through to the
+    // full reconcile path only when FM is genuinely unreachable
+    // (idle-scaled to 0, evicted, or never created).
+    const probedOk = directUrl ? await probeFmHealth(directUrl) : false;
+    if (probedOk) {
+      cacheReady(namespace);
+    } else {
       await ensureFileManagerRunning(k8sClients, namespace, image, 1);
-      ensureMs = Date.now() - t1;
-      const t2 = Date.now();
       const status = await waitForReady(k8sClients, namespace);
-      waitMs = Date.now() - t2;
       if (!status.ready) {
         throw new Error(`File manager not ready: ${status.message}`);
       }
@@ -602,14 +591,10 @@ export async function fileManagerRequest(
     }
   }
 
-  const t4 = Date.now();
   const result = await proxyToFileManager(kubeconfigPath, namespace, sidecarPath, {
     ...options,
     ...(directUrl ? { directUrl } : {}),
   });
-  const t5 = Date.now();
-  // eslint-disable-next-line no-console
-  console.log(`[fm-bench] ns=${namespace} hot=${hot} probe=${probeMs}ms ensure=${ensureMs}ms wait=${waitMs}ms proxy=${t5 - t4}ms direct=${!!directUrl} total=${t5 - t0}ms`);
 
   // 5xx might mean FM died between our cache hit and now (idle-cleanup,
   // OOM, eviction). Invalidate so the next call re-checks.
