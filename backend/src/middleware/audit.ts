@@ -17,7 +17,13 @@ export function extractResourceInfo(path: string): {
   clientId?: string;
 } {
   // /api/v1/clients/:clientId/:subResource/:subId
-  const segments = path.replace(/^\/api\/v1\//, '').split('/').filter(Boolean);
+  // Strip the query string before splitting — without this the third
+  // segment becomes e.g. "upload-raw?path=%2Fbench.bin" which then
+  // overflows the audit_logs.resource_id varchar(36) column and aborts
+  // the audit insert (and, when audits run in onResponse, can mask the
+  // outer 200 with a 500 if the surrounding handler awaits the insert).
+  const cleanPath = path.split('?')[0];
+  const segments = cleanPath.replace(/^\/api\/v1\//, '').split('/').filter(Boolean);
 
   if (segments.length === 0) return { resourceType: 'unknown' };
 
@@ -68,13 +74,17 @@ export function registerAuditHook(app: FastifyInstance, db: Database): void {
     const user = (request as unknown as { user?: { sub: string; role: string } }).user;
 
     // Fire-and-forget — don't block the response
+    // Defensive truncation: resource_id column is varchar(36). A path
+    // segment that legitimately exceeds 36 chars (e.g. encoded slug)
+    // shouldn't crash the audit insert.
+    const safeResourceId = resourceId ? resourceId.slice(0, 36) : null;
     db.insert(auditLogs)
       .values({
         id: crypto.randomUUID(),
         clientId: clientId ?? null,
         actionType: methodToAction(request.method),
-        resourceType,
-        resourceId: resourceId ?? null,
+        resourceType: resourceType.slice(0, 50),
+        resourceId: safeResourceId,
         actorId: user?.sub ?? 'anonymous',
         actorType: 'user',
         httpMethod: request.method,

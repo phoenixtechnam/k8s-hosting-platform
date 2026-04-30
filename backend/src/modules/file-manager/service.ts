@@ -118,6 +118,40 @@ async function resolveFmServiceUrl(
 }
 
 /**
+ * Probe-first ready helper for streaming routes (upload-raw, download,
+ * fetch-url, clone-site). Mirrors the hot-path logic in
+ * fileManagerRequest so streaming paths get the same sub-second cold
+ * start: cache hit → 0 K8s calls, FM-healthy probe → 1 HTTP /health
+ * call (~10 ms), only fall through to ensureFileManagerRunning +
+ * waitForReady when FM is genuinely down.
+ *
+ * Before this helper, streaming routes called ensureFileManagerRunning
+ * + getFileManagerStatus unconditionally on every request. That cost
+ * 2-4 K8s round-trips (~3-7 s cold) and the browser's <img> spinner /
+ * download UI showed nothing during the delay, looking hung even when
+ * the underlying transfer would have been fast.
+ */
+export async function ensureFileManagerReady(
+  k8sClients: K8sClients,
+  namespace: string,
+  image: string,
+): Promise<{ directUrl: string | null }> {
+  const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
+  if (recentlySeenReady(namespace)) return { directUrl };
+  if (directUrl && await probeFmHealth(directUrl)) {
+    cacheReady(namespace);
+    return { directUrl };
+  }
+  await ensureFileManagerRunning(k8sClients, namespace, image, 1);
+  const status = await waitForReady(k8sClients, namespace);
+  if (!status.ready) {
+    throw new Error(`File manager not ready: ${status.message}`);
+  }
+  cacheReady(namespace);
+  return { directUrl };
+}
+
+/**
  * Phase 5: probe-first fast cold-path.
  *
  * The Phase-1 ready cache is per-process, so with N platform-api

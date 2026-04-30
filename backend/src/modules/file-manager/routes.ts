@@ -6,7 +6,7 @@ import { clients } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute } from './service.js';
+import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute, ensureFileManagerReady } from './service.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
 
 // File-manager sidecar image. Default is the bare name used by local.sh
@@ -195,13 +195,10 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    // Ensure FM is running before we attempt to stream from it. Direct
-    // probe path (introduced in FM Phase 5) keeps this fast on warm pods.
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
-    const status = await getFileManagerStatus(k8sClients, namespace);
-    if (!status.ready) throw new ApiError('FILE_ERROR', `File manager not ready: ${status.message}`, 503);
-
-    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
+    // Probe-first ready helper: ~10 ms when FM is healthy (most calls),
+    // skips the K8s API ensure+status round-trips that previously made
+    // download/preview cold-start take 3-7 s.
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
 
     // streamFromFileManager throws on non-2xx upstream BEFORE writing
     // any response headers (it drains a bounded 16 KiB error buffer
@@ -506,18 +503,22 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    // Ensure file manager is running
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
-    const status = await getFileManagerStatus(k8sClients, namespace);
-    if (!status.ready) throw new Error(`File manager not ready: ${status.message}`);
+    // Probe-first ready helper (same fast path as /download).
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
 
-    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
+    // Forward `offset` query param to enable parallel-chunked uploads.
+    // When the client splits a file into N chunks and POSTs each with
+    // ?offset=<absolute byte offset>, the sidecar pwrites at that
+    // offset without truncating — so concurrent chunks land in their
+    // correct slot and the file is whole when all chunks complete.
+    const fwdQuery: Record<string, string> = { path: query.path };
+    if (query.offset !== undefined) fwdQuery.offset = query.offset;
 
     // Stream the raw request body directly to the sidecar
     const result = await streamToFileManager(kubeconfigPath, namespace, '/write-raw', request.raw, {
       contentType: 'application/octet-stream',
       contentLength: request.headers['content-length'],
-      query: { path: query.path },
+      query: fwdQuery,
       ...(directUrl ? { directUrl } : {}),
     });
 
@@ -562,10 +563,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    // Ensure file-manager is running, then stream response directly
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
-
-    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(
@@ -593,9 +591,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
-
-    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
+    const { directUrl } = await ensureFileManagerReady(k8sClients, namespace, FM_IMAGE);
     const { proxyToFileManagerStream } = await import('./service.js');
     reply.hijack();
     await proxyToFileManagerStream(
