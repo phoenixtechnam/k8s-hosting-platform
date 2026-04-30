@@ -2,8 +2,14 @@
  * Platform system settings — single-row configuration.
  *
  * Provides a cached getSettings() function that other modules call to read
- * settings without hitting the DB on every request. Cache is invalidated
- * on update and refreshed every 60 seconds.
+ * settings without hitting the DB on every request. The cache is per-pod;
+ * `updateSettings()` only invalidates the pod that handled the PATCH, so
+ * with N replicas the other N-1 pods can still see stale values for up
+ * to CACHE_TTL_MS. Keep the TTL short — a single-row read is cheap, and
+ * a long TTL turns "operator flips a toggle" into a flaky behaviour
+ * because subsequent requests round-robin across replicas. 5s is a
+ * pragmatic upper bound for "felt like an instant" while still cutting
+ * the per-request DB read by ~95% under normal load.
  */
 
 import { eq } from 'drizzle-orm';
@@ -12,7 +18,7 @@ import type { Database } from '../../db/index.js';
 import type { SystemSettings } from '../../db/schema.js';
 
 const SETTINGS_ID = 'system';
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 5_000;
 
 let cachedSettings: SystemSettings | null = null;
 let cacheTimestamp = 0;

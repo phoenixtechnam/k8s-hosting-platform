@@ -73,29 +73,35 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
 ok "logged in"
 
 # ─── Snapshot original setting so cleanup restores ─────────────────────────
+# Both toggles are snapshotted because a HA staging cluster will pin tenant
+# pods to a server-role node when no pure-worker node has capacity, so the
+# gate checks allowHostPortsServer instead of allowHostPortsWorker. The
+# test enables both during phase 2.
 ORIG_WORKER=$(api GET /admin/system-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('allowHostPortsWorker', False))" 2>/dev/null)
-log "original allowHostPortsWorker=$ORIG_WORKER"
+ORIG_SERVER=$(api GET /admin/system-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('allowHostPortsServer', False))" 2>/dev/null)
+log "original allowHostPortsWorker=$ORIG_WORKER allowHostPortsServer=$ORIG_SERVER"
 
 cleanup() {
   if [[ -n "${CID:-}" ]]; then
     curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
   fi
-  # Restore the original toggle so the staging cluster ends in the same
-  # state we found it in. Skip if we never managed to read the original
-  # value (login failure).
-  if [[ -n "${ORIG_WORKER:-}" ]]; then
-    local restore_val
-    restore_val=$([[ "$ORIG_WORKER" == "True" ]] && echo "true" || echo "false")
+  # Restore both toggles so the staging cluster ends in the same state
+  # we found it in. Skip if we never managed to read the original value
+  # (login failure).
+  if [[ -n "${ORIG_WORKER:-}" || -n "${ORIG_SERVER:-}" ]]; then
+    local restore_w restore_s
+    restore_w=$([[ "$ORIG_WORKER" == "True" ]] && echo "true" || echo "false")
+    restore_s=$([[ "$ORIG_SERVER" == "True" ]] && echo "true" || echo "false")
     curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/system-settings" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
-      -d "{\"allowHostPortsWorker\":$restore_val}" >/dev/null 2>&1 || true
+      -d "{\"allowHostPortsWorker\":$restore_w,\"allowHostPortsServer\":$restore_s}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 # ─── Resolve catalog entry id ──────────────────────────────────────────────
-CATALOG_ENTRY_ID=$(api GET "/catalog/entries?limit=100" \
+CATALOG_ENTRY_ID=$(api GET "/catalog?limit=100" \
   | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(next((e['id'] for e in d if e['code']=='$CATALOG_CODE'), ''))")
 if [[ -z "$CATALOG_ENTRY_ID" ]]; then
   fail "catalog entry '$CATALOG_CODE' not found in catalog — is the application catalog synced?"
@@ -114,23 +120,32 @@ RESP=$(api POST "/clients" "{\"company_name\":\"Firewall E2E $STAMP\",\"company_
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
-# Wait for provisioning so we have a worker pin and a namespace.
-log "── waiting for provisioning ──"
-for _ in $(seq 1 60); do
-  STATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status',''))" 2>/dev/null)
-  [[ "$STATUS" == "active" ]] && break
+# Wait for namespace+RBAC+PVC provisioning. clients.status is the
+# *lifecycle* (pending|active|suspended|…) and stays at pending until an
+# admin explicitly activates the tenant — provisioningStatus is the
+# infra-side flag that flips to 'provisioned' once runProvisionNamespace
+# finishes. For a firewall-deploy E2E we just need the namespace + worker
+# pin, so wait on provisioningStatus, not status.
+log "── waiting for provisioningStatus=provisioned (≤5min) ──"
+for i in $(seq 1 150); do
+  PSTATUS=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus',''))" 2>/dev/null)
+  [[ "$PSTATUS" == "provisioned" ]] && break
+  if [[ "$PSTATUS" == "failed" ]]; then
+    fail "provisioningStatus=failed — see backend logs"; exit 1
+  fi
+  if (( i % 15 == 0 )); then log "  …provisioningStatus=$PSTATUS (${i}×2s)"; fi
   sleep 2
 done
-[[ "$STATUS" == "active" ]] && ok "client active" || { fail "client never reached active (status=$STATUS)"; exit 1; }
+[[ "$PSTATUS" == "provisioned" ]] && ok "namespace provisioned" || { fail "client never reached provisioned (provisioningStatus=$PSTATUS)"; exit 1; }
 
 NAMESPACE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null)
 WORKER_NODE=$(api GET "/clients/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName',''))" 2>/dev/null)
 log "namespace=$NAMESPACE worker=$WORKER_NODE"
 
 # ─── Phase 1: gate REJECTS deploy when toggle is OFF ───────────────────────
-log "── phase 1: deploy with allowHostPortsWorker=false → expect 403 ──"
-api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":false}" >/dev/null
-sleep 2  # let the 60s in-memory cache invalidate (PATCH already does this)
+log "── phase 1: deploy with both toggles=false → expect 403 ──"
+api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":false,\"allowHostPortsServer\":false}" >/dev/null
+sleep 7  # cache TTL is 5s and PATCH only invalidates the pod that handled it
 
 DEPLOY_BODY="{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"coturn-fw-blocked-$STAMP\"}"
 HTTP_CODE=$(api_status POST "/clients/$CID/deployments" "$DEPLOY_BODY")
@@ -143,11 +158,17 @@ else
   fail "gate did NOT block deploy: HTTP=$HTTP_CODE code=$ERR_CODE body=$(echo "$RESP_BLOCKED" | head -c 300)"
 fi
 
-# ─── Phase 2: enable toggle, deploy succeeds ───────────────────────────────
-log "── phase 2: flip allowHostPortsWorker=true ──"
-TOGGLE_RESP=$(api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":true}")
-TOGGLE_VAL=$(echo "$TOGGLE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('allowHostPortsWorker', False))" 2>/dev/null)
-[[ "$TOGGLE_VAL" == "True" ]] && ok "toggle is on" || fail "toggle still off after PATCH: $TOGGLE_RESP"
+# ─── Phase 2: enable BOTH toggles, deploy succeeds ─────────────────────────
+# Enable both because the gate keys on the role of the pinned worker
+# (resolveTargetNodeRole), and HA staging always has clients pinned to a
+# server-role node since worker capacity is small. A pure-worker cluster
+# would only need allowHostPortsWorker.
+log "── phase 2: flip both toggles=true ──"
+TOGGLE_RESP=$(api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":true,\"allowHostPortsServer\":true}")
+TW=$(echo "$TOGGLE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('allowHostPortsWorker', False))" 2>/dev/null)
+TS=$(echo "$TOGGLE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('allowHostPortsServer', False))" 2>/dev/null)
+[[ "$TW" == "True" && "$TS" == "True" ]] && ok "both toggles on" || fail "toggles not on after PATCH (worker=$TW server=$TS): $TOGGLE_RESP"
+sleep 7  # let the 5s cache invalidate on the other replicas
 
 DEPLOY_NAME="coturn-fw-ok-$STAMP"
 log "── deploying $CATALOG_CODE ──"
