@@ -64,6 +64,16 @@ CALICO_VERSION="v3.31.5"
 # stay closed — the CIDR-restricted nft allow IS the allowlist.
 # Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
 # does that beforehand. See docs/04-deployment/CLUSTER_NETWORK.md.
+# Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
+# allow-list so pods can reach the host's control-plane ports via
+# kube-proxy Service-VIP DNAT (which preserves the pod source IP).
+# Without this, fresh installs race: pods crashloop with "i/o timeout"
+# against 10.43.0.1:443 until Calico's natOutgoing POSTROUTING chain
+# is fully active and starts SNAT'ing pod traffic. Existing clusters
+# work because Calico SNAT settled before any pod tried; observed on
+# fresh testing host 2026-04-30. Keep in sync with install_k3s_server's
+# cluster_cidr_arg.
+POD_CIDR_V4="10.42.0.0/16"
 CLUSTER_NETWORK_CIDR=""
 # IPv6 sibling of CLUSTER_NETWORK_CIDR. Auto-detected from wt0/tailscale0
 # scope-global v6 if not set explicitly. Empty → no v6 cluster-allow rule
@@ -722,6 +732,17 @@ ${set_decls}
     # Public-key-authenticated UDP — exposure is safe.
     udp dport 51820 accept   # NetBird WireGuard
     udp dport 29899 accept   # NetBird direct connection
+
+    # Pod CIDR — kube-proxy DNATs cluster Service VIPs (e.g. 10.43.0.1
+    # → kube-apiserver on host:6443) WITHOUT SNAT, so the packet arrives
+    # at the host INPUT chain with the pod's source IP. Calico's
+    # natOutgoing POSTROUTING chain SNATs it to the host IP eventually,
+    # but on a fresh install there's a race window where in-cluster pods
+    # (metrics-server, coredns, calico-apiserver, etc.) crashloop with
+    # "i/o timeout" against 10.43.0.1:443 before Calico's NAT rules
+    # are active. Pod CIDR is internal cluster traffic only; it isn't
+    # routable from outside.
+    ip saddr ${POD_CIDR_V4} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
 
 ${cluster_allow}
 
@@ -1749,8 +1770,13 @@ EOF
   # nb_xdp_prog in xdpgeneric mode), Felix otherwise enters a tight retry
   # loop trying to replace/wipe it — observed burning ~700-900m CPU per
   # node on the staging cluster (2026-04-27).
-  cat <<EOF | kubectl apply -f -
-apiVersion: projectcalico.org/v3
+  #
+  # Apply with retry: even after `api-resources` lists the CRD, the
+  # apiserver's RESTMapper cache may stay stale for 30-60s, so a single
+  # kubectl apply often fails with "no matches for kind FelixConfiguration".
+  # Retry up to 5 minutes total before giving up. Caught fresh-install
+  # on Ubuntu 24.04 testing host 2026-04-30.
+  local _felix_yaml='apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
 metadata:
   name: default
@@ -1758,8 +1784,18 @@ spec:
   wireguardEnabled: true
   wireguardListeningPort: 51821
   xdpEnabled: false
-  genericXDPEnabled: false
-EOF
+  genericXDPEnabled: false'
+  local _apply_attempts=0
+  while true; do
+    if printf '%s\n' "$_felix_yaml" | kubectl apply -f - 2>/dev/null; then
+      break
+    fi
+    _apply_attempts=$((_apply_attempts+1))
+    if [[ $_apply_attempts -ge 60 ]]; then
+      error "FelixConfiguration apply still failing after 5 minutes; bailing."
+    fi
+    sleep 5
+  done
 
   marker_set "calico-installed"
   log "Calico CNI installed (WireGuard enabled, port 51821)."
