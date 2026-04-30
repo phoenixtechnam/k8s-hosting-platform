@@ -44,6 +44,7 @@ vi.mock('./service.js', () => ({
     status: 200, body: '{}', bodyBuffer: Buffer.from('{}'), headers: {},
   }),
   resolveFmServiceUrlForRoute: vi.fn().mockResolvedValue(null),
+  ensureFileManagerReady: vi.fn().mockResolvedValue({ directUrl: null }),
   getFileManagerStatus: vi.fn().mockResolvedValue({ ready: true, phase: 'ready' }),
   ensureFileManagerRunning: vi.fn().mockResolvedValue(undefined),
   stopFileManager: vi.fn().mockResolvedValue(undefined),

@@ -3,6 +3,7 @@
 // No auth — protected by NetworkPolicy (only platform namespace can reach it)
 
 import { createServer } from 'node:http';
+import * as fs from 'node:fs';
 import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve, basename, extname, dirname, relative } from 'node:path';
@@ -480,15 +481,47 @@ async function handleExtract(req, res) {
 }
 
 async function handleWriteRaw(req, res) {
-  const { path: p } = getQuery(req.url);
+  const { path: p, offset: offsetParam } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
   const full = safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
+
+  // Chunked-upload mode: when ?offset=N is supplied, write the
+  // request body at byte offset N without truncating the file.
+  // Multiple parallel chunks can land concurrently — each gets its
+  // own fd opened with O_CREAT|O_WRONLY (no O_TRUNC), and pwrite via
+  // FileHandle.write(buf, …, position) is atomic per-chunk.
+  // After all chunks land, the file is whole.
+  const offsetN = offsetParam !== undefined ? Number.parseInt(offsetParam, 10) : -1;
+  const chunked = Number.isFinite(offsetN) && offsetN >= 0;
 
   try {
     const dir = dirname(full);
     await mkdir(dir, { recursive: true });
 
+    if (chunked) {
+      // pwrite-style write at explicit offset. Don't truncate; don't
+      // append-mode (positional writes are ignored when O_APPEND is
+      // set on Linux).
+      const fh = await fs.promises.open(full, fs.constants.O_CREAT | fs.constants.O_WRONLY);
+      try {
+        let written = 0;
+        for await (const chunk of req) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          await fh.write(buf, 0, buf.length, offsetN + written);
+          written += buf.length;
+        }
+        // Best-effort chown on the parent's first chunk only; subsequent
+        // chunks see "already-owned" no-op.
+        await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+        sendJson(res, 200, { path: p, offset: offsetN, bytes: written });
+      } finally {
+        await fh.close().catch(() => {});
+      }
+      return;
+    }
+
+    // Default mode (no offset): full overwrite, truncate to 0 first.
     const ws = createWriteStream(full);
 
     // Only abort on actual errors — NOT on normal 'close' events.
@@ -509,9 +542,13 @@ async function handleWriteRaw(req, res) {
     const s = await stat(full);
     sendJson(res, 200, { path: p, size: s.size, modifiedAt: s.mtime.toISOString() });
   } catch (err) {
-    // If client disconnected, clean up partial file
-    rm(full, { force: true }).catch(() => {});
-    console.error('[handleWriteRaw]', err.message);
+    // ECONNRESET / aborted are routine when the operator clicks Cancel
+    // in the upload modal or closes the tab — not worth a stack trace.
+    // Only log truly unexpected errors. Still clean up the partial file.
+    if (!chunked) rm(full, { force: true }).catch(() => {});
+    if (err.code !== 'ECONNRESET' && err.message !== 'aborted') {
+      console.error('[handleWriteRaw]', err.message);
+    }
     if (!res.headersSent) sendError(res, 500, 'Failed to write file');
   }
 }
