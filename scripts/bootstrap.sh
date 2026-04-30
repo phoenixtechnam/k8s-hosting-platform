@@ -496,7 +496,18 @@ harden_ssh() {
   sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$sshd_config"
 
   sshd -t || { error "Invalid sshd_config after modification"; }
-  systemctl reload sshd
+
+  # Service name varies across distros: 'ssh.service' on Debian/Ubuntu,
+  # 'sshd.service' on RHEL/Rocky/Alma/CentOS-Stream. Try both — only
+  # one of the two is present per host. Failing on a known-good
+  # sshd_config because of a unit-name guess would be an obvious bug.
+  if systemctl list-unit-files ssh.service >/dev/null 2>&1; then
+    systemctl reload ssh.service
+  elif systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+    systemctl reload sshd.service
+  else
+    error "No ssh / sshd systemd unit found — cannot reload OpenSSH."
+  fi
 
   marker_set "ssh-hardened"
   log "SSH hardened."
