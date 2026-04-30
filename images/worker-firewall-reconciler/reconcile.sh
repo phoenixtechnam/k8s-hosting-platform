@@ -56,6 +56,52 @@ nft_set_exists() {
   nft list set "$NFT_TABLE" "$set_name" >/dev/null 2>&1
 }
 
+# Self-bootstrap: idempotently install the named sets + accept rules in the
+# input chain if they're missing. Used on hosts whose bootstrap.sh predates
+# this feature — runs once at startup and on every reconcile if they
+# disappeared (e.g. after `nft flush ruleset`). Quietly no-ops if already
+# present.
+nft_self_bootstrap() {
+  local need_tcp_set=false need_udp_set=false need_tcp_rule=false need_udp_rule=false
+  nft_set_exists tenant_ports_tcp || need_tcp_set=true
+  nft_set_exists tenant_ports_udp || need_udp_set=true
+  # nft list table inet filter shows the rules; check for the dport @set
+  # references. If absent, we add them.
+  local existing
+  existing=$(nft list table "$NFT_TABLE" 2>/dev/null) || return 1
+  echo "$existing" | grep -qE 'tcp dport @tenant_ports_tcp accept' || need_tcp_rule=true
+  echo "$existing" | grep -qE 'udp dport @tenant_ports_udp accept' || need_udp_rule=true
+
+  if [[ "$need_tcp_set" == "true" ]]; then
+    if nft "add set $NFT_TABLE tenant_ports_tcp { type inet_service\; flags interval\; }" 2>/tmp/nft.err; then
+      log "self-bootstrap: created set tenant_ports_tcp"
+    else
+      log "FAIL self-bootstrap create tenant_ports_tcp: $(cat /tmp/nft.err)"
+    fi
+  fi
+  if [[ "$need_udp_set" == "true" ]]; then
+    if nft "add set $NFT_TABLE tenant_ports_udp { type inet_service\; flags interval\; }" 2>/tmp/nft.err; then
+      log "self-bootstrap: created set tenant_ports_udp"
+    else
+      log "FAIL self-bootstrap create tenant_ports_udp: $(cat /tmp/nft.err)"
+    fi
+  fi
+  if [[ "$need_tcp_rule" == "true" ]]; then
+    if nft "add rule $NFT_TABLE input tcp dport @tenant_ports_tcp accept" 2>/tmp/nft.err; then
+      log "self-bootstrap: added rule tcp dport @tenant_ports_tcp accept"
+    else
+      log "FAIL self-bootstrap add tcp rule: $(cat /tmp/nft.err)"
+    fi
+  fi
+  if [[ "$need_udp_rule" == "true" ]]; then
+    if nft "add rule $NFT_TABLE input udp dport @tenant_ports_udp accept" 2>/tmp/nft.err; then
+      log "self-bootstrap: added rule udp dport @tenant_ports_udp accept"
+    else
+      log "FAIL self-bootstrap add udp rule: $(cat /tmp/nft.err)"
+    fi
+  fi
+}
+
 nft_current_elements() {
   # Prints one element per line, no whitespace, sorted+unique.
   local set_name="$1"
@@ -180,8 +226,13 @@ build_desired_sets() {
 # ─── Reconcile loop ────────────────────────────────────────────────────────
 
 reconcile_once() {
+  # Idempotently ensure the host has the sets + accept rules. No-op when
+  # bootstrap.sh already installed them; saves the operator from
+  # re-running bootstrap on every node when this feature is rolled out
+  # to an existing cluster.
+  nft_self_bootstrap
   if ! nft_set_exists tenant_ports_tcp || ! nft_set_exists tenant_ports_udp; then
-    log "tenant_ports_{tcp,udp} sets not declared on host — bootstrap.sh probably pre-dates this feature; idling"
+    log "tenant_ports_{tcp,udp} sets still not present after self-bootstrap; idling"
     return 0
   fi
 
