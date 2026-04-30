@@ -387,14 +387,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // exact limits are in place. Idempotent — quotas already in the
       // target shape are no-ops. Best-effort: failure of this hook
       // does NOT abort startup; per-client errors are logged.
-      try {
-        const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
-        const { reconcileAllClientQuotas } = await import('./modules/k8s-provisioner/quota-reconciler.js');
-        const quotaK8s = createK8s((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
-        await reconcileAllClientQuotas(app.db, quotaK8s, app.log);
-      } catch (err) {
-        app.log.warn({ err }, 'startup: quota reconcile skipped (k8s unavailable)');
-      }
+      // Fire-and-forget: boot-time quota reconciliation walks every
+      // client and round-trips the k8s API once per row. With 30+
+      // clients that easily exceeds Fastify's 60s onReady timeout
+      // and starves the readiness probe → CrashLoopBackOff. Kick it
+      // off async so the API comes up immediately; the reconciler
+      // logs scanned/reconciled/errors when it finishes.
+      void (async () => {
+        try {
+          const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { reconcileAllClientQuotas } = await import('./modules/k8s-provisioner/quota-reconciler.js');
+          const quotaK8s = createK8s((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+          await reconcileAllClientQuotas(app.db, quotaK8s, app.log);
+        } catch (err) {
+          app.log.warn({ err }, 'startup: quota reconcile skipped (k8s unavailable)');
+        }
+      })();
 
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
