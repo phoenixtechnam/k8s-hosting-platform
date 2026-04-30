@@ -189,10 +189,30 @@ build_desired_sets() {
   # (port or interval), then re-validated in shell — defense in depth
   # against a malicious annotation injecting nft commands. A value like
   # `3478 } flush ruleset ;` is silently dropped at the jq stage.
+  #
+  # ── Tenant-namespace filter (CRITICAL for security) ──
+  # Infrastructure pods (calico typha, ingress-nginx admission webhook,
+  # kube-proxy, longhorn engine, etc.) often declare hostPort for
+  # cluster-internal control traffic. They MUST NOT be punched into the
+  # public-facing nft accept set — that re-creates exactly the
+  # CERT-Bund IngressNightmare exposure that the firewall guard exists
+  # to prevent. We accept ports ONLY from:
+  #   • Pods in a namespace carrying platform.phoenix-host.net/tenant=true
+  #   • Pods in a namespace whose name starts with "client-" (the
+  #     platform's tenant-namespace naming convention)
+  # Either signal flips a Pod into the "tenant" bucket. Belt + suspenders
+  # because we'd rather have one false-negative (tenant skipped) than
+  # one false-positive (infra port exposed).
   printf '%s' "$pods_json" | jq -r '
     def safe_port: tostring | select(test("^[0-9]+(-[0-9]+)?$"));
+    def is_tenant_ns:
+      (.metadata.namespace // "") as $ns
+      | ((.metadata.annotations // {})["platform.phoenix-host.net/tenant-namespace"] // "") as $a
+      | ($ns | startswith("client-"))
+        or ($a == "true");
 
     .items[]?
+    | select(is_tenant_ns)
     | (
         # 1. Literal hostPort declarations on every container port.
         (.spec.containers // [])[]?
