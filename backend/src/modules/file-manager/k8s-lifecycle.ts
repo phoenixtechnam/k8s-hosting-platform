@@ -154,8 +154,15 @@ export async function ensureFileManagerRunning(
                   capabilities: { drop: ['ALL'], add: ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'] },
                 },
                 resources: {
+                  // Requests stay tight (FM is mostly idle); limits raised
+                  // so file streaming + zip/tar/git operations aren't CPU-
+                  // throttled. Memory stays at 128Mi — the streaming
+                  // handlers (write-raw, download via createReadStream,
+                  // fetch-url piped to disk) don't buffer file content.
+                  // FM runs under platform-tenant-overhead PriorityClass
+                  // and is exempted from client quota by scopeSelector.
                   requests: { cpu: '25m', memory: '32Mi' },
-                  limits: { cpu: '100m', memory: '128Mi' },
+                  limits: { cpu: '500m', memory: '128Mi' },
                 },
                 volumeMounts: [
                   { name: 'client-storage', mountPath: '/data' },
@@ -193,12 +200,14 @@ export async function ensureFileManagerRunning(
   } else {
     // Check if the existing deployment spec matches what we want
     const existingDeploy = await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace }) as Record<string, unknown>;
-    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string }> } } } }).spec;
+    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; resources?: { limits?: { cpu?: string; memory?: string } } }> } } } }).spec;
     const templateSpec = existingSpec?.template?.spec;
     const existingReplicas = existingSpec?.replicas ?? 0;
     const existingPvcClaim = (templateSpec?.volumes ?? []).find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
     const existingCaps = templateSpec?.containers?.[0]?.securityContext?.capabilities?.add ?? [];
     const existingImage = templateSpec?.containers?.[0]?.image ?? '';
+    const existingCpuLim = templateSpec?.containers?.[0]?.resources?.limits?.cpu ?? '';
+    const existingMemLim = templateSpec?.containers?.[0]?.resources?.limits?.memory ?? '';
 
     const expectedPvcClaim = `${namespace}-storage`;
     const expectedCaps = ['SYS_ADMIN', 'DAC_OVERRIDE', 'FOWNER', 'CHOWN'];
@@ -206,8 +215,13 @@ export async function ensureFileManagerRunning(
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
     const capsMismatch = expectedCaps.some(c => !existingCaps.includes(c));
     const imageMismatch = image && existingImage !== image;
+    // Detect old FM deployments that still carry the original 100m CPU
+    // limit so they get recreated with the new 500m on next /files/start.
+    // Memory limit unchanged (128Mi) but check anyway in case it ever
+    // shifts. We compare the literal string to keep the check trivial.
+    const resourcesMismatch = existingCpuLim !== '500m' || existingMemLim !== '128Mi';
 
-    if (pvcMismatch || capsMismatch || imageMismatch) {
+    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
       try {
         await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });

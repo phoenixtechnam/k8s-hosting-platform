@@ -27,6 +27,23 @@ vi.mock('./service.js', () => ({
     bodyBuffer: Buffer.from(JSON.stringify({ path: '/', entries: [] })),
     headers: {},
   }),
+  streamFromFileManager: vi.fn().mockImplementation(async (
+    _kc: string | undefined,
+    _ns: string,
+    _path: string,
+    clientRes: import('node:http').ServerResponse,
+  ) => {
+    // Default success: write a small buffer through to the client.
+    clientRes.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-disposition': 'attachment; filename="test.txt"',
+    });
+    clientRes.end(Buffer.from('hello world binary content'));
+  }),
+  streamToFileManager: vi.fn().mockResolvedValue({
+    status: 200, body: '{}', bodyBuffer: Buffer.from('{}'), headers: {},
+  }),
+  resolveFmServiceUrlForRoute: vi.fn().mockResolvedValue(null),
   getFileManagerStatus: vi.fn().mockResolvedValue({ ready: true, phase: 'ready' }),
   ensureFileManagerRunning: vi.fn().mockResolvedValue(undefined),
   stopFileManager: vi.fn().mockResolvedValue(undefined),
@@ -228,17 +245,20 @@ describe('file-manager routes', () => {
 
   // ─── Download ───────────────────────────────────────────────────────────
 
-  it('GET /clients/c1/files/download returns binary buffer', async () => {
+  it('GET /clients/c1/files/download streams binary content through', async () => {
     const binaryContent = Buffer.from('hello world binary content');
-    const { fileManagerRequest } = await import('./service.js');
-    (fileManagerRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      status: 200,
-      body: '',
-      bodyBuffer: binaryContent,
-      headers: {
+    const { streamFromFileManager } = await import('./service.js');
+    (streamFromFileManager as ReturnType<typeof vi.fn>).mockImplementationOnce(async (
+      _kc: string | undefined,
+      _ns: string,
+      _path: string,
+      clientRes: import('node:http').ServerResponse,
+    ) => {
+      clientRes.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-disposition': 'attachment; filename="test.txt"',
-      },
+      });
+      clientRes.end(binaryContent);
     });
 
     const res = await app.inject({
