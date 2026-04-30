@@ -2659,8 +2659,64 @@ bundle_bootstrap_secrets() {
   log "  See docs/04-deployment/SECRETS_LIFECYCLE.md"
 }
 
+# Block until every admission webhook used by the platform overlay has
+# at least one Ready endpoint. Each entry is "<namespace>:<service>".
+# When Helm's --wait returns the Deployment is "available" (1/1 desired)
+# but the corresponding Endpoints object can lag the readiness probe by
+# 30-120s on a freshly-bootstrapped cluster; until that window closes,
+# any kubectl apply that triggers the webhook fails with "no endpoints
+# available for service <name>" — exactly the Longhorn race that aborts
+# the bootstrap on every fresh install.
+wait_for_admission_webhooks() {
+  local pairs=(
+    "longhorn-system:longhorn-admission-webhook"
+    "cnpg-system:cnpg-webhook-service"
+  )
+  local pair ns svc attempts
+  for pair in "${pairs[@]}"; do
+    ns="${pair%%:*}"
+    svc="${pair##*:}"
+    if ! kctl get svc -n "$ns" "$svc" &>/dev/null; then
+      # Service not declared on this cluster (e.g. --skip-longhorn or
+      # a future install path that doesn't ship CNPG) — silently skip.
+      continue
+    fi
+    log "  waiting for ${ns}/${svc} to have ready endpoints..."
+    attempts=0
+    while true; do
+      if kctl get endpoints -n "$ns" "$svc" \
+            -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null \
+            | grep -q '[0-9]'; then
+        log "  ${ns}/${svc} is ready."
+        break
+      fi
+      attempts=$((attempts + 1))
+      if (( attempts >= 60 )); then
+        # 60 × 5s = 5 min — long enough for any fresh-install boot
+        # delay on Longhorn / CNPG, short enough to fail loudly if
+        # something genuinely went wrong with the webhook deployment.
+        error "  ${ns}/${svc} still has no endpoints after 5 min — webhook never became ready, bailing."
+      fi
+      sleep 5
+    done
+  done
+}
+
 apply_platform_manifests() {
   log "Applying platform manifests..."
+
+  # Wait for admission webhooks that gate the kubectl apply -k below.
+  # On a fresh cluster, Longhorn's mutator.longhorn.io webhook can take
+  # 60-120s after Helm `--wait` returns before its endpoints populate;
+  # CNPG's webhook has the same shape. Both are referenced by objects
+  # in the platform overlay (Longhorn-class PVCs, the Postgres Cluster
+  # CR), so applying before they're ready triggers
+  # "no endpoints available for service longhorn-admission-webhook"
+  # and aborts under set -e. Caught fresh-install on testing.phoenix-
+  # host.net 2026-04-30 — same race on staging during initial
+  # bootstrap (worked there only because operator re-ran bootstrap
+  # after Longhorn settled).
+  wait_for_admission_webhooks
 
   # Clone repo if not already in it
   local repo_dir=""
@@ -2719,10 +2775,43 @@ spec:
     - host: ${admin_host}
     - host: ${client_host}
 PATCH
-    # Add patch reference if not already in kustomization.yaml
+    # Add patch reference if not already in kustomization.yaml.
+    # Insert at the END of the existing patches: list (NOT right after
+    # the `patches:` header). The staging overlay ships a hardcoded
+    # ingress-patch.yaml that resets hostnames to admin.staging.
+    # phoenix-host.net for the production-staging cluster; if our
+    # operator-domain patch is listed BEFORE it, ingress-patch.yaml
+    # strategic-merges over it and the operator's --domain hostnames
+    # are silently lost. Last patch wins. Surfaced 2026-04-30 on the
+    # testing.phoenix-host.net independent install.
     if ! grep -q "ingress-hosts-patch.yaml" "${overlay_dir}/kustomization.yaml"; then
-      log "Adding ingress-hosts-patch.yaml to staging kustomization."
-      sed -i '/^patches:/a\  - path: ingress-hosts-patch.yaml' "${overlay_dir}/kustomization.yaml"
+      log "Adding ingress-hosts-patch.yaml at end of staging patches list."
+      python3 - "${overlay_dir}/kustomization.yaml" <<'PY'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+patch_re = re.compile(r'^(\s*-\s+(path|target|patch):|\s{4,})')
+in_patches = False
+last_idx = None
+for i, line in enumerate(lines):
+    if line.startswith('patches:'):
+        in_patches = True
+        last_idx = i
+        continue
+    if in_patches:
+        if patch_re.match(line):
+            last_idx = i
+            continue
+        if line.strip() == '':
+            continue
+        break
+if last_idx is None:
+    sys.exit("could not find patches: section in " + path)
+lines.insert(last_idx + 1, "  - path: ingress-hosts-patch.yaml\n")
+with open(path, 'w') as f:
+    f.writelines(lines)
+PY
     fi
     # Replace Dex PLACEHOLDER URLs and inject generated client secrets
     local dex_config="${overlay_dir}/dex/config.yaml"
