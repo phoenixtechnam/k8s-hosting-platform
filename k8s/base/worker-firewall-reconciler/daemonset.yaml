@@ -46,7 +46,11 @@ spec:
       containers:
         - name: reconciler
           image: ghcr.io/phoenixtechnam/hosting-platform/worker-firewall-reconciler:latest # {"$imagepolicy": "flux-system:worker-firewall-reconciler"}
-          imagePullPolicy: IfNotPresent
+          # :latest tag with Always — same pattern as backend/admin/client.
+          # Without this every rollout-restart silently re-uses the cached
+          # image and the operator has no signal that the new bash didn't
+          # ship.
+          imagePullPolicy: Always
           env:
             - name: NODE_NAME
               valueFrom:
