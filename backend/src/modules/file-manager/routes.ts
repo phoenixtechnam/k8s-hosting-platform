@@ -3,10 +3,10 @@ import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireClientRoleByMethod, requireClientAccess } from '../../middleware/auth.js';
 import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@k8s-hosting/api-contracts';
 import { clients } from '../../db/schema.js';
-import { success } from '../../shared/response.js';
+import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { fileManagerRequest, streamToFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager } from './service.js';
+import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute } from './service.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
 
 // File-manager sidecar image. Default is the bare name used by local.sh
@@ -184,7 +184,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(JSON.parse(result.body));
   });
 
-  // GET /api/v1/clients/:clientId/files/download — download file
+  // GET /api/v1/clients/:clientId/files/download — download file (streaming, no RAM buffering)
   app.get('/clients/:clientId/files/download', {
     schema: { tags: ['Files'], summary: 'Download file', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
@@ -195,17 +195,49 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sClients, kubeconfigPath, namespace, FM_IMAGE, '/download', {
-      query: { path: query.path },
-    });
+    // Ensure FM is running before we attempt to stream from it. Direct
+    // probe path (introduced in FM Phase 5) keeps this fast on warm pods.
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
+    const status = await getFileManagerStatus(k8sClients, namespace);
+    if (!status.ready) throw new ApiError('FILE_ERROR', `File manager not ready: ${status.message}`, 503);
 
-    if (result.status !== 200) {
-      throw new ApiError('FILE_ERROR', 'Failed to download file', result.status);
+    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
+
+    // streamFromFileManager throws on non-2xx upstream BEFORE writing
+    // any response headers (it drains a bounded 16 KiB error buffer
+    // and re-throws with `upstreamStatus` + `upstreamBody`). On 2xx it
+    // hijacks reply.raw, writes upstream headers, and pipes the body.
+    // Either way Fastify-compress is bypassed (we never call reply.send
+    // on success; we throw via ApiError on failure so the global error
+    // handler formats the standard envelope).
+    try {
+      reply.hijack();
+      await streamFromFileManager(kubeconfigPath, namespace, '/download', reply.raw, {
+        query: { path: query.path },
+        ...(directUrl ? { directUrl } : {}),
+      });
+    } catch (err) {
+      const e = err as { upstreamStatus?: number; upstreamBody?: string };
+      if (reply.raw.headersSent) {
+        // Streaming already started — TCP-end is the only honest signal.
+        try { reply.raw.end(); } catch { /* ignore */ }
+        return;
+      }
+      const status = e.upstreamStatus ?? 500;
+      let message = 'Failed to download file';
+      if (e.upstreamBody) {
+        try {
+          const parsed = JSON.parse(e.upstreamBody) as { error?: string; message?: string };
+          message = parsed.error ?? parsed.message ?? message;
+        } catch { /* non-JSON body — keep generic message */ }
+      }
+      // We hijacked already, so we have to write the error envelope
+      // ourselves. Match `errorResponse()` so clients/tests parse it
+      // identically to any other API error.
+      const body = JSON.stringify(errorResponse('FILE_ERROR', message, status, request.id));
+      reply.raw.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body)) });
+      reply.raw.end(body);
     }
-
-    reply.header('Content-Type', result.headers['content-type'] || 'application/octet-stream');
-    reply.header('Content-Disposition', result.headers['content-disposition'] || 'attachment');
-    return reply.send(result.bodyBuffer);
   });
 
   // POST /api/v1/clients/:clientId/files/mkdir — create directory
@@ -460,8 +492,11 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/clients/:clientId/files/upload-raw — streaming raw binary upload
-  // No body limit — streams directly to sidecar without buffering
+  // Body limit raised to effectively unbounded (5 TiB; Fastify rejects 0).
+  // The route never buffers anyway — request.raw is piped straight to the
+  // sidecar. Only the PVC quota actually gates upload size.
   app.post('/clients/:clientId/files/upload-raw', {
+    bodyLimit: 5 * 1024 * 1024 * 1024 * 1024,
     schema: { tags: ['Files'], summary: 'Upload file (raw binary, streaming)', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
@@ -472,15 +507,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { k8sClients, kubeconfigPath } = getK8s();
 
     // Ensure file manager is running
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
     const status = await getFileManagerStatus(k8sClients, namespace);
     if (!status.ready) throw new Error(`File manager not ready: ${status.message}`);
+
+    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
 
     // Stream the raw request body directly to the sidecar
     const result = await streamToFileManager(kubeconfigPath, namespace, '/write-raw', request.raw, {
       contentType: 'application/octet-stream',
       contentLength: request.headers['content-length'],
       query: { path: query.path },
+      ...(directUrl ? { directUrl } : {}),
     });
 
     if (result.status !== 200) {
@@ -525,17 +563,19 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { k8sClients, kubeconfigPath } = getK8s();
 
     // Ensure file-manager is running, then stream response directly
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
 
+    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
     const { proxyToFileManagerStream } = await import('./service.js');
+    reply.hijack();
     await proxyToFileManagerStream(
       kubeconfigPath,
       namespace,
       '/fetch-url',
       JSON.stringify({ url, path: destPath, force: force ?? false }),
       reply.raw,
+      directUrl ? { directUrl } : {},
     );
-    return reply;
   });
 
   // POST /api/v1/clients/:clientId/files/clone-site — clone entire website
@@ -553,16 +593,18 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sClients);
     const { k8sClients, kubeconfigPath } = getK8s();
 
-    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE);
+    await ensureFileManagerRunning(k8sClients, namespace, FM_IMAGE, 1);
 
+    const directUrl = await resolveFmServiceUrlForRoute(k8sClients, namespace);
     const { proxyToFileManagerStream } = await import('./service.js');
+    reply.hijack();
     await proxyToFileManagerStream(
       kubeconfigPath,
       namespace,
       '/clone-site',
       JSON.stringify({ url, path: destPath, maxPages: maxPages ?? 50, maxDepth: maxDepth ?? 3, prettifyHtml: prettifyHtml ?? false, prettifyCss: prettifyCss ?? false, prettifyJs: prettifyJs ?? false }),
       reply.raw,
+      directUrl ? { directUrl } : {},
     );
-    return reply;
   });
 }

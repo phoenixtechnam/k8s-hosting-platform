@@ -93,6 +93,13 @@ async function getHttpAgent(): Promise<import('node:http').Agent> {
  *   - the Service can't be resolved (FM not deployed yet)
  * Caller falls back to the apiserver-proxy path in that case.
  */
+export async function resolveFmServiceUrlForRoute(
+  k8sClients: K8sClients,
+  namespace: string,
+): Promise<string | null> {
+  return resolveFmServiceUrl(k8sClients, namespace);
+}
+
 async function resolveFmServiceUrl(
   k8sClients: K8sClients,
   namespace: string,
@@ -158,6 +165,57 @@ function loadKubeConfig(kubeconfigPath?: string): k8s.KubeConfig {
     kc.loadFromCluster();
   }
   return kc;
+}
+
+// Module-level cached KubeConfig. Loading from disk + parsing is the
+// expensive part (~30-50ms) — cache the parsed KubeConfig and the
+// cluster/CA material. **Do NOT cache the bearer token**: in-cluster
+// projected SA tokens rotate every ~1h (default expirationSeconds=3607)
+// and the kubelet rewrites the file in place. We re-read the token via
+// kc.getCurrentUser() on every call — that pulls from the in-memory
+// KubeConfig.users[] which loadFromCluster repopulates from
+// /var/run/secrets/.../token — but K8s SDK only re-reads on
+// loadFromCluster(). To get fresh tokens we instead drop+rebuild the
+// CachedKubeContext if it's older than CACHE_TTL_MS.
+const KUBECONTEXT_TTL_MS = 5 * 60_000; // 5 min
+
+interface CachedKubeContext {
+  kc: k8s.KubeConfig;
+  cluster: ReturnType<k8s.KubeConfig['getCurrentCluster']>;
+  httpsOpts: { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
+  loadedAt: number;
+}
+const _kubeContextByPath = new Map<string, CachedKubeContext>();
+
+async function getKubeContext(kubeconfigPath: string | undefined): Promise<CachedKubeContext> {
+  const key = kubeconfigPath ?? '__incluster__';
+  const cached = _kubeContextByPath.get(key);
+  if (cached && Date.now() - cached.loadedAt < KUBECONTEXT_TTL_MS) return cached;
+  const kc = loadKubeConfig(kubeconfigPath);
+  const cluster = kc.getCurrentCluster();
+  const httpsOpts = {} as CachedKubeContext['httpsOpts'];
+  await kc.applyToHTTPSOptions(httpsOpts);
+  const ctx: CachedKubeContext = {
+    kc,
+    cluster,
+    httpsOpts,
+    loadedAt: Date.now(),
+  };
+  _kubeContextByPath.set(key, ctx);
+  return ctx;
+}
+
+/** Pull a fresh bearer token from the cached KubeConfig. Reads from
+ *  the SDK's parsed users[] table, which `loadFromCluster()` populated
+ *  from disk. We rebuild the whole context every KUBECONTEXT_TTL_MS so
+ *  the disk read happens before SA token rotation expires the old one. */
+function getBearerTokenFromContext(ctx: CachedKubeContext): string | undefined {
+  return ctx.kc.getCurrentUser()?.token;
+}
+
+/** Test-only: clear the kube-context cache so tests don't share state. */
+export function __resetKubeContextCacheForTests(): void {
+  _kubeContextByPath.clear();
 }
 
 /**
@@ -298,15 +356,12 @@ export async function proxyToFileManager(
   // Slow path: kubeconfig + apiserver service-proxy. Used when
   // platform-api runs out-of-cluster (local dev) or when the
   // ClusterIP isn't reachable.
-  const kc = loadKubeConfig(kubeconfigPath);
-  const cluster = kc.getCurrentCluster();
+  const ctx = await getKubeContext(kubeconfigPath);
+  const cluster = ctx.cluster;
   if (!cluster) throw new Error('No active cluster in kubeconfig');
 
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
-
-  // Extract TLS options (client certs) from kubeconfig
-  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
-  await kc.applyToHTTPSOptions(httpsOpts);
+  const httpsOpts = ctx.httpsOpts;
 
   const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
@@ -327,8 +382,7 @@ export async function proxyToFileManager(
   }
 
   // Apply auth headers (token-based auth)
-  const user = kc.getCurrentUser();
-  if (user?.token) headers['Authorization'] = `Bearer ${user.token}`;
+  const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
 
   const { default: https } = await import('node:https');
   const agent = await getHttpsAgent();
@@ -395,6 +449,10 @@ export async function proxyToFileManager(
  * Stream a response FROM the file-manager sidecar directly to the client.
  * Unlike proxyToFileManager, this does NOT buffer — it pipes the K8s API
  * proxy response directly to the outgoing HTTP response for real-time progress.
+ *
+ * When `directUrl` is provided, hits the FM ClusterIP directly (HTTP, no
+ * apiserver hop) for full streaming throughput. Otherwise falls back to
+ * the apiserver service-proxy which is rate-limited for bulk data.
  */
 export async function proxyToFileManagerStream(
   kubeconfigPath: string | undefined,
@@ -402,24 +460,57 @@ export async function proxyToFileManagerStream(
   sidecarPath: string,
   body: string,
   clientRes: import('node:http').ServerResponse,
+  options: { directUrl?: string } = {},
 ): Promise<void> {
-  const kc = loadKubeConfig(kubeconfigPath);
-  const cluster = kc.getCurrentCluster();
+  const writeUpstream = (res: import('node:http').IncomingMessage) => {
+    const contentType = res.headers['content-type'] ?? 'application/json';
+    clientRes.writeHead(res.statusCode ?? 200, {
+      'Content-Type': contentType,
+      'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-cache',
+    });
+    res.pipe(clientRes);
+  };
+
+  if (options.directUrl) {
+    const { default: http } = await import('node:http');
+    const httpAgent = await getHttpAgent();
+    return new Promise((resolve, reject) => {
+      const u = new URL(options.directUrl + sidecarPath);
+      const req = http.request({
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname + u.search,
+        method: 'POST',
+        agent: httpAgent,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(body)),
+        },
+      }, (res) => {
+        writeUpstream(res);
+        res.on('end', resolve);
+        res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  const ctx = await getKubeContext(kubeconfigPath);
+  const cluster = ctx.cluster;
   if (!cluster) throw new Error('No active cluster in kubeconfig');
 
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}`;
-
-  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
-  await kc.applyToHTTPSOptions(httpsOpts);
+  const httpsOpts = ctx.httpsOpts;
 
   const headers: Record<string, string> = {
     ...(httpsOpts.headers ?? {}),
     'Content-Type': 'application/json',
     'Content-Length': String(Buffer.byteLength(body)),
   };
-
-  const user = kc.getCurrentUser();
-  if (user?.token) headers['Authorization'] = `Bearer ${user.token}`;
+  const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
 
   const { default: https } = await import('node:https');
   const agent = await getHttpsAgent();
@@ -438,19 +529,126 @@ export async function proxyToFileManagerStream(
       rejectUnauthorized: false,
       agent,
     }, (res) => {
-      const contentType = res.headers['content-type'] ?? 'application/json';
-      clientRes.writeHead(res.statusCode ?? 200, {
-        'Content-Type': contentType,
-        'Transfer-Encoding': 'chunked',
-        'Cache-Control': 'no-cache',
-      });
-      res.on('data', (chunk: Buffer) => clientRes.write(chunk));
-      res.on('end', () => { clientRes.end(); resolve(); });
-      res.on('error', (err) => { clientRes.end(); reject(err); });
+      writeUpstream(res);
+      res.on('end', resolve);
+      res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
     });
-
     req.on('error', reject);
     req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Stream a response FROM the file-manager sidecar (e.g. binary file
+ * download) back to the client without buffering. Memory stays flat
+ * regardless of file size — bytes go pod→platform-api→client in flight.
+ *
+ * Returns:
+ *   - on 2xx: pipes the upstream body directly to clientRes after
+ *     forwarding Content-Type / Content-Length / Content-Disposition.
+ *   - on non-2xx: drains a small bounded buffer (16 KiB) and throws an
+ *     ApiError-shaped object with the status + body. We never stream a
+ *     potentially 1 GB body to the client when the upstream is an error.
+ */
+export async function streamFromFileManager(
+  kubeconfigPath: string | undefined,
+  namespace: string,
+  sidecarPath: string,
+  clientRes: import('node:http').ServerResponse,
+  options: {
+    query?: Record<string, string>;
+    method?: string;
+    directUrl?: string;
+  } = {},
+): Promise<void> {
+  const queryStr = options.query
+    ? '?' + new URLSearchParams(options.query).toString()
+    : '';
+  const method = options.method ?? 'GET';
+
+  const passthroughHeaders = ['content-type', 'content-length', 'content-disposition', 'last-modified', 'etag'];
+
+  const handleUpstream = (res: import('node:http').IncomingMessage, resolve: () => void, reject: (err: Error) => void) => {
+    const status = res.statusCode ?? 500;
+    if (status >= 200 && status < 300) {
+      const out: Record<string, string> = {};
+      for (const k of passthroughHeaders) {
+        const v = res.headers[k];
+        if (typeof v === 'string') out[k] = v;
+      }
+      clientRes.writeHead(status, out);
+      res.pipe(clientRes);
+      res.on('end', resolve);
+      res.on('error', (err) => { try { clientRes.end(); } catch { /* ignore */ } reject(err); });
+      return;
+    }
+    // Non-2xx: drain bounded buffer then surface as a thrown error so
+    // the route handler can map it to an ApiError envelope. Cap at
+    // 16 KiB so a misbehaving upstream that returns a huge HTML error
+    // page can't blow up platform-api memory.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const CAP = 16 * 1024;
+    res.on('data', (chunk: Buffer) => {
+      if (total < CAP) {
+        chunks.push(chunk.subarray(0, Math.min(chunk.length, CAP - total)));
+        total += chunk.length;
+      }
+    });
+    res.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf-8').slice(0, CAP);
+      const err: Error & { upstreamStatus?: number; upstreamBody?: string } = new Error(`File manager returned ${status}: ${text || '(empty body)'}`);
+      err.upstreamStatus = status;
+      err.upstreamBody = text;
+      reject(err);
+    });
+    res.on('error', reject);
+  };
+
+  if (options.directUrl) {
+    const { default: http } = await import('node:http');
+    const httpAgent = await getHttpAgent();
+    return new Promise((resolve, reject) => {
+      const u = new URL(options.directUrl + sidecarPath + queryStr);
+      const req = http.request({
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname + u.search,
+        method,
+        agent: httpAgent,
+      }, (res) => handleUpstream(res, () => resolve(), reject));
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  const ctx = await getKubeContext(kubeconfigPath);
+  const cluster = ctx.cluster;
+  if (!cluster) throw new Error('No active cluster in kubeconfig');
+
+  const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
+  const httpsOpts = ctx.httpsOpts;
+  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
+  const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
+
+  const { default: https } = await import('node:https');
+  const agent = await getHttpsAgent();
+  return new Promise((resolve, reject) => {
+    const fullUrl = new URL(`${cluster.server}${proxyPath}`);
+    const req = https.request({
+      hostname: fullUrl.hostname,
+      port: fullUrl.port || 443,
+      path: fullUrl.pathname + fullUrl.search,
+      method,
+      headers,
+      ca: httpsOpts.ca,
+      cert: httpsOpts.cert,
+      key: httpsOpts.key,
+      rejectUnauthorized: false,
+      agent,
+    }, (res) => handleUpstream(res, () => resolve(), reject));
+    req.on('error', reject);
     req.end();
   });
 }
@@ -470,28 +668,69 @@ export async function streamToFileManager(
     contentType?: string;
     contentLength?: string;
     query?: Record<string, string>;
+    /** Hit FM ClusterIP directly — bypasses apiserver-proxy bulk-data
+     *  cap (~MB/s) and removes ~0.5-1.5s startup latency per upload. */
+    directUrl?: string;
   } = {},
 ): Promise<ProxyResult> {
-  const kc = loadKubeConfig(kubeconfigPath);
-  const cluster = kc.getCurrentCluster();
-  if (!cluster) throw new Error('No active cluster in kubeconfig');
-
   const queryStr = options.query
     ? '?' + new URLSearchParams(options.query).toString()
     : '';
+
+  const buildHeaders = (extra: Record<string, string>): Record<string, string> => {
+    const h: Record<string, string> = { ...extra };
+    if (options.contentType) h['Content-Type'] = options.contentType;
+    if (options.contentLength) h['Content-Length'] = options.contentLength;
+    if (!options.contentLength) h['Transfer-Encoding'] = 'chunked';
+    return h;
+  };
+
+  // Direct ClusterIP: HTTP, no apiserver hop, full bandwidth.
+  if (options.directUrl) {
+    const { default: http } = await import('node:http');
+    const httpAgent = await getHttpAgent();
+    return new Promise((resolve, reject) => {
+      const u = new URL(options.directUrl + sidecarPath + queryStr);
+      const req = http.request({
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname + u.search,
+        method: 'POST',
+        agent: httpAgent,
+        headers: buildHeaders({}),
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const bodyBuffer = Buffer.concat(chunks);
+          const responseHeaders: Record<string, string> = {};
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (typeof v === 'string') responseHeaders[k] = v;
+          }
+          resolve({
+            status: res.statusCode ?? 500,
+            body: bodyBuffer.toString('utf-8'),
+            bodyBuffer,
+            headers: responseHeaders,
+          });
+        });
+      });
+      req.on('error', reject);
+      let pipeCompleted = false;
+      incomingStream.pipe(req);
+      req.on('finish', () => { pipeCompleted = true; });
+      incomingStream.on('error', (err) => { if (!pipeCompleted) req.destroy(err); });
+    });
+  }
+
+  const ctx = await getKubeContext(kubeconfigPath);
+  const cluster = ctx.cluster;
+  if (!cluster) throw new Error('No active cluster in kubeconfig');
+
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
-
-  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
-  await kc.applyToHTTPSOptions(httpsOpts);
-
-  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
-  if (options.contentType) headers['Content-Type'] = options.contentType;
-  if (options.contentLength) headers['Content-Length'] = options.contentLength;
-  // Use Transfer-Encoding: chunked if no Content-Length
-  if (!options.contentLength) headers['Transfer-Encoding'] = 'chunked';
-
-  const user = kc.getCurrentUser();
-  if (user?.token) headers['Authorization'] = `Bearer ${user.token}`;
+  const httpsOpts = ctx.httpsOpts;
+  const headers = buildHeaders({ ...(httpsOpts.headers ?? {}) });
+  const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
 
   const { default: https } = await import('node:https');
   const agent = await getHttpsAgent();
