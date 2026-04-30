@@ -111,6 +111,43 @@ async function resolveFmServiceUrl(
 }
 
 /**
+ * Phase 5: probe-first fast cold-path.
+ *
+ * The Phase-1 ready cache is per-process, so with N platform-api
+ * replicas only ~1 in N requests hits a hot cache. The other replicas
+ * paid the full ensureFileManagerRunning + waitForReady cost
+ * (~1.5–3s) on every "cold" call even though FM was actually healthy.
+ *
+ * This probe asks FM directly via the cluster DNS path: if /health
+ * answers within ~1.5s, FM is alive and we can populate the cache and
+ * skip the expensive K8s API reconciliation entirely. If the probe
+ * fails (FM scaled to 0 by idle-cleanup, evicted, or never created)
+ * we fall back to the full ensure + wait path.
+ */
+async function probeFmHealth(directUrl: string, timeoutMs = 1500): Promise<boolean> {
+  const { default: http } = await import('node:http');
+  const agent = await getHttpAgent();
+  return new Promise<boolean>((resolve) => {
+    const u = new URL(directUrl + '/health');
+    const req = http.request({
+      hostname: u.hostname,
+      port: u.port || 80,
+      path: u.pathname,
+      method: 'GET',
+      agent,
+      timeout: timeoutMs,
+    }, (res) => {
+      // Drain so the keep-alive socket can be reused.
+      res.resume();
+      resolve((res.statusCode ?? 500) >= 200 && (res.statusCode ?? 500) < 500);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
+/**
  * Create a KubeConfig object from file path for making raw HTTP requests.
  */
 function loadKubeConfig(kubeconfigPath?: string): k8s.KubeConfig {
@@ -529,40 +566,50 @@ export async function fileManagerRequest(
   } = {},
 ): Promise<ProxyResult> {
   // Phase 1: hot path — if we recently saw FM ready in this namespace,
-  // skip ensureFileManagerRunning + waitForReady entirely. Cuts ~3
-  // round-trips (1500-2500ms across NetBird mesh) per request.
+  // skip ensureFileManagerRunning + waitForReady entirely.
   const hot = recentlySeenReady(namespace);
   const t0 = Date.now();
+  const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
+  let probeMs = 0;
+  let ensureMs = 0;
+  let waitMs = 0;
 
   if (!hot) {
-    // Cold path: ensure deployed + scaled up + wait for Ready.
-    // Provisioner creates FM at replicas=0 to avoid RWO Multi-Attach
-    // at provision time; ensureFileManagerRunning(initialReplicas=1)
-    // brings it up on demand here.
-    const t1 = Date.now();
-    await ensureFileManagerRunning(k8sClients, namespace, image, 1);
-    const t2 = Date.now();
-    const status = await waitForReady(k8sClients, namespace);
-    const t3 = Date.now();
-    if (!status.ready) {
-      throw new Error(`File manager not ready: ${status.message}`);
+    // Phase 5: probe-first. With N platform-api replicas, the per-
+    // process cache only helps 1/N of requests. Probing FM /health
+    // via cluster DNS catches the common case (FM healthy, just not
+    // observed by this replica yet) in ~5-30ms instead of ~1.5-3s.
+    let probedOk = false;
+    if (directUrl) {
+      const tp0 = Date.now();
+      probedOk = await probeFmHealth(directUrl);
+      probeMs = Date.now() - tp0;
+      if (probedOk) cacheReady(namespace);
     }
-    cacheReady(namespace);
-    // eslint-disable-next-line no-console
-    console.log(`[fm-bench] cold ns=${namespace} ensure=${t2 - t1}ms waitReady=${t3 - t2}ms`);
+
+    if (!probedOk) {
+      // Slow path: FM not reachable — reconcile (deploy/scale/wait).
+      const t1 = Date.now();
+      await ensureFileManagerRunning(k8sClients, namespace, image, 1);
+      ensureMs = Date.now() - t1;
+      const t2 = Date.now();
+      const status = await waitForReady(k8sClients, namespace);
+      waitMs = Date.now() - t2;
+      if (!status.ready) {
+        throw new Error(`File manager not ready: ${status.message}`);
+      }
+      cacheReady(namespace);
+    }
   }
 
-  // Phase 2: prefer direct ClusterIP path (no apiserver proxy).
   const t4 = Date.now();
-  const directUrl = await resolveFmServiceUrl(k8sClients, namespace);
-
   const result = await proxyToFileManager(kubeconfigPath, namespace, sidecarPath, {
     ...options,
     ...(directUrl ? { directUrl } : {}),
   });
   const t5 = Date.now();
   // eslint-disable-next-line no-console
-  console.log(`[fm-bench] ns=${namespace} hot=${hot} resolve+proxy=${t5 - t4}ms direct=${!!directUrl} total=${t5 - t0}ms`);
+  console.log(`[fm-bench] ns=${namespace} hot=${hot} probe=${probeMs}ms ensure=${ensureMs}ms wait=${waitMs}ms proxy=${t5 - t4}ms direct=${!!directUrl} total=${t5 - t0}ms`);
 
   // 5xx might mean FM died between our cache hit and now (idle-cleanup,
   // OOM, eviction). Invalidate so the next call re-checks.
