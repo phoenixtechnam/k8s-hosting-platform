@@ -72,32 +72,29 @@ nft_self_bootstrap() {
   echo "$existing" | grep -qE 'tcp dport @tenant_ports_tcp accept' || need_tcp_rule=true
   echo "$existing" | grep -qE 'udp dport @tenant_ports_udp accept' || need_udp_rule=true
 
+  # Build the missing-pieces declaration as one nft script and feed it
+  # via stdin. Single-shot `nft -f -` avoids the bash-vs-nft semicolon
+  # quoting headache (semicolons are nft statement separators inside
+  # `{ … }` set definitions).
+  local script=""
   if [[ "$need_tcp_set" == "true" ]]; then
-    if nft "add set $NFT_TABLE tenant_ports_tcp { type inet_service\; flags interval\; }" 2>/tmp/nft.err; then
-      log "self-bootstrap: created set tenant_ports_tcp"
-    else
-      log "FAIL self-bootstrap create tenant_ports_tcp: $(cat /tmp/nft.err)"
-    fi
+    script+="add set $NFT_TABLE tenant_ports_tcp { type inet_service; flags interval; }"$'\n'
   fi
   if [[ "$need_udp_set" == "true" ]]; then
-    if nft "add set $NFT_TABLE tenant_ports_udp { type inet_service\; flags interval\; }" 2>/tmp/nft.err; then
-      log "self-bootstrap: created set tenant_ports_udp"
-    else
-      log "FAIL self-bootstrap create tenant_ports_udp: $(cat /tmp/nft.err)"
-    fi
+    script+="add set $NFT_TABLE tenant_ports_udp { type inet_service; flags interval; }"$'\n'
   fi
   if [[ "$need_tcp_rule" == "true" ]]; then
-    if nft "add rule $NFT_TABLE input tcp dport @tenant_ports_tcp accept" 2>/tmp/nft.err; then
-      log "self-bootstrap: added rule tcp dport @tenant_ports_tcp accept"
-    else
-      log "FAIL self-bootstrap add tcp rule: $(cat /tmp/nft.err)"
-    fi
+    script+="add rule $NFT_TABLE input tcp dport @tenant_ports_tcp accept"$'\n'
   fi
   if [[ "$need_udp_rule" == "true" ]]; then
-    if nft "add rule $NFT_TABLE input udp dport @tenant_ports_udp accept" 2>/tmp/nft.err; then
-      log "self-bootstrap: added rule udp dport @tenant_ports_udp accept"
+    script+="add rule $NFT_TABLE input udp dport @tenant_ports_udp accept"$'\n'
+  fi
+
+  if [[ -n "$script" ]]; then
+    if printf '%s' "$script" | nft -f - 2>/tmp/nft.err; then
+      log "self-bootstrap applied: $(printf '%s' "$script" | tr '\n' ';' | head -c 200)"
     else
-      log "FAIL self-bootstrap add udp rule: $(cat /tmp/nft.err)"
+      log "FAIL self-bootstrap: $(cat /tmp/nft.err) — script was: $(printf '%s' "$script" | tr '\n' '|')"
     fi
   fi
 }
