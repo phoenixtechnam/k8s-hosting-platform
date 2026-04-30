@@ -466,12 +466,20 @@ export async function completeAuthentication(
       'Passkey identity does not match step-1 password identity', 401);
   }
 
-  // Userless flow may NOT be used by users in 'second_factor' mode —
-  // they must come through the password endpoint first, get a
-  // pre-auth token, and use the 2FA-bound flow.
-  if (input.expectedUserId === undefined && user.passkeyMode === 'second_factor') {
-    throw new ApiError('PASSKEY_REQUIRES_PASSWORD_FIRST',
-      'This account has 2FA enabled. Sign in with email + password first.', 401);
+  // Userless flow is only permitted in 'alternative' mode. The other
+  // two states reject:
+  //   • 'second_factor' — passkey is the SECOND factor; user must
+  //                       go through password endpoint first.
+  //   • NULL            — passkey login is not enabled for this user.
+  //                       (May have a stale credential from before they
+  //                       switched back to password-only.)
+  if (input.expectedUserId === undefined && user.passkeyMode !== 'alternative') {
+    if (user.passkeyMode === 'second_factor') {
+      throw new ApiError('PASSKEY_REQUIRES_PASSWORD_FIRST',
+        'This account has 2FA enabled. Sign in with email + password first.', 401);
+    }
+    throw new ApiError('PASSKEY_LOGIN_NOT_ENABLED',
+      'Passkey login is not enabled for this account. Sign in with email + password.', 401);
   }
 
   await consumeChallenge(
