@@ -523,6 +523,77 @@ harden_ssh() {
   log "SSH hardened."
 }
 
+tune_kernel_network() {
+  # Persistent TCP tuning for the platform-api ingress + tenant traffic.
+  # Default Debian/Ubuntu buffers (rmem_max/wmem_max=208 KB) cap single-
+  # stream throughput at ~bandwidth-delay-product / 208 KB. Over a
+  # 150 ms RTT WAN that's ~11 Mbps even when the underlay is faster.
+  # CUBIC also ramps slowly on high-RTT and drops aggressively on a
+  # single packet loss — BBR is dramatically better for sustained
+  # uploads/downloads (file manager, backups, Longhorn replication).
+  #
+  # Settings applied:
+  #   net.core.{rmem,wmem}_max = 16 MiB     — autotuner ceiling
+  #   net.ipv4.tcp_rmem        = 4K 87K 16M — autotune range
+  #   net.ipv4.tcp_wmem        = 4K 64K 16M — autotune range
+  #   net.ipv4.tcp_congestion_control = bbr — better high-RTT throughput
+  #   net.core.default_qdisc   = fq         — required by BBR for pacing
+  #
+  # No effect on the per-flow ISP cap on the *client* side (residential
+  # uplinks still shape single TCP flows to ~3-5 Mbps), but lets clients
+  # with bigger windows actually fill the pipe and improves cluster-
+  # internal throughput (Longhorn replica sync, FM in-cluster transfer,
+  # apiserver-proxy fallback path).
+  if marker_exists "kernel-net-tuned"; then
+    log "Kernel network tuning already applied, skipping."
+    return 0
+  fi
+  log "Tuning kernel network parameters (BBR + 16 MiB TCP buffers)..."
+
+  # BBR ships as a module on Debian/Ubuntu; load it once so it can be
+  # selected as the congestion-control algorithm. modprobe is a no-op
+  # if BBR is built-in (newer kernels) or already loaded.
+  if ! lsmod 2>/dev/null | grep -q '^tcp_bbr '; then
+    modprobe tcp_bbr 2>/dev/null || warn "modprobe tcp_bbr failed — kernel may lack BBR support; tuning will fall back to cubic."
+  fi
+  # Persist module load across reboots.
+  mkdir -p /etc/modules-load.d
+  cat >/etc/modules-load.d/platform-bbr.conf <<'EOF'
+# Loaded by bootstrap.sh tune_kernel_network — required for
+# net.ipv4.tcp_congestion_control=bbr in /etc/sysctl.d/99-platform-net.conf
+tcp_bbr
+EOF
+
+  # Confirm BBR is selectable before writing it as the default; fall
+  # back to cubic if not (e.g. unusual kernel build) so we don't fail
+  # `sysctl --system` and abort the bootstrap.
+  local cc="bbr"
+  if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    warn "BBR not available in this kernel — sticking with cubic."
+    cc="cubic"
+  fi
+
+  cat >/etc/sysctl.d/99-platform-net.conf <<EOF
+# Managed by bootstrap.sh tune_kernel_network() — 2026-04-30
+# Removes the 208 KB single-stream throughput cap on the default
+# Debian/Ubuntu install and switches to BBR for better sustained
+# performance over high-RTT WAN paths.
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_congestion_control = ${cc}
+net.core.default_qdisc = fq
+EOF
+
+  if ! sysctl --system >/dev/null 2>&1; then
+    warn "sysctl --system reported errors; check 'sysctl --system' output."
+  fi
+
+  marker_set "kernel-net-tuned"
+  log "Kernel network tuning applied (cc=${cc}, rmem_max/wmem_max=16M)."
+}
+
 install_packages() {
   log "Installing base packages (family=${OS_FAMILY})..."
   case "$OS_FAMILY" in
@@ -2992,6 +3063,7 @@ main() {
     harden_ssh
   fi
   install_packages
+  tune_kernel_network
   if [[ "$DRY_RUN" == true ]]; then
     log ""
     log "════════════════════════════════════════════════"
