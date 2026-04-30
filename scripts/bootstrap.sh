@@ -669,10 +669,25 @@ configure_firewall() {
     fi
   fi
 
-  # ─── nft set declarations (set mode only) ─────────────────────────────
-  local set_decls=""
+  # ─── nft set declarations ─────────────────────────────────────────────
+  # cluster_peers_v{4,6} — set-mode only, peer-IP allowlist for cluster ports
+  # tenant_ports_{tcp,udp} — always declared, runtime-managed by the
+  #   worker-firewall-reconciler DaemonSet. Empty at bootstrap; the
+  #   reconciler watches Pods on this node for hostPort + the
+  #   `platform.io/firewall-{tcp,udp}-ports` annotation and converges
+  #   the live set via `nft add element / nft delete element`. See
+  #   docs/04-deployment/RUNTIME_FIREWALL.md.
+  local set_decls="  set tenant_ports_tcp {
+    type inet_service
+    flags interval
+  }
+  set tenant_ports_udp {
+    type inet_service
+    flags interval
+  }
+"
   if [[ "$mode" == "set" ]]; then
-    set_decls="  set cluster_peers_v4 {
+    set_decls="${set_decls}  set cluster_peers_v4 {
     type ipv4_addr
     flags interval
   }
@@ -727,6 +742,15 @@ ${calico_wg_rule}
     tcp dport 110 accept     # POP3
     tcp dport 995 accept     # POP3S
     tcp dport 4190 accept    # ManageSieve
+
+    # Runtime-managed tenant host ports — populated by
+    # worker-firewall-reconciler DaemonSet at runtime as Pods land
+    # with hostPort or the platform.io/firewall-{tcp,udp}-ports
+    # annotations. Bootstrap leaves the sets empty; the reconciler
+    # is the only writer. Same chain on server + worker nodes (server-
+    # side host ports are gated by an admin toggle in System Settings).
+    tcp dport @tenant_ports_tcp accept
+    udp dport @tenant_ports_udp accept
 
     counter drop
   }

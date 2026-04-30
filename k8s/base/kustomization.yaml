@@ -30,6 +30,12 @@ resources:
   # single firewall mode (the nft sets don't exist there). See
   # docs/04-deployment/CLUSTER_NETWORK.md for the three-mode design.
   - peer-firewall-reconciler/
+  # worker-firewall-reconciler — keeps host nft sets
+  # tenant_ports_{tcp,udp} in sync with Pods scheduled to this node
+  # (hostPort + platform.io/firewall-{tcp,udp}-ports annotations).
+  # bootstrap.sh declares the sets empty; this DaemonSet is the only
+  # writer at runtime. See docs/04-deployment/RUNTIME_FIREWALL.md.
+  - worker-firewall-reconciler/
   - oauth2-proxy/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml

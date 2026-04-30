@@ -73,6 +73,22 @@ interface EntryManifest {
   readonly provides?: Record<string, unknown>;
   readonly env_vars?: Record<string, unknown>;
   readonly supportedVersions?: readonly SupportedVersion[];
+  /**
+   * Optional runtime-firewall declaration. When present, the catalog deploy
+   * gate (modules/deployments/service.ts) refuses to schedule the workload
+   * unless the operator has flipped `system_settings.allow_host_ports_*`
+   * for the target node role. When approved, the host nft sets
+   * `tenant_ports_{tcp,udp}` are populated by the worker-firewall-reconciler
+   * DaemonSet on the node hosting the pod.
+   *
+   * UDP supports nft-style ranges as strings (e.g. `"16384-32768"`) so
+   * TURN/RTP relay pools fit into a single declaration. TCP is plain ints.
+   *
+   * Persisted into `catalog_entries.networking.firewall` at sync time so
+   * existing consumers that already deserialize `networking` keep working
+   * without a schema migration.
+   */
+  readonly firewall?: { tcp?: readonly number[]; udp?: readonly (number | string)[] };
 }
 
 interface ListCatalogEntriesParams {
@@ -543,6 +559,17 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         ? resolveDefaultVersion(manifest.supportedVersions)
         : latestVersion;
 
+      // Merge top-level `firewall` into the persisted `networking` blob.
+      // We don't add a column for it — `networking` is jsonb with no
+      // schema-level constraints so embedding the runtime-firewall
+      // declaration there avoids a migration while still keeping the
+      // value available to the catalog deploy gate at deploy time.
+      const networkingMerged: Record<string, unknown> | null = (() => {
+        const base = (manifest.networking ?? null) as Record<string, unknown> | null;
+        if (!manifest.firewall) return base;
+        return { ...(base ?? {}), firewall: manifest.firewall };
+      })();
+
       const catalogValues = {
         name: manifest.name,
         type: (manifest.type ?? 'application') as 'application' | 'runtime' | 'database' | 'service',
@@ -556,7 +583,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         minPlan: manifest.min_plan ?? null,
         tenancy: (manifest.tenancy ?? null) as typeof catalogEntries.$inferInsert['tenancy'],
         components: (manifest.components ?? null) as typeof catalogEntries.$inferInsert['components'],
-        networking: (manifest.networking ?? null) as typeof catalogEntries.$inferInsert['networking'],
+        networking: networkingMerged as typeof catalogEntries.$inferInsert['networking'],
         volumes: (manifest.volumes ?? null) as typeof catalogEntries.$inferInsert['volumes'],
         resources: (manifest.resources ?? null) as typeof catalogEntries.$inferInsert['resources'],
         healthCheck: (manifest.health_check ?? null) as typeof catalogEntries.$inferInsert['healthCheck'],

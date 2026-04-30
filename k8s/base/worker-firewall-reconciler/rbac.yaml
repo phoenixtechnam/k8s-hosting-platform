@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker-firewall-reconciler
+  namespace: platform-system
+  labels:
+    app: worker-firewall-reconciler
+    app.kubernetes.io/part-of: hosting-platform
+---
+# Read-only on Pods cluster-wide. The reconciler filters by
+# spec.nodeName == its own NODE_NAME, but the field-selector only
+# narrows the LIST/WATCH; the API server still authorises the verb at
+# cluster scope, so the ClusterRole has to be cluster-wide.
+#
+# We never write Pods (or anything else) — the firewall change happens
+# locally on the host via `nft` (privileged + hostNetwork).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: worker-firewall-reconciler
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: worker-firewall-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: worker-firewall-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: worker-firewall-reconciler
+    namespace: platform-system

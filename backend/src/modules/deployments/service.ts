@@ -5,10 +5,11 @@
  */
 
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
-import { deployments, catalogEntries, catalogEntryVersions, clients, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
+import { deployments, catalogEntries, catalogEntryVersions, clients, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getClientById } from '../clients/service.js';
+import { getSettings as getSystemSettings } from '../system-settings/service.js';
 import {
   deployCatalogEntry,
   stopDeployment,
@@ -191,6 +192,111 @@ export async function resolveVersionAwareDeploymentConfig(
   };
 }
 
+// ─── Runtime-firewall helpers (Phase 3) ─────────────────────────────────────
+
+/**
+ * Shape of the manifest-level `firewall` block as persisted under
+ * `catalog_entries.networking.firewall`. Both arrays are optional so an
+ * entry can declare TCP-only or UDP-only exposure. UDP supports
+ * nft-style range strings ("16384-32768") because TURN/RTP relays need
+ * port pools.
+ */
+export interface ManifestFirewall {
+  readonly tcp?: readonly number[];
+  readonly udp?: readonly (number | string)[];
+}
+
+/**
+ * Read the firewall declaration from a catalog entry. Returns null when
+ * either the manifest doesn't declare one OR both port lists are empty
+ * (treat empty arrays as "no host ports requested" so toggling them in
+ * a manifest doesn't accidentally block deploy).
+ */
+export function readEntryFirewall(entry: typeof catalogEntries.$inferSelect): ManifestFirewall | null {
+  const networking = parseJsonField<{ firewall?: ManifestFirewall }>(entry.networking);
+  const fw = networking?.firewall;
+  if (!fw) return null;
+  const tcp = fw.tcp ?? [];
+  const udp = fw.udp ?? [];
+  if (tcp.length === 0 && udp.length === 0) return null;
+  return { tcp, udp };
+}
+
+/**
+ * Resolve the target node role for a deployment from the client's
+ * pinned worker. Defaults to 'worker' when no pin is set OR when the
+ * pinned hostname doesn't have a cluster_nodes row yet (newly-joined
+ * node, etc.) — worker is the safe default because:
+ *   - server roles are explicitly tainted; tenant pods don't land
+ *     there unless the operator wired up tolerations
+ *   - the worker toggle is the more common opt-in
+ */
+async function resolveTargetNodeRole(
+  db: Database,
+  workerNodeName: string | null | undefined,
+): Promise<'server' | 'worker'> {
+  if (!workerNodeName) return 'worker';
+  const [node] = await db
+    .select({ role: clusterNodes.role })
+    .from(clusterNodes)
+    .where(eq(clusterNodes.name, workerNodeName));
+  return (node?.role ?? 'worker') as 'server' | 'worker';
+}
+
+/**
+ * Catalog deploy gate. Refuses the deploy when the entry declares
+ * `firewall` OR a component declares `hostPort` AND the operator has
+ * not enabled the corresponding `system_settings.allow_host_ports_*`
+ * toggle for the target role.
+ *
+ * Returns the firewall block (or null) so the caller can pass it
+ * through to deployCatalogEntry without a second lookup.
+ */
+export async function enforceHostPortGate(
+  db: Database,
+  entry: typeof catalogEntries.$inferSelect,
+  components: readonly DeployComponentInput[],
+  workerNodeName: string | null | undefined,
+): Promise<ManifestFirewall | null> {
+  const firewall = readEntryFirewall(entry);
+  // Also detect literal hostPort declarations on container spec — these
+  // need the same gate even if the manifest doesn't carry an explicit
+  // `firewall` block (the firewall reconciler picks them up either way).
+  const hasHostPort = components.some(c =>
+    (c.ports ?? []).some(p => 'hostPort' in (p as Record<string, unknown>) && (p as { hostPort?: number }).hostPort != null),
+  );
+
+  if (!firewall && !hasHostPort) return null;
+
+  const role = await resolveTargetNodeRole(db, workerNodeName);
+  const settings = await getSystemSettings(db);
+  const allowed = role === 'server'
+    ? settings.allowHostPortsServer
+    : settings.allowHostPortsWorker;
+
+  if (allowed) return firewall;
+
+  const portsDesc: string[] = [];
+  if (firewall?.tcp && firewall.tcp.length > 0) portsDesc.push(`TCP/${firewall.tcp.join(',')}`);
+  if (firewall?.udp && firewall.udp.length > 0) portsDesc.push(`UDP/${firewall.udp.join(',')}`);
+  const portsStr = portsDesc.length > 0 ? portsDesc.join(' + ') : 'host network ports';
+  const toggleLabel = role === 'server' ? 'Server' : 'Worker';
+
+  throw new ApiError(
+    'HOST_PORTS_DISABLED',
+    `This application requires host network ports (${portsStr}). Enable "Allow Custom Host Ports on ${toggleLabel} Nodes" in System Settings to deploy.`,
+    403,
+    {
+      catalog_entry_id: entry.id,
+      catalog_entry_code: entry.code,
+      target_role: role,
+      requested_tcp: firewall?.tcp ?? [],
+      requested_udp: firewall?.udp ?? [],
+    },
+    `Toggle System Settings → Host Network Ports → "${toggleLabel} Nodes" then retry the deploy.`,
+  );
+}
+
 function resolveIngressPorts(
   entry: typeof catalogEntries.$inferSelect,
 ): Array<{ port: number; protocol: string; ingress?: boolean }> {
@@ -225,6 +331,15 @@ export async function createDeployment(
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);
   const { components, volumes, fixedEnvVars, generatedEnvKeys, configurableEnvKeys, installedVersion } = resolved;
   const namespace = client.kubernetesNamespace;
+
+  // Phase 3 firewall gate: reject the deploy BEFORE we touch the DB if
+  // the catalog manifest declares host-network ports AND the per-role
+  // operator toggle is OFF. Throwing here surfaces a 403 to the caller
+  // with `code: HOST_PORTS_DISABLED` so the UI can render an actionable
+  // message ("enable Allow Custom Host Ports on … in System Settings").
+  // Returns the firewall block (or null) so we can pass it through to
+  // deployCatalogEntry without re-parsing the manifest.
+  const firewall = await enforceHostPortGate(db, entry, components, client.workerNodeName);
 
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
@@ -340,6 +455,13 @@ export async function createDeployment(
         // preferred affinity (so HA can fail over).
         workerNodeName: client.workerNodeName ?? undefined,
         storageTier: (client.storageTier ?? null) as 'local' | 'ha' | null,
+        // Phase 3: propagate the manifest's runtime-firewall block. The
+        // deployer stamps it as Pod annotations which the
+        // worker-firewall-reconciler converges into the host's nft sets
+        // tenant_ports_{tcp,udp}. Already gated above; null here means
+        // either the manifest didn't declare any host ports OR the
+        // toggle let the deploy through with no ports requested.
+        firewall: firewall ?? undefined,
       });
       await db.update(deployments).set({ status: 'deploying' }).where(eq(deployments.id, id));
 
@@ -822,6 +944,12 @@ export async function updateDeploymentResources(
       const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
       try {
+        // Re-resolve firewall for the redeploy path so an existing
+        // host-port app keeps its annotations across resource bumps.
+        // We DON'T re-run the gate here — toggling it OFF after deploy
+        // shouldn't retroactively close ports on a running app, the
+        // operator gets explicit control over that via redeploy.
+        const reFirewall = readEntryFirewall(entry);
         await deployCatalogEntry(k8s, {
           deploymentName: deployment.name,
           storagePath: deployment.storagePath ?? '',
@@ -835,6 +963,7 @@ export async function updateDeploymentResources(
           configuration: config,
           envVars: { fixed: resolved.fixedEnvVars },
           configurableEnvKeys: resolved.configurableEnvKeys,
+          firewall: reFirewall ?? undefined,
         });
         // Force pod restart by deleting existing pods — K8s recreates from updated spec.
         // The patchNamespacedDeployment annotation approach doesn't work reliably
@@ -951,6 +1080,10 @@ export async function redeployWithCurrentConfig(
     configuration: config,
     envVars: { fixed: resolved.fixedEnvVars },
     configurableEnvKeys: resolved.configurableEnvKeys,
+    // Carry the manifest's runtime-firewall block through credential
+    // rotations / config redeploys so a host-port app doesn't lose its
+    // pod annotations between deploys.
+    firewall: readEntryFirewall(entry) ?? undefined,
   });
 
   // Force pod restart by deleting existing pods — K8s recreates from updated spec.

@@ -309,6 +309,11 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     const errorCode = (err as { code?: string } | null)?.code;
     const isSoftDeleteCollision = errorCode === 'DEPLOYMENT_NAME_RESERVED_BY_DELETED';
     const isDuplicate = errorCode === 'DUPLICATE_NAME' || isSoftDeleteCollision;
+    // Phase 4: surface the runtime-firewall gate verbatim — the backend
+    // builds an actionable message ("Enable Allow Custom Host Ports on
+    // <Workers|Server> in System Settings to deploy.") so we just render
+    // it in a dedicated amber state instead of a generic red error.
+    const isHostPortsBlocked = errorCode === 'HOST_PORTS_DISABLED';
     const errorMessage = err instanceof Error
       ? err.message
       : 'Deployment failed. Please try again.';
@@ -327,13 +332,18 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
           </div>
           <div className="flex flex-col items-center justify-center py-16 px-6">
-            <AlertCircle size={48} className={isDuplicate ? 'text-amber-500 mb-4' : 'text-red-500 mb-4'} />
+            <AlertCircle size={48} className={(isDuplicate || isHostPortsBlocked) ? 'text-amber-500 mb-4' : 'text-red-500 mb-4'} />
             <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
-              {isDuplicate ? 'Name already in use' : 'Deployment Failed'}
+              {isDuplicate ? 'Name already in use' : isHostPortsBlocked ? 'Host network ports disabled' : 'Deployment Failed'}
             </p>
-            <p className="text-sm text-red-600 dark:text-red-400 mb-2 text-center max-w-md">
+            <p className={`text-sm ${isHostPortsBlocked ? 'text-amber-700 dark:text-amber-300' : 'text-red-600 dark:text-red-400'} mb-2 text-center max-w-md`}>
               {errorMessage}
             </p>
+            {isHostPortsBlocked && (
+              <p className="text-xs text-gray-600 dark:text-gray-400 mb-8 text-center max-w-md" data-testid="host-ports-blocked-hint">
+                Ask an administrator to flip the matching toggle in <strong>System Settings → Host Network Ports</strong>, then retry.
+              </p>
+            )}
             {isSoftDeleteCollision && (
               <p className="text-xs text-amber-700 dark:text-amber-300 mb-8 text-center max-w-md">
                 A previous deployment with this name was deleted but is preserved for restore.

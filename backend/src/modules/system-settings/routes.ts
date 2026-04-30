@@ -51,6 +51,12 @@ const updateSchema = z.object({
   // existing tooling doesn't break; the service layer ignores them.
   mailHostname: z.string().max(255).optional().nullable(),
   webmailUrl: z.string().url().max(500).optional().nullable(),
+  // Host-port gating (migration 0062). When false, the catalog deploy
+  // path rejects workloads that request hostPort or carry the
+  // platform.io/firewall-{tcp,udp}-ports annotations on the
+  // corresponding node role.
+  allowHostPortsServer: z.boolean().optional(),
+  allowHostPortsWorker: z.boolean().optional(),
 });
 
 export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> {

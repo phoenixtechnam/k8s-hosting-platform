@@ -95,6 +95,23 @@ export interface DeployCatalogEntryInput {
    * MUST use soft so the pod can reschedule when the pin node fails.
    */
   readonly storageTier?: 'local' | 'ha' | null;
+  /**
+   * Runtime-firewall declaration propagated from the catalog manifest.
+   * When present, the deployer stamps two annotations onto the Pod
+   * template (`platform.io/firewall-tcp-ports`, `platform.io/firewall-udp-ports`)
+   * which the worker-firewall-reconciler DaemonSet picks up to populate
+   * the host nft sets `tenant_ports_{tcp,udp}`. The catalog deploy gate
+   * in service.ts is responsible for refusing to deploy when the
+   * corresponding system_settings.allow_host_ports_{server,worker}
+   * toggle is OFF — by the time we reach this layer the gate has
+   * already approved the exposure.
+   *
+   * UDP ports support nft-style range strings (e.g. `"16384-32768"`)
+   * because TURN/RTP relays need port pools. TCP ports are typed as
+   * numbers in the manifest but stringified here so both sets share the
+   * same annotation format.
+   */
+  readonly firewall?: { tcp?: readonly number[]; udp?: readonly (number | string)[] };
 }
 
 export interface ComponentPodStatus {
@@ -133,6 +150,29 @@ function deploymentLabels(deploymentName: string, componentName: string): Record
     component: componentName,
     'platform.io/managed': 'true',
   };
+}
+
+/**
+ * Render the catalog manifest's `firewall` block into the two pod
+ * annotations the worker-firewall-reconciler watches for. Returns
+ * `undefined` when no host ports are requested so the rendered Pod
+ * carries no annotations at all (clean diff for non-firewall apps).
+ *
+ * Both keys use comma-separated values; UDP supports nft-style ranges
+ * (e.g. `"16384-32768"`). Numbers are stringified to keep the
+ * annotation map a homogenous Record<string,string>.
+ */
+export function buildFirewallAnnotations(
+  firewall?: { tcp?: readonly number[]; udp?: readonly (number | string)[] },
+): Record<string, string> | undefined {
+  if (!firewall) return undefined;
+  const tcp = (firewall.tcp ?? []).map(String).filter(s => s.length > 0);
+  const udp = (firewall.udp ?? []).map(String).filter(s => s.length > 0);
+  if (tcp.length === 0 && udp.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  if (tcp.length > 0) out['platform.io/firewall-tcp-ports'] = tcp.join(',');
+  if (udp.length > 0) out['platform.io/firewall-udp-ports'] = udp.join(',');
+  return out;
 }
 
 function k8sResourceName(deploymentName: string, componentName: string, componentCount: number): string {
@@ -354,9 +394,16 @@ export async function deployCatalogEntry(
     // component preserves legacy share-all; empty array means mounts nothing.
     const componentVolumes = filterVolumesForComponent(volumes, component.volumes);
 
+    // Compute the firewall pod-template annotations once per call. They're
+    // identical for every component because the firewall block lives at
+    // the entry/manifest level — every pod the deploy emits should carry
+    // the same set so the reconciler is consistent regardless of which
+    // component the host-port lands in.
+    const firewallAnnotations = buildFirewallAnnotations(input.firewall);
+
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'statefulset':
@@ -367,7 +414,7 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.workerNodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'cronjob':
@@ -407,6 +454,13 @@ async function deployK8sDeployment(
   // stays Pending forever waiting for the dead node to come back.
   workerNodeName?: string | null,
   storageTier?: 'local' | 'ha' | null,
+  // Firewall annotations from the catalog manifest's `firewall` block.
+  // Stamped onto the pod template's metadata (NOT the Deployment's
+  // top-level metadata) so the worker-firewall-reconciler can read them
+  // off `kubectl get pods` output. The deploy gate in service.ts has
+  // already enforced the per-role allow_host_ports toggle by the time
+  // we land here.
+  podAnnotations?: Record<string, string>,
 ): Promise<void> {
   const selectorLabels = { app: labels.app, component: labels.component };
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
@@ -455,6 +509,13 @@ async function deployK8sDeployment(
     }
   }
 
+  // Pod-template metadata: labels are mandatory for the selector; annotations
+  // are conditional so non-firewall apps render a clean Pod spec.
+  const templateMetadata: Record<string, unknown> = { labels };
+  if (podAnnotations && Object.keys(podAnnotations).length > 0) {
+    templateMetadata.annotations = { ...podAnnotations };
+  }
+
   const body = {
     metadata: { name, namespace, labels },
     spec: {
@@ -469,7 +530,7 @@ async function deployK8sDeployment(
       // anything backed by a single PVC) must use Recreate.
       strategy: { type: 'Recreate' },
       template: {
-        metadata: { labels },
+        metadata: templateMetadata,
         spec: podSpec,
       },
     },

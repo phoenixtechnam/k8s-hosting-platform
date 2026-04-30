@@ -1582,6 +1582,16 @@ export const systemSettings = pgTable('system_settings', {
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   timezone: varchar('timezone', { length: 50 }).notNull().default('UTC'),
+  // Host-port gating (migration 0062). When OFF, the catalog deploy
+  // path rejects workloads that request hostPort or carry the
+  // platform.io/firewall-{tcp,udp}-ports annotations on the
+  // corresponding node role. Server is OFF by default — most
+  // operators won't ever want host ports on the control plane.
+  // Worker is OFF by default too — opt-in keeps the attack surface
+  // explicit. Toggling either flips a flag read by the catalog
+  // deploy gate; existing pods are not retroactively closed.
+  allowHostPortsServer: boolean('allow_host_ports_server').notNull().default(false),
+  allowHostPortsWorker: boolean('allow_host_ports_worker').notNull().default(false),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

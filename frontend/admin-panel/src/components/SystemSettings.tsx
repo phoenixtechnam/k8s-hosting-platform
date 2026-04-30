@@ -22,6 +22,8 @@ export default function SystemSettingsForm() {
   const [ingressBaseDomain, setIngressBaseDomain] = useState('');
   const [apiRateLimit, setApiRateLimit] = useState(100);
   const [timezone, setTimezone] = useState('UTC');
+  const [allowHostPortsServer, setAllowHostPortsServer] = useState(false);
+  const [allowHostPortsWorker, setAllowHostPortsWorker] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -35,6 +37,8 @@ export default function SystemSettingsForm() {
       setIngressBaseDomain(settings.ingressBaseDomain ?? '');
       setApiRateLimit(settings.apiRateLimit);
       setTimezone(settings.timezone ?? 'UTC');
+      setAllowHostPortsServer(settings.allowHostPortsServer ?? false);
+      setAllowHostPortsWorker(settings.allowHostPortsWorker ?? false);
     }
   }, [settings]);
 
@@ -51,6 +55,8 @@ export default function SystemSettingsForm() {
         ingressBaseDomain: ingressBaseDomain || null,
         apiRateLimit,
         timezone,
+        allowHostPortsServer,
+        allowHostPortsWorker,
       },
       {
         onSuccess: () => {
@@ -204,6 +210,55 @@ export default function SystemSettingsForm() {
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             Base domain used for CNAME routing targets (e.g., slug.ingress.example.com).
           </p>
+        </div>
+      </div>
+
+      {/* Host Network Ports */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5" data-testid="host-network-ports-card">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Host Network Ports</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+          Some applications (e.g. COTURN, BBB media servers) require dedicated UDP/TCP ports on the underlying host network. Enabling these toggles lets the catalog deploy gate schedule those workloads onto the matching node role and opens the requested ports on every node of that role.
+        </p>
+        <p className="text-xs text-amber-700 dark:text-amber-300 mb-4 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/40 px-2 py-1">
+          <strong>Note:</strong> turning a toggle <strong>off</strong> only blocks <em>new</em> deploys. Already-running workloads keep their open ports until they are deleted or redeployed manually. To force closure, delete the affected deployments after disabling.
+        </p>
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <input
+              id="allow-host-ports-server"
+              type="checkbox"
+              checked={allowHostPortsServer}
+              onChange={(e) => setAllowHostPortsServer(e.target.checked)}
+              className="mt-1 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
+              data-testid="allow-host-ports-server-toggle"
+            />
+            <div className="flex-1">
+              <label htmlFor="allow-host-ports-server" className="block text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
+                Allow Custom Host Ports on Server Nodes
+              </label>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                When enabled, applications declaring custom host-network ports (e.g., COTURN, BBB media servers) can be deployed onto control-plane (server) nodes. Off by default — enabling exposes the listed ports on every server node&apos;s public interface.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <input
+              id="allow-host-ports-worker"
+              type="checkbox"
+              checked={allowHostPortsWorker}
+              onChange={(e) => setAllowHostPortsWorker(e.target.checked)}
+              className="mt-1 rounded border-gray-300 dark:border-gray-600 text-brand-500 focus:ring-brand-500"
+              data-testid="allow-host-ports-worker-toggle"
+            />
+            <div className="flex-1">
+              <label htmlFor="allow-host-ports-worker" className="block text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
+                Allow Custom Host Ports on Worker Nodes
+              </label>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                When enabled, applications declaring custom host-network ports (e.g., COTURN, BBB media servers) can be deployed onto worker nodes. Off by default — enabling exposes the listed ports on every worker node&apos;s public interface.
+              </p>
+            </div>
+          </div>
         </div>
       </div>
 

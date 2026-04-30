@@ -1,0 +1,67 @@
+name: Worker-Firewall-Reconciler CI
+
+on:
+  push:
+    branches: [main, runtime-firewall]
+    paths:
+      - 'images/worker-firewall-reconciler/**'
+      - '.github/workflows/ci-worker-firewall-reconciler.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'images/worker-firewall-reconciler/**'
+      - '.github/workflows/ci-worker-firewall-reconciler.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/phoenixtechnam/hosting-platform/worker-firewall-reconciler
+
+jobs:
+  build:
+    name: Lint + Build + Push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck the reconciler so a syntactically broken bash never
+      # ships in a pushed image. The reconcile script is the entire app.
+      - name: shellcheck reconcile.sh
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck images/worker-firewall-reconciler/reconcile.sh
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: images/worker-firewall-reconciler
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # amd64-only — matches the existing fleet (k3s on Hetzner cx VPS).
+          # Multi-arch is straightforward to add later if we need arm64 nodes.
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

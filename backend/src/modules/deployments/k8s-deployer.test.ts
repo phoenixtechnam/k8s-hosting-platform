@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { deployCatalogEntry } from './k8s-deployer.js';
+import { deployCatalogEntry, buildFirewallAnnotations } from './k8s-deployer.js';
 import type { DeployCatalogEntryInput, DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -352,5 +352,73 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     // Services get created for components that have ports (wordpress + mariadb)
     expect(calls.createService).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
+  });
+});
+
+describe('buildFirewallAnnotations', () => {
+  it('returns undefined when no firewall block is provided', () => {
+    expect(buildFirewallAnnotations(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when both arrays are empty', () => {
+    expect(buildFirewallAnnotations({ tcp: [], udp: [] })).toBeUndefined();
+    expect(buildFirewallAnnotations({})).toBeUndefined();
+  });
+
+  it('emits both annotations when both lists are populated', () => {
+    expect(buildFirewallAnnotations({ tcp: [3478, 5349], udp: [3478, 5349] })).toEqual({
+      'platform.io/firewall-tcp-ports': '3478,5349',
+      'platform.io/firewall-udp-ports': '3478,5349',
+    });
+  });
+
+  it('preserves nft-style range strings on UDP', () => {
+    expect(buildFirewallAnnotations({ tcp: [3478], udp: ['16384-32768', 5349] })).toEqual({
+      'platform.io/firewall-tcp-ports': '3478',
+      'platform.io/firewall-udp-ports': '16384-32768,5349',
+    });
+  });
+
+  it('omits the empty side when only one protocol is requested', () => {
+    expect(buildFirewallAnnotations({ udp: [3478] })).toEqual({
+      'platform.io/firewall-udp-ports': '3478',
+    });
+    expect(buildFirewallAnnotations({ tcp: [3478] })).toEqual({
+      'platform.io/firewall-tcp-ports': '3478',
+    });
+  });
+});
+
+describe('deployCatalogEntry: firewall annotations on Pod template', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it('stamps platform.io/firewall-{tcp,udp}-ports on every component when firewall is set', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      deploymentName: 'turn',
+      components: [
+        makeComponent('deployment', { name: 'coturn', image: 'coturn:4.9', ports: [{ port: 3478, protocol: 'TCP' }] } as Partial<DeployComponentInput>),
+      ],
+      firewall: { tcp: [3478, 5349], udp: [3478, 5349, '16384-32768'] },
+    }));
+
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    expect(body.spec.template.metadata.annotations).toEqual({
+      'platform.io/firewall-tcp-ports': '3478,5349',
+      'platform.io/firewall-udp-ports': '3478,5349,16384-32768',
+    });
+    // The Deployment's top-level metadata must NOT carry the firewall
+    // annotations — only the Pod template does, because that's what the
+    // worker-firewall-reconciler reads.
+    expect(body.metadata.annotations).toBeUndefined();
+  });
+
+  it('omits the annotations key entirely when no firewall is requested', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'wp', image: 'w:1' })],
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    expect(body.spec.template.metadata.annotations).toBeUndefined();
   });
 });

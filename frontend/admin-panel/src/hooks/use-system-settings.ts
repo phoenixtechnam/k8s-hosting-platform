@@ -14,6 +14,11 @@ export interface SystemSettings {
   readonly apiRateLimit: number;
   readonly timezone: string;
   readonly currencySymbol: string;
+  // Runtime-firewall toggles (migration 0062). Default false — host-port
+  // apps (COTURN, BBB media servers) refuse to deploy on the matching
+  // node role until the operator flips the toggle in System Settings.
+  readonly allowHostPortsServer: boolean;
+  readonly allowHostPortsWorker: boolean;
   readonly updatedAt: string;
 }
 
