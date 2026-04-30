@@ -77,6 +77,27 @@ run_panel_suite() {
   fi
   ok "${PANEL} login → access token"
 
+  # Pre-test cleanup: a previous run / manual probe / parallel session
+  # may have left passkeys on this user. The suite assumes "fresh user"
+  # state. Drop mode first (so we don't trip the LAST_PASSKEY_IN_2FA_MODE
+  # guard), then iterate every credential.
+  api "$HOST" PATCH "/auth/passkey-mode" '{"mode":null}' "$TOKEN" >/dev/null
+  local STALE_IDS
+  STALE_IDS=$(api "$HOST" GET "/auth/passkey" "" "$TOKEN" | python3 -c "
+import json, sys
+try:
+    pks = json.load(sys.stdin)['data'].get('passkeys') or []
+    print(' '.join(p['id'] for p in pks))
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
+  if [[ -n "$STALE_IDS" ]]; then
+    for pkid in $STALE_IDS; do
+      api "$HOST" DELETE "/auth/passkey/$pkid" "" "$TOKEN" >/dev/null
+    done
+    log "  cleared $(echo "$STALE_IDS" | wc -w) stale passkey(s) before test"
+  fi
+
   # 1. GET /auth/passkey on fresh user
   local LIST_RESP
   LIST_RESP=$(api "$HOST" GET "/auth/passkey" "" "$TOKEN")
