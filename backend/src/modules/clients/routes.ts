@@ -77,6 +77,19 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
                 companyEmail: { type: 'string' },
                 status: { type: 'string' },
                 createdAt: { type: 'string' },
+                // The auto-created client_admin user surfaces here on
+                // create (and only here — never on subsequent reads)
+                // so the operator can hand the one-shot password to
+                // the client. Fastify's response-schema stripping
+                // would silently drop these without an explicit decl.
+                clientUser: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    email: { type: 'string' },
+                    generatedPassword: { type: 'string' },
+                  },
+                },
               },
             },
           },
