@@ -461,6 +461,77 @@ export async function deployCatalogEntry(
       await deployK8sService(k8s, namespace, name, labels, component.ports);
     }
   }
+
+  // Tenant namespaces ship with a default-deny-ingress NetworkPolicy
+  // (modules/k8s-provisioner/service.ts). For host-port apps the host's
+  // nft set + CNI portmap let an external packet reach the pod's veth,
+  // but the default-deny then drops it before it gets to the container.
+  // Emit a per-deployment policy that allows ingress from anywhere on
+  // exactly the firewall ports the operator opened — coupled with the
+  // `firewall: { tcp, udp }` block, this is the third leg of the
+  // runtime-firewall feature (host fw + hostPort + NetworkPolicy).
+  if (input.firewall && (input.firewall.tcp?.length || input.firewall.udp?.length)) {
+    await deployFirewallNetworkPolicy(k8s, namespace, input.deploymentName, input.firewall);
+  }
+}
+
+async function deployFirewallNetworkPolicy(
+  k8s: K8sClients,
+  namespace: string,
+  deploymentName: string,
+  firewall: { tcp?: readonly number[]; udp?: readonly (number | string)[] },
+): Promise<void> {
+  // Build an `ingress` rule listing every numeric tcp/udp port. UDP
+  // ranges (e.g. "16384-32768") aren't expressible in K8s
+  // NetworkPolicy v1 — endPort is supported but only for a single
+  // contiguous range per rule entry. For now, expand explicit numbers
+  // and turn ranges into endPort tuples; if a manifest declares
+  // multiple ranges or mixed ranges+singletons, each becomes its own
+  // ingress rule entry.
+  type PortEntry = { protocol: 'TCP' | 'UDP'; port: number; endPort?: number };
+  const entries: PortEntry[] = [];
+  for (const p of firewall.tcp ?? []) {
+    if (typeof p === 'number') entries.push({ protocol: 'TCP', port: p });
+  }
+  for (const p of firewall.udp ?? []) {
+    if (typeof p === 'number') {
+      entries.push({ protocol: 'UDP', port: p });
+    } else if (typeof p === 'string') {
+      const m = p.match(/^(\d+)-(\d+)$/);
+      if (m) entries.push({ protocol: 'UDP', port: Number(m[1]), endPort: Number(m[2]) });
+      else if (/^\d+$/.test(p)) entries.push({ protocol: 'UDP', port: Number(p) });
+    }
+  }
+  if (entries.length === 0) return;
+
+  const npName = `firewall-allow-${deploymentName}`;
+  const body = {
+    metadata: {
+      name: npName,
+      namespace,
+      labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'platform.io/firewall-policy': deploymentName },
+    },
+    spec: {
+      podSelector: { matchLabels: { app: deploymentName } },
+      policyTypes: ['Ingress'],
+      // from: [] (i.e. omitted) means "any source". This is by design —
+      // STUN/TURN servers explicitly need internet ingress on these
+      // ports, and the operator already opted in via the System
+      // Settings host-port toggle + the catalog manifest.
+      ingress: [{ ports: entries }],
+    },
+  };
+  try {
+    await (k8s as unknown as { networking: { createNamespacedNetworkPolicy: (args: { namespace: string; body: unknown }) => Promise<unknown> } })
+      .networking.createNamespacedNetworkPolicy({ namespace, body });
+  } catch (err) {
+    if (isK8s409(err)) {
+      await (k8s as unknown as { networking: { replaceNamespacedNetworkPolicy: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown> } })
+        .networking.replaceNamespacedNetworkPolicy({ name: npName, namespace, body });
+    } else {
+      throw err;
+    }
+  }
 }
 
 async function deployK8sDeployment(
