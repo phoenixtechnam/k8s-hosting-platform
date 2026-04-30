@@ -1836,7 +1836,13 @@ kctl() {
 }
 
 install_nginx_ingress() {
-  if kctl get deployment -n ingress-nginx ingress-nginx-controller &>/dev/null 2>&1; then
+  # The chart deploys the controller as a DaemonSet (controller.kind=DaemonSet
+  # set below), NOT a Deployment — checking for a Deployment always misses
+  # and re-runs `helm upgrade --install`, which on bootstrap re-runs
+  # re-creates the admission Job. That Job lacks the server-only toleration
+  # and gets stuck Pending behind the platform.phoenix-host.net/server-only
+  # NoSchedule taint, blocking the whole bootstrap on `helm --wait`.
+  if kctl get daemonset -n ingress-nginx ingress-nginx-controller &>/dev/null 2>&1; then
     log "NGINX Ingress already installed, skipping."
     return 0
   fi
@@ -2562,13 +2568,23 @@ bundle_bootstrap_secrets() {
   # Stage to /dev/shm so cleartext doesn't hit the root filesystem.
   # Trap-based cleanup ensures we wipe the staging dir even if a
   # later step calls error() (which exit 1's mid-function).
-  local stage=""
+  #
+  # The trap fires once on RETURN (function exits normally) and again
+  # on EXIT (whole script exits). On EXIT, `$stage` (a function-local)
+  # is out of scope, so under `set -u` the bare `$stage` reference
+  # would print "stage: unbound variable". `${stage:-}` defaults to
+  # empty in that case — the [[ -n ]] guard then short-circuits cleanly.
+  # Hoist `stage` out of `local` so the trap (which runs in the parent
+  # shell context on EXIT) can still see the value it was set to.
   _bundle_cleanup() {
-    if [[ -n "$stage" && -d "$stage" ]]; then
-      find "$stage" -type f -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
-      rm -rf "$stage"
+    local s="${stage:-}"
+    if [[ -n "$s" && -d "$s" ]]; then
+      find "$s" -type f -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
+      rm -rf "$s"
+      stage=""  # idempotent — second trap fire (EXIT after RETURN) no-ops
     fi
   }
+  stage=""
   trap _bundle_cleanup RETURN EXIT
   stage=$(mktemp -d --tmpdir=/dev/shm bootstrap-bundle.XXXXXX 2>/dev/null \
     || mktemp -d)
