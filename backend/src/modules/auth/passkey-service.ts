@@ -569,40 +569,51 @@ export async function listPasskeys(db: Database, userId: string): Promise<Passke
 /**
  * Delete a passkey. Refuses to remove the last credential when the
  * user is in 'second_factor' mode — would lock them out of step 2.
+ *
+ * The select-then-delete sequence runs inside a transaction so two
+ * concurrent delete requests can't both pass the
+ * "last credential & 2fa-mode" guard before either commits. Without
+ * the transaction a user with 2 simultaneous sessions could double-
+ * delete and end up locked out (mode='second_factor', zero passkeys).
  */
 export async function deletePasskey(
   db: Database,
   userId: string,
   passkeyId: string,
 ): Promise<void> {
-  const [row] = await db
-    .select()
-    .from(userPasskeys)
-    .where(and(eq(userPasskeys.id, passkeyId), eq(userPasskeys.userId, userId)))
-    .limit(1);
-  if (!row) throw new ApiError('PASSKEY_NOT_FOUND', 'Passkey not found', 404);
+  // Drizzle exposes db.transaction with the same query API on the inner
+  // tx object, so we just rebind the operations onto tx.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (db as any).transaction(async (tx: Database) => {
+    const [row] = await tx
+      .select()
+      .from(userPasskeys)
+      .where(and(eq(userPasskeys.id, passkeyId), eq(userPasskeys.userId, userId)))
+      .limit(1);
+    if (!row) throw new ApiError('PASSKEY_NOT_FOUND', 'Passkey not found', 404);
 
-  const all = await db
-    .select({ id: userPasskeys.id })
-    .from(userPasskeys)
-    .where(eq(userPasskeys.userId, userId));
+    const all = await tx
+      .select({ id: userPasskeys.id })
+      .from(userPasskeys)
+      .where(eq(userPasskeys.userId, userId));
 
-  if (all.length <= 1) {
-    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-    if (user?.passkeyMode === 'second_factor') {
-      throw new ApiError('LAST_PASSKEY_IN_2FA_MODE',
-        'Cannot delete the last passkey while 2FA is enabled. Switch to "alternative" or disable 2FA first.',
-        409);
+    if (all.length <= 1) {
+      const [user] = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (user?.passkeyMode === 'second_factor') {
+        throw new ApiError('LAST_PASSKEY_IN_2FA_MODE',
+          'Cannot delete the last passkey while 2FA is enabled. Switch to "alternative" or disable 2FA first.',
+          409);
+      }
+      // If the user removes their last passkey while in 'alternative'
+      // mode, drop the mode back to NULL — UI no longer offers a
+      // passkey login button.
+      if (user?.passkeyMode === 'alternative') {
+        await tx.update(users).set({ passkeyMode: null }).where(eq(users.id, userId));
+      }
     }
-    // If the user removes their last passkey while in 'alternative'
-    // mode, drop the mode back to NULL — UI no longer offers a
-    // passkey login button.
-    if (user?.passkeyMode === 'alternative') {
-      await db.update(users).set({ passkeyMode: null }).where(eq(users.id, userId));
-    }
-  }
 
-  await db.delete(userPasskeys).where(eq(userPasskeys.id, passkeyId));
+    await tx.delete(userPasskeys).where(eq(userPasskeys.id, passkeyId));
+  });
 }
 
 /**
@@ -631,7 +642,14 @@ export async function setPasskeyMode(
 }
 
 /**
- * Called by the password-reset flow. Per the security review (M2):
+ * Called by the email-based password-reset flow when/if it is added
+ * (no such endpoint exists today; the operator-grade reset is in
+ * scripts/admin-password-reset.sh which performs the equivalent SQL
+ * directly). Authenticated change-password (PATCH /auth/password) does
+ * NOT call this — a user voluntarily rotating their own password
+ * while logged in still wants to keep their 2FA mode and credentials.
+ *
+ * Per the security review (M2):
  *   • Clear passkey_mode so 2FA doesn't block login after reset.
  *   • Keep the credentials so the legitimate user can re-enable 2FA
  *     in one click (attacker has the email but not the passkey).

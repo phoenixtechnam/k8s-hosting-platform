@@ -203,7 +203,14 @@ export async function passkeyRoutes(app: FastifyInstance) {
     let expectedUserId: string | undefined;
     if (body.pre_auth_token) {
       const claims = await verifyPreAuthClaims(app, body.pre_auth_token, panel);
-      // Atomic single-use mark; replay throws PRE_AUTH_TOKEN_REPLAY.
+      // Atomic single-use mark BEFORE the assertion is verified. This
+      // means a failed WebAuthn ceremony (wrong PIN, dismissed prompt,
+      // bad signature) still consumes the pre-auth token — the
+      // operator must restart at /auth/login. The alternative
+      // (consume only on success) would give an attacker an unlimited
+      // replay window during the 5-min TTL, which is the worse
+      // trade-off. The frontend renders the AUTHENTICATION_FAILED
+      // error with a "go back to login" affordance.
       await verifyAndConsumePreAuthToken(app.db, claims.jti, claims.sub, panel);
       expectedUserId = claims.sub;
     }

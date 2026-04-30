@@ -92,7 +92,12 @@ describe('deletePasskey lockout guard', () => {
     const update = vi.fn(() => ({ set: updateSet }));
     const deleteWhere = vi.fn(() => Promise.resolve());
     const del = vi.fn(() => ({ where: deleteWhere }));
-    return { select, update, delete: del, _deleteWhere: deleteWhere, _updateSet: updateSet };
+    const txDb = { select, update, delete: del };
+    // deletePasskey wraps everything in db.transaction(tx => …); the
+    // tx adapter exposes the same select/update/delete API as db.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const transaction = vi.fn((fn: (tx: any) => Promise<unknown>) => fn(txDb));
+    return { ...txDb, transaction, _deleteWhere: deleteWhere, _updateSet: updateSet };
   }
 
   it('rejects last-passkey delete when user is in second_factor mode', async () => {

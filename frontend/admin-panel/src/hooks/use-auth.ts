@@ -104,7 +104,7 @@ export const useAuth = create<AuthState>((set) => ({
             };
       }>('/api/v1/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, panel: 'admin' }),
       });
 
       if ('requires_passkey' in res.data) {
