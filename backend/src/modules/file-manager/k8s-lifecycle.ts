@@ -128,7 +128,18 @@ export async function ensureFileManagerRunning(
               containers: [{
                 name: FM_NAME,
                 image,
-                imagePullPolicy: 'IfNotPresent',
+                // imagePullPolicy: Always — the sidecar image is pinned
+                // by tag (file-manager-sidecar:<branch> or :latest) and
+                // the digest behind that tag changes whenever
+                // images/file-manager-sidecar/** ships. With Always the
+                // kubelet checks the registry digest on each pod start;
+                // unchanged digests are a fast HEAD (no data transfer)
+                // so the only cost vs IfNotPresent is one HTTP HEAD per
+                // FM start — well below the per-call cost we already
+                // pay on cold path. Without this, fixes to server.mjs
+                // never propagate to existing tenants until the pod is
+                // manually deleted or the tenant is reprovisioned.
+                imagePullPolicy: 'Always',
                 ports: [{ containerPort: FM_PORT }],
                 env: [
                   // Phase 3 T5.1: shared secret for the platform bypass header.
@@ -200,12 +211,13 @@ export async function ensureFileManagerRunning(
   } else {
     // Check if the existing deployment spec matches what we want
     const existingDeploy = await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace }) as Record<string, unknown>;
-    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; resources?: { limits?: { cpu?: string; memory?: string } } }> } } } }).spec;
+    const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; imagePullPolicy?: string; resources?: { limits?: { cpu?: string; memory?: string } } }> } } } }).spec;
     const templateSpec = existingSpec?.template?.spec;
     const existingReplicas = existingSpec?.replicas ?? 0;
     const existingPvcClaim = (templateSpec?.volumes ?? []).find((v: Record<string, unknown>) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
     const existingCaps = templateSpec?.containers?.[0]?.securityContext?.capabilities?.add ?? [];
     const existingImage = templateSpec?.containers?.[0]?.image ?? '';
+    const existingPullPolicy = templateSpec?.containers?.[0]?.imagePullPolicy ?? '';
     const existingCpuLim = templateSpec?.containers?.[0]?.resources?.limits?.cpu ?? '';
     const existingMemLim = templateSpec?.containers?.[0]?.resources?.limits?.memory ?? '';
 
@@ -215,13 +227,18 @@ export async function ensureFileManagerRunning(
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
     const capsMismatch = expectedCaps.some(c => !existingCaps.includes(c));
     const imageMismatch = image && existingImage !== image;
+    // Detect old FM deployments still carrying imagePullPolicy: IfNotPresent
+    // so they recreate with Always — required for sidecar code changes
+    // (server.mjs) to propagate to existing tenants without manual pod
+    // deletion or reprovision.
+    const pullPolicyMismatch = existingPullPolicy !== 'Always';
     // Detect old FM deployments that still carry the original 100m CPU
     // limit so they get recreated with the new 500m on next /files/start.
     // Memory limit unchanged (128Mi) but check anyway in case it ever
     // shifts. We compare the literal string to keep the check trivial.
     const resourcesMismatch = existingCpuLim !== '500m' || existingMemLim !== '128Mi';
 
-    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch) {
+    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
       try {
         await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });

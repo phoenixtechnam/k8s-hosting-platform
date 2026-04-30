@@ -241,23 +241,33 @@ export function useAuthenticatedBlobUrl(path: string, enabled = true) {
   });
 }
 
-/** Trigger an authenticated file download */
+/** Trigger an authenticated file download.
+ *
+ * Uses a native <a href> click with the JWT in a `token=` query param
+ * (the FM routes' onRequest hook reads it when no Authorization header
+ * is present). This makes the browser stream the response straight to
+ * disk: the save dialog appears AS SOON AS the response head arrives
+ * (fast — sub-second after our probe-first cold path), and the body is
+ * written to the chosen file as it flows from the server. No memory
+ * buffer, no spinner-only-then-pop UX.
+ *
+ * The previous fetch + blob() approach buffered the entire response
+ * in browser memory before triggering the download — which is why the
+ * save dialog only appeared after the full transfer completed.
+ */
 export function useDownloadFile() {
   const { clientId } = useClientContext();
-  return useCallback(async (path: string) => {
-    const url = `${API_BASE}/api/v1/clients/${clientId}/files/download?path=${encodeURIComponent(path)}`;
-    const res = await fetch(url, { headers: getAuthHeaders() });
-    if (!res.ok) throw new Error('Failed to download file');
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
+  return useCallback((path: string) => {
+    const token = localStorage.getItem('auth_token') ?? '';
+    const url = `${API_BASE}/api/v1/clients/${clientId}/files/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`;
     const filename = path.split('/').pop() || 'download';
     const a = document.createElement('a');
-    a.href = blobUrl;
+    a.href = url;
     a.download = filename;
+    // The anchor must be in the DOM for some browsers to honour click().
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
   }, [clientId]);
 }
 
