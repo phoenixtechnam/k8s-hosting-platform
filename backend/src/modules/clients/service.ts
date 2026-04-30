@@ -212,6 +212,12 @@ interface KubeletHttpsContext {
    *  silently disable TLS verification on the apiserver hop too. */
   proxyAgent: import('node:https').Agent;
 }
+
+// Per-process learned state: if direct :10250 returns 401/403 once
+// (kubelet RBAC not granted to the platform-api SA — common in
+// stock installs), don't keep paying the 500ms TLS handshake to
+// re-discover it. Cleared only on process restart.
+let _directKubeletKnownUnauthorized = false;
 let _kubeletCtx: KubeletHttpsContext | null = null;
 let _kubeletCtxInitPromise: Promise<KubeletHttpsContext | null> | null = null;
 async function getKubeletHttpsContext(): Promise<KubeletHttpsContext | null> {
@@ -412,8 +418,20 @@ export async function getClientStoragePlacement(
               key: ctx.opts.key,
               headers: ctx.opts.headers ?? {},
               agent: ctx.directAgent,
-              timeout: 4_000,
+              // Short timeout — if the node's :10250 isn't reachable
+              // (firewall) we want to fall back to apiserver-proxy
+              // quickly, not pay 4s every cold load.
+              timeout: 800,
             }, (res) => {
+              if (res.statusCode === 401 || res.statusCode === 403) {
+                // Kubelet RBAC denies our SA — typical on stock installs
+                // where only system:kubelet-api-admin can hit
+                // /stats/summary directly. Latch and skip from now on.
+                _directKubeletKnownUnauthorized = true;
+                res.resume();
+                resolve(null);
+                return;
+              }
               if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
               let data = '';
               res.setEncoding('utf8');
@@ -460,7 +478,9 @@ export async function getClientStoragePlacement(
 
           const summaries = await Promise.all(Array.from(nodeNames).map(async (node) => {
             const ip = ipByNode.get(node);
-            if (ip) {
+            // Skip direct path if we already know the SA lacks kubelet
+            // RBAC (saves 800ms × N nodes on every cold load thereafter).
+            if (ip && !_directKubeletKnownUnauthorized) {
               const direct = await fetchDirect(ip);
               if (direct) return direct;
             }
