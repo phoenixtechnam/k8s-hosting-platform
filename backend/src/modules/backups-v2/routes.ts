@@ -3,7 +3,7 @@ import { eq, desc, sql } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { backupJobs, backupComponents, backupConfigurations, clients } from '../../db/schema.js';
 import {
   createBundleSchema,
@@ -22,8 +22,15 @@ import { decrypt } from '../oidc/crypto.js';
 // on the node). Keeping them as a sibling subdir avoids a new
 // volumeMount and keeps Phase 2 a code-only deploy. Phase 3 may move to
 // a dedicated PVC-backed location.
+//
+// The pod runs as uid 1000 but the hostPath root is root:0755, so the
+// store delegates the parent-dir create to a one-shot root-Job (see
+// hostpath-job.ts). hostpathRoot/mountPath here must match what the
+// platform-api Deployment mounts.
 const PLATFORM_BUNDLES_INPOD_ROOT = '/snapshots/_bundles_v2';
 const PLATFORM_BUNDLES_HOSTPATH = '/var/lib/platform/snapshots/_bundles_v2';
+const PLATFORM_SNAPSHOTS_HOSTPATH_ROOT = '/var/lib/platform/snapshots';
+const PLATFORM_SNAPSHOTS_MOUNT_PATH = '/snapshots';
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -161,7 +168,26 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string | null): Promise<BackupStore> {
   if (!targetConfigId) {
-    return new LocalHostPathBackupStore(PLATFORM_BUNDLES_INPOD_ROOT);
+    // Production wiring: pass the K8s client so the store can spawn a
+    // root-Job to chmod the parent dir on first use. K8s client is
+    // best-effort — if the in-cluster config isn't loadable (vitest
+    // runs), the store falls back to skipping the Job which is fine
+    // for tmpdirs.
+    let k8s: K8sClients | undefined;
+    try {
+      const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      k8s = createK8sClients(kc);
+    } catch (err) {
+      app.log.warn({ err }, 'backups-v2: k8s client unavailable for hostpath init Job');
+      k8s = undefined;
+    }
+    return new LocalHostPathBackupStore({
+      inPodRoot: PLATFORM_BUNDLES_INPOD_ROOT,
+      hostpathRoot: PLATFORM_SNAPSHOTS_HOSTPATH_ROOT,
+      mountPath: PLATFORM_SNAPSHOTS_MOUNT_PATH,
+      k8s,
+      logFn: (level, ctx, msg) => app.log[level](ctx, msg),
+    });
   }
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
