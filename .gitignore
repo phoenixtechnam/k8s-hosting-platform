@@ -59,3 +59,5 @@ test-artifacts/
 # Claude Code IDE config
 .claude/
 .local.build-state
+shellcheck-v0.10.0/
+shellcheck-v0.10.0.linux.x86_64.tar.xz
