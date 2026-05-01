@@ -36,6 +36,13 @@ export const updateSystemSettingsSchema = z.object({
   // explicit operator decision.
   allowHostPortsServer: z.boolean().optional(),
   allowHostPortsWorker: z.boolean().optional(),
+  // Node-defaults (migration 0063). When TRUE (default), a freshly
+  // joined SERVER node that did not carry an explicit
+  // `platform.phoenix-host.net/host-client-workloads` label gets
+  // labelled to host client workloads by the cluster-side
+  // reconciler. Operator-set labels (via bootstrap.sh
+  // `--host-client-workloads`) always win.
+  newServerHostsClientWorkloads: z.boolean().optional(),
 });
 
 // ─── Response Schema ───────────────────────────────────────────────────────
@@ -55,6 +62,7 @@ export const systemSettingsResponseSchema = z.object({
   timezone: z.string(),
   allowHostPortsServer: z.boolean(),
   allowHostPortsWorker: z.boolean(),
+  newServerHostsClientWorkloads: z.boolean(),
   updatedAt: z.string(),
 });
 

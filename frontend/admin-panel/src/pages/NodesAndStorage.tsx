@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import ClusterNodes from '@/pages/ClusterNodes';
 import StorageSettings from '@/pages/StorageSettings';
 import PlatformStoragePolicyCard from '@/components/PlatformStoragePolicyCard';
+import NodeDefaultsCard from '@/components/NodeDefaultsCard';
 
 type TabKey = 'nodes' | 'storage' | 'ha';
 
@@ -28,9 +29,9 @@ const TABS: ReadonlyArray<{
   },
   {
     key: 'ha',
-    label: 'HA Settings',
+    label: 'Cluster Settings',
     icon: Layers,
-    hint: 'Platform storage replication tier (Local ↔ HA)',
+    hint: 'Node defaults + platform storage replication tier (Local ↔ HA)',
   },
 ];
 
@@ -135,8 +136,13 @@ export default function NodesAndStorage() {
           id="nodes-and-storage-panel-ha"
           aria-labelledby="nodes-and-storage-tab-ha"
           className="space-y-6"
+          // The Cluster Settings tab is also addressable by its
+          // historical name. Both test IDs render so existing
+          // selectors keep working.
           data-testid="ha-settings-tab"
         >
+          <span data-testid="cluster-settings-tab" className="sr-only" aria-hidden="true" />
+          <NodeDefaultsCard />
           <PlatformStoragePolicyCard />
         </div>
       )}

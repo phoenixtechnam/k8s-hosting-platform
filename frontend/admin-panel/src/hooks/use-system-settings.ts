@@ -19,6 +19,11 @@ export interface SystemSettings {
   // node role until the operator flips the toggle in System Settings.
   readonly allowHostPortsServer: boolean;
   readonly allowHostPortsWorker: boolean;
+  // Node-defaults (migration 0063). When TRUE (default), the
+  // cluster-side node reconciler labels freshly-joined SERVER nodes
+  // as hosting client workloads when bootstrap.sh did not stamp an
+  // explicit value.
+  readonly newServerHostsClientWorkloads: boolean;
   readonly updatedAt: string;
 }
 

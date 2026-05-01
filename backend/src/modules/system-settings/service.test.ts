@@ -111,6 +111,19 @@ describe('system-settings service: round-trip', () => {
     expect(settings.timezone).toBe('Europe/Berlin');
   });
 
+  it('persists newServerHostsClientWorkloads (true → false)', async () => {
+    await updateSettings(db, { newServerHostsClientWorkloads: false });
+    const settings = await getSettings(db);
+    expect(settings.newServerHostsClientWorkloads).toBe(false);
+  });
+
+  it('persists newServerHostsClientWorkloads (false → true)', async () => {
+    await updateSettings(db, { newServerHostsClientWorkloads: false });
+    await updateSettings(db, { newServerHostsClientWorkloads: true });
+    const settings = await getSettings(db);
+    expect(settings.newServerHostsClientWorkloads).toBe(true);
+  });
+
   it('getSetting falls back to provided env value when DB is empty', async () => {
     // Clear the value
     await updateSettings(db, { supportEmail: null });

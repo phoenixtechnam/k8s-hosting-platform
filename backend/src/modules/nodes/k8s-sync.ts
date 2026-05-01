@@ -6,8 +6,11 @@ import {
   NODE_ROLE_LABEL,
   HOST_CLIENT_WORKLOADS_LABEL,
   INGRESS_MODE_LABEL,
+  SERVER_ONLY_TAINT_KEY,
   type ObservedNode,
 } from './service.js';
+import { getSettings } from '../system-settings/service.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import type { NodeRole, NodeIngressMode } from '@k8s-hosting/api-contracts';
 
 interface NodeUsageAggregate {
@@ -31,8 +34,48 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
     collectNodeUsage(k8s),
   ]);
   const items = nodesRes.items ?? [];
+
+  // Read the platform default once per cycle. Used by the per-node
+  // pass below to fill in the missing host-client-workloads label on
+  // freshly joined servers — operator-set explicit labels are never
+  // overridden.
+  let newServerDefault: boolean;
+  try {
+    const settings = await getSettings(db);
+    newServerDefault = settings.newServerHostsClientWorkloads;
+  } catch (err) {
+    // If the settings table read fails (rare, but DB hiccup is plausible)
+    // fall back to TRUE — this matches both bootstrap.sh's flag default
+    // and the migration's column default, so the recovery path keeps
+    // operator surprise to a minimum.
+    console.warn('[node-sync] system-settings read failed, falling back to default=true:', (err as Error).message);
+    newServerDefault = true;
+  }
+
   for (const node of items) {
-    const observed = projectNode(node);
+    let observed = projectNode(node);
+
+    // Apply the system-defined default for new SERVER nodes whose
+    // bootstrap did not stamp an explicit host-client-workloads label.
+    // The k8s label is the source of truth — once written, future
+    // sync cycles see it and skip this branch.
+    const labels = node.metadata?.labels ?? {};
+    const hasExplicitHostLabel = labels[HOST_CLIENT_WORKLOADS_LABEL] !== undefined;
+    if (observed.role === 'server' && !hasExplicitHostLabel) {
+      try {
+        await applyNewServerDefault(k8s, observed.name, newServerDefault, observed.taints);
+        // Reflect what we just wrote so the DB row matches k8s.
+        observed = { ...observed, canHostClientWorkloads: newServerDefault };
+      } catch (err) {
+        // Best-effort — logging keeps the operator informed without
+        // failing the whole sync cycle. Next tick retries.
+        console.warn(
+          `[node-sync] failed to apply newServerHostsClientWorkloads=${newServerDefault} to ${observed.name}:`,
+          (err as Error).message,
+        );
+      }
+    }
+
     const u = usage.get(observed.name);
     observed.scheduledPods = u?.pods ?? 0;
     observed.cpuRequestsMillicores = u?.cpuMillis ?? 0;
@@ -46,6 +89,46 @@ export async function syncNodesOnce(db: Database, k8s: K8sClients): Promise<numb
   // (fresh dev cluster) — failures are logged and ignored.
   await reconcileLonghornNodeTags(k8s, items);
   return items.length;
+}
+
+/**
+ * Stamp the host-client-workloads label on a fresh server node, and
+ * (when the value is false) ensure the server-only NoSchedule taint
+ * matches — mirroring bootstrap.sh's behaviour for an explicit
+ * `--host-client-workloads false` join.
+ *
+ * Combined into a single strategic-merge patch so labels + taints
+ * land atomically. Existing operator-set taints (other keys) are
+ * preserved.
+ */
+export async function applyNewServerDefault(
+  k8s: K8sClients,
+  nodeName: string,
+  hostClientWorkloads: boolean,
+  existingTaints: ReadonlyArray<{ key: string; value?: string; effect: string }>,
+): Promise<void> {
+  const withoutOurs = existingTaints.filter((t) => t.key !== SERVER_ONLY_TAINT_KEY);
+  const shouldTaint = !hostClientWorkloads;
+  const nextTaints = shouldTaint
+    ? [...withoutOurs, { key: SERVER_ONLY_TAINT_KEY, value: 'true', effect: 'NoSchedule' }]
+    : withoutOurs;
+
+  await k8s.core.patchNode({
+    name: nodeName,
+    body: {
+      metadata: {
+        labels: {
+          [HOST_CLIENT_WORKLOADS_LABEL]: String(hostClientWorkloads),
+        },
+      },
+      spec: { taints: nextTaints },
+    },
+  } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+    STRATEGIC_MERGE_PATCH);
+
+  console.log(
+    `[node-sync] applied newServerHostsClientWorkloads=${hostClientWorkloads} to fresh server ${nodeName}`,
+  );
 }
 
 interface RawNodeForTag {

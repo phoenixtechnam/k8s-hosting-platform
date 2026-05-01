@@ -57,6 +57,10 @@ const updateSchema = z.object({
   // corresponding node role.
   allowHostPortsServer: z.boolean().optional(),
   allowHostPortsWorker: z.boolean().optional(),
+  // Node-defaults (migration 0063). Default applied to freshly-joined
+  // SERVER nodes that arrive without an explicit
+  // `platform.phoenix-host.net/host-client-workloads` label.
+  newServerHostsClientWorkloads: z.boolean().optional(),
 });
 
 export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> {

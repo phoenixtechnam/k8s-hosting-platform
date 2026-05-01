@@ -1592,6 +1592,14 @@ export const systemSettings = pgTable('system_settings', {
   // deploy gate; existing pods are not retroactively closed.
   allowHostPortsServer: boolean('allow_host_ports_server').notNull().default(false),
   allowHostPortsWorker: boolean('allow_host_ports_worker').notNull().default(false),
+  // Node-defaults (migration 0063). Applied by the cluster-side node
+  // reconciler (nodes/k8s-sync.ts) when a fresh SERVER node joins
+  // without an explicit `platform.phoenix-host.net/host-client-workloads`
+  // label. Default TRUE preserves the historical behaviour where every
+  // server hosts client workloads. Operator-set bootstrap labels always
+  // win — this only fills in the gap when bootstrap.sh ran with the
+  // default flag and no explicit operator decision.
+  newServerHostsClientWorkloads: boolean('new_server_hosts_client_workloads').notNull().default(true),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
