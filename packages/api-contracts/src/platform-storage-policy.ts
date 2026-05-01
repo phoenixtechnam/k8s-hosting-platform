@@ -23,7 +23,9 @@ export const clusterStorageStateSchema = z.object({
   totalNodeCount: z.number().int().nonnegative(),
   recommendedTier: platformStorageTierSchema,
   // Per-volume facts so the UI can show what will actually change. One
-  // entry per Longhorn Volume backing a platform StatefulSet PVC.
+  // entry per Longhorn Volume backing a platform StatefulSet PVC OR a
+  // CNPG-managed Postgres PVC. `kind` lets the UI label the row;
+  // backend behaviour (Longhorn-replica patching) is identical for both.
   volumes: z.array(z.object({
     namespace: z.string(),
     pvcName: z.string(),
@@ -36,6 +38,8 @@ export const clusterStorageStateSchema = z.object({
     replicaNodes: z.array(z.string()).default([]),
     /** True when at least one replica sits on a non-system server (drift). */
     hasOffSystemReplica: z.boolean().default(false),
+    /** Source of the PVC — `statefulset` (e.g. stalwart) or `cnpg` (e.g. postgres). */
+    kind: z.enum(['statefulset', 'cnpg']).default('statefulset'),
   })),
 });
 export type ClusterStorageState = z.infer<typeof clusterStorageStateSchema>;

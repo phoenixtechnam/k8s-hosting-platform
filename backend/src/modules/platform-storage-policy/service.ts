@@ -17,11 +17,20 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 // NOTE: Postgres is owned by CNPG (Cluster/postgres in k8s/base/database.yaml),
 // not a StatefulSet. CNPG's `instances` field is set by CNPG_INSTANCES_FOR
 // below. The legacy `data-postgres-0` prefix entry was retired with the
-// orphan StatefulSet (Phase 4 cleanup, 2026-04-27). CNPG-managed PVCs
-// are named `<cluster>-<n>` (e.g. postgres-1) which doesn't match this
-// pvcPrefix shape; if Longhorn-replica control over CNPG volumes is
-// needed in the future, add a separate code path rather than retrofitting
-// it here.
+// orphan StatefulSet (Phase 4 cleanup, 2026-04-27).
+//
+// CNPG-managed PVCs (`<cluster>-<n>`, e.g. postgres-1) are now ALSO
+// included in the volumes list returned from readClusterState — they
+// are enumerated separately via the cnpg.io/cluster=<name> label
+// selector (see CNPG_CLUSTERS below). Inclusion is for OBSERVATION
+// (display in the volumes table) and Longhorn-replica patching only:
+// once a CNPG PVC appears in `state.volumes`, the existing
+// `patchLonghornVolumes` loop will reconcile its numberOfReplicas to
+// match the platform tier just like a StatefulSet PVC. CNPG's
+// `spec.instances` is still patched independently by
+// `patchCnpgClusters` — these are orthogonal concerns (CNPG instances
+// = number of Postgres pods; Longhorn numberOfReplicas = number of
+// disk copies per pod's PVC).
 export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix: string }> = [
   { namespace: 'mail', pvcPrefix: 'data-stalwart-mail' },    // data-stalwart-mail-0
 ];
@@ -92,6 +101,8 @@ export type VolumeFact = {
   replicaNodes: string[];
   /** True when at least one replicaNodes entry sits on a non-system server. */
   hasOffSystemReplica: boolean;
+  /** Source of the PVC — `statefulset` (e.g. stalwart) or `cnpg` (e.g. postgres). */
+  kind: 'statefulset' | 'cnpg';
 };
 
 export async function getPolicy(db: Database): Promise<typeof schema.platformStoragePolicy.$inferSelect> {
@@ -234,6 +245,49 @@ export async function readClusterState(
         phase: state,
         replicaNodes,
         hasOffSystemReplica,
+        kind: 'statefulset',
+      });
+    }
+  }
+
+  // CNPG-managed PVCs. CNPG creates one PVC per Postgres instance
+  // labelled `cnpg.io/cluster=<cluster.name>`. Listing by label is
+  // robust against the cluster name not matching a fixed pvcPrefix
+  // (CNPG names them `<cluster>-<n>`, with no consistent suffix
+  // count). desiredReplicas comes from the same REPLICAS_FOR table
+  // so the column stays consistent across PVC sources, and the
+  // existing patchLonghornVolumes() loop handles reconcile.
+  for (const c of CNPG_CLUSTERS) {
+    const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
+      namespace: c.namespace,
+      labelSelector: `cnpg.io/cluster=${c.name}`,
+    } as unknown as Parameters<typeof k8s.core.listNamespacedPersistentVolumeClaim>[0])
+      .catch(() => ({ items: [] }));
+    for (const pvc of pvcs.items ?? []) {
+      const name = pvc.metadata?.name ?? '';
+      const lhVolName = pvc.spec?.volumeName;
+      if (!name || !lhVolName) continue;
+      const vol = await k8s.custom.getNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes', name: lhVolName,
+      }).catch(() => null) as LonghornVolume | null;
+      const currentReplicas = vol?.spec?.numberOfReplicas ?? 0;
+      const robustness = vol?.status?.robustness ?? null;
+      const state = vol?.status?.state ?? null;
+      const healthy = robustness === 'healthy' && state === 'attached';
+      const replicaNodes = (replicasByVolume.get(lhVolName) ?? []).slice().sort();
+      const hasOffSystemReplica = replicaNodes.some((n) => !systemNodes.has(n));
+      volumes.push({
+        namespace: c.namespace,
+        pvcName: name,
+        volumeName: lhVolName,
+        currentReplicas,
+        desiredReplicas,
+        healthy,
+        phase: state,
+        replicaNodes,
+        hasOffSystemReplica,
+        kind: 'cnpg',
       });
     }
   }

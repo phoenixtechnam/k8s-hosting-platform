@@ -5,6 +5,11 @@ import {
   useUpdatePlatformStoragePolicy,
 } from '@/hooks/use-platform-storage-policy';
 
+// Display labels for the (wire-stable) tier values. Wire stays
+// `local`/`ha` everywhere — URL, DB, API. Only the human-facing string
+// changes here.
+const TIER_LABEL: Record<'local' | 'ha', string> = { local: 'Local', ha: 'High Availability' };
+
 /**
  * Platform-storage replication policy card. Lives on StorageSettings.
  *
@@ -77,15 +82,15 @@ export default function PlatformStoragePolicyCard() {
           <AlertTriangle size={20} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="text-sm text-amber-900 dark:text-amber-200">
             <strong>Cluster reached HA size.</strong> {cluster.readyServerCount} of {cluster.totalNodeCount} nodes
-            are Ready servers. Switch to <code>ha</code> to replicate platform volumes 3× and survive a single
-            node outage. Reversible — switch back to <code>local</code> anytime.
+            are Ready servers. Switch to <strong>High Availability</strong> to replicate platform volumes 3× and
+            survive a single node outage. Reversible — switch back to <strong>Local</strong> anytime.
           </div>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Stat label="Current tier" value={policy.systemTier} highlight={isHA ? 'green' : 'gray'} />
-        <Stat label="Recommended" value={cluster.recommendedTier} highlight={recommendsHA ? 'green' : 'gray'} />
+        <Stat label="Current tier" value={TIER_LABEL[policy.systemTier]} highlight={isHA ? 'green' : 'gray'} />
+        <Stat label="Recommended" value={TIER_LABEL[cluster.recommendedTier]} highlight={recommendsHA ? 'green' : 'gray'} />
         <Stat label="Ready servers" value={`${cluster.readyServerCount} / ${cluster.totalNodeCount} nodes`} />
       </div>
 
@@ -151,20 +156,42 @@ export default function PlatformStoragePolicyCard() {
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <button
-          onClick={() => onApply('ha')}
-          disabled={isHA || update.isPending}
-          className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Apply HA (3 replicas)
-        </button>
-        <button
-          onClick={() => onApply('local')}
-          disabled={!isHA || update.isPending}
-          className="px-4 py-2 rounded-lg bg-gray-600 text-white text-sm font-medium hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Revert to Local (1 replica)
-        </button>
+        {/* Hide-by-state: only the actionable button renders. During an
+            in-flight Apply we keep it rendered but disabled with a
+            spinner so the operator sees feedback (vs. an empty row that
+            looks frozen). */}
+        {!isHA && (
+          <button
+            onClick={() => onApply('ha')}
+            disabled={update.isPending}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {update.isPending ? (
+              <>
+                <RefreshCw size={14} className="animate-spin" />
+                Applying…
+              </>
+            ) : (
+              'Apply HA (3 replicas)'
+            )}
+          </button>
+        )}
+        {isHA && (
+          <button
+            onClick={() => onApply('local')}
+            disabled={update.isPending}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-600 text-white text-sm font-medium hover:bg-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {update.isPending ? (
+              <>
+                <RefreshCw size={14} className="animate-spin" />
+                Applying…
+              </>
+            ) : (
+              'Revert to Local (1 replica)'
+            )}
+          </button>
+        )}
         {replicasOutOfSync && !update.isPending && (
           <span className="text-xs text-amber-700 dark:text-amber-400 ml-2">
             Replicas reconciling — Longhorn rebuilds in the background.
@@ -188,7 +215,7 @@ export default function PlatformStoragePolicyCard() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirming(null)}>
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-lg shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">
-              Confirm: switch platform storage to <code>{confirming}</code>?
+              Confirm: switch platform storage to {TIER_LABEL[confirming]}?
             </h3>
             <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1 mb-4 list-disc pl-5">
               <li><strong>Longhorn volumes:</strong> {confirming === 'ha' ? '1 → 3 replicas (Longhorn rebuilds in background)' : '3 → 1 replica (extra copies deleted permanently)'}</li>
@@ -200,7 +227,7 @@ export default function PlatformStoragePolicyCard() {
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirming(null)} className="px-3 py-2 rounded-lg text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100">Cancel</button>
               <button onClick={onConfirm} className={`px-3 py-2 rounded-lg text-sm text-white ${confirming === 'ha' ? 'bg-green-600 hover:bg-green-700' : 'bg-amber-600 hover:bg-amber-700'}`}>
-                Apply {confirming}
+                Apply {TIER_LABEL[confirming]}
               </button>
             </div>
           </div>
