@@ -433,6 +433,10 @@ check_root() {
 # OS_FAMILY is set by check_os and consumed by install_packages.
 # Values: "debian" (apt path) or "rhel" (dnf path).
 OS_FAMILY=""
+# OS_VARIANT differentiates within a family when install paths diverge.
+# Currently used to flag Amazon Linux 2023 in the rhel family — AL2023
+# has no EPEL / no CRB and ships fail2ban/age/wireguard-tools in core.
+OS_VARIANT=""
 
 check_os() {
   if [[ ! -f /etc/os-release ]]; then
@@ -474,8 +478,18 @@ check_os() {
       fi
       OS_FAMILY=rhel
       ;;
+    amzn)
+      # Amazon Linux 2023 (AL2023) only — AL2 reaches EOL on 2026-06-30
+      # and doesn't ship modern enough kernels for Calico WireGuard
+      # without manual backports. AL2023's VERSION_ID is "2023".
+      if [[ "${VERSION_ID:-}" != "2023" ]]; then
+        error "${NAME:-$ID} ${VERSION_ID:-unknown} is unsupported. Use Amazon Linux 2023 — AL2 is EOL on 2026-06-30."
+      fi
+      OS_FAMILY=rhel
+      OS_VARIANT=amzn2023
+      ;;
     *)
-      error "Unsupported OS '${ID:-unknown}' (${PRETTY_NAME:-?}). Supported: Debian 12+, Ubuntu 22.04+, RHEL/Rocky/AlmaLinux 9+, CentOS Stream 9+."
+      error "Unsupported OS '${ID:-unknown}' (${PRETTY_NAME:-?}). Supported: Debian 12+, Ubuntu 22.04+, RHEL/Rocky/AlmaLinux 9+, CentOS Stream 9+, Amazon Linux 2023."
       ;;
   esac
 
@@ -569,18 +583,25 @@ install_packages_apt() {
 }
 
 install_packages_dnf() {
-  # EPEL provides fail2ban, age, and (on RHEL/CentOS-Stream) wireguard-
-  # tools when CRB isn't enabled. Rocky/Alma 9 ship wireguard-tools in
-  # the AppStream repo directly, but enabling CRB + EPEL on every RHEL-9
-  # variant is the smallest common code path.
-  dnf install -y -q epel-release >/dev/null 2>&1 || \
-    error "Failed to install epel-release. RHEL-9-family clusters need EPEL for fail2ban + age."
+  # AL2023 ships fail2ban / age / wireguard-tools in its core repos and
+  # has no EPEL / no CRB / no PowerTools — enabling them fails. Branch
+  # so the RHEL-9-family path stays unchanged.
+  if [[ "$OS_VARIANT" != "amzn2023" ]]; then
+    # EPEL provides fail2ban, age, and (on RHEL/CentOS-Stream)
+    # wireguard-tools when CRB isn't enabled. Rocky/Alma 9 ship
+    # wireguard-tools in the AppStream repo directly, but enabling
+    # CRB + EPEL on every RHEL-9 variant is the smallest common
+    # code path.
+    dnf install -y -q epel-release >/dev/null 2>&1 || \
+      error "Failed to install epel-release. RHEL-9-family clusters need EPEL for fail2ban + age."
 
-  # CodeReady Builder (RHEL) / PowerTools / CRB (Rocky/Alma) — name varies
-  # by release. Try both; ignore failure (some EPEL packages don't need it).
-  dnf config-manager --enable crb >/dev/null 2>&1 \
-    || dnf config-manager --enable powertools >/dev/null 2>&1 \
-    || true
+    # CodeReady Builder (RHEL) / PowerTools / CRB (Rocky/Alma) —
+    # name varies by release. Try both; ignore failure (some EPEL
+    # packages don't need it).
+    dnf config-manager --enable crb >/dev/null 2>&1 \
+      || dnf config-manager --enable powertools >/dev/null 2>&1 \
+      || true
+  fi
 
   # RHEL-9 minimal images ship 'curl-minimal' (provides the curl binary)
   # which conflicts with the full 'curl' package; --allowerasing lets dnf
@@ -588,14 +609,55 @@ install_packages_dnf() {
   # 'curl' from the explicit list avoids the conflict on a fresh box.
   # gettext for envsubst (Debian splits envsubst into gettext-base; RHEL
   # ships it inside the main gettext package).
+  #
+  # `age` is omitted here and installed separately by install_age_if_missing
+  # because it's not packaged on AL2023 (no EPEL) — install_age_if_missing
+  # falls back to the upstream static binary when the package isn't
+  # available, which is also a safe no-op when dnf provides age.
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates \
     nftables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
-    age \
     >/dev/null 2>&1
+  if [[ "$OS_VARIANT" != "amzn2023" ]]; then
+    # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age; install it
+    # via dnf so we get distro-managed updates. amzn2023 takes the
+    # static-binary path below.
+    dnf install -y -q age >/dev/null 2>&1 || true
+  fi
+  install_age_if_missing
+}
+
+# Install age from the upstream GitHub release tarball if the system
+# package isn't available. Used by AL2023 (no EPEL) and as a defensive
+# fallback for any RHEL variant where the EPEL `age` install slipped
+# through. age is required by the Tier-1 secrets bundle; the script
+# errors out at bundle time without it.
+install_age_if_missing() {
+  if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+    return 0
+  fi
+  local arch="amd64"
+  case "$(uname -m)" in
+    x86_64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) error "install_age_if_missing: unsupported arch '$(uname -m)'" ;;
+  esac
+  local age_ver="v1.2.1"
+  local url="https://github.com/FiloSottile/age/releases/download/${age_ver}/age-${age_ver}-linux-${arch}.tar.gz"
+  log "  age package not available — installing static binary ${age_ver}/${arch} from upstream..."
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  if ! curl -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
+    rm -rf "$tmpdir"
+    error "Failed to download age from ${url}. Check outbound HTTPS connectivity to github.com."
+  fi
+  tar -xzf "${tmpdir}/age.tar.gz" -C "$tmpdir"
+  install -m 0755 "${tmpdir}/age/age"        /usr/local/bin/age
+  install -m 0755 "${tmpdir}/age/age-keygen" /usr/local/bin/age-keygen
+  rm -rf "$tmpdir"
 }
 
 configure_firewall() {

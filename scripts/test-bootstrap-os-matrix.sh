@@ -31,13 +31,17 @@ TIER_OK=(
   "ubuntu:24.04"
   "rockylinux:9"
   "almalinux:9"
+  "amazonlinux:2023"
 )
 
 # Rejected — bootstrap.sh::check_os MUST abort with a clear error.
+# amazonlinux:2 is rejected because AL2 EOLs 2026-06-30 and check_os
+# requires VERSION_ID=2023.
 TIER_REJECT=(
   "ubuntu:20.04"
   "alpine:3.20"
   "centos:7"
+  "amazonlinux:2"
 )
 
 # Common dry-run args. Domain/email values are placeholders — dry-run

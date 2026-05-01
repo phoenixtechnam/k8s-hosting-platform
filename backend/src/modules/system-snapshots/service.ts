@@ -598,6 +598,21 @@ export async function revertSnapshot(
     const e = new Error(`Cannot resolve workload mounting ${pvcNamespace}/${pvcName} — manual restore required`);
     (e as Error & { code?: number }).code = 422; throw e;
   }
+  // CNPG validates spec.instances >= 1, so the orchestrator can't scale
+  // the cluster to 0 to detach the primary's PVC. CNPG has its own
+  // restore path (barman-cloud PITR / `kubectl cnpg restore`) that
+  // operates at the WAL layer instead of block-level snapshot revert.
+  // Refuse here with a clear remediation rather than fail mid-flight
+  // with the admission-webhook error.
+  if (consumer.kind === 'CnpgCluster') {
+    const e = new Error(
+      `In-place snapshot revert is not supported for CNPG-managed PVCs. `
+      + `CNPG validates spec.instances >= 1 so the primary's PVC cannot be detached. `
+      + `Use CNPG barman-cloud PITR or kubectl cnpg restore — see `
+      + `https://cloudnative-pg.io/documentation/current/recovery/.`,
+    );
+    (e as Error & { code?: number }).code = 422; throw e;
+  }
   steps.push({ step: 'resolve-consumer', ok: true, detail: `${consumer.kind}/${consumer.name} (count=${consumer.originalCount})` });
 
   let restored = false;

@@ -117,7 +117,7 @@ packages/api-contracts/src/
 
 **Cluster firewall**: bootstrap.sh ships a three-mode firewall — `cidr` (mesh/VLAN auto-detected or explicit `--cluster-network-cidr`), `set` (HA install with no private network; reconciled from kube-API by `peer-firewall-reconciler` DaemonSet + `/usr/local/bin/peer-firewall-add` for new-peer pre-authorisation), `single` (no peers). All control-plane ports — `:6443` `:8443` `:10250` `:5473` `:2379-2380` — are scoped, never open to `0.0.0.0/0`. Dual-stack v4+v6. Calico WG (51821) stays public (public-key auth). See [docs/04-deployment/CLUSTER_NETWORK.md](docs/04-deployment/CLUSTER_NETWORK.md). CI guard `scripts/ci-firewall-check.sh` rejects regressions.
 
-**Supported operating systems**: Tier-1 (Debian 12/13, Ubuntu 22.04/24.04 LTS) and Tier-2 (RHEL 9, Rocky 9, AlmaLinux 9, CentOS Stream 9/10). bootstrap.sh dispatches between apt and dnf via `OS_FAMILY` set in `check_os` — fail-fast on EOL or unsupported (CentOS Linux 7/8, Ubuntu < 22.04, Alpine, Talos). DinD harness `scripts/test-bootstrap-os-matrix.sh` runs `bootstrap.sh --dry-run` per distro to validate the package install path without touching real hosts.
+**Supported operating systems**: Tier-1 (Debian 12/13, Ubuntu 22.04/24.04 LTS) and Tier-2 (RHEL 9, Rocky 9, AlmaLinux 9, CentOS Stream 9/10, Amazon Linux 2023). bootstrap.sh dispatches between apt and dnf via `OS_FAMILY` set in `check_os`, with `OS_VARIANT=amzn2023` flagging AL2023's no-EPEL/no-CRB install path — fail-fast on EOL or unsupported (CentOS Linux 7/8, Ubuntu < 22.04, Amazon Linux 2 (EOL 2026-06-30), Alpine, Talos). DinD harness `scripts/test-bootstrap-os-matrix.sh` runs `bootstrap.sh --dry-run` per distro to validate the package install path without touching real hosts.
 
 ## Conventions
 

@@ -99,51 +99,72 @@ HTTP=$(curl -sS -k -o /tmp/wrong.json -w '%{http_code}' \
   -X DELETE "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots/$PG_SNAP")
 [[ "$HTTP" = "409" ]] && pass "guard returned 409 SNAPSHOT_VOLUME_MISMATCH" || fail "expected 409, got $HTTP: $(cat /tmp/wrong.json)"
 
-log "4) Full restore lifecycle on the postgres primary"
+log "4a) CNPG restore must be refused with 422 (not supported — CNPG has its own PITR)"
 PG_NS=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; p=[i for i in d["items"] if i.get("cnpgRole")=="primary"][0]; print(p["namespace"])')
 PG_PVC=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; p=[i for i in d["items"] if i.get("cnpgRole")=="primary"][0]; print(p["pvcName"])')
-echo "  primary: $PG_NS/$PG_PVC  vol=$PG_VOL  snap=$PG_SNAP"
 
-# Take a fresh marker snapshot now (so the restore reverts to a known state)
 curl_admin -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots" \
+  -H 'Content-Type: application/json' -d '{"label":"e2e-cnpg-refuse"}' -o /tmp/cnpg-marker.json
+CNPG_MARKER=$(python3 -c 'import json; print(json.load(open("/tmp/cnpg-marker.json"))["data"]["snapshotName"])')
+sleep 3
+HTTP=$(curl -sS -k -o /tmp/cnpg-restore.json -w '%{http_code}' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots/$CNPG_MARKER/restore" \
+  --max-time 30 \
+  -d "{\"pvcNamespace\":\"$PG_NS\",\"pvcName\":\"$PG_PVC\"}")
+if [[ "$HTTP" = "422" ]] && grep -q "not supported for CNPG" /tmp/cnpg-restore.json; then
+  pass "CNPG restore refused 422 with barman-cloud remediation"
+else
+  cat /tmp/cnpg-restore.json
+  fail "expected 422 with CNPG-not-supported message, got $HTTP"
+fi
+# Clean up marker snapshot
+curl_admin -X DELETE "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots/$CNPG_MARKER" >/dev/null
+
+log "4b) Full restore lifecycle on the Stalwart (StatefulSet) PVC"
+MAIL_NS=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; m=[i for i in d["items"] if i["namespace"]=="mail"][0]; print(m["namespace"])')
+MAIL_PVC=$(python3 -c 'import json; d=json.load(open("/tmp/sys-snaps.json"))["data"]; m=[i for i in d["items"] if i["namespace"]=="mail"][0]; print(m["pvcName"])')
+echo "  consumer: StatefulSet/stalwart-mail  pvc=$MAIL_NS/$MAIL_PVC vol=$MAIL_VOL"
+
+# Take a marker snapshot NOW
+curl_admin -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots" \
   -H 'Content-Type: application/json' -d '{"label":"e2e-restore"}' -o /tmp/marker.json
 MARKER=$(python3 -c 'import json; print(json.load(open("/tmp/marker.json"))["data"]["snapshotName"])')
 echo "  marker snapshot: $MARKER"
-sleep 5
+sleep 8
 
-# Drop a temp row in postgres so we can verify the restore actually rolled back.
-# CNPG primary serves writes through the postgres-rw service.
-echo "  writing post-snapshot marker row…"
-$KUBECTL exec -n platform postgres-1 -c postgres -- bash -c 'PGPASSWORD=$(cat /etc/cnpg-app-passwd 2>/dev/null || echo "") psql -h postgres-rw -U platform -d hosting_platform -c "CREATE TABLE IF NOT EXISTS e2e_restore_marker (id int); INSERT INTO e2e_restore_marker VALUES (42);"' 2>&1 | tail -3 || true
+# Drop a marker file inside the volume so we can verify the restore rolled back.
+# Stalwart pod has root access to /opt/stalwart/data which is the PVC mount.
+echo "  writing post-snapshot marker file…"
+$KUBECTL exec -n mail stalwart-mail-0 -- /bin/sh -c 'echo "post-snapshot-marker-$$" > /opt/stalwart/data/e2e-restore-marker.txt; ls -la /opt/stalwart/data/e2e-restore-marker.txt' 2>&1 | tail -3 || true
 
 # Issue restore
 echo "  POST restore (this takes 2-5 min)…"
 HTTP=$(curl -sS -k -o /tmp/restore.json -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$PG_VOL/snapshots/$MARKER/restore" \
+  -X POST "$ADMIN_HOST/api/v1/admin/system-snapshots/$MAIL_VOL/snapshots/$MARKER/restore" \
   --max-time 480 \
-  -d "{\"pvcNamespace\":\"$PG_NS\",\"pvcName\":\"$PG_PVC\"}")
+  -d "{\"pvcNamespace\":\"$MAIL_NS\",\"pvcName\":\"$MAIL_PVC\"}")
 echo "  HTTP=$HTTP"
-cat /tmp/restore.json | python3 -m json.tool 2>/dev/null | head -30 || cat /tmp/restore.json
+cat /tmp/restore.json | python3 -m json.tool 2>/dev/null | head -40 || cat /tmp/restore.json
 
 if [[ "$HTTP" = "200" ]]; then
   STEPS=$(python3 -c 'import json; d=json.load(open("/tmp/restore.json"))["data"]; print(",".join(s["step"] for s in d["steps"] if s["ok"]))')
   echo "  steps OK: $STEPS"
   pass "restore lifecycle returned 200 with full step trace"
 
-  # Wait for cluster to recover; then check the marker is GONE
-  echo "  waiting for primary to be writable again…"
+  echo "  waiting for stalwart pod to recover…"
   for i in {1..30}; do
-    if $KUBECTL exec -n platform postgres-1 -c postgres -- bash -c 'PGPASSWORD=$(cat /etc/cnpg-app-passwd 2>/dev/null || echo "") psql -h postgres-rw -U platform -d hosting_platform -tAc "SELECT 1"' 2>/dev/null | grep -q '^1$'; then
+    if $KUBECTL get pod -n mail stalwart-mail-0 -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
+      sleep 5
       break
     fi
     sleep 10
   done
-  ROWS=$($KUBECTL exec -n platform postgres-1 -c postgres -- bash -c 'PGPASSWORD=$(cat /etc/cnpg-app-passwd 2>/dev/null || echo "") psql -h postgres-rw -U platform -d hosting_platform -tAc "SELECT COUNT(*) FROM e2e_restore_marker;" 2>/dev/null || echo MISSING' 2>&1 | tail -1 | tr -d ' ')
-  if [[ "$ROWS" = "MISSING" ]] || [[ "$ROWS" = "0" ]]; then
-    pass "marker table absent or empty after restore — rollback verified"
+  if $KUBECTL exec -n mail stalwart-mail-0 -- test -f /opt/stalwart/data/e2e-restore-marker.txt 2>/dev/null; then
+    echo "  WARN: marker file still present — restore may not have rolled back"
   else
-    echo "  WARN: marker still present (rows=$ROWS) — restore may not have rolled back"
+    pass "marker file absent after restore — rollback verified"
   fi
 else
   cat /tmp/restore.json
