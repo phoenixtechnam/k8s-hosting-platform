@@ -1,10 +1,10 @@
 import { Link } from 'react-router-dom';
-import { Users, Globe, Server, Archive, Loader2, Activity } from 'lucide-react';
+import { Users, Globe, Server, Archive, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useClients } from '@/hooks/use-clients';
 import { usePlatformStatus, useDashboardMetrics } from '@/hooks/use-dashboard';
-import { useAuditLogs } from '@/hooks/use-audit-logs';
+import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -12,8 +12,8 @@ export default function Dashboard() {
   const { data: clientsData, isLoading: clientsLoading, error: clientsError } = useClients({ limit: 5 });
   const { data: statusData } = usePlatformStatus();
   const { data: metricsData, isLoading: metricsLoading } = useDashboardMetrics();
-  const { data: auditData, isLoading: auditLoading } = useAuditLogs({ limit: 10 });
-  const recentActivity = auditData?.data ?? [];
+  const { data: nodesData, isLoading: nodesLoading } = useClusterNodes();
+  const nodes = nodesData?.data ?? [];
 
   const clients = clientsData?.data ?? [];
   const metrics = metricsData?.data;
@@ -124,37 +124,63 @@ export default function Dashboard() {
           </div>
         )}
       </div>
-      {/* Recent Activity Feed */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="recent-activity">
+      {/* Cluster Nodes Overview */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="cluster-nodes-overview">
         <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-5 py-4">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent Activity</h2>
-          <Link to="/monitoring" className="text-sm font-medium text-brand-500 hover:text-brand-600">View all</Link>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Cluster Nodes</h2>
+          <Link to="/settings/nodes-and-storage" className="text-sm font-medium text-brand-500 hover:text-brand-600">Manage</Link>
         </div>
-        {auditLoading && (
+        {nodesLoading && (
           <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
         )}
-        {!auditLoading && recentActivity.length === 0 && (
-          <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">No recent activity.</div>
+        {!nodesLoading && nodes.length === 0 && (
+          <div className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">No nodes found.</div>
         )}
-        {!auditLoading && recentActivity.length > 0 && (
-          <div className="divide-y divide-gray-100 dark:divide-gray-700">
-            {recentActivity.map((entry) => (
-              <div key={entry.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                <Activity size={14} className="shrink-0 text-gray-400" />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium">{entry.httpMethod ?? entry.actionType}</span>{' '}
-                    {entry.resourceType}
-                  </span>
-                  {entry.httpPath && (
-                    <span className="ml-2 text-xs text-gray-400 font-mono truncate">{entry.httpPath}</span>
-                  )}
-                </div>
-                <span className="shrink-0 text-xs text-gray-400">
-                  {new Date(entry.createdAt).toLocaleTimeString()}
-                </span>
-              </div>
-            ))}
+        {!nodesLoading && nodes.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                  <th className="px-5 py-2.5 font-medium">Name</th>
+                  <th className="px-5 py-2.5 font-medium">Role</th>
+                  <th className="px-5 py-2.5 font-medium">Status</th>
+                  <th className="px-5 py-2.5 font-medium">Address</th>
+                  <th className="px-5 py-2.5 font-medium text-right">CPU / Memory</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                {nodes.map((n) => {
+                  const readyCondition = n.statusConditions?.find((c) => c.type === 'Ready');
+                  const ready = readyCondition?.status === 'True';
+                  const cpuPct = n.cpuRequestsMillicores != null && n.cpuMillicores
+                    ? `${Math.round((n.cpuRequestsMillicores / n.cpuMillicores) * 100)}%`
+                    : '—';
+                  const memPct = n.memoryRequestsBytes != null && n.memoryBytes
+                    ? `${Math.round((n.memoryRequestsBytes / n.memoryBytes) * 100)}%`
+                    : '—';
+                  return (
+                    <tr key={n.name} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                      <td className="px-5 py-2.5 font-medium text-gray-900 dark:text-gray-100">{n.displayName ?? n.name}</td>
+                      <td className="px-5 py-2.5 text-gray-600 dark:text-gray-400 capitalize">{n.role}</td>
+                      <td className="px-5 py-2.5">
+                        <span className={`inline-flex items-center gap-1 text-xs font-medium ${
+                          ready ? 'text-green-700 dark:text-green-400' : 'text-amber-700 dark:text-amber-400'
+                        }`}>
+                          {ready ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                          {ready ? 'Ready' : 'NotReady'}
+                        </span>
+                      </td>
+                      <td className="px-5 py-2.5 text-gray-600 dark:text-gray-400 font-mono text-xs">{n.publicIp ?? '—'}</td>
+                      <td className="px-5 py-2.5 text-right text-xs text-gray-600 dark:text-gray-400">
+                        <span className="tabular-nums" title="CPU requests / capacity">{cpuPct}</span>
+                        <span className="mx-1 text-gray-400">/</span>
+                        <span className="tabular-nums" title="Memory requests / capacity">{memPct}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

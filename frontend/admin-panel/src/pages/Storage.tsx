@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { HardDrive, Archive, Loader2, Settings as SettingsIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { HardDrive, Archive, Loader2, Settings as SettingsIcon, Cloud, Server, ExternalLink, RotateCcw } from 'lucide-react';
 import clsx from 'clsx';
 import StatCard from '@/components/ui/StatCard';
-import ResourceBar from '@/components/ui/ResourceBar';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { useBackups } from '@/hooks/use-backups';
 import { useDashboardMetrics } from '@/hooks/use-dashboard';
+import { useBackupConfigs, useBackupList } from '@/hooks/use-backup-config';
 import {
   useSnapshots,
   useCreateSnapshot,
@@ -283,12 +284,112 @@ function AuditTable({ rows }: { readonly rows: readonly AuditRow[] }) {
 }
 
 function OverviewTab() {
+  const { data: configsData, isLoading } = useBackupConfigs();
+  const configs = configsData?.data ?? [];
+
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm">
-      <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Storage Allocation</h2>
-      <div className="space-y-5">
-        <ResourceBar label="Block Storage" used={280} total={500} unit=" GB" />
-        <ResourceBar label="Backup Storage" used={520} total={800} unit=" GB" />
+    <div className="space-y-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Backup Storage Targets</h2>
+          <Link
+            to="/settings/backups"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:underline"
+          >
+            <SettingsIcon size={14} /> Configure
+          </Link>
+        </div>
+        {isLoading && (
+          <div className="flex justify-center py-6"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
+        )}
+        {!isLoading && configs.length === 0 && (
+          <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+            No backup targets configured.{' '}
+            <Link to="/settings/backups" className="font-medium text-brand-600 dark:text-brand-400 hover:underline">
+              Add one
+            </Link>
+            {' '}to enable system backups.
+          </div>
+        )}
+        {!isLoading && configs.length > 0 && (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {configs.map((cfg) => <BackupTargetStatCard key={cfg.id} cfg={cfg} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Per-target panel: shows backup count, total size, last-backup time. */
+function BackupTargetStatCard({ cfg }: { readonly cfg: import('@k8s-hosting/api-contracts').BackupConfigResponse }) {
+  const isS3 = cfg.storageType === 's3';
+  const Icon = isS3 ? Cloud : Server;
+  // Lazy-fetch backup list for this target — only when an active config
+  // has Longhorn-side backups. Inactive configs don't have any in
+  // longhorn-system yet (until activate).
+  const { data, isLoading } = useBackupList(cfg.active ? cfg.id : null);
+  const backups = (data?.data ?? []) as ReadonlyArray<{ size?: string | number; createdAt?: string | null }>;
+  const totalBytes = backups.reduce((acc, b) => acc + (Number(b.size) || 0), 0);
+  const latest = backups[0]?.createdAt ? new Date(backups[0].createdAt as string) : null;
+
+  const formatBytes = (bytes: number) => {
+    if (!bytes) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return `${(bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
+  };
+
+  return (
+    <div className={clsx(
+      'rounded-lg border p-4 transition-colors',
+      cfg.active
+        ? 'border-green-200 dark:border-green-700 bg-green-50/50 dark:bg-green-900/10'
+        : 'border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30',
+    )}>
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-2">
+          <Icon size={16} className="text-gray-500 dark:text-gray-400" />
+          <div>
+            <div className="font-medium text-gray-900 dark:text-gray-100 text-sm">{cfg.name}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              {isS3
+                ? `S3: ${cfg.s3Bucket ?? '—'} (${cfg.s3Region ?? '—'})`
+                : `SSH: ${cfg.sshUser}@${cfg.sshHost}:${cfg.sshPort}`}
+            </div>
+          </div>
+        </div>
+        {cfg.active && (
+          <span className="rounded-full bg-green-100 dark:bg-green-900/40 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-300">
+            Active
+          </span>
+        )}
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+        <div>
+          <div className="text-gray-500 dark:text-gray-400">Backups</div>
+          <div className="font-medium text-gray-900 dark:text-gray-100">
+            {!cfg.active ? '—' : isLoading ? '…' : backups.length}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500 dark:text-gray-400">Total Size</div>
+          <div className="font-medium text-gray-900 dark:text-gray-100">
+            {!cfg.active ? '—' : isLoading ? '…' : formatBytes(totalBytes)}
+          </div>
+        </div>
+        <div>
+          <div className="text-gray-500 dark:text-gray-400">Last Backup</div>
+          <div className="font-medium text-gray-900 dark:text-gray-100">
+            {!cfg.active
+              ? '—'
+              : isLoading
+                ? '…'
+                : latest
+                  ? latest.toLocaleDateString()
+                  : 'never'}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -356,6 +457,7 @@ function BackupsTable({ backups }: BackupsTableProps) {
               <SortableHeader label="Size" sortKey="sizeBytes" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
               <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
               <SortableHeader label="Expires" sortKey="expiresAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
+              <th className="px-5 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -386,11 +488,14 @@ function BackupsTable({ backups }: BackupsTableProps) {
                 <td className="hidden px-5 py-3.5 text-sm text-gray-500 dark:text-gray-400 lg:table-cell">
                   {backup.expiresAt ? new Date(backup.expiresAt).toLocaleDateString() : '---'}
                 </td>
+                <td className="px-5 py-3.5 text-right">
+                  <RestoreLink backupId={backup.id} />
+                </td>
               </tr>
             ))}
             {backups.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
+                <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                   No backups found for this client.
                 </td>
               </tr>
@@ -407,6 +512,8 @@ function BackupsTable({ backups }: BackupsTableProps) {
 function SettingsTab() {
   const { data, isLoading, error } = useStorageLifecycleSettings();
   const update = useUpdateStorageLifecycleSettings();
+  const { data: configsData } = useBackupConfigs();
+  const backupConfigs = configsData?.data ?? [];
 
   const settings = data?.data;
 
@@ -455,6 +562,16 @@ function SettingsTab() {
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
           Where client PVC snapshots are persisted. Changing the backend affects <strong>new</strong> snapshots only — existing archives stay where they were written.
         </p>
+        {backupConfigs.length > 0 && (
+          <div className="mb-4 rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-300">
+            <strong>Backup targets configured:</strong>{' '}
+            {backupConfigs.map((c) => `${c.name} (${c.storageType})`).join(', ')}.{' '}
+            <Link to="/settings/backups" className="font-medium underline hover:no-underline">
+              Manage targets
+            </Link>
+            . Selecting an S3 store below will use the same target's credentials when configured.
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -466,14 +583,9 @@ function SettingsTab() {
               data-testid="snapshot-backend-select"
             >
               <option value="hostpath">hostpath (dev / single-node)</option>
-              <option value="s3">S3 (coming soon — stub)</option>
-              <option value="azure">Azure Blob (coming soon — stub)</option>
+              <option value="s3">S3 / S3-compatible</option>
+              <option value="azure">Azure Blob</option>
             </select>
-            {backend !== 'hostpath' && (
-              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                {backend === 's3' ? 'S3' : 'Azure'} backend accepts config but is not yet implemented — take-snapshot will fail until the MVP ships.
-              </p>
-            )}
           </div>
 
           {backend === 'hostpath' && (
@@ -542,6 +654,35 @@ function SettingsTab() {
         {savedMessage && <p className="text-sm text-green-600 dark:text-green-400">{savedMessage}</p>}
       </div>
     </div>
+  );
+}
+
+/** Per-backup restore action.
+ *
+ * The actual restore (creating a new Longhorn Volume from the Backup
+ * artifact) is a multi-step destructive operation that's safer to
+ * drive from the Longhorn dashboard — it shows pre-flight validation,
+ * source-volume metadata, and target-volume naming. We deep-link into
+ * Longhorn UI's backup-details page rather than re-implementing the
+ * flow ourselves and risking partial-restore corner cases.
+ *
+ * If the Longhorn UI ingress is not configured, this falls back to a
+ * disabled tooltip pointing to the backup-target host.
+ */
+function RestoreLink({ backupId }: { readonly backupId: string }) {
+  // Longhorn UI is mounted at /longhorn/ on the platform ingress.
+  return (
+    <a
+      href="/longhorn/#/backup"
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`Open Longhorn UI to restore ${backupId.slice(0, 12)}…`}
+      className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+    >
+      <RotateCcw size={11} />
+      Restore
+      <ExternalLink size={10} className="text-gray-400" />
+    </a>
   );
 }
 

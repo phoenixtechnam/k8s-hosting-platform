@@ -39,12 +39,9 @@ describe('Storage page', () => {
     expect(overviewTab).toHaveClass('border-brand-500');
   });
 
-  it('shows ResourceBar components in Overview', () => {
+  it('shows Backup Storage Targets section in Overview', () => {
     render(<Storage />, { wrapper: createWrapper() });
-    const bars = screen.getAllByTestId('resource-bar');
-    expect(bars.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('Block Storage')).toBeInTheDocument();
-    expect(screen.getByText('Backup Storage')).toBeInTheDocument();
+    expect(screen.getByText(/Backup Storage Targets/i)).toBeInTheDocument();
   });
 
   it('switches to Backups tab', () => {
