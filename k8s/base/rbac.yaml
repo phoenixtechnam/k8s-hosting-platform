@@ -69,9 +69,14 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["*"]
-  # Subresource: deployment scale (used by k8s-deployer for replicas patch)
+  # Subresource: deployment + statefulset scale.
+  # - deployments/scale: used by k8s-deployer for replicas patch.
+  # - statefulsets/scale: used by system-snapshots restore orchestrator
+  #   to scale a StatefulSet to 0 (detach Longhorn volume), revert, and
+  #   scale back. K8s treats subresources as distinct for RBAC, so the
+  #   `statefulsets` wildcard verb above does NOT grant this.
   - apiGroups: ["apps"]
-    resources: ["deployments/scale"]
+    resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update", "patch"]
   # DaemonSets — read-only, used by cluster-health to surface
   # ingress-nginx + longhorn-manager readiness. Scoped to get/list/watch

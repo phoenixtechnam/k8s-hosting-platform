@@ -633,8 +633,19 @@ export async function revertSnapshot(
 
   let restored = false;
   try {
-    await scaleConsumer(k8s, consumer, 0);
-    steps.push({ step: 'scale-down', ok: true });
+    try {
+      await scaleConsumer(k8s, consumer, 0);
+      steps.push({ step: 'scale-down', ok: true });
+    } catch (e) {
+      // Mark the failure explicitly in the step trace so the operator
+      // sees WHICH step failed (RBAC errors at scale-down were
+      // previously hidden behind the recovery-scale-up entry).
+      steps.push({ step: 'scale-down', ok: false, detail: (e as Error).message });
+      // We never actually changed the consumer's replica count, so
+      // there's no recovery work needed — flip the flag to skip it.
+      restored = true;
+      throw e;
+    }
 
     const detach = await pollVolumeState(k8s, volumeName, 'detached', detachTimeoutMs);
     steps.push({ step: 'wait-detach', ok: detach.ok, detail: `final=${detach.state ?? 'unknown'}` });
