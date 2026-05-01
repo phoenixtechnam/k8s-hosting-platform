@@ -13,7 +13,8 @@
  *
  *   - `k1:` is the Key Identifier (KID) — see ADR-032 §7. Future key
  *     rotation lands as `k2:` etc. without breaking old bundles.
- *   - AES-256-GCM, 16-byte IV, 16-byte auth tag.
+ *   - AES-256-GCM, **96-bit (12-byte) IV** (NIST SP 800-38D / RFC 5116),
+ *     16-byte auth tag.
  *   - Key material: process.env.OIDC_ENCRYPTION_KEY (64-char hex
  *     string = 32 bytes = AES-256). Same key the OIDC module uses;
  *     splitting into a separate key is left for ADR-032 follow-up.
@@ -44,7 +45,12 @@ const gzipAsync = promisify(gzip);
 export const SECRETS_DUMP_SCHEMA_VERSION = 1 as const;
 export const SECRETS_KEY_ID = 'k1' as const;
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 16;
+// 96-bit IV per NIST SP 800-38D §8.2 / RFC 5116. Standard interop length;
+// every major AES-GCM implementation (OpenSSL, AWS SDK, Web Crypto) treats
+// 96 bits as the canonical IV size. Don't change this without bumping the
+// KID prefix (k1 → k2) — bundles encrypted with one IV size cannot be
+// decrypted with the other.
+const IV_LENGTH = 12;
 
 export interface SecretsDumpV1 {
   schemaVersion: typeof SECRETS_DUMP_SCHEMA_VERSION;
@@ -95,8 +101,23 @@ export function decryptSecretsPayload(envelope: string, keyHex: string): Buffer 
     throw new Error(`secrets envelope: unsupported keyId '${kid}' (this platform decrypts ${SECRETS_KEY_ID})`);
   }
   const keyBuffer = Buffer.from(keyHex, 'hex');
-  const decipher = crypto.createDecipheriv(ALGORITHM, keyBuffer, Buffer.from(ivHex!, 'hex'));
-  decipher.setAuthTag(Buffer.from(tagHex!, 'hex'));
+  if (keyBuffer.length !== 32) {
+    throw new Error(`OIDC_ENCRYPTION_KEY must be 32 bytes (64 hex chars); got ${keyBuffer.length} bytes`);
+  }
+  const ivBuffer = Buffer.from(ivHex!, 'hex');
+  if (ivBuffer.length !== IV_LENGTH) {
+    throw new Error(`secrets envelope: IV must be ${IV_LENGTH} bytes (got ${ivBuffer.length})`);
+  }
+  const tagBuffer = Buffer.from(tagHex!, 'hex');
+  if (tagBuffer.length !== 16) {
+    // Defence-in-depth: assert the GCM auth tag is the standard 128 bits
+    // before handing it to setAuthTag. Older Node.js versions had a
+    // window where short tags would slip past the auth check; v22 is
+    // safe but the assertion is a one-liner.
+    throw new Error(`secrets envelope: auth tag must be 16 bytes (got ${tagBuffer.length})`);
+  }
+  const decipher = crypto.createDecipheriv(ALGORITHM, keyBuffer, ivBuffer);
+  decipher.setAuthTag(tagBuffer);
   return Buffer.concat([decipher.update(Buffer.from(ctHex!, 'hex')), decipher.final()]);
 }
 

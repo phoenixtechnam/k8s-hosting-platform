@@ -27,6 +27,22 @@ describe('encryptSecretsPayload / decryptSecretsPayload', () => {
     expect(() => decryptSecretsPayload('k99:00:00:deadbeef', KEY_HEX)).toThrow();
   });
 
+  it('rejects a short auth tag (defence-in-depth)', () => {
+    // Build an otherwise-well-formed envelope with a 4-byte tag.
+    const ivHex = '00'.repeat(12);
+    const tagHex = '00'.repeat(4);
+    expect(() => decryptSecretsPayload(`k1:${ivHex}:${tagHex}:deadbeef`, KEY_HEX))
+      .toThrow(/auth tag must be 16 bytes/);
+  });
+
+  it('rejects a wrong-length IV (defence-in-depth)', () => {
+    // 8-byte IV in a k1 envelope should be rejected.
+    const ivHex = '00'.repeat(8);
+    const tagHex = '00'.repeat(16);
+    expect(() => decryptSecretsPayload(`k1:${ivHex}:${tagHex}:deadbeef`, KEY_HEX))
+      .toThrow(/IV must be 12 bytes/);
+  });
+
   it('rejects a key that is not 32 bytes', () => {
     expect(() => encryptSecretsPayload(Buffer.from('x'), 'aa')).toThrow();
   });

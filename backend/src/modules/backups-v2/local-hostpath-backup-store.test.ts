@@ -103,6 +103,14 @@ describe('LocalHostPathBackupStore', () => {
     });
   });
 
+  it('rejects backupIds that resolve outside the root (path traversal)', async () => {
+    await withStore(async (store) => {
+      await expect(store.open('../etc/passwd')).rejects.toThrow(/path traversal rejected/);
+      await expect(store.reserveBundle({ backupId: '../escape', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' }))
+        .rejects.toThrow(/path traversal rejected/);
+    });
+  });
+
   it('delete removes the entire bundle dir', async () => {
     await withStore(async (store, root) => {
       const handle = await store.reserveBundle({ backupId: 'bkp-del', clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b' });

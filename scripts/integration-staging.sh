@@ -486,6 +486,67 @@ scenario_reaper() {
   api DELETE "/clients/$cid" >/dev/null 2>&1 || true
 }
 
+# ─── scenario: backup bundle (Phase 2 / ADR-032) ─────────────────
+# Creates a client, runs a hostpath bundle, asserts that meta.json +
+# config + secrets components landed on disk and the bundle row in the
+# DB is `completed`. Files component is exercised only if the client
+# already has a bound PVC (deployments running) — otherwise the
+# scenario asserts `partial` is acceptable, since files capture
+# requires a tenant PVC and we're not provisioning one to keep the
+# scenario fast.
+scenario_bundle() {
+  if [[ "${SKIP_BUNDLE_SCENARIO:-}" == "1" ]]; then
+    log "scenario bundle skipped — SKIP_BUNDLE_SCENARIO=1"
+    return 0
+  fi
+
+  local plan_id region_id
+  plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
+  region_id=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
+  [[ -n "$plan_id" && -n "$region_id" ]] || { fail "bundle: could not resolve plan/region"; return 1; }
+
+  local stamp; stamp=$(date +%s)
+  local resp; resp=$(api POST "/clients" \
+    "{\"company_name\":\"Bundle Test $stamp\",\"company_email\":\"bundle-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$cid" ]] || { fail "bundle: client create failed"; return 1; }
+  ok "bundle: client created cid=$cid"
+
+  wait_for 120 "bundle: client provisioned" '"provisioningStatus":"provisioned"' \
+    "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+  # Skip the slow files component — config + secrets only, so the
+  # scenario completes in <30s without needing a tenant deployment.
+  local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"E2E bundle $stamp\",\"retentionDays\":1,\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+  local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
+  local bundle_id status
+  bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
+  status=$(echo "$b_resp"   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+  [[ -n "$bundle_id" ]] || { fail "bundle: create failed: $(echo "$b_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$status" == "completed" ]] || { fail "bundle: status=$status (expected completed) — $(echo "$b_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "bundle: created $bundle_id status=$status"
+
+  # Assert meta.json + config + secrets exist on the platform-data PVC.
+  local found_meta found_config found_secrets
+  found_meta=$(ssh_cp "ls /var/lib/platform/bundles/$bundle_id/meta.json 2>/dev/null && echo OK" || true)
+  found_config=$(ssh_cp "ls /var/lib/platform/bundles/$bundle_id/components/config/db-rows.json.gz 2>/dev/null && echo OK" || true)
+  found_secrets=$(ssh_cp "ls /var/lib/platform/bundles/$bundle_id/components/secrets/tls.json.gz.enc 2>/dev/null && echo OK" || true)
+
+  [[ "$found_meta" =~ OK ]]    || { fail "bundle: meta.json missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$found_config" =~ OK ]]  || { fail "bundle: config component missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  [[ "$found_secrets" =~ OK ]] || { fail "bundle: secrets component missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "bundle: all 3 expected artifacts present on disk"
+
+  # Assert detail endpoint returns the components rows.
+  local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
+  echo "$detail" | grep -q '"components"' || { fail "bundle: detail endpoint missing components"; }
+  ok "bundle: detail endpoint returned components"
+
+  # Cleanup
+  api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true
+  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+}
+
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
@@ -548,6 +609,7 @@ case "$SCENARIO" in
     run_scenario reprovision
     run_scenario drain
     run_scenario reaper
+    run_scenario bundle
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then

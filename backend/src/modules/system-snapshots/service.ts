@@ -547,7 +547,13 @@ async function pollVolumeState(
       last = v.status?.state;
       const tickets = va.spec?.attachmentTickets ?? {};
       const hasCsi = Object.values(tickets).some((t) => t.type === 'csi-attacher');
-      if (expected === 'detached' && (last === 'detached' || !hasCsi)) {
+      // Detach is only "really done" when both: (a) no csi-attacher
+      // ticket (no consumer pod is mounting the volume), AND (b) the
+      // engine has stopped (state == 'detached'). Catching the volume
+      // mid-`detaching` (engine still tearing down) lets snapshotRevert
+      // race the detach handshake and Longhorn returns HTTP 500
+      // "failed to revert snapshot".
+      if (expected === 'detached' && last === 'detached' && !hasCsi) {
         return { ok: true, state: last };
       }
       if (expected === 'attached' && last === 'attached' && hasCsi) {

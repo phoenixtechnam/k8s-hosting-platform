@@ -22,7 +22,7 @@
 
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rename, rm, stat as fsStat, readdir, readFile, writeFile, unlink } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import type { BackupComponentName, BackupMetaV1 } from '@k8s-hosting/api-contracts';
@@ -49,7 +49,24 @@ function isHostPathBackend(b: unknown): b is HostPathBackend {
 export class LocalHostPathBackupStore implements BackupStore {
   readonly kind = 'hostpath' as const;
 
-  constructor(private readonly root: string) {}
+  private readonly normalizedRoot: string;
+  constructor(private readonly root: string) {
+    this.normalizedRoot = resolve(root);
+  }
+
+  /**
+   * Build a bundle directory path inside `root`, rejecting any backupId
+   * that resolves outside of it (path traversal defence).
+   * Callers normally have backupId from `randomUUID()`, but DELETE/GET
+   * routes accept it from the URL — so we never trust it without checking.
+   */
+  private safeBundleDir(backupId: string): string {
+    const candidate = resolve(this.normalizedRoot, backupId);
+    if (candidate !== this.normalizedRoot && !candidate.startsWith(`${this.normalizedRoot}/`)) {
+      throw new Error(`LocalHostPathBackupStore: invalid backupId '${backupId}' (path traversal rejected)`);
+    }
+    return candidate;
+  }
 
   private resolveBackend(handle: BundleHandle): HostPathBackend {
     if (!isHostPathBackend(handle._backend)) {
@@ -63,7 +80,7 @@ export class LocalHostPathBackupStore implements BackupStore {
   }
 
   async reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle> {
-    const bundleDir = join(this.root, input.backupId);
+    const bundleDir = this.safeBundleDir(input.backupId);
     // Create the bundle root + four component subdirs up-front so component
     // writers don't race on mkdir for sibling artifacts.
     await mkdir(bundleDir, { recursive: true });
@@ -80,7 +97,7 @@ export class LocalHostPathBackupStore implements BackupStore {
   }
 
   async open(backupId: string): Promise<BundleHandle | null> {
-    const bundleDir = join(this.root, backupId);
+    const bundleDir = this.safeBundleDir(backupId);
     try {
       const s = await fsStat(bundleDir);
       if (!s.isDirectory()) return null;

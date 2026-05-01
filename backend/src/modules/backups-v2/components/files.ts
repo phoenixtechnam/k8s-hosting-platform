@@ -27,6 +27,7 @@
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { BackupStore, BundleHandle } from '../bundle-store.js';
 import { componentDir } from '../meta.js';
+import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 
 export interface FilesComponentResult {
   readonly sha256: string;
@@ -42,6 +43,13 @@ export interface CaptureFilesComponentOpts {
   readonly backupId: string;
   readonly store: BackupStore;
   readonly handle: BundleHandle;
+  /** Hostpath bundle directory the Job mounts. Required for hostpath store.
+   *  The orchestrator passes the path it got back from `reserveBundle` so
+   *  the components layer never needs to inspect `handle._backend`. */
+  readonly bundleDir?: string;
+  /** Hostpath root volume for the Job mount (e.g. /var/lib/platform/bundles).
+   *  Required for hostpath store. */
+  readonly hostpathRoot?: string;
   readonly jobImage?: string;
   readonly timeoutMs?: number;
   readonly onProgress?: (msg: string) => Promise<void> | void;
@@ -171,9 +179,6 @@ export async function captureFilesComponent(
   opts: CaptureFilesComponentOpts,
 ): Promise<FilesComponentResult> {
   if (opts.store.kind !== 'hostpath') {
-    // S3 + SSH paths require the presigned-URL / Job-with-SSH-key
-    // wiring that lands in Phase 3. Until then, the orchestrator
-    // surfaces a structured error rather than silently dropping.
     const err = new Error(
       `files component capture is not yet wired for store kind '${opts.store.kind}' (Phase 3).`,
     );
@@ -181,23 +186,17 @@ export async function captureFilesComponent(
     throw err;
   }
 
-  // We rely on the orchestrator already having called `reserveBundle`,
-  // so the bundle directory exists with all four component subdirs.
-  const handleBackend = opts.handle._backend as { bundleDir?: string };
-  if (!handleBackend.bundleDir) {
-    throw new Error('files-component: hostpath handle has no bundleDir');
+  if (!opts.hostpathRoot) {
+    throw new Error('files-component: hostpathRoot is required for hostpath store');
   }
 
-  // Build the Job spec — caller mounts the same hostpath root the
-  // store uses, so the Job writes directly into the bundle's
-  // components/files/ subdir.
   const archiveRel = `${componentDir('files')}/archive.tar.gz`;
   const treeRel = `${componentDir('files')}/tree.jsonl.gz`;
 
   const hostMount = {
     volumeSpec: {
       name: 'platform-bundles',
-      hostPath: { path: hostpathRoot(opts.handle), type: 'DirectoryOrCreate' },
+      hostPath: { path: opts.hostpathRoot, type: 'DirectoryOrCreate' },
     },
     mountPath: '/bundle',
   };
@@ -226,14 +225,11 @@ export async function captureFilesComponent(
   const archiveStat = await opts.store.stat(opts.handle, 'files', 'archive.tar.gz');
   if (!archiveStat) throw new Error('files-component: archive.tar.gz missing after Job completion');
 
-  // Tree count = lines in tree.jsonl.gz — but we recorded it in the Job
-  // log via FILES_TREE_COUNT. For the meta.json we need a number; if we
-  // didn't surface it from the log, fall back to the on-disk file count
-  // probe. To keep this function side-effect-light, we approximate from
-  // the archive — the orchestrator can refine via the Job log next pass.
-  const fileCount = 0;
+  // Read the Job pod log for FILES_TREE_COUNT=N — emitted right before
+  // FILES_DONE. Best-effort: if pod-log RBAC or the pod is gone, we
+  // surface fileCount=0 rather than failing the whole component.
+  const fileCount = await readFileCountFromJobLog(opts.k8s, opts.namespace, jobName);
 
-  // Sidecar holds the sha256 of archive.tar.gz.
   if (!archiveStat.sha256) {
     throw new Error('files-component: sha256 sidecar missing');
   }
@@ -245,10 +241,17 @@ export async function captureFilesComponent(
   };
 }
 
-function hostpathRoot(handle: BundleHandle): string {
-  const backend = handle._backend as { root?: string; bundleDir?: string };
-  if (!backend.root) throw new Error('hostpathRoot: handle missing root');
-  return backend.root;
+async function readFileCountFromJobLog(k8s: K8sClients, namespace: string, jobName: string): Promise<number> {
+  try {
+    // Pull the last ~30 lines so we catch FILES_TREE_COUNT=N in the
+    // Job's stdout regardless of how chatty awk was.
+    const last = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 5000 });
+    if (!last) return 0;
+    const m = last.match(/FILES_TREE_COUNT=(\d+)/);
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function waitForJob(

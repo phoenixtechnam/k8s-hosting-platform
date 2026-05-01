@@ -51,6 +51,10 @@ export interface OrchestratorDeps {
   readonly store: BackupStore;
   readonly platformVersion: string;
   readonly secretsKeyHex: string;
+  /** Hostpath root mounted into the platform-api pod and into every
+   *  files-component Job (so the Job sees the same dir tree as the
+   *  store). Required when `store.kind === 'hostpath'`. */
+  readonly hostpathRoot?: string;
 }
 
 export interface RunBundleInput {
@@ -137,6 +141,7 @@ export async function runBundle(
           backupId: bundleId,
           store: deps.store,
           handle,
+          hostpathRoot: deps.hostpathRoot,
         });
         await markComponentDone(
           deps.db,
@@ -336,25 +341,31 @@ async function markComponentFailed(
   } satisfies NewBackupComponent);
 }
 
+/**
+ * Resolve the client's namespace + tenant data PVC name in one query.
+ *
+ * Convention (matches storage-lifecycle/service.ts):
+ *   namespace = clients.kubernetesNamespace
+ *   pvcName   = `${namespace}-storage`
+ *
+ * Throws OperatorError-friendly messages when the client is missing or
+ * has no provisioned namespace yet (e.g. a freshly created client whose
+ * provisioning Job hasn't run).
+ */
 async function resolveClientNamespace(db: Database, clientId: string): Promise<string> {
-  const r = await db.select({ id: clients.id }).from(clients).where(eq(clients.id, clientId)).limit(1);
-  if (r.length === 0) throw new Error(`client not found: ${clientId}`);
-  return `client-${clientId}`;
+  const [r] = await db
+    .select({ ns: clients.kubernetesNamespace })
+    .from(clients)
+    .where(eq(clients.id, clientId))
+    .limit(1);
+  if (!r) throw new Error(`client not found: ${clientId}`);
+  if (!r.ns) throw new Error(`client ${clientId} has no kubernetesNamespace yet — wait for provisioning to complete`);
+  return r.ns;
 }
 
-/**
- * Resolve the tenant data PVC name for the client. The platform
- * convention is `tenant-data-<short-id>` per
- * `backend/src/modules/storage-lifecycle/platform-ns.ts`.
- *
- * For the orchestrator we keep this as a dedicated function so the
- * naming convention can change in one place if the platform ever
- * adopts a different scheme.
- */
-async function resolveTenantPvc(_db: Database, clientId: string): Promise<string> {
-  // Match storage-lifecycle/snapshot.ts caller — the orchestrator is
-  // intentionally light-touch here and trusts the convention.
-  return `tenant-data-${clientId.slice(0, 8)}`;
+async function resolveTenantPvc(db: Database, clientId: string): Promise<string> {
+  const namespace = await resolveClientNamespace(db, clientId);
+  return `${namespace}-storage`;
 }
 
 function addDays(d: Date, days: number): Date {

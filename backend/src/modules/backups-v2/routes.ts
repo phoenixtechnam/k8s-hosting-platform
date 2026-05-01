@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -15,6 +15,7 @@ import { LocalHostPathBackupStore } from './local-hostpath-backup-store.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
+import { decrypt } from '../oidc/crypto.js';
 
 const PLATFORM_BUNDLES_HOSTPATH = '/var/lib/platform/bundles';
 
@@ -24,9 +25,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   const platformVersion = (app.config as Record<string, unknown>).PLATFORM_VERSION as string | undefined ?? '0.0.0-dev';
-  const secretsKeyHex = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY
-    ?? '0'.repeat(64); /* dev-only fallback */
+  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
+    ?? process.env.OIDC_ENCRYPTION_KEY;
+  const secretsKeyHex = configuredKey ?? '0'.repeat(64);
+  if (!configuredKey && process.env.NODE_ENV === 'production') {
+    app.log.error('backups-v2: OIDC_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set OIDC_ENCRYPTION_KEY now.');
+  } else if (!configuredKey) {
+    app.log.warn('backups-v2: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
+  }
 
   // ── GET /api/v1/admin/backups/bundles ──────────────────────────────
   app.get('/admin/backups/bundles', {
@@ -35,24 +41,27 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const q = request.query as { clientId?: string; limit?: string; status?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 100);
 
-    let rows;
-    if (q.clientId) {
-      rows = await app.db
-        .select()
-        .from(backupJobs)
-        .where(eq(backupJobs.clientId, q.clientId))
-        .orderBy(desc(backupJobs.createdAt))
-        .limit(limit);
-    } else {
-      rows = await app.db
-        .select()
-        .from(backupJobs)
-        .orderBy(desc(backupJobs.createdAt))
-        .limit(limit);
-    }
+    const whereClause = q.clientId ? eq(backupJobs.clientId, q.clientId) : undefined;
+    const rowsQuery = whereClause
+      ? app.db.select().from(backupJobs).where(whereClause).orderBy(desc(backupJobs.createdAt)).limit(limit + 1)
+      : app.db.select().from(backupJobs).orderBy(desc(backupJobs.createdAt)).limit(limit + 1);
+    const countQuery = whereClause
+      ? app.db.select({ n: sql<number>`count(*)::int` }).from(backupJobs).where(whereClause)
+      : app.db.select({ n: sql<number>`count(*)::int` }).from(backupJobs);
+    const [rows, countRows] = await Promise.all([rowsQuery, countQuery]);
 
-    const items: BundleSummary[] = rows.map(toBundleSummary);
-    return success({ data: items, pagination: { total_count: items.length, cursor: null, has_more: false, page_size: limit } });
+    const hasMore = rows.length > limit;
+    const items: BundleSummary[] = rows.slice(0, limit).map(toBundleSummary);
+    const total = countRows[0]?.n ?? items.length;
+    return success({
+      data: items,
+      pagination: {
+        total_count: total,
+        cursor: hasMore ? items[items.length - 1]?.id ?? null : null,
+        has_more: hasMore,
+        page_size: limit,
+      },
+    });
   });
 
   // ── GET /api/v1/admin/backups/bundles/:id ──────────────────────────
@@ -104,7 +113,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       : `${store.kind}://${input.targetConfigId ?? 'unknown'}`;
 
     const result = await runBundle(
-      { db: app.db, k8s, store, platformVersion, secretsKeyHex },
+      { db: app.db, k8s, store, platformVersion, secretsKeyHex, hostpathRoot: PLATFORM_BUNDLES_HOSTPATH },
       {
         clientId: input.clientId,
         initiator: input.initiator,
@@ -150,21 +159,33 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string | null)
   if (cfg.storageType !== 's3') {
     throw new ApiError('NOT_IMPLEMENTED', `Backup store kind '${cfg.storageType}' is not yet wired in backups-v2`, 501);
   }
-  // Pull access keys from the encrypted column. We re-use backup-config's
-  // decryption helper.
-  const { decryptConfig } = await import('../backup-config/service.js') as unknown as {
-    decryptConfig?: (cfg: unknown, key: string) => { accessKey?: string; secretKey?: string };
-  };
+  // Decrypt the S3 access keys using the platform-wide OIDC_ENCRYPTION_KEY.
+  // Same key the backup-config module uses to encrypt them at write time.
   const encKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
     ?? process.env.OIDC_ENCRYPTION_KEY
     ?? '0'.repeat(64);
-  const decoded = decryptConfig ? decryptConfig(cfg, encKey) : {};
+  // Decrypt with a sanitised error wrapper — the underlying decrypt()
+  // can throw OpenSSL strings that include ciphertext fragments, and
+  // those would otherwise leak through Fastify's default 500 handler
+  // into the response body.
+  let accessKey = '';
+  let secretKey = '';
+  try {
+    accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
+    secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
+  } catch (err) {
+    app.log.error({ err, configId: cfg.id }, 'backups-v2: S3 credential decryption failed');
+    throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed (encryption key may have rotated)', 500);
+  }
+  if (!accessKey || !secretKey) {
+    throw new ApiError('CONFIG_INVALID', `Backup target ${cfg.id} has no S3 credentials configured`, 400);
+  }
   return new S3BackupStore({
     bucket: cfg.s3Bucket ?? '',
     region: cfg.s3Region ?? 'us-east-1',
     endpoint: cfg.s3Endpoint ?? undefined,
-    accessKeyId: decoded.accessKey ?? '',
-    secretAccessKey: decoded.secretKey ?? '',
+    accessKeyId: accessKey,
+    secretAccessKey: secretKey,
     pathPrefix: cfg.s3Prefix ?? undefined,
   });
 }
