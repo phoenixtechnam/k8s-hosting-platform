@@ -2926,8 +2926,11 @@ verify() {
 verify_install() {
   log ""
   log "── Verifying install ──"
+  # The platform-api is path-routed under admin.${PLATFORM_DOMAIN}/api/v1/*
+  # (no separate api.<domain> Ingress host). Earlier code used a phantom
+  # api_host that returned 404 because nothing actually serves it —
+  # bootstrap-only synthetic, not in the rendered overlay.
   local admin_host="admin.${PLATFORM_DOMAIN}"
-  local api_host="api.${PLATFORM_DOMAIN}"
   local creds_file="/etc/platform/admin-credentials"
   local rc=0
 
@@ -2939,10 +2942,10 @@ verify_install() {
   fi
 
   # 1. /healthz — checks API process and DB connectivity.
-  log "  Probing https://${api_host}/api/v1/healthz ..."
+  log "  Probing https://${admin_host}/api/v1/healthz ..."
   local health
   health=$(curl -sk -m 15 -o /dev/null -w '%{http_code}' \
-             -H "Host: ${api_host}" "https://127.0.0.1/api/v1/healthz" 2>/dev/null || echo "000")
+             -H "Host: ${admin_host}" "https://127.0.0.1/api/v1/healthz" 2>/dev/null || echo "000")
   if [[ "$health" != "200" ]]; then
     warn "  /healthz returned ${health} (expected 200)"
     rc=1
@@ -2967,7 +2970,7 @@ verify_install() {
       login_body=$(printf '{"email":"%s","password":"%s"}' "$admin_email" "$admin_password")
       local login_resp login_code
       login_resp=$(curl -sk -m 15 -X POST \
-                     -H "Host: ${api_host}" \
+                     -H "Host: ${admin_host}" \
                      -H "Content-Type: application/json" \
                      -d "$login_body" \
                      -w '\n%{http_code}' \
