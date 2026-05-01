@@ -43,6 +43,13 @@ export const updateSystemSettingsSchema = z.object({
   // reconciler. Operator-set labels (via bootstrap.sh
   // `--host-client-workloads`) always win.
   newServerHostsClientWorkloads: z.boolean().optional(),
+  // Kubelet image-GC thresholds (migration 0065). Applied on new nodes
+  // via bootstrap.sh --kubelet-arg flags. Existing nodes require a k3s
+  // restart to pick up changes (Phase 2 reconciler TODO).
+  // high must be > low; both in range 0–100.
+  imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
+  imageGcLowThreshold: z.number().int().min(40).max(94).optional(),
+  imageGcMinTtlMinutes: z.number().int().min(0).max(1440).optional(),
 });
 
 // ─── Response Schema ───────────────────────────────────────────────────────
@@ -63,6 +70,9 @@ export const systemSettingsResponseSchema = z.object({
   allowHostPortsServer: z.boolean(),
   allowHostPortsWorker: z.boolean(),
   newServerHostsClientWorkloads: z.boolean(),
+  imageGcHighThreshold: z.number(),
+  imageGcLowThreshold: z.number(),
+  imageGcMinTtlMinutes: z.number(),
   updatedAt: z.string(),
 });
 

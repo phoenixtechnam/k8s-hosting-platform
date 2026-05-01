@@ -6,6 +6,7 @@ import {
   integer,
   numeric,
   bigint,
+  bigserial,
   boolean,
   timestamp,
   jsonb,
@@ -1600,10 +1601,34 @@ export const systemSettings = pgTable('system_settings', {
   // win — this only fills in the gap when bootstrap.sh ran with the
   // default flag and no explicit operator decision.
   newServerHostsClientWorkloads: boolean('new_server_hosts_client_workloads').notNull().default(true),
+  // Kubelet image-GC thresholds (migration 0065). Shipped as k3s
+  // --kubelet-arg flags by bootstrap.sh; surfaced in the admin panel.
+  // Reconciliation to running kubelets is handled by the kubelet-gc
+  // reconciler (deferred — see cluster-settings/kubelet-gc-reconciler.ts).
+  imageGcHighThreshold: integer('image_gc_high_threshold').notNull().default(70),
+  imageGcLowThreshold: integer('image_gc_low_threshold').notNull().default(60),
+  imageGcMinTtlMinutes: integer('image_gc_min_ttl_minutes').notNull().default(60),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
 export type SystemSettings = typeof systemSettings.$inferSelect;
+
+// ─── Image Reap Log (migration 0064) ────────────────────────────────────────
+
+export const imageReapLog = pgTable('image_reap_log', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  imageName: text('image_name').notNull(),
+  imageId: text('image_id'),
+  nodesReclaimed: text('nodes_reclaimed').array().notNull().default([]),
+  bytesReclaimed: bigint('bytes_reclaimed', { mode: 'number' }).notNull().default(0),
+  triggeredBy: text('triggered_by').notNull(), // 'deployment_delete' | 'manual_purge' | 'pressure_watcher'
+  triggerRef: text('trigger_ref'),
+  succeeded: boolean('succeeded').notNull().default(false),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ImageReapLog = typeof imageReapLog.$inferSelect;
 
 // ─── AI Editor ─────────────────────────────────────────────────────────────
 

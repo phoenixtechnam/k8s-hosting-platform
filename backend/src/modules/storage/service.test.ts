@@ -37,7 +37,7 @@ describe('storage service', () => {
   // ─── classifyImage ──────────────────────────────────────────────────────────
 
   describe('classifyImage', () => {
-    it('should classify platform images as protected', () => {
+    it('should classify platform images as protected when in use (default)', () => {
       expect(classifyImage('hosting-platform-backend:latest').protected).toBe(true);
       expect(classifyImage('hosting-platform-admin-panel:latest').protected).toBe(true);
       expect(classifyImage('hosting-platform-client-panel:latest').protected).toBe(true);
@@ -45,7 +45,7 @@ describe('storage service', () => {
       expect(classifyImage('docker.io/library/file-manager-sidecar:latest').protected).toBe(true);
     });
 
-    it('should classify k8s/k3s system images as protected', () => {
+    it('should classify k8s/k3s system images as protected when in use (default)', () => {
       expect(classifyImage('rancher/k3s:v1.31.4').protected).toBe(true);
       expect(classifyImage('registry.k8s.io/kustomize/kustomize:v5.4.3').protected).toBe(true);
       expect(classifyImage('ghcr.io/dexidp/dex:v2.39.1').protected).toBe(true);
@@ -58,6 +58,30 @@ describe('storage service', () => {
       expect(classifyImage('postgres:17').protected).toBe(false);
       expect(classifyImage('wordpress:latest').protected).toBe(false);
       expect(classifyImage('docker.io/library/mariadb:10').protected).toBe(false);
+    });
+
+    // B0.3: deprecated system images (not in use) must be purgeable
+    it('should classify system images as NOT protected when not in use (B0.3)', () => {
+      expect(classifyImage('rancher/k3s:v1.30.0-k3s1', false).protected).toBe(false);
+      expect(classifyImage('docker.io/longhornio/longhorn-manager:v1.5.0', false).protected).toBe(false);
+      expect(classifyImage('quay.io/calico/node:v3.26.0', false).protected).toBe(false);
+      expect(classifyImage('quay.io/jetstack/cert-manager-controller:v1.13.0', false).protected).toBe(false);
+      expect(classifyImage('ghcr.io/cloudnative-pg/cloudnative-pg:1.22.0', false).protected).toBe(false);
+      expect(classifyImage('ghcr.io/fluxcd/source-controller:v1.0.0', false).protected).toBe(false);
+      expect(classifyImage('docker.io/bitnami/sealed-secrets-controller:v0.24.0', false).protected).toBe(false);
+      expect(classifyImage('ghcr.io/phoenixtechnam/hosting-platform/backend:v1.0.0', false).protected).toBe(false);
+    });
+
+    it('should classify in-use system images as protected regardless of version (B0.3)', () => {
+      expect(classifyImage('docker.io/longhornio/longhorn-manager:v1.5.0', true).protected).toBe(true);
+      expect(classifyImage('quay.io/calico/node:v3.26.0', true).protected).toBe(true);
+      expect(classifyImage('ghcr.io/cloudnative-pg/cloudnative-pg:1.22.0', true).protected).toBe(true);
+    });
+
+    // Tenant/app images: never protected regardless of inUse
+    it('tenant images are not protected even when in use', () => {
+      expect(classifyImage('mariadb:11', true).protected).toBe(false);
+      expect(classifyImage('wordpress:latest', true).protected).toBe(false);
     });
   });
 
@@ -242,6 +266,9 @@ describe('storage service', () => {
 
   describe('getImageInventory', () => {
     it('should classify images and identify in-use ones', async () => {
+      // B0.3: protection is now (prefix matches) AND (image is in use).
+      // We include a pod referencing file-manager-sidecar to confirm that
+      // a currently-running system image is still protected.
       const k8s = {
         core: {
           listNode: vi.fn().mockResolvedValue({
@@ -256,9 +283,11 @@ describe('storage service', () => {
             }],
           }),
           listPodForAllNamespaces: vi.fn().mockResolvedValue({
-            items: [{
-              spec: { containers: [{ image: 'mariadb:11' }] },
-            }],
+            items: [
+              { spec: { containers: [{ image: 'mariadb:11' }] } },
+              // Include file-manager-sidecar as running so it stays protected
+              { spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } },
+            ],
           }),
         },
       };
@@ -272,7 +301,9 @@ describe('storage service', () => {
       const mysql = result.images.find(i => i.name === 'mysql:9');
       expect(mysql?.inUse).toBe(false);
       expect(mysql?.protected).toBe(false);
+      // B0.3: protected=true because it matches a system prefix AND is in use
       const fm = result.images.find(i => i.name === 'file-manager-sidecar:latest');
+      expect(fm?.inUse).toBe(true);
       expect(fm?.protected).toBe(true);
       expect(result.purgeableCount).toBe(1); // only mysql:9
       expect(result.purgeableBytes).toBe(250_000_000);
@@ -289,6 +320,109 @@ describe('storage service', () => {
       expect(result.images).toHaveLength(0);
       expect(result.totalBytes).toBe(0);
       expect(result.purgeableCount).toBe(0);
+    });
+
+    // B0.1 — dangling :<none> images use digest as crictlName
+    it('B0.1 — dangling image with :<none> tag uses digest ref as crictlName (via purgeUnusedImages dry-run)', async () => {
+      // We verify crictlName indirectly: the image appears in removedImages
+      // with the display name (which includes the short digest) rather than
+      // the broken :<none> form.
+      const k8s = {
+        core: {
+          listNode: vi.fn().mockResolvedValue({
+            items: [{
+              metadata: { name: 'node-1' },
+              status: {
+                images: [
+                  {
+                    names: [
+                      'ghcr.io/foo/bar:<none>',
+                      'ghcr.io/foo/bar@sha256:abc123def456',
+                    ],
+                    sizeBytes: 50_000_000,
+                  },
+                ],
+              },
+            }],
+          }),
+          listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        },
+      };
+      const result = await getImageInventory(k8s as unknown as Parameters<typeof getImageInventory>[0]);
+      expect(result.images).toHaveLength(1);
+      // Display name must reference the short digest, NOT end with just ':<none>'
+      const img = result.images[0];
+      expect(img.name).toMatch(/abc123def456/);
+      expect(img.name).not.toBe('ghcr.io/foo/bar:<none>');
+      // Must be purgeable (not in use, not a protected prefix)
+      expect(img.inUse).toBe(false);
+      expect(result.purgeableCount).toBe(1);
+    });
+
+    // B0.3 — deprecated system images (not in use) should be purgeable
+    it('B0.3 — deprecated Longhorn image (not in use) is purgeable', async () => {
+      const k8s = {
+        core: {
+          listNode: vi.fn().mockResolvedValue({
+            items: [{
+              status: {
+                images: [
+                  { names: ['docker.io/longhornio/longhorn-manager:v1.4.0'], sizeBytes: 200_000_000 },
+                  { names: ['docker.io/longhornio/longhorn-manager:v1.5.0'], sizeBytes: 200_000_000 },
+                ],
+              },
+            }],
+          }),
+          listPodForAllNamespaces: vi.fn().mockResolvedValue({
+            items: [{
+              spec: { containers: [{ image: 'docker.io/longhornio/longhorn-manager:v1.5.0' }] },
+            }],
+          }),
+        },
+      };
+      const result = await getImageInventory(k8s as unknown as Parameters<typeof getImageInventory>[0]);
+      const old = result.images.find(i => i.name.includes('v1.4.0'));
+      const current = result.images.find(i => i.name.includes('v1.5.0'));
+      // Old version: prefix matches but NOT in use → purgeable
+      expect(old?.protected).toBe(false);
+      expect(old?.inUse).toBe(false);
+      // Current version: prefix matches AND in use → protected
+      expect(current?.protected).toBe(true);
+      expect(current?.inUse).toBe(true);
+      expect(result.purgeableCount).toBe(1);
+    });
+
+    // B0.4 — two distinct dangling images (same repo:<none>) get separate entries
+    it('B0.4 — two dangling images with same :<none> tag get distinct entries', async () => {
+      const k8s = {
+        core: {
+          listNode: vi.fn().mockResolvedValue({
+            items: [{
+              metadata: { name: 'node-1' },
+              status: {
+                images: [
+                  {
+                    names: ['ghcr.io/foo/bar:<none>', 'ghcr.io/foo/bar@sha256:aaa111'],
+                    sizeBytes: 10_000_000,
+                  },
+                  {
+                    names: ['ghcr.io/foo/bar:<none>', 'ghcr.io/foo/bar@sha256:bbb222'],
+                    sizeBytes: 20_000_000,
+                  },
+                ],
+              },
+            }],
+          }),
+          listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+        },
+      };
+      const result = await getImageInventory(k8s as unknown as Parameters<typeof getImageInventory>[0]);
+      // Must produce two separate entries, not one collapsed entry
+      expect(result.images).toHaveLength(2);
+      const names = result.images.map(i => i.name);
+      // Each entry must reference its own digest
+      expect(names.some(n => n.includes('aaa111'))).toBe(true);
+      expect(names.some(n => n.includes('bbb222'))).toBe(true);
     });
   });
 
@@ -320,6 +454,8 @@ describe('storage service', () => {
     });
 
     it('should return empty result in dry-run when no purgeable images', async () => {
+      // B0.3: system images (prefix match) are protected ONLY when in use.
+      // Include a pod running file-manager-sidecar so the image is protected.
       const k8s = {
         core: {
           listNode: vi.fn().mockResolvedValue({
@@ -331,7 +467,9 @@ describe('storage service', () => {
               },
             }],
           }),
-          listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+          listPodForAllNamespaces: vi.fn().mockResolvedValue({
+            items: [{ spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } }],
+          }),
         },
       };
 
@@ -343,6 +481,7 @@ describe('storage service', () => {
     });
 
     it('should not attempt purge when no purgeable images in non-dry-run mode', async () => {
+      // B0.3: include a pod running file-manager-sidecar so it stays protected.
       const createNamespacedPod = vi.fn();
       const k8s = {
         core: {
@@ -355,7 +494,9 @@ describe('storage service', () => {
               },
             }],
           }),
-          listPodForAllNamespaces: vi.fn().mockResolvedValue({ items: [] }),
+          listPodForAllNamespaces: vi.fn().mockResolvedValue({
+            items: [{ spec: { containers: [{ image: 'file-manager-sidecar:latest' }] } }],
+          }),
           createNamespacedPod,
         },
       };

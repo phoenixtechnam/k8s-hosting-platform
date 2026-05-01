@@ -24,6 +24,11 @@ export interface SystemSettings {
   // as hosting client workloads when bootstrap.sh did not stamp an
   // explicit value.
   readonly newServerHostsClientWorkloads: boolean;
+  // Kubelet image-GC thresholds (migration 0065). Applied via
+  // bootstrap.sh --kubelet-arg flags on new nodes.
+  readonly imageGcHighThreshold: number;
+  readonly imageGcLowThreshold: number;
+  readonly imageGcMinTtlMinutes: number;
   readonly updatedAt: string;
 }
 
