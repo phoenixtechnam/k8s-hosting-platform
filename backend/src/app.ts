@@ -106,6 +106,8 @@ import { startDkimScheduler } from './modules/email-dkim/scheduler.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
+import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
+import { startKubeletGcReconciler } from './modules/cluster-settings/kubelet-gc-reconciler.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -592,6 +594,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       }, 60 * 60 * 1000); // 1h
       app.addHook('onClose', () => clearInterval(passkeyPruneInterval));
+
+      // Phase 3 — disk-pressure image watcher + Phase 2 kubelet-GC drift
+      // detector. Both share a k8s client. Failures are non-fatal.
+      try {
+        const { createK8sClients: createK8sForWatcher } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const watcherKubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+        const watcherK8s = createK8sForWatcher(watcherKubePath);
+
+        const pressureWatcher = startImagePressureWatcher(app.db, watcherK8s, app.log);
+        app.addHook('onClose', () => pressureWatcher.stop());
+
+        const gcReconciler = startKubeletGcReconciler(app.db, watcherK8s, app.log);
+        app.addHook('onClose', () => gcReconciler.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'image-pressure-watcher / kubelet-gc-reconciler: startup skipped');
+      }
 
       app.addHook('onClose', async () => { await closeRedis(); });
     });

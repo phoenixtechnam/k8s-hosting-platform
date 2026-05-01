@@ -1574,6 +1574,9 @@ install_k3s_server() {
       --write-kubeconfig-mode=644 \
       --cluster-cidr=${cluster_cidr_arg} \
       --service-cidr=${service_cidr_arg} \
+      --kubelet-arg=image-gc-high-threshold=70 \
+      --kubelet-arg=image-gc-low-threshold=60 \
+      --kubelet-arg=minimum-image-ttl-duration=60m \
       ${tls_sans}
 
   log "Waiting for k3s API server..."

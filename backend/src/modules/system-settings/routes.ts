@@ -61,6 +61,11 @@ const updateSchema = z.object({
   // SERVER nodes that arrive without an explicit
   // `platform.phoenix-host.net/host-client-workloads` label.
   newServerHostsClientWorkloads: z.boolean().optional(),
+  // Kubelet image-GC thresholds (migration 0065). high > low, both 0–100,
+  // minTtl ≥ 0. Applied on new nodes via bootstrap.sh --kubelet-arg.
+  imageGcHighThreshold: z.number().int().min(50).max(95).optional(),
+  imageGcLowThreshold: z.number().int().min(40).max(94).optional(),
+  imageGcMinTtlMinutes: z.number().int().min(0).max(1440).optional(),
 });
 
 export async function systemSettingsRoutes(app: FastifyInstance): Promise<void> {

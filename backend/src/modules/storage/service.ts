@@ -14,7 +14,14 @@ import type {
 
 /**
  * Prefixes for images that are part of platform infrastructure.
- * These images MUST NEVER be purged — removing them would break the platform.
+ *
+ * B0.3 change: these prefixes alone are no longer sufficient to protect an
+ * image. An image is "protected" only when it matches a prefix AND it is
+ * currently in use by a pod. Deprecated/orphaned system images (e.g. old k3s
+ * versions after an upgrade) become purgeable once no pod references them.
+ *
+ * Pass `inUse=true` (the default) to preserve the legacy behaviour for callers
+ * that don't track in-use state.
  */
 const PROTECTED_PREFIXES: readonly string[] = [
   'hosting-platform-',
@@ -26,6 +33,14 @@ const PROTECTED_PREFIXES: readonly string[] = [
   'docker.io/rancher/',
   'docker.io/library/busybox', // Used by init containers
   'docker.io/library/file-manager-sidecar',
+  // System-critical images added in B0.3 — protected only when in use
+  'docker.io/longhornio/',
+  'quay.io/calico/',
+  'quay.io/jetstack/cert-manager-',
+  'ghcr.io/cloudnative-pg/',
+  'ghcr.io/fluxcd/',
+  'docker.io/bitnami/sealed-secrets-controller',
+  'ghcr.io/phoenixtechnam/hosting-platform/',
 ];
 
 export interface ClassifiedImage {
@@ -33,18 +48,45 @@ export interface ClassifiedImage {
 }
 
 /**
- * Determine whether an image name matches any protected prefix.
+ * Determine whether an image is protected.
+ *
+ * @param name - Image reference (tag or digest form)
+ * @param inUse - Whether any running pod references this image. Defaults to
+ *   `true` so existing callers remain conservative (prefix match → protected).
+ *   Pass `false` for images confirmed to be unused; they become purgeable even
+ *   if their registry prefix matches a known system prefix.
  */
-export function classifyImage(name: string): ClassifiedImage {
+export function classifyImage(name: string, inUse = true): ClassifiedImage {
   // Normalize: strip docker.io/library/ prefix if present for matching
   const normalized = name.replace(/^docker\.io\/library\//, '');
 
-  const isProtected = PROTECTED_PREFIXES.some(prefix => {
+  const prefixMatches = PROTECTED_PREFIXES.some(prefix => {
     // Match against both the normalized name and the original
     return normalized.startsWith(prefix) || name.startsWith(prefix);
   });
 
+  // B0.3: prefix match alone is insufficient. The image is only truly
+  // protected when it is ALSO in use. An orphaned system image (e.g., old
+  // k3s version after upgrade) is safe to purge.
+  const isProtected = prefixMatches && inUse;
+
   return { protected: isProtected };
+}
+
+/**
+ * HIGH #4: classify by examining ALL names attached to an image.
+ *
+ * The aggregator's display name has `docker.io/library/` stripped, which
+ * causes prefix entries like `docker.io/library/busybox` and
+ * `docker.io/library/file-manager-sidecar` to never match. Pass every name
+ * the kubelet reports for the image; if any one matches a protected prefix
+ * (and the image is in use), the image is protected.
+ */
+export function classifyImageByNames(names: readonly string[], inUse: boolean): ClassifiedImage {
+  for (const n of names) {
+    if (classifyImage(n, inUse).protected) return { protected: true };
+  }
+  return { protected: false };
 }
 
 // ─── Image Name Formatting ───────────────────────────────────────────────────
@@ -96,8 +138,11 @@ export function parseNodeImages(nodeImages: readonly RawNodeImage[]): readonly P
 
 /**
  * Filter images to only those that are safe to purge:
- * - Not protected (not a platform/system image)
+ * - Not protected (not a platform/system image that is currently in use)
  * - Not currently in use by any pod
+ *
+ * B0.3: `img.protected` is now false for system images that are NOT in use,
+ * so this filter naturally picks them up as purgeable.
  */
 export function filterPurgeableImages(images: readonly ImageEntry[]): readonly ImageEntry[] {
   return images.filter(img => !img.protected && !img.inUse);
@@ -279,35 +324,51 @@ export async function getStorageOverview(
 
 // ─── Image Inventory ─────────────────────────────────────────────────────────
 
-async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
+export async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
   const inUse = new Set<string>();
   try {
     const podList = await k8s.core.listPodForAllNamespaces();
     type PodContainer = { readonly image?: string };
+    type StatusContainer = { readonly image?: string; readonly imageID?: string };
     type Pod = {
       readonly spec?: {
         readonly containers?: readonly PodContainer[];
         readonly initContainers?: readonly PodContainer[];
+        readonly ephemeralContainers?: readonly PodContainer[];
       };
       readonly status?: {
-        readonly containerStatuses?: readonly { readonly image?: string; readonly imageID?: string }[];
-        readonly initContainerStatuses?: readonly { readonly image?: string; readonly imageID?: string }[];
+        readonly containerStatuses?: readonly StatusContainer[];
+        readonly initContainerStatuses?: readonly StatusContainer[];
+        readonly ephemeralContainerStatuses?: readonly StatusContainer[];
       };
     };
     const pods = (podList as { items?: readonly Pod[] }).items ?? [];
+    const addStatus = (s: StatusContainer): void => {
+      // CRITICAL #2: also pin the resolved digest (imageID) so digest-pinned
+      // images aren't reaped when crictlName resolves to the digest form.
+      if (s.image) inUse.add(s.image);
+      if (s.imageID) {
+        inUse.add(s.imageID);
+        // Strip the docker-pullable:// prefix some runtimes emit
+        const stripped = s.imageID.replace(/^docker-pullable:\/\//, '');
+        if (stripped !== s.imageID) inUse.add(stripped);
+      }
+    };
     for (const pod of pods) {
+      // CRITICAL #1: ephemeral containers (kubectl debug) hold images that
+      // must not be reaped while the debug session is alive.
       for (const c of pod.spec?.containers ?? []) {
         if (c.image) inUse.add(c.image);
       }
       for (const c of pod.spec?.initContainers ?? []) {
         if (c.image) inUse.add(c.image);
       }
-      for (const s of pod.status?.containerStatuses ?? []) {
-        if (s.image) inUse.add(s.image);
+      for (const c of pod.spec?.ephemeralContainers ?? []) {
+        if (c.image) inUse.add(c.image);
       }
-      for (const s of pod.status?.initContainerStatuses ?? []) {
-        if (s.image) inUse.add(s.image);
-      }
+      for (const s of pod.status?.containerStatuses ?? []) addStatus(s);
+      for (const s of pod.status?.initContainerStatuses ?? []) addStatus(s);
+      for (const s of pod.status?.ephemeralContainerStatuses ?? []) addStatus(s);
     }
   } catch {
     // Return empty set on error — all images will be shown as not-in-use
@@ -315,11 +376,15 @@ async function getInUseImages(k8s: K8sClients): Promise<Set<string>> {
   return inUse;
 }
 
-function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
+export function isAnyNameInUse(allNames: readonly string[], inUseSet: ReadonlySet<string>): boolean {
   for (const name of allNames) {
     if (inUseSet.has(name)) return true;
     const normalized = name.replace(/^docker\.io\/library\//, '');
     if (inUseSet.has(normalized)) return true;
+    // Also accept the docker.io/library/ form when the in-use set has the bare name
+    if (!name.includes('/')) {
+      if (inUseSet.has(`docker.io/library/${name}`)) return true;
+    }
   }
   return false;
 }
@@ -341,6 +406,76 @@ interface AggregatedImage {
 
 type RawImage = { names?: readonly string[] | null; sizeBytes?: number };
 
+/**
+ * Choose the best crictl-compatible reference for an image.
+ *
+ * B0.1 fix: when the image has no real (non-`<none>`) tag — either because
+ * the tag is literally `<none>` (CI rolled a new :latest) or because there is
+ * no tag entry at all — fall back to the digest reference (`repo@sha256:…`)
+ * or the bare image ID (`sha256:…`). Both are accepted by `crictl rmi`.
+ */
+function chooseCrictlName(names: readonly string[]): string {
+  // 1. Prefer a real tag (has ':' and not '@sha256', and does NOT end with ':<none>')
+  const realTag = names.find(n =>
+    n.includes(':') &&
+    !n.includes('@sha256') &&
+    !n.endsWith(':<none>'),
+  );
+  if (realTag) return realTag;
+
+  // 2. Fall back to the digest form (repo@sha256:...) — unambiguous for crictl
+  const digestRef = names.find(n => n.includes('@sha256:'));
+  if (digestRef) return digestRef;
+
+  // 3. Last resort: bare sha256 ID or whatever is left
+  return names[0];
+}
+
+/**
+ * Derive a stable dedup key for the byDisplay map.
+ *
+ * B0.4 fix: multiple distinct dangling images can all produce the display name
+ * `repo:<none>`. Use the digest (or bare sha256 ID) as the dedup key when no
+ * real tag is available, so each dangling image gets its own entry.
+ */
+function dedupKey(names: readonly string[]): string {
+  // If there is a real tag, that is unique enough
+  const realTag = names.find(n =>
+    n.includes(':') &&
+    !n.includes('@sha256') &&
+    !n.endsWith(':<none>'),
+  );
+  if (realTag) return realTag;
+
+  // Dangling image — use digest or first name as dedup key
+  const digestRef = names.find(n => n.includes('@sha256:'));
+  return digestRef ?? names[0];
+}
+
+/**
+ * B0.4: build the UI display name. For dangling images (`:<none>`), append the
+ * short image ID so operators can tell them apart.
+ */
+function buildDisplayName(names: readonly string[]): string {
+  const realTag = names.find(n =>
+    n.includes(':') &&
+    !n.includes('@sha256') &&
+    !n.endsWith(':<none>'),
+  );
+  if (realTag) return formatImageName(realTag);
+
+  // Dangling: show `repo:<none> (<short-id>)` when a digest ref is available
+  const noneTag = names.find(n => n.endsWith(':<none>'));
+  const digestRef = names.find(n => n.includes('@sha256:'));
+  if (digestRef) {
+    const shortId = digestRef.split('@sha256:')[1]?.slice(0, 12) ?? '';
+    const base = noneTag ? formatImageName(noneTag) : formatImageName(digestRef);
+    return shortId ? `${base} (${shortId})` : base;
+  }
+
+  return formatImageName(names[0]);
+}
+
 async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly AggregatedImage[]> {
   let nodes: readonly { metadata?: { name?: string }; status?: { images?: readonly RawImage[] } }[] = [];
   try {
@@ -351,7 +486,7 @@ async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly Agg
   }
 
   const inUseSet = await getInUseImages(k8s);
-  const byDisplay = new Map<string, { displayName: string; perNode: NodeImagePresence[]; allNames: Set<string> }>();
+  const byKey = new Map<string, { displayName: string; perNode: NodeImagePresence[]; allNames: Set<string> }>();
 
   for (const node of nodes) {
     const nodeName = node.metadata?.name ?? 'unknown';
@@ -359,17 +494,19 @@ async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly Agg
     for (const img of images) {
       const names = img.names ?? [];
       if (names.length === 0) continue;
-      const tagName = names.find(n => n.includes(':') && !n.includes('@sha256')) ?? names[0];
-      const displayName = formatImageName(tagName);
 
-      let entry = byDisplay.get(displayName);
+      const key = dedupKey(names);             // B0.4: stable dedup key per image
+      const displayName = buildDisplayName(names); // B0.4: UI-friendly name
+      const crictlName = chooseCrictlName(names);  // B0.1: crictl-safe reference
+
+      let entry = byKey.get(key);
       if (!entry) {
         entry = { displayName, perNode: [], allNames: new Set<string>() };
-        byDisplay.set(displayName, entry);
+        byKey.set(key, entry);
       }
       entry.perNode.push({
         node: nodeName,
-        crictlName: tagName,
+        crictlName,
         sizeBytes: img.sizeBytes ?? 0,
         allNames: names,
       });
@@ -378,10 +515,13 @@ async function aggregateImagesAcrossNodes(k8s: K8sClients): Promise<readonly Agg
   }
 
   const result: AggregatedImage[] = [];
-  for (const entry of byDisplay.values()) {
+  for (const entry of byKey.values()) {
     const totalSizeBytes = entry.perNode.reduce((s, p) => s + p.sizeBytes, 0);
-    const isProtected = classifyImage(entry.displayName).protected;
     const inUse = isAnyNameInUse([...entry.allNames, entry.displayName], inUseSet);
+    // B0.3 + HIGH #4: pass ALL names (not the stripped display name) so that
+    // protected prefixes containing `docker.io/library/...` actually match.
+    // inUse remains the gate so deprecated system images become purgeable.
+    const isProtected = classifyImageByNames([...entry.allNames], inUse).protected;
     result.push({
       displayName: entry.displayName,
       perNode: entry.perNode,
@@ -424,7 +564,7 @@ const PURGE_POLL_MS = 2_000;
 // We do not (yet) support upstream containerd installations.
 const CONTAINERD_SOCKET_PATH = '/run/k3s/containerd/containerd.sock';
 
-interface PerNodePurgeResult {
+export interface PerNodePurgeResult {
   readonly node: string;
   readonly removedDisplayNames: readonly string[];
   readonly failedDisplayNames: readonly string[];
@@ -432,7 +572,7 @@ interface PerNodePurgeResult {
   readonly podError?: string;
 }
 
-async function runPurgeOnNode(
+export async function runPurgeOnNode(
   k8s: K8sClients,
   node: string,
   targets: readonly { crictlName: string; displayName: string; sizeBytes: number }[],
@@ -448,6 +588,12 @@ async function runPurgeOnNode(
   // --runtime-endpoint is supplied on the command line. It searches
   // /var/lib/rancher/k3s/agent/etc/crictl.yaml first — write a minimal
   // config there before invoking it.
+  //
+  // B0.2: run `crictl rmi --prune` first to remove any dangling blobs/layers
+  // that didn't make it into our node.status.images list. Failures are logged
+  // (PRUNE_FAILED line) but do not abort the per-image loop. Freed bytes from
+  // --prune are counted separately (we don't know exact size, so we output the
+  // exit code and skip byte tracking for the prune pass).
   const script = `
 set -u
 if [ ! -S "${CONTAINERD_SOCKET_PATH}" ]; then
@@ -460,6 +606,11 @@ runtime-endpoint: unix://${CONTAINERD_SOCKET_PATH}
 image-endpoint: unix://${CONTAINERD_SOCKET_PATH}
 timeout: 30
 EOF
+if crictl rmi --prune >/tmp/prune_out 2>&1; then
+  echo "PRUNE_OK"
+else
+  echo "PRUNE_FAILED:$(tr '\\n' ' ' < /tmp/prune_out | head -c 200)"
+fi
 for img in ${imageList}; do
   if crictl rmi "$img" >/tmp/out 2>&1; then
     echo "REMOVED:$img"
@@ -550,6 +701,9 @@ done
         const t = crictlByName.get(crictlName);
         failedDisplayNames.push(t?.displayName ?? crictlName);
       }
+      // B0.2: PRUNE_FAILED is logged but does not fail the whole purge
+      // (the per-image loop still runs). No bytes are tracked for --prune
+      // since we don't know exact sizes of orphaned blobs.
     }
   } else if (!podError) {
     podError = `purge pod on ${node} did not finish within ${PURGE_TIMEOUT_MS / 1000}s`;

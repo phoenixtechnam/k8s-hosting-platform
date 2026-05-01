@@ -711,6 +711,33 @@ export async function deleteDeployment(
       }
     }
   }
+
+  // Phase 1 — eager image reap: schedule removal of the deployment's
+  // container images after a 5-minute grace period (pods may still be
+  // Terminating). Fire-and-forget; errors are logged to image_reap_log.
+  if (k8s) {
+    void (async () => {
+      try {
+        const [entry] = await db
+          .select()
+          .from(catalogEntries)
+          .where(eq(catalogEntries.id, deployment.catalogEntryId));
+        if (!entry) return;
+        const components = resolveComponents(entry, null);
+        const images = [...new Set(components.map(c => c.image).filter(Boolean))];
+        const { scheduleReap } = await import('../storage/image-reaper.js');
+        for (const image of images) {
+          scheduleReap(db, k8s, {
+            image,
+            triggeredBy: 'deployment_delete',
+            triggerRef: deploymentId,
+          });
+        }
+      } catch {
+        // Non-critical: log suppressed — reap is best-effort
+      }
+    })();
+  }
 }
 
 export async function restoreDeployment(

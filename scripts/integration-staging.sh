@@ -389,6 +389,103 @@ scenario_drain() {
   return 1
 }
 
+# ─── scenario 6: image reaper E2E ─────────────────────────────────
+#
+# Phase 4 acceptance test for the eager image reaper.
+#
+# Steps:
+#   1. Provision a client + deploy the nginx-php catalog entry.
+#   2. Wait until the deployment is running (image pulled onto the node).
+#   3. Capture which node the pod landed on via kubectl.
+#   4. Assert the image IS present on that node via crictl images.
+#   5. Delete the deployment via the API.
+#   6. Wait the reaper grace period (5 min) + 30s for the reap job to run.
+#   7. Assert the image is GONE from the node via crictl images.
+#
+# SKIP GUARD: this scenario requires SSH access to the cluster node.
+# Set SKIP_REAPER_SCENARIO=1 to skip (e.g. on clusters without SSH).
+
+scenario_reaper() {
+  if [[ "${SKIP_REAPER_SCENARIO:-}" == "1" ]]; then
+    log "scenario reaper skipped — SKIP_REAPER_SCENARIO=1"
+    return 0
+  fi
+
+  local plan_id region_id
+  plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
+  region_id=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
+  [[ -n "$plan_id" && -n "$region_id" ]] || { fail "reaper: could not resolve plan/region"; return 1; }
+
+  local stamp; stamp=$(date +%s)
+  local company="Reaper Test $stamp"
+  local resp; resp=$(api POST "/clients" \
+    "{\"company_name\":\"$company\",\"company_email\":\"reaper-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$cid" ]] || { fail "reaper: client create failed"; return 1; }
+  ok "reaper: client created cid=$cid"
+
+  wait_for 90 "reaper: namespace provisioned" "Active" \
+    "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1
+  wait_for 180 "reaper: client provisioned" '"provisioningStatus":"provisioned"' \
+    "api GET '/clients/$cid'" || return 1
+
+  # Deploy nginx-php
+  local depl_name="reaper-${stamp}"
+  local depl_resp; depl_resp=$(api POST "/clients/$cid/deployments" \
+    "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}")
+  local depl_id; depl_id=$(echo "$depl_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$depl_id" ]] || { fail "reaper: deployment create failed: $(echo "$depl_resp" | head -c 300)"; return 1; }
+  ok "reaper: deployment created depl_id=$depl_id"
+
+  # Wait for pod to be running (image must be pulled)
+  wait_for 240 "reaper: deployment running" '"status":"running"' \
+    "api GET '/clients/$cid/deployments/$depl_id'" || return 1
+
+  # Find the namespace and the node the pod landed on
+  local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}'")
+  [[ -n "$ns" ]] || { fail "reaper: could not resolve tenant namespace"; return 1; }
+
+  local node_name; node_name=$(ssh_cp "kubectl -n $ns get pods -l app=$depl_name -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null || true)
+  [[ -n "$node_name" ]] || { fail "reaper: could not determine pod node"; return 1; }
+  ok "reaper: pod is on node $node_name"
+
+  # Capture the image ref from the running pod
+  local image_ref; image_ref=$(ssh_cp "kubectl -n $ns get pods -l app=$depl_name -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'" 2>/dev/null || true)
+  # imageID may be a full digest ref; strip the docker-pullable:// prefix if present
+  image_ref="${image_ref#docker-pullable://}"
+  [[ -n "$image_ref" ]] || { fail "reaper: could not determine image ref"; return 1; }
+  ok "reaper: image ref = $image_ref"
+
+  # Assert image IS present on the node before deletion
+  if ssh_cp "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
+    ok "reaper: image confirmed present on node $node_name before delete"
+  else
+    fail "reaper: image not found on node $node_name before delete — pull may have failed"
+    # Clean up and exit scenario (don't false-pass the post-delete check)
+    api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  # Delete the deployment
+  local del_resp; del_resp=$(api DELETE "/clients/$cid/deployments/$depl_id" 2>/dev/null)
+  # Accept 200 or 204
+  ok "reaper: deployment deleted (response: $(echo "$del_resp" | head -c 80))"
+
+  # Wait the grace period (5 min) + 30s buffer
+  log "reaper: waiting 330s for reaper grace period + job to complete…"
+  sleep 330
+
+  # Assert image is GONE from the node
+  if ssh_cp "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
+    fail "reaper: image STILL present on node $node_name after 330s — reaper did not fire"
+  else
+    ok "reaper: image successfully reaped from node $node_name"
+  fi
+
+  # Clean up the test client
+  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+}
+
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
@@ -450,6 +547,7 @@ case "$SCENARIO" in
     run_scenario https
     run_scenario reprovision
     run_scenario drain
+    run_scenario reaper
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then
