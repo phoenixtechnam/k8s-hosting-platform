@@ -2792,108 +2792,54 @@ apply_platform_manifests() {
   local overlay_dir="${repo_dir}/k8s/overlays/${PLATFORM_ENV}"
   mkdir -p "$overlay_dir"
 
-  if [[ "$PLATFORM_ENV" == "staging" && -f "${overlay_dir}/kustomization.yaml" ]]; then
-    log "Staging: preserving checked-in overlay (placeholder-templated)."
-    # ── Domain templating via Flux postBuild.substituteFrom ────────────
-    # The checked-in staging overlay holds literal ${DOMAIN} placeholders
-    # wherever a per-cluster value (Ingress hosts, CORS origins, cookie
-    # domains, passkey RP-ID, Dex issuer) would otherwise be hardcoded.
-    # We materialise the operator's --domain into a single source-of-
-    # truth ConfigMap (platform-cluster-config in the flux-system
-    # namespace, where Flux's kustomize-controller looks it up). Both
-    # paths converge on the same rendered output:
-    #   • bootstrap (this script): `kustomize | envsubst | kubectl apply`
-    #   • Flux: built-in postBuild.substituteFrom on every reconcile
-    # No on-disk sed; no Flux/bootstrap tug-of-war. See
-    # docs/04-deployment/CLUSTER_NETWORK.md (operator section) for the
-    # full design.
-    log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN})..."
-    kctl create configmap platform-cluster-config \
-      -n flux-system \
-      --from-literal=DOMAIN="${PLATFORM_DOMAIN}" \
-      --dry-run=client -o yaml | kctl apply -f -
-
-    # Replace Dex PLACEHOLDER URLs and inject generated client secrets
-    # (these are dex-specific, not part of the shared DOMAIN templating).
-    local dex_config="${overlay_dir}/dex/config.yaml"
-    if [[ -f "$dex_config" ]]; then
-      log "Updating Dex config..."
-      sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
-      # Note: ${DOMAIN}-bearing lines (issuer, redirectURIs) are left as
-      # placeholders and resolved by envsubst at apply time.
-      local proxy_secret
-      proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
-      if [[ -n "$proxy_secret" ]]; then
-        sed -i "s|staging-secret-oauth2-proxy|${proxy_secret}|g" "$dex_config"
-        log "Dex oauth2-proxy client secret synced from generated secret."
-      fi
-    fi
-
-    # envsubst is in apt's `gettext-base` package — already pulled in by
-    # base-image dependencies on Debian/Ubuntu/RHEL. Fail loud if missing.
-    if ! command -v envsubst >/dev/null 2>&1; then
-      error "envsubst not found on PATH; install gettext-base / gettext."
-    fi
-    log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
-    DOMAIN="${PLATFORM_DOMAIN}" \
-      kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
-      | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
-      | kctl apply -f -
-    log "Staging manifests applied."
-    return 0
+  # ── Unified overlay-apply flow (works for ALL environments) ──────────
+  # Every overlay (dev, staging, production) is checked into the repo
+  # using literal `${DOMAIN}` placeholders wherever the cluster apex
+  # would otherwise be hardcoded. Two converging paths apply the
+  # rendered output:
+  #   • bootstrap (this script): `kustomize | envsubst | kubectl apply`
+  #   • Flux: built-in postBuild.substituteFrom on every reconcile,
+  #     reading from the same platform-cluster-config ConfigMap.
+  # No on-disk sed; no Flux/bootstrap tug-of-war. See
+  # docs/04-deployment/CLUSTER_NETWORK.md (operator section).
+  if [[ ! -f "${overlay_dir}/kustomization.yaml" ]]; then
+    error "Overlay ${PLATFORM_ENV} not found at ${overlay_dir}/kustomization.yaml — \
+expected k8s/overlays/${PLATFORM_ENV}/ to exist (dev | staging | production)."
   fi
 
-  # Also handle dev overlay Dex config if present
-  if [[ "$PLATFORM_ENV" == "dev" ]]; then
-    local dex_config="${overlay_dir}/dex/config.yaml"
-    if [[ -f "$dex_config" ]]; then
-      log "Updating dev Dex config with domain ${PLATFORM_DOMAIN}..."
-      sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
-      sed -i "s|issuer:.*|issuer: http://dex.${PLATFORM_DOMAIN}/dex|" "$dex_config"
-      # Sync oauth2-proxy client secret
-      local proxy_secret
-      proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
-      if [[ -n "$proxy_secret" ]]; then
-        sed -i "s|local-dev-secret-oauth2-proxy|${proxy_secret}|g" "$dex_config"
-      fi
+  log "Materialising ConfigMap platform-cluster-config (DOMAIN=${PLATFORM_DOMAIN}, ENV=${PLATFORM_ENV})..."
+  kctl create configmap platform-cluster-config \
+    -n flux-system \
+    --from-literal=DOMAIN="${PLATFORM_DOMAIN}" \
+    --from-literal=ENV="${PLATFORM_ENV}" \
+    --dry-run=client -o yaml | kctl apply -f -
+
+  # Dex config injection — only for overlays that ship Dex (dev/staging).
+  # Replace any leftover PLACEHOLDER URLs and the generated oauth2-proxy
+  # client secret. The ${DOMAIN}-bearing lines are left as placeholders
+  # for envsubst to resolve below.
+  local dex_config="${overlay_dir}/dex/config.yaml"
+  if [[ -f "$dex_config" ]]; then
+    log "Updating Dex config (env=${PLATFORM_ENV})..."
+    sed -i "s|PLACEHOLDER.example.com|${PLATFORM_DOMAIN}|g" "$dex_config"
+    local proxy_secret
+    proxy_secret=$(kctl get secret -n platform oauth2-proxy-config -o jsonpath='{.data.OAUTH2_PROXY_CLIENT_SECRET}' 2>/dev/null | base64 -d || echo "")
+    if [[ -n "$proxy_secret" ]]; then
+      # Match either staging-secret-oauth2-proxy or local-dev-secret-oauth2-proxy
+      sed -i "s|staging-secret-oauth2-proxy\|local-dev-secret-oauth2-proxy|${proxy_secret}|g" "$dex_config"
+      log "Dex oauth2-proxy client secret synced from generated secret."
     fi
   fi
 
-  cat > "${overlay_dir}/kustomization.yaml" <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-resources:
-  - ../../base
-
-patches:
-  # Ingress hostnames for ${PLATFORM_ENV} (generated by bootstrap.sh --domain ${PLATFORM_DOMAIN})
-  - target:
-      kind: Ingress
-      name: platform-ingress
-      namespace: platform
-    patch: |
-      - op: replace
-        path: /spec/tls/0/hosts
-        value:
-          - ${api_host}
-          - ${admin_host}
-          - ${client_host}
-      - op: replace
-        path: /spec/rules/0/host
-        value: ${api_host}
-      - op: replace
-        path: /spec/rules/1/host
-        value: ${admin_host}
-      - op: replace
-        path: /spec/rules/2/host
-        value: ${client_host}
-EOF
-
-  log "Generated overlay at ${overlay_dir}/kustomization.yaml"
-
-  kctl apply -k "${overlay_dir}"
-  log "Platform manifests applied with domain ${PLATFORM_DOMAIN}."
+  if ! command -v envsubst >/dev/null 2>&1; then
+    error "envsubst not found on PATH; install gettext-base / gettext."
+  fi
+  log "Rendering overlay with envsubst (DOMAIN=${PLATFORM_DOMAIN}) and applying..."
+  DOMAIN="${PLATFORM_DOMAIN}" \
+    kubectl --kubeconfig="$KUBECONFIG" kustomize "$overlay_dir" \
+    | DOMAIN="${PLATFORM_DOMAIN}" envsubst '${DOMAIN}' \
+    | kctl apply -f -
+  log "Platform manifests applied with domain ${PLATFORM_DOMAIN} (env=${PLATFORM_ENV})."
 }
 
 # ─── Phase 4: Verification ───────────────────────────────────────────────────

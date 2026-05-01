@@ -24,10 +24,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - dex.k8s-platform.test
+        - dex.${DOMAIN}
       secretName: dex-dev-tls
   rules:
-    - host: dex.k8s-platform.test
+    - host: dex.${DOMAIN}
       http:
         paths:
           - path: /

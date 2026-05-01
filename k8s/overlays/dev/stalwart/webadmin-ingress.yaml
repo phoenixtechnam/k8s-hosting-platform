@@ -1,6 +1,6 @@
 # Dedicated subdomain for Stalwart's embedded web-admin SPA.
 #
-# URL (dev): https://mail-admin.k8s-platform.test:2011/
+# URL (dev): https://mail-admin.${DOMAIN}:2011/
 # Backend:   stalwart-mail-mgmt.mail.svc.cluster.local:8080
 #
 # Why a separate subdomain (vs same-origin proxy on admin.*):
@@ -18,7 +18,7 @@
 # Access control:
 #   nginx auth_request calls /api/v1/auth/verify-admin-session on the
 #   platform backend. The browser's platform_session cookie (issued by
-#   /api/v1/auth/login with Domain=.k8s-platform.test) is forwarded on
+#   /api/v1/auth/login with Domain=.${DOMAIN}) is forwarded on
 #   the sub-request. Only admin-panel staff (super_admin/admin/billing/
 #   support) pass; read_only, client_admin, client_user → 403.
 #
@@ -38,7 +38,7 @@ metadata:
     # The platform_session cookie is forwarded automatically via the
     # sub-request. 2xx → pass, 401/403 → redirect to admin-panel login.
     nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
-    nginx.ingress.kubernetes.io/auth-signin: "https://admin.k8s-platform.test:2011/login?redirect=/settings/mail"
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}:2011/login?redirect=/settings/mail"
     # Sub-request to the verify endpoint must ONLY carry the browser's
     # platform_session cookie. We strip Authorization so Stalwart's own
     # OAuth Bearer (set by its SPA on XHR calls) can't reach our JWT
@@ -60,7 +60,7 @@ metadata:
     # restrict who may embed. frame-ancestors is the modern CSP
     # replacement for X-Frame-Options; it covers the full origin list.
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_set_headers "Content-Security-Policy: frame-ancestors https://admin.k8s-platform.test:2011 https://admin.k8s-platform.test";
+      more_set_headers "Content-Security-Policy: frame-ancestors https://admin.${DOMAIN}:2011 https://admin.${DOMAIN}";
     # WebSocket support for live metrics / log streaming.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
@@ -68,10 +68,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - mail-admin.k8s-platform.test
+        - mail-admin.${DOMAIN}
       secretName: stalwart-webadmin-dev-tls
   rules:
-    - host: mail-admin.k8s-platform.test
+    - host: mail-admin.${DOMAIN}
       http:
         paths:
           - path: /

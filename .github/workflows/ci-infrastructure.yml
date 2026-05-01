@@ -74,6 +74,14 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  no-pinned-domains:
+    name: No hard-coded apex domains in K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan k8s/ for pinned apex literals
+        run: ./scripts/ci-no-pinned-domains.sh
+
   system-affinity-check:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest

@@ -46,10 +46,12 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [admin.k8s-platform.test, client.k8s-platform.test]
+    - hosts:
+        - admin.${DOMAIN}
+        - client.${DOMAIN}
       secretName: platform-dev-tls
   rules:
-    - host: admin.k8s-platform.test
+    - host: admin.${DOMAIN}
       http:
         paths:
           - path: /api/v1/clients/[^/]+/files/upload-raw
@@ -59,7 +61,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.k8s-platform.test
+    - host: client.${DOMAIN}
       http:
         paths:
           - path: /api/v1/clients/[^/]+/files/upload-raw

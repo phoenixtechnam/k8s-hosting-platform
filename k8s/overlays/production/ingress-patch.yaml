@@ -1,5 +1,5 @@
 # Patch ingress hostnames for production environment.
-# Replace example.com with your actual production domain.
+# Replace ${DOMAIN} with your actual production domain.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,11 +10,11 @@ metadata:
 spec:
   tls:
     - hosts:
-        - admin.example.com
-        - client.example.com
+        - admin.${DOMAIN}
+        - client.${DOMAIN}
       secretName: platform-production-tls
   rules:
-    - host: admin.example.com
+    - host: admin.${DOMAIN}
       http:
         paths:
           - path: /
@@ -24,7 +24,7 @@ spec:
                 name: admin-panel
                 port:
                   number: 80
-    - host: client.example.com
+    - host: client.${DOMAIN}
       http:
         paths:
           - path: /

@@ -73,10 +73,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - webmail.k8s-platform.test
+        - webmail.${DOMAIN}
       secretName: webmail-tls
   rules:
-    - host: webmail.k8s-platform.test
+    - host: webmail.${DOMAIN}
       http:
         paths:
           - path: /

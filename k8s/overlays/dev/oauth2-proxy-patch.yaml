@@ -1,7 +1,7 @@
 # Dev overlay: split browser-facing and cluster-internal URLs for oauth2-proxy.
 #
 # Pods can't validate the self-signed cert that the dev ingress presents on
-# dex.k8s-platform.test:2011, so we keep the redeem/jwks calls on the
+# dex.${DOMAIN}:2011, so we keep the redeem/jwks calls on the
 # cluster-internal Service DNS. The browser-facing login URL uses the
 # ingress subdomain so the user sees HTTPS with the dev CA.
 #
@@ -23,9 +23,9 @@ spec:
             - --upstream=static://200
             - --email-domain=*
             - --provider=oidc
-            - --oidc-issuer-url=https://dex.k8s-platform.test:2011/dex
+            - --oidc-issuer-url=https://dex.${DOMAIN}:2011/dex
             - --skip-oidc-discovery=true
-            - --login-url=https://dex.k8s-platform.test:2011/dex/auth
+            - --login-url=https://dex.${DOMAIN}:2011/dex/auth
             - --redeem-url=http://dex.platform.svc.cluster.local:5556/dex/token
             - --oidc-jwks-url=http://dex.platform.svc.cluster.local:5556/dex/keys
             - --client-id=$(OAUTH2_PROXY_CLIENT_ID)
