@@ -1956,6 +1956,20 @@ spec:
     - http01:
         ingress:
           ingressClassName: nginx
+          # Solver Pods are short-lived Jobs spawned by cert-manager.
+          # On clusters where servers carry the platform-managed
+          # platform.phoenix-host.net/server-only=true:NoSchedule taint
+          # (single-server installs, or any cluster where workers don't
+          # accept system Pods), the solver lacks the required
+          # toleration and stays Pending — every Order hangs forever.
+          # Caught on testing.phoenix-host.net 2026-05-01.
+          podTemplate:
+            spec:
+              tolerations:
+                - key: platform.phoenix-host.net/server-only
+                  operator: Equal
+                  value: "true"
+                  effect: NoSchedule
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -1971,6 +1985,20 @@ spec:
     - http01:
         ingress:
           ingressClassName: nginx
+          # Solver Pods are short-lived Jobs spawned by cert-manager.
+          # On clusters where servers carry the platform-managed
+          # platform.phoenix-host.net/server-only=true:NoSchedule taint
+          # (single-server installs, or any cluster where workers don't
+          # accept system Pods), the solver lacks the required
+          # toleration and stays Pending — every Order hangs forever.
+          # Caught on testing.phoenix-host.net 2026-05-01.
+          podTemplate:
+            spec:
+              tolerations:
+                - key: platform.phoenix-host.net/server-only
+                  operator: Equal
+                  value: "true"
+                  effect: NoSchedule
 EOF
 
   log "cert-manager installed with Let's Encrypt issuers (email=${le_email})."
