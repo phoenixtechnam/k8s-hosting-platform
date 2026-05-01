@@ -57,20 +57,6 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
 
   const isDemotion = node.role === 'server' && role === 'worker';
 
-  // Symmetric coupling between cordon ↔ canHost so the modal can't
-  // express the contradictory state "Cordoned + still hosts tenants":
-  //   cordon → ON  ⇒ canHost → No (don't schedule new tenant pods anyway)
-  //   canHost → Yes ⇒ cordon → Off (otherwise the Yes is a no-op —
-  //                                  the cordon blocks scheduling regardless)
-  const handleCordonChange = (value: boolean) => {
-    setCordoned(value);
-    if (value && canHost) setCanHost(false);
-  };
-  const handleCanHostChange = (value: boolean) => {
-    setCanHost(value);
-    if (value && cordoned) setCordoned(false);
-  };
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -143,60 +129,87 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-role">Role</label>
-              <select
-                id="node-role"
-                value={role}
-                onChange={(e) => setRole(e.target.value as 'server' | 'worker')}
-                className={INPUT_CLASS}
-              >
-                <option value="server">server (runs system workloads)</option>
-                <option value="worker">worker (tenants only)</option>
-              </select>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Demoting a server with system pods still on it requires Force.
-              </p>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-can-host">
-                Can host client workloads
-              </label>
-              <select
-                id="node-can-host"
-                value={canHost ? 'true' : 'false'}
-                onChange={(e) => handleCanHostChange(e.target.value === 'true')}
-                className={INPUT_CLASS}
-                data-testid="node-can-host-select"
-              >
-                <option value="true">Yes — tenant pods may schedule here</option>
-                <option value="false">No — NoSchedule taint for tenant pods</option>
-              </select>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Servers default to No; workers default to Yes. Auto-flips to No when Cordon is enabled, and flipping this back to Yes auto-uncordons the node (else the Yes is a no-op).
-              </p>
-            </div>
-          </div>
-
           <div>
-            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-cordon">
-              Cordon (spec.unschedulable)
-            </label>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-role">Role</label>
             <select
-              id="node-cordon"
-              value={cordoned ? 'true' : 'false'}
-              onChange={(e) => handleCordonChange(e.target.value === 'true')}
+              id="node-role"
+              value={role}
+              onChange={(e) => setRole(e.target.value as 'server' | 'worker')}
               className={INPUT_CLASS}
-              data-testid="node-cordon-select"
             >
-              <option value="false">Uncordoned — pods may schedule here</option>
-              <option value="true">Cordoned — block new pods (existing pods stay)</option>
+              <option value="server">server (runs system workloads)</option>
+              <option value="worker">worker (tenants only)</option>
             </select>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Cordon blocks the scheduler from placing NEW pods. Use the
-              {' '}<strong>Drain Node</strong>{' '}button on the card to also evict + re-pin existing workloads.
+              Demoting a server with system pods still on it requires Force.
             </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <div className="flex-1">
+              <label
+                htmlFor="node-can-host-toggle"
+                className="block text-sm font-medium text-gray-900 dark:text-gray-100"
+              >
+                Can host client workloads
+              </label>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                When ON, tenant pods may schedule here. When OFF, a NoSchedule taint
+                blocks tenant pods. Servers default to OFF; workers default to ON.
+              </p>
+            </div>
+            <button
+              id="node-can-host-toggle"
+              data-testid="node-can-host-toggle"
+              type="button"
+              role="switch"
+              aria-checked={canHost}
+              onClick={() => setCanHost(!canHost)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
+                canHost ? 'bg-brand-500' : 'bg-gray-300 dark:bg-gray-600'
+              }`}
+            >
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${
+                  canHost ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <div className="flex-1">
+              <label
+                htmlFor="node-cordon-toggle"
+                className="block text-sm font-medium text-gray-900 dark:text-gray-100"
+              >
+                Cordon (spec.unschedulable)
+              </label>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                When ON, the scheduler refuses to place NEW pods on this node;
+                existing pods stay running. Use <strong>Drain Node</strong> on the
+                card to also evict and re-pin existing workloads.
+              </p>
+            </div>
+            <button
+              id="node-cordon-toggle"
+              data-testid="node-cordon-toggle"
+              type="button"
+              role="switch"
+              aria-checked={cordoned}
+              onClick={() => setCordoned(!cordoned)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
+                cordoned ? 'bg-brand-500' : 'bg-gray-300 dark:bg-gray-600'
+              }`}
+            >
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${
+                  cordoned ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
           </div>
 
           <div>

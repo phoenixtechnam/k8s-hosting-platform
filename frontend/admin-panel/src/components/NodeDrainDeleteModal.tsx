@@ -78,10 +78,26 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
 
   const handleDrain = async (): Promise<void> => {
     try {
+      // Fill in defaults: if the operator didn't explicitly pick a
+      // placement for an impacted item, send "" (auto) so the backend
+      // re-pins it. Without this, an empty `workloadPlacement` map
+      // means the backend's iteration finds zero entries and no
+      // workload gets re-pinned — pods get evicted but their
+      // nodeSelector still points at the cordoned node, leaving them
+      // stuck Pending. Same for PVCs.
+      const finalWorkloadPlacement = { ...workloadPlacement };
+      for (const w of impact?.pinnedWorkloads ?? []) {
+        const key = `${w.namespace}/${w.kind}/${w.name}`;
+        if (!(key in finalWorkloadPlacement)) finalWorkloadPlacement[key] = '';
+      }
+      const finalPvcPlacement = { ...pvcPlacement };
+      for (const p of impact?.tenantPvcs ?? []) {
+        if (!(p.volumeName in finalPvcPlacement)) finalPvcPlacement[p.volumeName] = '';
+      }
       await drain.mutateAsync({
         forceLastReplica,
-        workloadPlacement,
-        pvcPlacement,
+        workloadPlacement: finalWorkloadPlacement,
+        pvcPlacement: finalPvcPlacement,
       });
       // Refetch impact so the modal flips to "drained → ready to delete".
       await impactQuery.refetch();

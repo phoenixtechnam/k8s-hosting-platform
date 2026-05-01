@@ -80,6 +80,8 @@ export function useDrainImpact(name: string | undefined, enabled: boolean) {
     },
     enabled: Boolean(name) && enabled,
     staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
     refetchOnWindowFocus: false,
   });
 }
