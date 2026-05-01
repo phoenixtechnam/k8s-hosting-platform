@@ -510,6 +510,21 @@ async function scaleConsumer(k8s: K8sClients, c: ConsumerRef, count: number): Pr
   }
 }
 
+/**
+ * Poll the Longhorn Volume CR until it reaches the expected condition.
+ *
+ * For `expected='detached'` we don't strictly require `status.state ==
+ * 'detached'` — Longhorn's snapshot-controller holds VolumeAttachment
+ * tickets (with `disableFrontend: any`) for any pending snapshot
+ * delete/purge work, which keeps `state` reading as "attached" even
+ * though the consumer pod has released the volume. What actually
+ * matters for `snapshotRevert` is that no `csi-*` attachment ticket
+ * remains (i.e. no pod is mounting the volume's frontend). We accept
+ * either state=detached OR no csi ticket.
+ *
+ * For `expected='attached'` we require state=attached AND a csi ticket
+ * present (the consumer pod has rebound).
+ */
 async function pollVolumeState(
   k8s: K8sClients,
   volumeName: string,
@@ -520,11 +535,24 @@ async function pollVolumeState(
   let last: string | undefined;
   while (Date.now() < deadline) {
     try {
-      const v = await k8s.custom.getNamespacedCustomObject({
-        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
-      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { state?: string } };
+      const [v, va] = await Promise.all([
+        k8s.custom.getNamespacedCustomObject({
+          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
+        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as Promise<{ status?: { state?: string } }>,
+        k8s.custom.getNamespacedCustomObject({
+          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumeattachments', name: volumeName,
+        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0])
+          .catch(() => ({ spec: { attachmentTickets: {} } })) as Promise<{ spec?: { attachmentTickets?: Record<string, { type?: string }> } }>,
+      ]);
       last = v.status?.state;
-      if (last === expected) return { ok: true, state: last };
+      const tickets = va.spec?.attachmentTickets ?? {};
+      const hasCsi = Object.values(tickets).some((t) => t.type === 'csi-attacher');
+      if (expected === 'detached' && (last === 'detached' || !hasCsi)) {
+        return { ok: true, state: last };
+      }
+      if (expected === 'attached' && last === 'attached' && hasCsi) {
+        return { ok: true, state: last };
+      }
     } catch { /* keep polling */ }
     await new Promise((r) => setTimeout(r, 2_000));
   }

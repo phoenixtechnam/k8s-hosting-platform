@@ -69,6 +69,7 @@ import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
 import { backupConfigRoutes } from './modules/backup-config/routes.js';
+import { backupsV2Routes } from './modules/backups-v2/routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
@@ -299,6 +300,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
+  await app.register(backupsV2Routes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
