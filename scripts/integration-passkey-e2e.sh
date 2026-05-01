@@ -20,7 +20,11 @@
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.phoenix-host.net}"
-CLIENT_HOST="${CLIENT_HOST:-https://client.staging.phoenix-host.net}"
+# Derive CLIENT_HOST from ADMIN_HOST by swapping the `admin.` prefix
+# for `client.` — these two hostnames are always paired in this
+# platform's ingress (see k8s/base/platform/platform-ingress.yaml).
+# An explicit CLIENT_HOST env var still wins.
+CLIENT_HOST="${CLIENT_HOST:-${ADMIN_HOST/admin./client.}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@phoenix-host.net}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 

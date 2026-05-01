@@ -28,6 +28,52 @@ import type { Database } from '../../db/index.js';
 import { hostingPlans, clusterNodes } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { ApiError } from '../../shared/errors.js';
+
+/**
+ * Minimum number of tenant-capable nodes required to make the HA
+ * storage tier meaningful. Longhorn places one replica per node, so
+ * a single-node cluster cannot host an HA volume even with abundant
+ * free disk. We gate at 3 to match the StorageClass numberOfReplicas
+ * for tenant-ha (anti-affinity across distinct nodes).
+ */
+export const HA_MIN_TENANT_NODES = 3;
+
+/**
+ * Throws HA_REQUIRES_MULTI_NODE (409) when the cluster cannot host
+ * an HA-tier client because there aren't enough tenant-capable nodes.
+ * Used by both POST /clients (create with storage_tier=ha) and
+ * PATCH /clients (live tier flip local→ha) so an operator can't
+ * silently put the DB into a state the cluster cannot honour.
+ */
+export async function assertHaTierFeasible(db: Database): Promise<void> {
+  const eligible = await db
+    .select({ name: clusterNodes.name })
+    .from(clusterNodes)
+    .where(eq(clusterNodes.canHostClientWorkloads, true));
+  const count = eligible.length;
+  if (count >= HA_MIN_TENANT_NODES) return;
+
+  throw new ApiError(
+    'HA_REQUIRES_MULTI_NODE',
+    `HA storage tier requires ≥${HA_MIN_TENANT_NODES} tenant-capable nodes; cluster has ${count}.`,
+    409,
+    {
+      operatorError: {
+        code: 'HA_REQUIRES_MULTI_NODE',
+        title: 'HA tier not available on this cluster',
+        detail: `HA replicates each tenant volume across ${HA_MIN_TENANT_NODES} distinct nodes. This cluster has ${count} tenant-capable node(s), so HA cannot be honoured.`,
+        remediation: [
+          `Add worker nodes (canHostClientWorkloads=true) until at least ${HA_MIN_TENANT_NODES} are present.`,
+          'Or pick the Local storage tier — single-replica volumes work on any cluster size.',
+        ],
+        retryable: false,
+        diagnostics: { tenantCapableNodes: count, requiredNodes: HA_MIN_TENANT_NODES },
+      },
+    },
+    'Add worker nodes or pick the Local tier.',
+  );
+}
 
 interface DiskStatus {
   storageMaximum?: number;

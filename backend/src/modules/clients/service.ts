@@ -805,6 +805,13 @@ export async function updateClient(
     const [row] = await db.select({ storageTier: clients.storageTier })
       .from(clients).where(eq(clients.id, id)).limit(1);
     previousTier = ((row?.storageTier ?? 'local') as 'local' | 'ha');
+    // Cluster-shape gate: only check on a real local→ha flip (no-op
+    // and ha→local are always safe). Same helper the create path uses
+    // so the rule lives in one place.
+    if (tierChange === 'ha' && previousTier !== 'ha') {
+      const { assertHaTierFeasible } = await import('./capacity-preflight.js');
+      await assertHaTierFeasible(db);
+    }
     updateValues.storageTier = tierChange;
   }
 

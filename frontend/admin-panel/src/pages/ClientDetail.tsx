@@ -2325,8 +2325,16 @@ function PlacementCard({ clientId, client }: {
             data-testid="placement-tier-select"
           >
             <option value="local">Local — 1 replica · cheaper · restore-from-backup on node loss</option>
-            <option value="ha">HA — 2 replicas · auto-failover ~30–90s · 2× storage</option>
+            <option value="ha" disabled={nodes.length < 3 && (client.storageTier ?? 'local') !== 'ha'}>
+              HA — 2 replicas · auto-failover ~30–90s · 2× storage
+              {nodes.length < 3 && (client.storageTier ?? 'local') !== 'ha' && ` (needs ≥3 worker nodes; cluster has ${nodes.length})`}
+            </option>
           </select>
+          {nodes.length < 3 && (client.storageTier ?? 'local') !== 'ha' && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              HA tier needs ≥3 tenant-capable nodes. Add worker nodes to enable.
+            </p>
+          )}
           {tierTarget !== (client.storageTier ?? 'local') && client.workerNodeName && (
             <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
               Tier changes are applied live. Replica rebuild runs in the background.

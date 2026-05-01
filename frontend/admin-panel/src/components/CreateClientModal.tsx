@@ -368,10 +368,14 @@ export default function CreateClientModal({ open, onClose }: CreateClientModalPr
                 data-testid="storage-tier-select"
               >
                 <option value="local">Local (1 replica — default)</option>
-                <option value="ha">HA (2 replicas — longhorn-tenant-ha)</option>
+                <option value="ha" disabled={(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3}>
+                  HA (2 replicas — longhorn-tenant-ha)
+                  {(nodesData?.data ?? []).filter((n) => n.canHostClientWorkloads).length < 3
+                    && ` — needs ≥3 worker nodes`}
+                </option>
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                HA costs 2× storage and requires ≥2 worker nodes to stay fully replicated.
+                HA costs 2× storage and requires ≥3 tenant-capable nodes to stay fully replicated.
               </p>
             </div>
           </div>

@@ -59,6 +59,27 @@ PLAN_ID=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);
 REGION_ID=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
 [[ -n "$PLAN_ID" && -n "$REGION_ID" ]] || { echo "no plan/region"; exit 1; }
 
+# HA tier requires ≥3 tenant-capable nodes; the backend now rejects
+# the flip with HA_REQUIRES_MULTI_NODE on smaller clusters. Skip this
+# suite cleanly on single-node / small clusters so we don't fail a
+# test that's correctly enforcing a platform invariant.
+TENANT_NODE_COUNT=$(api GET "/admin/nodes" \
+  | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    nodes = d.get('data') or []
+    print(sum(1 for n in nodes if n.get('canHostClientWorkloads')))
+except Exception:
+    print(0)
+" 2>/dev/null)
+if [[ "${TENANT_NODE_COUNT:-0}" -lt 3 ]]; then
+  log "── tier-flip suite SKIPPED ──"
+  log "  tenant-capable nodes=${TENANT_NODE_COUNT:-0} (<3); HA tier is not feasible on this cluster."
+  log "  This is the correct platform behaviour — see backend HA_REQUIRES_MULTI_NODE gate."
+  exit 0
+fi
+
 # ─── reproduce the user's flow ───────────────────────────────────────
 log "── creating client (mirrors UI: New Client) ──"
 STAMP=$(date +%s)
@@ -216,6 +237,31 @@ fi
 # ─── deploy a tenant workload, verify affinity patch on tier flip ────
 log "── deploy tenant workload + verify affinity flip ──"
 CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
+# Auto-resolve the seeded UUID — it varies per install/migration. Same
+# pattern as integration-staging.sh.
+if ! api GET "/catalog/$CATALOG_NGINX_PHP" 2>/dev/null | grep -q '"code":"nginx-php"'; then
+  RESOLVED=$(api GET '/catalog?limit=200' 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    body = json.load(sys.stdin)
+    items = body.get('data', body) if isinstance(body, dict) else body
+    items = items if isinstance(items, list) else items.get('items', [])
+    for entry in items:
+        if entry.get('code') == 'nginx-php':
+            print(entry.get('id') or entry.get('uuid') or '')
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+  if [[ -n "$RESOLVED" ]]; then
+    CATALOG_NGINX_PHP="$RESOLVED"
+    log "  resolved CATALOG_NGINX_PHP=$CATALOG_NGINX_PHP"
+  else
+    fail "could not resolve catalog entry code=nginx-php"
+    exit 2
+  fi
+fi
 DEPL_NAME="t$(date +%s)"
 DEPL_RESP=$(api POST "/clients/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$DEPL_NAME\",\"replica_count\":1}")
 DEPL_ID=$(echo "$DEPL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('id',''))" 2>/dev/null)

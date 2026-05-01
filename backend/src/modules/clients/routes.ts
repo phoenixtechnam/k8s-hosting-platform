@@ -116,11 +116,18 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     // their account was ready. Now they see "no node has 20 GiB free"
     // before they hit Submit.
     try {
-      const { checkProvisioningCapacity } = await import('./capacity-preflight.js');
+      const { checkProvisioningCapacity, assertHaTierFeasible } = await import('./capacity-preflight.js');
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       let preflightK8s: ReturnType<typeof createK8sClients> | undefined;
       try { preflightK8s = createK8sClients(kubeconfigPath); } catch { /* skip preflight */ }
       const tier = (parsed.data.storage_tier ?? 'local') as 'local' | 'ha';
+      // HA-tier feasibility comes BEFORE the disk-capacity check: if the
+      // cluster fundamentally can't host HA, surface the cluster-shape
+      // error directly instead of "fittingNodes=0" which reads as a
+      // capacity problem.
+      if (tier === 'ha') {
+        await assertHaTierFeasible(app.db);
+      }
       const preflight = await checkProvisioningCapacity(app.db, preflightK8s, parsed.data.plan_id, tier);
       if (!preflight.ok && preflight.reason && preflight.fittingNodes < preflight.required.replicaCount) {
         const planSizeGiB = preflight.required.planSizeBytes / (1024 ** 3);
