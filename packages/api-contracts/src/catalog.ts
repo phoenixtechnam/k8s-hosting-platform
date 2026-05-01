@@ -49,8 +49,19 @@ export const componentSchema = z.object({
   database: z.enum(['mariadb', 'mysql', 'postgresql', 'mongodb']).optional(),
 });
 
+/**
+ * Volume entry in a catalog manifest.
+ *
+ * `local_path` must be either the literal `"."` (PVC-root, no subPath) or a
+ * single lowercase segment: `^[a-z][a-z0-9_-]{0,63}$`.  Multi-segment paths
+ * like `"applications/wordpress/content"` are rejected.
+ */
+export const LOCAL_PATH_RE = /^(\.|[a-z][a-z0-9_-]{0,63})$/;
+
 export const volumeSchema = z.object({
-  local_path: z.string(),
+  local_path: z.string().regex(LOCAL_PATH_RE, {
+    message: 'local_path must be "." or a single lowercase segment (^[a-z][a-z0-9_-]{0,63}$)',
+  }),
   container_path: z.string(),
   description: z.string().optional(),
   optional: z.boolean().optional(),

@@ -362,7 +362,13 @@ export const catalogEntries = pgTable('catalog_entries', {
   tenancy: jsonb('tenancy').$type<string[] | null>(),
   components: jsonb('components').$type<Array<{ name: string; type: string; image: string; ports?: Array<{ port: number; protocol: string; ingress?: boolean }>; optional?: boolean; schedule?: string; volumes?: string[]; command?: string[]; args?: string[]; resources?: { cpu?: string; memory?: string } }> | null>(),
   networking: jsonb('networking').$type<{ ingress_ports: Array<{ port: number; protocol: string; tls: boolean; description?: string }>; host_ports?: Array<{ port: number; protocol: string; component: string; description: string }>; websocket?: boolean } | null>(),
-  volumes: jsonb('volumes').$type<Array<{ local_path: string; container_path: string; description?: string; optional?: boolean }> | null>(),
+  volumes: jsonb('volumes').$type<Array<{
+    /** "." = PVC-root (no subPath), or a single lowercase segment e.g. "content" */
+    local_path: string;
+    container_path: string;
+    description?: string;
+    optional?: boolean;
+  }> | null>(),
   resources: jsonb('resources').$type<{ recommended: { cpu: string; memory: string; storage?: string }; minimum: { cpu: string; memory: string; storage?: string } } | null>(),
   healthCheck: jsonb('health_check').$type<{ path?: string | null; command?: string[] | null; port?: number | null; initial_delay_seconds: number; period_seconds: number } | null>(),
   parameters: jsonb('parameters').$type<Array<{ key: string; label: string; type: string; default?: unknown; required?: boolean; description?: string; advanced?: boolean }> | null>(),

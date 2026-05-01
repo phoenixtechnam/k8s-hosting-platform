@@ -611,6 +611,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'image-pressure-watcher / kubelet-gc-reconciler: startup skipped');
       }
 
+      // Auto-sync: fire a one-time catalog sync for every active repo that has
+      // never been synced (last_synced_at IS NULL). This ensures that on a
+      // fresh bootstrap the default catalog repo (seeded by db/seed.ts) is
+      // populated without requiring an operator to trigger a manual sync.
+      //
+      // Safe with multiple platform-api replicas: syncCatalogRepo marks the
+      // repo as "syncing" immediately and the underlying upsert is idempotent,
+      // so concurrent runs are harmless (they just duplicate work).
+      //
+      // Fire-and-forget — errors land in the repo's last_error column and are
+      // visible in the admin Catalog UI. Never crash the startup path.
+      void (async () => {
+        try {
+          const { autoSyncUnsyncedRepos } = await import('./modules/catalog/service.js');
+          const queued = await autoSyncUnsyncedRepos(app.db);
+          if (queued > 0) {
+            app.log.info(`[catalog-auto-sync] Queued initial sync for ${queued} unsynced repo(s)`);
+          }
+        } catch (err) {
+          app.log.warn({ err }, '[catalog-auto-sync] startup hook failed');
+        }
+      })();
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }

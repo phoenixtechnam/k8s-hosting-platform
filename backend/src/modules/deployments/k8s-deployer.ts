@@ -192,18 +192,27 @@ function k8sResourceName(deploymentName: string, componentName: string, componen
   return `${deploymentName}-${componentName}`;
 }
 
+/** Regex for a valid single-segment local_path (shared with catalog sync validator). */
+export const LOCAL_PATH_SEGMENT_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+
 /**
- * Derive a stable per-volume subdirectory key from the manifest's `local_path`
- * (author-chosen, e.g. `content`, `database`) with fallbacks to
- * `container_path` basename and `volN` for last-resort uniqueness.
+ * Derive a stable per-volume subdirectory key from the manifest's `local_path`.
+ *
+ * Returns:
+ *   - `null`  when `local_path` is `"."` or missing/null → mount the PVC root
+ *             with no subPath (entire PVC at `container_path`).
+ *   - `string` when `local_path` matches `/^[a-z][a-z0-9_-]{0,63}$/` → use
+ *              that exact name as the subPath suffix.
+ *
+ * Any other value (multi-segment path, absolute path, etc.) throws — these
+ * should already be caught at catalog-sync time, but this is a defence-in-depth
+ * guard so a malformed entry can't silently mount the wrong directory.
  */
-function volumeKey(v: { container_path: string; local_path?: string }, idx: number): string {
-  const localBase = v.local_path ? v.local_path.replace(/\/+$/, '').split('/').pop() : undefined;
-  const containerBase = v.container_path.replace(/\/+$/, '').split('/').pop();
-  const key = (localBase && localBase !== '')
-    ? localBase
-    : (containerBase && containerBase !== '' ? containerBase : `vol${idx}`);
-  return key;
+export function volumeKey(v: { container_path: string; local_path?: string | null }): string | null {
+  const lp = v.local_path;
+  if (!lp || lp === '.') return null;
+  if (LOCAL_PATH_SEGMENT_RE.test(lp)) return lp;
+  throw new Error(`volumeKey: invalid local_path "${lp}" — expected "." or a single lowercase segment`);
 }
 
 /**
@@ -211,45 +220,64 @@ function volumeKey(v: { container_path: string; local_path?: string }, idx: numb
  * needs. When `componentVolumes` is undefined (legacy manifests without per-
  * component bindings) the full array is returned — preserves pre-scoping
  * behavior. An explicit empty array returns nothing (stateless component).
+ *
+ * With the new flat `local_path` contract, component volume references are
+ * exact-match against `local_path` (e.g. `"content"`, `"database"`).
+ * The `"."` (PVC-root) volume matches the sentinel string `"."` — but in
+ * practice single-volume manifests leave `componentVolumes` unset, so this
+ * branch is mainly for correctness.
  */
 function filterVolumesForComponent(
-  appVolumes: Array<{ container_path: string; local_path?: string }>,
+  appVolumes: Array<{ container_path: string; local_path?: string | null }>,
   componentVolumes: readonly string[] | undefined,
-): Array<{ container_path: string; local_path?: string }> {
+): Array<{ container_path: string; local_path?: string | null }> {
   if (componentVolumes === undefined) return appVolumes;
   if (componentVolumes.length === 0) return [];
   const want = new Set(componentVolumes);
-  return appVolumes.filter((v, idx) => want.has(volumeKey(v, idx)));
+  return appVolumes.filter(v => {
+    const lp = v.local_path;
+    // "." volumes match if the component explicitly asked for "."
+    if (!lp || lp === '.') return want.has('.');
+    return want.has(lp);
+  });
 }
 
 /**
  * Produce volumeMounts + the init-dirs init container + the pod-level volumes
  * entry for a given set of volumes, all referencing the shared client PVC.
  * Returns `null` when the component mounts nothing (caller skips PVC entirely).
+ *
+ * When `local_path === "."` (or missing), the mount has no `subPath` — the
+ * entire PVC root is mounted at `container_path`. When `local_path` is a
+ * single segment (e.g. `"content"`), `subPath` is `<storagePath>/<segment>`.
  */
 function buildVolumeMountSpec(
-  volumes: Array<{ container_path: string; local_path?: string }>,
+  volumes: Array<{ container_path: string; local_path?: string | null }>,
   storagePath: string,
   namespace: string,
 ): {
-  mounts: Array<{ name: string; mountPath: string; subPath: string }>;
+  mounts: Array<{ name: string; mountPath: string; subPath?: string }>;
   podVolumes: Array<Record<string, unknown>>;
   initDirsContainer: Record<string, unknown>;
 } | null {
   if (volumes.length === 0) return null;
 
-  const seen = new Set<string>();
-  const mounts = volumes.map((v, idx) => {
-    let key = volumeKey(v, idx);
-    if (seen.has(key)) key = `${key}-${idx}`;
-    seen.add(key);
+  const mounts = volumes.map(v => {
+    const key = volumeKey(v);
+    if (key === null) {
+      // PVC-root mount — no subPath
+      return { name: 'client-storage', mountPath: v.container_path };
+    }
     const subPath = storagePath ? `${storagePath}/${key}` : key;
     return { name: 'client-storage', mountPath: v.container_path, subPath };
   });
 
-  const mkdirCmd = mounts
-    .map(m => `mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`)
-    .join(' && ');
+  // init-dirs only needs to mkdir for sub-path mounts; root mounts rely on
+  // the PVC being pre-formatted by storage provisioning.
+  const subPathMounts = mounts.filter(m => m.subPath !== undefined);
+  const mkdirCmd = subPathMounts.length > 0
+    ? subPathMounts.map(m => `mkdir -p /data/${m.subPath} && chmod 777 /data/${m.subPath}`).join(' && ')
+    : 'true'; // no-op when all mounts are PVC-root
 
   const initDirsContainer = {
     name: 'init-dirs',

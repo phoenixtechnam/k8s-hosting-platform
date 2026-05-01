@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { deployCatalogEntry, buildFirewallAnnotations } from './k8s-deployer.js';
+import { deployCatalogEntry, buildFirewallAnnotations, volumeKey, LOCAL_PATH_SEGMENT_RE } from './k8s-deployer.js';
 import type { DeployCatalogEntryInput, DeployComponentInput } from './k8s-deployer.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -78,7 +78,7 @@ function makeComponent(type: DeployComponentInput['type'], overrides: Partial<De
 describe('deployCatalogEntry: per-component volume scoping', () => {
   beforeEach(() => { vi.restoreAllMocks(); });
 
-  it('WordPress-shaped install: wordpress only mounts content, mariadb only database, redis nothing, wp-cron gets content', async () => {
+  it('WordPress-shaped install (flat local_path): wordpress only mounts content, mariadb only database, redis nothing, wp-cron gets content', async () => {
     const { k8s, calls } = makeK8sMock();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await deployCatalogEntry(k8s, baseInput({
@@ -89,8 +89,8 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
         makeComponent('cronjob',    { name: 'wp-cron',   image: 'wordpress:6.9', schedule: '*/15 * * * *', volumes: ['content'] } as Partial<DeployComponentInput>),
       ],
       volumes: [
-        { container_path: '/var/www/html/wp-content', local_path: 'applications/wordpress/content' },
-        { container_path: '/var/lib/mysql',            local_path: 'applications/wordpress/database' },
+        { container_path: '/var/www/html/wp-content', local_path: 'content' },
+        { container_path: '/var/lib/mysql',            local_path: 'database' },
       ],
       storagePath: 'applications/wordpress/my-wp',
     }));
@@ -104,7 +104,7 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
     const redisBody = calls.createDeployment.mock.calls.find((c: [{ body: { metadata: { name: string } } }]) => c[0].body.metadata.name === 'my-wp-redis')![0].body;
     const cronBody = calls.createCronJob.mock.calls[0][0].body;
 
-    // wordpress: only content
+    // wordpress: only content (subPath = storagePath/content)
     const wpMounts = wpBody.spec.template.spec.containers[0].volumeMounts;
     expect(wpMounts).toHaveLength(1);
     expect(wpMounts[0]).toMatchObject({ mountPath: '/var/www/html/wp-content', subPath: 'applications/wordpress/my-wp/content' });
@@ -136,14 +136,14 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
         makeComponent('deployment', { name: 'app', image: 'app:1', ports: [{ port: 80, protocol: 'TCP' }] }),
       ],
       volumes: [
-        { container_path: '/app/a', local_path: 'x/a' },
-        { container_path: '/app/b', local_path: 'x/b' },
+        { container_path: '/app/a', local_path: 'data' },
+        { container_path: '/app/b', local_path: 'config' },
       ],
       storagePath: 'x/inst',
     }));
     const body = calls.createDeployment.mock.calls[0][0].body;
     const mounts = body.spec.template.spec.containers[0].volumeMounts;
-    expect(mounts.map((m: { subPath: string }) => m.subPath).sort()).toEqual(['x/inst/a', 'x/inst/b']);
+    expect(mounts.map((m: { subPath: string }) => m.subPath).sort()).toEqual(['x/inst/config', 'x/inst/data']);
   });
 
   it('Job component mounts its declared volumes', async () => {
@@ -152,7 +152,7 @@ describe('deployCatalogEntry: per-component volume scoping', () => {
       components: [
         makeComponent('job', { name: 'migrate', image: 'mig:1', volumes: ['data'] } as Partial<DeployComponentInput>),
       ],
-      volumes: [{ container_path: '/work', local_path: 'app/data' }],
+      volumes: [{ container_path: '/work', local_path: 'data' }],
       storagePath: 'app/inst',
     }));
     const body = calls.createJob.mock.calls[0][0].body;
@@ -293,21 +293,19 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     expect(calls.createDeployment).not.toHaveBeenCalled();
   });
 
-  it('per-volume subPath prevents collision (WordPress wp-content vs mysql data)', async () => {
+  it('per-volume subPath prevents collision (WordPress wp-content vs mysql data, flat local_path)', async () => {
     const { k8s, calls } = makeK8sMock();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await deployCatalogEntry(k8s, baseInput({
       components: [
         makeComponent('deployment', { name: 'wordpress', image: 'wordpress:6.9', ports: [{ port: 80, protocol: 'TCP' }] }),
         makeComponent('deployment', { name: 'mariadb', image: 'mariadb:11.8', ports: [{ port: 3306, protocol: 'TCP' }] }),
       ],
       volumes: [
-        { container_path: '/var/www/html/wp-content', local_path: 'applications/wordpress/content' },
-        { container_path: '/var/lib/mysql', local_path: 'applications/wordpress/database' },
+        { container_path: '/var/www/html/wp-content', local_path: 'content' },
+        { container_path: '/var/lib/mysql', local_path: 'database' },
       ],
       storagePath: 'applications/wordpress/my-wp',
     }));
-    warnSpy.mockRestore();
 
     expect(calls.createDeployment).toHaveBeenCalledTimes(2);
     const firstBody = calls.createDeployment.mock.calls[0][0].body;
@@ -325,16 +323,43 @@ describe('deployCatalogEntry: component type → k8s resource mapping', () => {
     expect(initCmd).toContain('mkdir -p /data/applications/wordpress/my-wp/database');
   });
 
-  it('falls back to container_path basename when local_path is missing', async () => {
+  it('single-volume app with local_path "." mounts PVC root (no subPath)', async () => {
     const { k8s, calls } = makeK8sMock();
     await deployCatalogEntry(k8s, baseInput({
-      components: [makeComponent('deployment', { name: 'app', image: 'app:1', ports: [{ port: 80, protocol: 'TCP' }] })],
-      volumes: [{ container_path: '/var/lib/mysql' }],
-      storagePath: 'applications/legacy/inst',
+      components: [makeComponent('deployment', { name: 'app', image: 'nginx-php:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      volumes: [{ container_path: '/var/www/html', local_path: '.' }],
+      storagePath: 'runtimes/nginx-php/my-site',
     }));
     const body = calls.createDeployment.mock.calls[0][0].body;
     const mount = body.spec.template.spec.containers[0].volumeMounts[0];
-    expect(mount.subPath).toBe('applications/legacy/inst/mysql');
+    // No subPath — entire PVC mounted at container_path
+    expect(mount.subPath).toBeUndefined();
+    expect(mount.mountPath).toBe('/var/www/html');
+    // init-dirs runs a no-op since there are no subdirs to create
+    const initCmd = body.spec.template.spec.initContainers[0].command[2];
+    expect(initCmd).toBe('true');
+  });
+
+  it('local_path "." with null local_path also mounts PVC root', async () => {
+    const { k8s, calls } = makeK8sMock();
+    // null local_path treated the same as "." — mount root, no subPath
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'db', image: 'postgresql:16', ports: [{ port: 5432, protocol: 'TCP' }] })],
+      volumes: [{ container_path: '/var/lib/postgresql/data', local_path: undefined }],
+      storagePath: 'databases/postgresql/mydb',
+    }));
+    const body = calls.createDeployment.mock.calls[0][0].body;
+    const mount = body.spec.template.spec.containers[0].volumeMounts[0];
+    expect(mount.subPath).toBeUndefined();
+  });
+
+  it('invalid multi-segment local_path throws at deploy time (defence-in-depth)', async () => {
+    const { k8s } = makeK8sMock();
+    await expect(deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'app', image: 'app:1', ports: [{ port: 80, protocol: 'TCP' }] })],
+      volumes: [{ container_path: '/data', local_path: 'applications/wordpress/content' }],
+      storagePath: 'x/inst',
+    }))).rejects.toThrow(/invalid local_path/);
   });
 
   it('multi-component app (WordPress: wp + mariadb + wp-cron) creates the right mix', async () => {
@@ -424,5 +449,65 @@ describe('deployCatalogEntry: firewall annotations on Pod template', () => {
     }));
     const body = calls.createDeployment.mock.calls[0][0].body;
     expect(body.spec.template.metadata.annotations).toBeUndefined();
+  });
+});
+
+// ─── Unit tests: volumeKey() ─────────────────────────────────────────────────
+
+describe('volumeKey', () => {
+  it('returns null for local_path "." (PVC-root, no subPath)', () => {
+    expect(volumeKey({ container_path: '/var/www/html', local_path: '.' })).toBeNull();
+  });
+
+  it('returns null when local_path is undefined (treated as PVC-root)', () => {
+    expect(volumeKey({ container_path: '/data', local_path: undefined })).toBeNull();
+  });
+
+  it('returns null when local_path is null (treated as PVC-root)', () => {
+    expect(volumeKey({ container_path: '/data', local_path: null })).toBeNull();
+  });
+
+  it('returns the exact segment for a valid single-segment local_path', () => {
+    expect(volumeKey({ container_path: '/var/www/html/wp-content', local_path: 'content' })).toBe('content');
+    expect(volumeKey({ container_path: '/var/lib/mysql', local_path: 'database' })).toBe('database');
+    expect(volumeKey({ container_path: '/data', local_path: 'ml-cache' })).toBe('ml-cache');
+    expect(volumeKey({ container_path: '/data', local_path: 'data_v2' })).toBe('data_v2');
+  });
+
+  it('throws for multi-segment local_path (old format)', () => {
+    expect(() => volumeKey({ container_path: '/data', local_path: 'applications/wordpress/content' }))
+      .toThrow(/invalid local_path/);
+  });
+
+  it('throws for absolute path', () => {
+    expect(() => volumeKey({ container_path: '/data', local_path: '/data' }))
+      .toThrow(/invalid local_path/);
+  });
+
+  it('throws for ".." (path traversal attempt)', () => {
+    expect(() => volumeKey({ container_path: '/data', local_path: '..' }))
+      .toThrow(/invalid local_path/);
+  });
+
+  it('returns null for empty string (treated as missing/root)', () => {
+    // Empty string is falsy, so it's treated the same as undefined — PVC-root mount.
+    expect(volumeKey({ container_path: '/data', local_path: '' })).toBeNull();
+  });
+
+  it('LOCAL_PATH_SEGMENT_RE accepts valid names', () => {
+    expect(LOCAL_PATH_SEGMENT_RE.test('content')).toBe(true);
+    expect(LOCAL_PATH_SEGMENT_RE.test('database')).toBe(true);
+    expect(LOCAL_PATH_SEGMENT_RE.test('ml-cache')).toBe(true);
+    expect(LOCAL_PATH_SEGMENT_RE.test('data_v2')).toBe(true);
+    expect(LOCAL_PATH_SEGMENT_RE.test('a')).toBe(true);
+  });
+
+  it('LOCAL_PATH_SEGMENT_RE rejects invalid names', () => {
+    expect(LOCAL_PATH_SEGMENT_RE.test('')).toBe(false);
+    expect(LOCAL_PATH_SEGMENT_RE.test('0data')).toBe(false); // starts with digit
+    expect(LOCAL_PATH_SEGMENT_RE.test('Data')).toBe(false);  // uppercase
+    expect(LOCAL_PATH_SEGMENT_RE.test('a/b')).toBe(false);   // slash
+    expect(LOCAL_PATH_SEGMENT_RE.test('..')).toBe(false);     // dot-dot
+    expect(LOCAL_PATH_SEGMENT_RE.test('/data')).toBe(false);  // absolute
   });
 });

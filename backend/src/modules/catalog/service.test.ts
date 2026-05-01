@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateIngressRules } from './service.js';
+import { validateIngressRules, validateLocalPaths } from './service.js';
 
 describe('validateIngressRules', () => {
   it('accepts an app with one ingressable component', () => {
@@ -66,5 +66,56 @@ describe('validateIngressRules', () => {
 
   it('accepts an entry with no components (legacy single-image runtime)', () => {
     expect(validateIngressRules({ type: 'runtime' })).toBeNull();
+  });
+});
+
+// ─── validateLocalPaths ──────────────────────────────────────────────────────
+
+describe('validateLocalPaths', () => {
+  it('accepts "." for a single-volume app (PVC-root)', () => {
+    expect(validateLocalPaths([{ local_path: '.', container_path: '/var/www/html' }])).toBeNull();
+  });
+
+  it('accepts valid single-segment names', () => {
+    expect(validateLocalPaths([
+      { local_path: 'content', container_path: '/var/www/html/wp-content' },
+      { local_path: 'database', container_path: '/var/lib/mysql' },
+    ])).toBeNull();
+    expect(validateLocalPaths([{ local_path: 'ml-cache', container_path: '/cache' }])).toBeNull();
+    expect(validateLocalPaths([{ local_path: 'data_v2', container_path: '/data' }])).toBeNull();
+  });
+
+  it('rejects a multi-segment path like "applications/wordpress/content"', () => {
+    const err = validateLocalPaths([{ local_path: 'applications/wordpress/content', container_path: '/data' }]);
+    expect(err).toMatch(/invalid local_path/);
+  });
+
+  it('rejects an absolute path', () => {
+    expect(validateLocalPaths([{ local_path: '/data', container_path: '/data' }])).toMatch(/invalid local_path/);
+  });
+
+  it('rejects ".." path traversal', () => {
+    expect(validateLocalPaths([{ local_path: '..', container_path: '/data' }])).toMatch(/invalid local_path/);
+  });
+
+  it('rejects an empty string', () => {
+    expect(validateLocalPaths([{ local_path: '', container_path: '/data' }])).toMatch(/invalid local_path/);
+  });
+
+  it('rejects undefined / missing local_path', () => {
+    const err = validateLocalPaths([{ container_path: '/var/lib/mysql' }]);
+    expect(err).toMatch(/missing local_path/);
+  });
+
+  it('rejects more than one volume with local_path "."', () => {
+    const err = validateLocalPaths([
+      { local_path: '.', container_path: '/data' },
+      { local_path: '.', container_path: '/other' },
+    ]);
+    expect(err).toMatch(/at most one PVC-root mount/);
+  });
+
+  it('returns null for empty volumes array', () => {
+    expect(validateLocalPaths([])).toBeNull();
   });
 });

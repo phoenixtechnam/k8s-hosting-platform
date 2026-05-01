@@ -24,6 +24,16 @@ import type { PaginationMeta } from '../../shared/response.js';
 const DEFAULT_CATALOG_URL = 'https://github.com/phoenixtechnam/k8s-application-catalog';
 const VALID_ENTRY_NAME = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 
+/**
+ * Regex that every `local_path` value in a manifest's `volumes` array must
+ * satisfy. Accepted values:
+ *   "."              → mount the PVC root with no subPath
+ *   "content"        → single lowercase segment, alphanumeric + _ / -, max 64 chars
+ *
+ * Rejected examples: "" · "applications/wordpress/content" · "/data" · ".."
+ */
+const VALID_LOCAL_PATH = /^(\.|[a-z][a-z0-9_-]{0,63})$/;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface CatalogJson {
@@ -133,6 +143,34 @@ function normalizeEntryRow(row: typeof catalogEntries.$inferSelect) {
     provides: parseJsonField(row.provides),
     envVars: parseJsonField(row.envVars),
   };
+}
+
+// ─── Volume local_path Validator ────────────────────────────────────────────
+
+/**
+ * Validate all `local_path` values in a manifest's volumes array.
+ *
+ * Returns null when all are valid; otherwise a short error string describing
+ * the first failure.  Exported so tests can call it directly.
+ */
+export function validateLocalPaths(
+  volumes: ReadonlyArray<{ local_path?: string | null; container_path?: string }>,
+): string | null {
+  let dotCount = 0;
+  for (const v of volumes) {
+    const lp = v.local_path;
+    if (lp === undefined || lp === null) {
+      return `volume with container_path "${v.container_path ?? '?'}" is missing local_path — all volumes must declare local_path explicitly`;
+    }
+    if (!VALID_LOCAL_PATH.test(lp)) {
+      return `invalid local_path '${lp}' — must be "." or a single lowercase segment (^[a-z][a-z0-9_-]{0,63}$)`;
+    }
+    if (lp === '.') dotCount++;
+  }
+  if (dotCount > 1) {
+    return 'more than one volume declares local_path "." — at most one PVC-root mount is allowed per manifest';
+  }
+  return null;
 }
 
 // ─── Version Helpers ────────────────────────────────────────────────────────
@@ -390,6 +428,7 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
 
 interface SyncResult {
   readonly synced: number;
+  readonly skipped: number;
   readonly errors: readonly string[];
   readonly message: string;
 }
@@ -431,6 +470,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
     const entryCodes: readonly string[] = catalogRaw.entries ?? [];
     const manifestErrors: string[] = [];
     let syncedCount = 0;
+    let skippedCount = 0;
 
     for (const code of entryCodes) {
       if (!VALID_ENTRY_NAME.test(code)) {
@@ -456,18 +496,26 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       // Build the remote manifestUrl for display (even though we read locally)
       const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
 
+      // Validate local_path values: every volume must have a local_path that
+      // is either "." (PVC-root, no subPath) or a single lowercase segment.
+      // Missing (undefined) local_path is also rejected — all manifests must
+      // declare it explicitly after the Phase C rewrite.
+      const manifestVolumes = (manifest.volumes ?? []) as Array<{ local_path?: string; container_path?: string }>;
+      const localPathError = validateLocalPaths(manifestVolumes);
+      if (localPathError) {
+        console.warn(`[catalog-sync] entry ${code}: ${localPathError} — skipping entry`);
+        manifestErrors.push(`${code}: ${localPathError}`);
+        skippedCount++;
+        continue;
+      }
+
       // Validate per-component volume references: each entry in a component's
-      // `volumes: [...]` must match a top-level volume's `local_path` basename.
+      // `volumes: [...]` must match a top-level volume's `local_path` exactly.
       // Typos here would silently produce empty mounts at install time, so we
       // fail loudly at sync instead.
       const topVolumeKeys = new Set(
-        (manifest.volumes ?? [])
-          .map(v => {
-            const lp = (v as { local_path?: string }).local_path;
-            const cp = (v as { container_path?: string }).container_path;
-            const src = (lp && lp.length > 0 ? lp : cp) ?? '';
-            return src.replace(/\/+$/, '').split('/').pop() ?? '';
-          })
+        manifestVolumes
+          .map(v => v.local_path ?? '')
           .filter(k => k !== ''),
       );
       let componentVolumeError: string | null = null;
@@ -665,13 +713,14 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       })
       .where(eq(catalogRepositories.id, repoId));
 
-    console.log(`[catalog-sync] Synced ${syncedCount}/${entryCodes.length} entries${usedTarball ? ' (tarball)' : ' (per-file)'}`);
+    console.log(`[catalog-sync] Synced ${syncedCount}/${entryCodes.length} entries (skipped: ${skippedCount})${usedTarball ? ' (tarball)' : ' (per-file)'}`);
 
     return {
       synced: syncedCount,
+      skipped: skippedCount,
       errors: manifestErrors,
       message: manifestErrors.length > 0
-        ? `Synced ${syncedCount} entries with ${manifestErrors.length} error(s)`
+        ? `Synced ${syncedCount} entries with ${manifestErrors.length} error(s) (${skippedCount} skipped due to invalid local_path)`
         : `Synced ${syncedCount} entries successfully`,
     };
   } catch (error) {
@@ -805,6 +854,35 @@ export async function getCatalogEntryByCode(db: Database, code: string) {
 
   if (!row) throw entryNotFound(code);
   return normalizeEntryRow(row);
+}
+
+/**
+ * Fire-and-forget auto-sync: find every active catalog repo that has never
+ * been synced (last_synced_at IS NULL) and trigger an initial sync.
+ *
+ * Safe with multiple platform-api replicas — syncCatalogRepo is idempotent
+ * and concurrent runs just waste a network call. Returns the number of repos
+ * queued, for logging.
+ */
+export async function autoSyncUnsyncedRepos(db: Database): Promise<number> {
+  const { isNull, eq: eqInner, and: andInner } = await import('drizzle-orm');
+  const repos = await db
+    .select({ id: catalogRepositories.id })
+    .from(catalogRepositories)
+    .where(andInner(
+      isNull(catalogRepositories.lastSyncedAt),
+      eqInner(catalogRepositories.status, 'active'),
+    ));
+
+  for (const repo of repos) {
+    // fire-and-forget: errors are captured in the repo's last_error column
+    syncCatalogRepo(db, repo.id).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[catalog-auto-sync] initial sync failed for repo ${repo.id}: ${msg}`);
+    });
+  }
+
+  return repos.length;
 }
 
 export async function updateBadges(db: Database, id: string, badges: { featured?: boolean; popular?: boolean }) {
