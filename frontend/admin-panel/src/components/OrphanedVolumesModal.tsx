@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
-  X, Trash2, Camera, Loader2, AlertTriangle, AlertCircle, RefreshCw, CheckCircle,
+  X, Trash2, Camera, Loader2, AlertTriangle, AlertCircle, RefreshCw, CheckCircle, Eraser,
 } from 'lucide-react';
 import {
   useOrphanedVolumes,
   useSnapshotOrphan,
   useDeleteOrphan,
+  usePurgeAllOrphans,
 } from '@/hooks/use-orphaned-volumes';
 import type { OrphanedVolumeEntry, OrphanReason } from '@k8s-hosting/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
@@ -36,6 +37,11 @@ const REASON_LABELS: Record<OrphanReason, { label: string; explainer: string; to
     explainer: 'Longhorn volume CR exists but no PV references it.',
     tone: 'amber',
   },
+  namespace_orphaned: {
+    label: 'Namespace orphaned',
+    explainer: 'A client-* namespace with no matching client row and no backing volume — typically a deprovision that left the namespace standing.',
+    tone: 'red',
+  },
 };
 
 function formatBytes(bytes: number): string {
@@ -60,13 +66,16 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
   const list = useOrphanedVolumes();
   const snap = useSnapshotOrphan();
   const del = useDeleteOrphan();
+  const purge = usePurgeAllOrphans();
   const [confirmDelete, setConfirmDelete] = useState<OrphanedVolumeEntry | null>(null);
+  const [confirmPurge, setConfirmPurge] = useState(false);
   const [snappedVolumes, setSnappedVolumes] = useState<Set<string>>(new Set());
 
   const orphans = list.data?.data.orphans ?? [];
   const total = list.data?.data.totalCount ?? 0;
   const totalBytes = list.data?.data.totalBytes ?? 0;
   const stale = list.data?.data.stalePvThresholdDays ?? 7;
+  const purgeResult = purge.data?.data ?? null;
 
   const rowKey = (o: OrphanedVolumeEntry): string =>
     o.longhornVolumeName ?? o.pvName ?? `${o.namespace ?? '-'}/${o.pvcName ?? '-'}`;
@@ -81,21 +90,46 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
 
   const handleDelete = async (): Promise<void> => {
     if (!confirmDelete) return;
-    // The DELETE endpoint uses the longhorn volume name as the path
-    // segment when present; falls back to the PV name for unbound /
-    // non-Longhorn orphans (e.g. local-path provisioner).
-    const volumeName = confirmDelete.longhornVolumeName ?? confirmDelete.pvName;
-    if (!volumeName) {
-      setConfirmDelete(null);
-      return;
-    }
+    // Three call shapes:
+    //   1) Longhorn-backed PV → DELETE /:volumeName?pvName=...
+    //   2) Non-Longhorn PV    → DELETE /:pvName (fallback)
+    //   3) namespace_orphaned → DELETE /by-namespace/:namespace
     try {
-      await del.mutateAsync({
-        volumeName,
-        pvName: confirmDelete.pvName,
-      });
+      if (confirmDelete.reason === 'namespace_orphaned') {
+        if (!confirmDelete.namespace) {
+          setConfirmDelete(null);
+          return;
+        }
+        await del.mutateAsync({ namespace: confirmDelete.namespace });
+      } else {
+        const volumeName = confirmDelete.longhornVolumeName ?? confirmDelete.pvName;
+        if (!volumeName) {
+          setConfirmDelete(null);
+          return;
+        }
+        await del.mutateAsync({
+          volumeName,
+          pvName: confirmDelete.pvName,
+        });
+      }
       setConfirmDelete(null);
     } catch { /* surfaced below */ }
+  };
+
+  const handlePurgeAll = async (): Promise<void> => {
+    try {
+      // Forward the same threshold the list query was fetched with so
+      // the server's purge set matches the rows the operator saw.
+      await purge.mutateAsync({ stalePvThresholdDays: stale });
+      setConfirmPurge(false);
+    } catch { /* surfaced below */ }
+  };
+
+  // Drop any prior purge result when the modal closes so the next open
+  // doesn't show a stale "Purge: x/y deleted" panel.
+  const handleClose = (): void => {
+    purge.reset();
+    onClose();
   };
 
   return (
@@ -105,7 +139,7 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
       aria-modal="true"
       aria-labelledby="orphaned-volumes-modal-title"
       data-testid="orphaned-volumes-modal"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -133,14 +167,26 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
               {list.isFetching ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmPurge(true)}
+              disabled={total === 0 || purge.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              data-testid="orphans-purge-all-button"
+            >
+              {purge.isPending ? <Loader2 size={12} className="animate-spin" /> : <Eraser size={12} />}
+              Purge All
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="rounded-md p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
@@ -203,7 +249,12 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
                       >
                         <td className="py-2 pr-2">{o.ownerLabel}</td>
                         <td className="py-2 pr-2 font-mono">
-                          {o.namespace && o.pvcName ? (
+                          {o.reason === 'namespace_orphaned' && o.namespace ? (
+                            <div>
+                              <div>{o.namespace}</div>
+                              <div className="text-[10px] text-gray-400">namespace · no PV</div>
+                            </div>
+                          ) : o.namespace && o.pvcName ? (
                             <div>
                               <div>{o.namespace}/{o.pvcName}</div>
                               <div className="text-[10px] text-gray-400">{lhName ?? o.pvName ?? key}</div>
@@ -260,6 +311,37 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
               testId="orphan-snapshot-error"
             />
           )}
+
+          {/* Purge All result panel: shown only after a completed purge.
+              Per-row failures are aggregated server-side so partial
+              success surfaces here without rejecting the mutation. */}
+          {purgeResult && (
+            <div
+              className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs dark:border-gray-700 dark:bg-gray-900/40"
+              data-testid="orphans-purge-result"
+            >
+              <div className="font-medium text-gray-700 dark:text-gray-200">
+                Purge: {purgeResult.deleted}/{purgeResult.attempted} deleted · {formatBytes(purgeResult.bytesReclaimed)} reclaimed
+              </div>
+              {purgeResult.failures.length > 0 && (
+                <ul className="mt-1 space-y-0.5 text-amber-700 dark:text-amber-300">
+                  {purgeResult.failures.map((f) => (
+                    <li key={f.key} className="font-mono">
+                      {f.key} ({f.reason}): {f.error}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {purge.error && (
+            <ErrorPanel
+              error={extractOperatorError(purge.error)}
+              severity="error"
+              compact
+              testId="orphan-purge-error"
+            />
+          )}
         </div>
 
         {/* Confirm delete dialog */}
@@ -272,11 +354,22 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
               <h3 className="flex items-center gap-2 text-base font-semibold text-red-700 dark:text-red-300">
                 <AlertTriangle size={16} /> Are you sure?
               </h3>
-              <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
-                This will permanently delete the Persistent Volume <strong>{confirmDelete.pvName ?? '(none)'}</strong>{' '}
-                and Longhorn volume <strong className="font-mono">{confirmDelete.longhornVolumeName}</strong>{' '}
-                ({formatBytes(confirmDelete.sizeBytes)}). The data on every replica will be gone.
-              </p>
+              {confirmDelete.reason === 'namespace_orphaned' ? (
+                <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+                  This will permanently delete the Kubernetes namespace{' '}
+                  <strong className="font-mono">{confirmDelete.namespace}</strong> and every
+                  resource still inside it (configmaps, secrets, services, PVCs).
+                  PVCs whose StorageClass uses <code>reclaimPolicy=Retain</code> may
+                  resurface as Released-PV orphans on the next scan — purge again
+                  to reclaim those.
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+                  This will permanently delete the Persistent Volume <strong>{confirmDelete.pvName ?? '(none)'}</strong>{' '}
+                  and Longhorn volume <strong className="font-mono">{confirmDelete.longhornVolumeName}</strong>{' '}
+                  ({formatBytes(confirmDelete.sizeBytes)}). The data on every replica will be gone.
+                </p>
+              )}
               {confirmDelete.longhornVolumeName && !snappedVolumes.has(confirmDelete.longhornVolumeName) && (
                 <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
                   <AlertCircle size={12} className="mt-0.5 shrink-0" />
@@ -310,6 +403,54 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
                 >
                   {del.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                   Yes, delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Purge All confirm dialog. No per-row snapshot is taken — the
+            operator opted to bulk-clean and any pre-snapshot would need
+            to scan every row and is intentionally manual. */}
+        {confirmPurge && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+            data-testid="orphan-confirm-purge"
+          >
+            <div className="w-full max-w-md rounded-xl border border-red-300 bg-white p-5 shadow-xl dark:border-red-700 dark:bg-gray-800">
+              <h3 className="flex items-center gap-2 text-base font-semibold text-red-700 dark:text-red-300">
+                <AlertTriangle size={16} /> Purge every orphan?
+              </h3>
+              <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+                This will cascade-delete{' '}
+                <strong>{total}</strong> orphan{total === 1 ? '' : 's'}{' '}
+                (~<strong>{formatBytes(totalBytes)}</strong>) — every Persistent Volume,
+                Longhorn volume CR, and orphaned namespace currently in the list. No
+                snapshots will be taken. The data is unrecoverable.
+              </p>
+              <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                Per-row failures will be reported below the list. The purge will not
+                abort if a single delete fails.
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmPurge(false)}
+                  disabled={purge.isPending}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePurgeAll}
+                  disabled={purge.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                  data-testid="orphan-purge-confirm"
+                >
+                  {purge.isPending ? <Loader2 size={12} className="animate-spin" /> : <Eraser size={12} />}
+                  Yes, purge all
                 </button>
               </div>
             </div>
