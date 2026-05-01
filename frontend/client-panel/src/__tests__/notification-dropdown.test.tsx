@@ -16,6 +16,7 @@ vi.mock('../hooks/use-notifications', () => ({
     isLoading: false,
   })),
   useMarkNotificationsRead: vi.fn(() => ({ mutate: vi.fn() })),
+  useMarkAllNotificationsRead: vi.fn(() => ({ mutate: vi.fn() })),
 }));
 
 function createWrapper() {

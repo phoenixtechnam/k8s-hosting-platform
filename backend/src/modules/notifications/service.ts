@@ -59,6 +59,19 @@ export async function markAsRead(db: Database, userId: string, ids: string[]) {
     .where(and(eq(notifications.userId, userId), inArray(notifications.id, ids)));
 }
 
+/** Mark every unread notification for the user as read. Single-shot
+ *  for the bell-badge "Mark all read" affordance — the per-id endpoint
+ *  only covers the visible top-N which silently leaves a stale badge
+ *  when the user has more unread than the dropdown displays. */
+export async function markAllAsRead(db: Database, userId: string): Promise<number> {
+  const result = await db
+    .update(notifications)
+    .set({ isRead: 1, readAt: new Date() })
+    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, 0)))
+    .returning({ id: notifications.id });
+  return result.length;
+}
+
 export async function getUnreadCount(db: Database, userId: string): Promise<number> {
   const [result] = await db
     .select({ count: sql<number>`count(*)` })

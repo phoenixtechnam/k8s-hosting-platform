@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, Info, AlertTriangle, XCircle, CheckCircle, CheckCheck } from 'lucide-react';
-import { useNotifications, useUnreadCount, useMarkNotificationsRead } from '@/hooks/use-notifications';
+import { useNotifications, useUnreadCount, useMarkAllNotificationsRead } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 
 const typeIcons = {
@@ -23,7 +23,7 @@ export default function NotificationDropdown() {
   const ref = useRef<HTMLDivElement>(null);
   const { data, isLoading } = useNotifications(10);
   const { data: unreadData } = useUnreadCount();
-  const markRead = useMarkNotificationsRead();
+  const markAllRead = useMarkAllNotificationsRead();
   const navigate = useNavigate();
 
   const notifications = data?.data ?? [];
@@ -42,9 +42,8 @@ export default function NotificationDropdown() {
   }, [open]);
 
   const handleMarkAllRead = () => {
-    const unreadIds = notifications.filter((n) => !n.isRead).map((n) => n.id);
-    if (unreadIds.length > 0) {
-      markRead.mutate(unreadIds);
+    if (unreadCount > 0) {
+      markAllRead.mutate();
     }
   };
 
@@ -74,7 +73,7 @@ export default function NotificationDropdown() {
             {unreadCount > 0 && (
               <button
                 onClick={handleMarkAllRead}
-                disabled={markRead.isPending}
+                disabled={markAllRead.isPending}
                 className="inline-flex items-center gap-1.5 rounded-md border border-brand-200 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-800/40 transition-colors disabled:opacity-50"
                 title="Mark all as read"
                 data-testid="mark-all-read"

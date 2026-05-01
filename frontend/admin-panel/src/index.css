@@ -32,6 +32,30 @@
   html.dark body {
     @apply bg-gray-900 text-gray-100;
   }
+
+  /* Tailwind v4 + modern browsers default <button> to cursor:default,
+   * which makes interactive controls feel dead. Restore the pointer
+   * cursor for every clickable element by tag/role/aria signal. The
+   * `:disabled` carve-out keeps the not-allowed cursor on disabled
+   * controls instead of falsely advertising clickability. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  label[for],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  input[type="submit"]:not(:disabled),
+  input[type="button"]:not(:disabled),
+  input[type="reset"]:not(:disabled),
+  a[href] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 @layer components {

@@ -41,6 +41,13 @@ export async function notificationRoutes(app: FastifyInstance): Promise<void> {
     return success({ updated: parsed.data.ids.length });
   });
 
+  // POST /api/v1/notifications/mark-all-read — clears the unread
+  // badge in one request, regardless of how many unread the user has.
+  app.post('/notifications/mark-all-read', async (request) => {
+    const updated = await service.markAllAsRead(app.db, request.user!.sub);
+    return success({ updated });
+  });
+
   // DELETE /api/v1/notifications/:id
   app.delete('/notifications/:id', async (request, reply) => {
     const { id } = request.params as { id: string };

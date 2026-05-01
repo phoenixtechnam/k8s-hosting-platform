@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Bell, Info, AlertTriangle, XCircle, CheckCircle, Check } from 'lucide-react';
+import { Bell, Info, AlertTriangle, XCircle, CheckCircle, CheckCheck } from 'lucide-react';
 import {
   useNotifications,
   useUnreadCount,
-  useMarkNotificationsRead,
+  useMarkAllNotificationsRead,
   type NotificationEntry,
 } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format-relative-time';
@@ -28,7 +28,7 @@ export default function NotificationDropdown() {
   const ref = useRef<HTMLDivElement>(null);
   const { data, isLoading } = useNotifications(10);
   const { data: unreadData } = useUnreadCount();
-  const markRead = useMarkNotificationsRead();
+  const markAllRead = useMarkAllNotificationsRead();
 
   const notifications: readonly NotificationEntry[] = data?.data ?? [];
   const unreadCount = unreadData?.data?.count ?? 0;
@@ -46,9 +46,8 @@ export default function NotificationDropdown() {
   }, [open]);
 
   const handleMarkAllRead = () => {
-    const unreadIds = notifications.filter((n) => !n.isRead).map((n) => n.id);
-    if (unreadIds.length > 0) {
-      markRead.mutate(unreadIds);
+    if (unreadCount > 0) {
+      markAllRead.mutate();
     }
   };
 
@@ -57,7 +56,7 @@ export default function NotificationDropdown() {
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="relative rounded-md p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200"
+        className="relative rounded-md p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-100 transition-colors"
         aria-label="Notifications"
         data-testid="notification-bell"
       >
@@ -76,24 +75,19 @@ export default function NotificationDropdown() {
         >
           <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-4 py-3">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Notifications</h3>
-            <div className="flex items-center gap-2">
-              {unreadCount > 0 && (
-                <>
-                  <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-900 dark:text-brand-300">
-                    {unreadCount}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleMarkAllRead}
-                    className="rounded p-1 text-gray-400 hover:text-brand-500"
-                    title="Mark all as read"
-                    data-testid="mark-all-read"
-                  >
-                    <Check size={14} />
-                  </button>
-                </>
-              )}
-            </div>
+            {unreadCount > 0 && (
+              <button
+                type="button"
+                onClick={handleMarkAllRead}
+                disabled={markAllRead.isPending}
+                className="inline-flex items-center gap-1.5 rounded-md border border-brand-200 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/30 px-2.5 py-1 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-800/40 transition-colors disabled:opacity-50"
+                title="Mark all as read"
+                data-testid="mark-all-read"
+              >
+                <CheckCheck size={14} />
+                Mark all read ({unreadCount})
+              </button>
+            )}
           </div>
 
           <div className="max-h-72 overflow-y-auto">
@@ -112,7 +106,7 @@ export default function NotificationDropdown() {
                 return (
                   <div
                     key={item.id}
-                    className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-750 ${
+                    className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${
                       !item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''
                     }`}
                   >

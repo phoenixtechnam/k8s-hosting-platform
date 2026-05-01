@@ -55,6 +55,25 @@ export function useMarkNotificationsRead() {
   });
 }
 
+/** Mark EVERY unread notification for the current user as read in one
+ *  request. Use this for the bell-badge "Mark all read" affordance —
+ *  the per-id variant above only covers visible/passed ids, which
+ *  silently leaves the bell badge non-zero when the user has more
+ *  unread than the dropdown lists. */
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { updated: number } }>('/api/v1/notifications/mark-all-read', {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      qc.invalidateQueries({ queryKey: ['notifications-unread-count'] });
+    },
+  });
+}
+
 export function useDeleteNotification() {
   const qc = useQueryClient();
   return useMutation({

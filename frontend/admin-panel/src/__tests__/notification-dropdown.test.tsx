@@ -23,6 +23,10 @@ vi.mock('../hooks/use-notifications', () => ({
     mutate: vi.fn(),
     isPending: false,
   })),
+  useMarkAllNotificationsRead: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+  })),
   useDeleteNotification: vi.fn(() => ({
     mutate: vi.fn(),
     isPending: false,
