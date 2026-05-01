@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle } from 'lucide-react';
+import { Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
-import { useClusterNodes } from '@/hooks/use-cluster-nodes';
+import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
 import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-contracts';
 import NodeEditModal from '@/components/NodeEditModal';
@@ -101,10 +101,20 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
 function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport }) {
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteNodeMutation = useDeleteNode(node.name);
   const ready = readyCondition(node);
   const stale = staleness(node.lastSeenAt);
   // Surface alias when present, but always keep the k8s identity visible.
   const headerName = node.displayName?.trim() ? node.displayName : node.name;
+
+  const handleDelete = () => {
+    if (!confirm(`Delete node "${node.name}" from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
+    setDeleteError(null);
+    deleteNodeMutation.mutate(undefined, {
+      onError: (err) => setDeleteError(err instanceof Error ? err.message : 'Delete failed'),
+    });
+  };
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
@@ -127,6 +137,24 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
               ) : (
                 <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">
                   system only
+                </span>
+              )}
+              {node.cordoned && !node.drained && (
+                <span
+                  className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300"
+                  title="Node is cordoned (spec.unschedulable=true) — no new pods will schedule here"
+                  data-testid={`node-cordoned-tag-${node.name}`}
+                >
+                  Cordoned
+                </span>
+              )}
+              {node.drained && (
+                <span
+                  className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-900/40 dark:text-purple-300"
+                  title="Node is fully drained — cordoned + no client workloads + no Longhorn replicas. Safe to delete."
+                  data-testid={`node-drained-tag-${node.name}`}
+                >
+                  Drained
                 </span>
               )}
               <IngressModePill mode={node.ingressMode} />
@@ -166,8 +194,26 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
           >
             <AlertTriangle size={14} /> Drain Node
           </button>
+          {node.drained && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleteNodeMutation.isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200 dark:hover:bg-red-900/50"
+              data-testid={`delete-node-${node.name}-button`}
+              title="Remove the drained node from the cluster (kubectl delete node + DB row)"
+            >
+              <Trash2 size={14} /> {deleteNodeMutation.isPending ? 'Deleting…' : 'Delete'}
+            </button>
+          )}
         </div>
       </div>
+
+      {deleteError && (
+        <div className="border-b border-red-200 bg-red-50 px-5 py-2 text-xs text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200" data-testid={`delete-node-error-${node.name}`}>
+          {deleteError}
+        </div>
+      )}
 
       {subsystem && (
         <SubsystemHealthRow subsystem={subsystem} />

@@ -50,6 +50,13 @@ export const clusterNodeSchema = z.object({
     value: z.string().optional(),
     effect: z.string(),
   })).nullable(),
+  /** Live cordon state — k8s node.spec.unschedulable. UI surfaces a
+   *  red "Cordoned" tag; bootstrap.sh and `kubectl drain` set it. */
+  cordoned: z.boolean(),
+  /** True when the node is cordoned AND has no client workloads or
+   *  PVC replicas left on it. UI shows a purple "Drained" tag and the
+   *  Delete button to remove the node from the cluster. */
+  drained: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -70,6 +77,11 @@ export const updateClusterNodeSchema = z.object({
   canHostClientWorkloads: z.boolean().optional(),
   ingressMode: nodeIngressModeSchema.optional(),
   notes: z.string().max(2000).nullable().optional(),
+  /** Toggle the k8s spec.unschedulable flag (cordon/uncordon). When
+   *  the modal flips this to true, it also auto-clears
+   *  canHostClientWorkloads so the operator's intent ("stop scheduling
+   *  here") is honoured at both the cordon and the tenant-taint level. */
+  cordoned: z.boolean().optional(),
   force: z.boolean().optional(),
 });
 export type UpdateClusterNodeInput = z.infer<typeof updateClusterNodeSchema>;

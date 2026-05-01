@@ -53,6 +53,88 @@ export async function listNodes(db: Database): Promise<ClusterNode[]> {
   return db.select().from(clusterNodes).orderBy(desc(clusterNodes.role), clusterNodes.name);
 }
 
+/**
+ * Enrich the DB row list with live K8s state — `cordoned` and
+ * `drained` aren't persisted (they change on operator action /
+ * scheduler decisions, not the reconciler tick), so we read them
+ * once per LIST and decorate. `drained` = cordoned AND no tenant
+ * pods (excluding DaemonSets / system namespaces) AND no Longhorn
+ * replicas remain on the node.
+ *
+ * Best-effort: a K8s API hiccup yields cordoned/drained=false rather
+ * than failing the whole call. The page falls back to "not cordoned"
+ * which is safe — operators just lose the visual cue temporarily.
+ */
+export async function listNodesEnriched(
+  db: Database,
+  k8s: K8sClients | null,
+): Promise<Array<ClusterNode & { cordoned: boolean; drained: boolean }>> {
+  const rows = await listNodes(db);
+  if (!k8s) return rows.map((r) => ({ ...r, cordoned: false, drained: false }));
+
+  // Each call is wrapped in a try/catch — ANY of the three methods may
+  // be missing in tests (mock that only stubs a subset) or fail in
+  // production (CRD not installed → custom listNamespacedCustomObject
+  // 404). We tolerate all of them and fall back to empty data; the
+  // tags just won't render but the LIST itself succeeds.
+  type NodesResp = { items?: Array<{ metadata?: { name?: string }; spec?: { unschedulable?: boolean } }> };
+  type PodsResp = { items?: Array<{ metadata?: { namespace?: string; ownerReferences?: Array<{ kind?: string }> }; spec?: { nodeName?: string }; status?: { phase?: string } }> };
+  type ReplicasResp = { items?: Array<{ spec?: { nodeID?: string }; status?: { currentState?: string } }> };
+  const safeCall = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
+    try { return await fn(); } catch { return fallback; }
+  };
+  const [nodesResp, podsResp, replicasResp] = await Promise.all([
+    safeCall<NodesResp>(() => k8s.core.listNode() as Promise<NodesResp>, { items: [] }),
+    safeCall<PodsResp>(() => k8s.core.listPodForAllNamespaces({}) as Promise<PodsResp>, { items: [] }),
+    safeCall<ReplicasResp>(
+      () => k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'replicas',
+      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<ReplicasResp>,
+      { items: [] },
+    ),
+  ]);
+
+  const cordonedByName = new Map<string, boolean>();
+  for (const n of nodesResp.items ?? []) {
+    if (n.metadata?.name) {
+      cordonedByName.set(n.metadata.name, n.spec?.unschedulable === true);
+    }
+  }
+
+  // Count tenant pods per node (skip system NS, DaemonSets, mirror pods,
+  // and terminal-phase pods).
+  const tenantPodsByNode = new Map<string, number>();
+  for (const p of podsResp.items ?? []) {
+    const phase = p.status?.phase;
+    if (phase === 'Succeeded' || phase === 'Failed') continue;
+    const ns = p.metadata?.namespace ?? '';
+    if ((SYSTEM_NAMESPACES as readonly string[]).includes(ns)) continue;
+    const ownerKind = p.metadata?.ownerReferences?.[0]?.kind;
+    if (ownerKind === 'DaemonSet' || ownerKind === 'Node') continue;
+    const node = p.spec?.nodeName;
+    if (!node) continue;
+    tenantPodsByNode.set(node, (tenantPodsByNode.get(node) ?? 0) + 1);
+  }
+
+  // Count running Longhorn replicas per node.
+  const replicasByNode = new Map<string, number>();
+  for (const r of replicasResp.items ?? []) {
+    if (r.status?.currentState !== 'running') continue;
+    const node = r.spec?.nodeID;
+    if (!node) continue;
+    replicasByNode.set(node, (replicasByNode.get(node) ?? 0) + 1);
+  }
+
+  return rows.map((r) => {
+    const cordoned = cordonedByName.get(r.name) === true;
+    const drained = cordoned
+      && (tenantPodsByNode.get(r.name) ?? 0) === 0
+      && (replicasByNode.get(r.name) ?? 0) === 0;
+    return { ...r, cordoned, drained };
+  });
+}
+
 export async function getNode(db: Database, name: string): Promise<ClusterNode | null> {
   const [row] = await db.select().from(clusterNodes).where(eq(clusterNodes.name, name)).limit(1);
   return row ?? null;
@@ -265,13 +347,24 @@ export async function updateNode(
     // Single atomic patch. The library's auto-generated client picks
     // Content-Type = application/json-patch+json by default; pass a
     // STRATEGIC_MERGE_PATCH middleware override so our object-shaped
-    // body is interpreted correctly.
+    // body is interpreted correctly. Merge `cordoned` into the same
+    // patch when set so the operator's "cordon + flip canHost" intent
+    // lands in one round-trip.
+    const specPatch: Record<string, unknown> = { taints: nextTaints };
+    if (patch.cordoned !== undefined) specPatch.unschedulable = patch.cordoned;
     await k8s.core.patchNode({
       name,
       body: {
         metadata: { labels: nextLabels },
-        spec: { taints: nextTaints },
+        spec: specPatch,
       },
+    } as unknown as Parameters<typeof k8s.core.patchNode>[0],
+      STRATEGIC_MERGE_PATCH);
+  } else if (patch.cordoned !== undefined) {
+    // No labels/taints touched but cordon flipped — still need to patch.
+    await k8s.core.patchNode({
+      name,
+      body: { spec: { unschedulable: patch.cordoned } },
     } as unknown as Parameters<typeof k8s.core.patchNode>[0],
       STRATEGIC_MERGE_PATCH);
   }

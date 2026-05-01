@@ -45,8 +45,11 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   // workloadPlacement keyed by "<ns>/<kind>/<name>", value is "" (auto),
-  // "<targetNode>", or "stay". Defaults to "stay" so the operator must
-  // explicitly opt into a re-pin.
+  // "<targetNode>", or "stay". Defaults to "" (auto) — kubectl drain
+  // semantics: drain MOVES things by default. Operator can opt into
+  // "stay" or a specific target if they need a refusal-to-move signal.
+  // Pre-this-default it was "stay" and "Drain Node" silently no-op'd
+  // for operators who didn't realise per-row selection was required.
   const [workloadPlacement, setWorkloadPlacement] = useState<Record<string, string>>({});
   const [pvcPlacement, setPvcPlacement] = useState<Record<string, string>>({});
 
@@ -63,12 +66,13 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       .map((n) => n.name);
   }, [nodesQuery.data, node.name]);
 
-  // Block the drain button when any pinned workload is still set to
-  // "stay" — the operator must explicitly choose Auto / specific node
-  // for each. Otherwise the workload's nodeSelector still points at
-  // the cordoned node and its replacement pods sit Pending forever.
+  // Block the drain button only when the operator has EXPLICITLY set
+  // a pinned workload to "stay" — that's a real refusal-to-move signal
+  // and the drain would otherwise leave the workload's nodeSelector
+  // pointing at the cordoned node (replacement pods stuck Pending).
+  // Default is now "auto" so plain "Drain Node" actually moves things.
   const stayPinnedWorkloads = (impact?.pinnedWorkloads ?? []).filter(
-    (w) => (workloadPlacement[`${w.namespace}/${w.kind}/${w.name}`] ?? 'stay') === 'stay',
+    (w) => workloadPlacement[`${w.namespace}/${w.kind}/${w.name}`] === 'stay',
   );
   const anyStayPinned = stayPinnedWorkloads.length > 0;
 
@@ -166,7 +170,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                     <tbody>
                       {impact.pinnedWorkloads.map((w) => {
                         const key = `${w.namespace}/${w.kind}/${w.name}`;
-                        const value = workloadPlacement[key] ?? 'stay';
+                        const value = workloadPlacement[key] ?? '';
                         return (
                           <tr key={key} className="border-t border-amber-200/60 dark:border-amber-700/40">
                             <td className="py-1.5 pr-2">
@@ -280,7 +284,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                     <tbody>
                       {impact.tenantPvcs.map((p) => {
                         const sizeGiB = (p.sizeBytes / (1024 ** 3)).toFixed(0);
-                        const value = pvcPlacement[p.volumeName] ?? 'stay';
+                        const value = pvcPlacement[p.volumeName] ?? '';
                         return (
                           <tr key={p.volumeName} className="border-t border-gray-200/60 dark:border-gray-700/40">
                             <td className="py-1.5 pr-2">

@@ -4,7 +4,7 @@ import { updateClusterNodeSchema, drainNodeRequestSchema } from '@k8s-hosting/ap
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { listNodes, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
+import { listNodes, listNodesEnriched, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
 
 // RFC-1123 DNS subdomain label with dots — matches k8s' own node-name
 // validation. We reject anything else at the route boundary so a path
@@ -33,7 +33,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async () => {
-    const rows = await listNodes(app.db);
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    let k8s: ReturnType<typeof createK8sClients> | null = null;
+    try { k8s = createK8sClients(kubeconfigPath); } catch { /* live data optional */ }
+    const rows = await listNodesEnriched(app.db, k8s);
     return success(rows);
   });
 

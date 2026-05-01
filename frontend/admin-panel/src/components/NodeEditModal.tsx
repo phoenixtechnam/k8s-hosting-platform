@@ -50,11 +50,26 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
   const [displayName, setDisplayName] = useState(node.displayName ?? '');
   const [role, setRole] = useState<'server' | 'worker'>(node.role);
   const [canHost, setCanHost] = useState(node.canHostClientWorkloads);
+  const [cordoned, setCordoned] = useState(node.cordoned);
   const [ingressMode, setIngressMode] = useState<NodeIngressMode>(node.ingressMode);
   const [notes, setNotes] = useState(node.notes ?? '');
   const [force, setForce] = useState(false);
 
   const isDemotion = node.role === 'server' && role === 'worker';
+
+  // Symmetric coupling between cordon ↔ canHost so the modal can't
+  // express the contradictory state "Cordoned + still hosts tenants":
+  //   cordon → ON  ⇒ canHost → No (don't schedule new tenant pods anyway)
+  //   canHost → Yes ⇒ cordon → Off (otherwise the Yes is a no-op —
+  //                                  the cordon blocks scheduling regardless)
+  const handleCordonChange = (value: boolean) => {
+    setCordoned(value);
+    if (value && canHost) setCanHost(false);
+  };
+  const handleCanHostChange = (value: boolean) => {
+    setCanHost(value);
+    if (value && cordoned) setCordoned(false);
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -64,6 +79,7 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
         displayName: displayName.trim(),
         role,
         canHostClientWorkloads: canHost,
+        cordoned: cordoned !== node.cordoned ? cordoned : undefined,
         ingressMode,
         notes: notes.trim() === '' ? null : notes,
         force: isDemotion && force ? true : undefined,
@@ -150,16 +166,37 @@ export default function NodeEditModal({ node, onClose }: NodeEditModalProps) {
               <select
                 id="node-can-host"
                 value={canHost ? 'true' : 'false'}
-                onChange={(e) => setCanHost(e.target.value === 'true')}
+                onChange={(e) => handleCanHostChange(e.target.value === 'true')}
                 className={INPUT_CLASS}
+                data-testid="node-can-host-select"
               >
                 <option value="true">Yes — tenant pods may schedule here</option>
                 <option value="false">No — NoSchedule taint for tenant pods</option>
               </select>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                Servers default to No; workers default to Yes.
+                Servers default to No; workers default to Yes. Auto-flips to No when Cordon is enabled, and flipping this back to Yes auto-uncordons the node (else the Yes is a no-op).
               </p>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300" htmlFor="node-cordon">
+              Cordon (spec.unschedulable)
+            </label>
+            <select
+              id="node-cordon"
+              value={cordoned ? 'true' : 'false'}
+              onChange={(e) => handleCordonChange(e.target.value === 'true')}
+              className={INPUT_CLASS}
+              data-testid="node-cordon-select"
+            >
+              <option value="false">Uncordoned — pods may schedule here</option>
+              <option value="true">Cordoned — block new pods (existing pods stay)</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Cordon blocks the scheduler from placing NEW pods. Use the
+              {' '}<strong>Drain Node</strong>{' '}button on the card to also evict + re-pin existing workloads.
+            </p>
           </div>
 
           <div>
