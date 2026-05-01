@@ -2460,6 +2460,15 @@ create_platform_configmap() {
     --from-literal=support-url="${SUPPORT_URL:-}" \
     --from-literal=platform-name="$platform_name_value" \
     --from-literal=platform-tls-secret-name="${PLATFORM_TLS_SECRET_NAME:-platform-tls}" \
+    `# Passkey/WebAuthn RP config — derived from --domain so a fresh` \
+    `# install Just Works without anyone needing to run` \
+    `# set-overlay-apex.sh on a separate overlay. RP_ID is the` \
+    `# registrable suffix shared by admin + client panels (the apex);` \
+    `# ORIGINS is the CSV of fully-qualified panel URLs. Per-overlay` \
+    `# overrides remain possible via overlays/<env>/platform-config-patch.yaml.` \
+    --from-literal=passkey-rp-id="${PLATFORM_DOMAIN:-localhost}" \
+    --from-literal=passkey-rp-name="$platform_name_value" \
+    --from-literal=passkey-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://client.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 }
