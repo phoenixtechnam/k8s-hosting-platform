@@ -8,10 +8,19 @@ metadata:
   namespace: platform
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod-http01
-    # Global ssl-redirect is disabled (so cert-manager HTTP-01 solver
-    # ingresses can serve /.well-known/acme-challenge on port 80) —
-    # keep the redirect behaviour on the platform ingress itself.
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Use `ssl-redirect` (NOT `force-ssl-redirect`). The two differ in one
+    # critical way: `ssl-redirect` exempts `/.well-known/acme-challenge/*`
+    # so cert-manager's HTTP-01 solver Ingress can serve the validation
+    # token on port 80; `force-ssl-redirect` redirects ALL paths to HTTPS,
+    # including the ACME challenge path. Caught on testing.phoenix-host.
+    # net 2026-05-01: every Order stuck in pending because LE got 308 to
+    # https when fetching the http://…/.well-known/acme-challenge/<token>
+    # URL.
+    #
+    # `ssl-redirect: true` still HTTPS-redirects normal traffic (the
+    # Ingress has a TLS section, which is the prerequisite). Browsers
+    # opening admin.<domain> over http get bumped to https as expected.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   tls:
     - hosts:
