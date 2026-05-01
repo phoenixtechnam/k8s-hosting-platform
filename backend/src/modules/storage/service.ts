@@ -615,7 +615,15 @@ for img in ${imageList}; do
   if crictl rmi "$img" >/tmp/out 2>&1; then
     echo "REMOVED:$img"
   else
-    echo "FAILED:$img cause=$(tr '\\n' ' ' < /tmp/out | head -c 200)"
+    out=$(tr '\\n' ' ' < /tmp/out | head -c 200)
+    # B0.2 follow-up: \`crictl rmi --prune\` (above) already removed any
+    # dangling/digest-only images. The per-image loop then sees them as
+    # "no such image" — that's success, not failure. Treat the message as
+    # a successful removal so the response doesn't report false negatives.
+    case "$out" in
+      *"no such image"*|*"not found"*) echo "REMOVED:$img" ;;
+      *)                                echo "FAILED:$img cause=$out" ;;
+    esac
   fi
 done
 `;
