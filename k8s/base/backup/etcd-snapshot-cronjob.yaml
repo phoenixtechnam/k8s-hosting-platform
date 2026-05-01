@@ -100,12 +100,14 @@ spec:
                     secretKeyRef:
                       name: backup-credentials
                       key: S3_PATH_PREFIX
-              # Use bash explicitly — the script uses `mapfile -t` (bash
-              # builtin, not POSIX sh). alpine/k8s ships bash.
-              command: [/bin/bash, -c]
+              # POSIX sh — no bash arrays. Flux's envsubst rejects
+              # ${#VAR}/${VAR[@]} as "bad substitution"; a temp-file
+              # + `while read` loop achieves the same iteration without
+              # tripping the postBuild substitution stage.
+              command: [/bin/sh, -c]
               args:
                 - |
-                  set -euo pipefail
+                  set -eu
                   SRC=/snapshots
                   PREFIX="${S3_PATH_PREFIX:+${S3_PATH_PREFIX}/}etcd"
                   if [ ! -d "${SRC}" ]; then
@@ -118,32 +120,35 @@ spec:
                   # (any filename the snapshot API produced). First-run
                   # clusters may have no auto-snapshots yet — exit cleanly
                   # in that case rather than treating "nothing to upload"
-                  # as an error. Populate `files` via mapfile so an empty
-                  # result doesn't trip set -e + pipefail on the pipeline.
-                  mapfile -t files < <(find . -maxdepth 1 -type f -mtime -2 2>/dev/null | sed 's|^\./||')
-                  if [ "${#files[@]}" -eq 0 ]; then
+                  # as an error.
+                  TMP_FILES=/tmp/etcd-files
+                  find . -maxdepth 1 -type f -mtime -2 2>/dev/null | sed 's|^\./||' > "${TMP_FILES}" || true
+                  COUNT=$(wc -l < "${TMP_FILES}" | tr -d ' ')
+                  if [ "${COUNT}" -eq 0 ]; then
                     echo "[etcd] no snapshots <36h old — k3s auto-snapshot-schedule-cron defaults to 0 */12 * * *; first run on a fresh cluster may skip an upload cycle. Exiting clean."
                     exit 0
                   fi
-                  for name in "${files[@]}"; do
+                  while IFS= read -r name; do
+                    [ -z "${name}" ] && continue
                     echo "[etcd] upload ${name}"
                     aws s3 cp --endpoint-url="${AWS_ENDPOINT_URL}" \
                       "${name}" "s3://${S3_BUCKET}/${PREFIX}/${name}"
-                  done
+                  done < "${TMP_FILES}"
                   # Retention: keep 14 newest in S3. `aws s3 ls` on an
-                  # empty prefix returns 0 with no output — pipefail-safe.
-                  mapfile -t to_evict < <(aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
-                    "s3://${S3_BUCKET}/${PREFIX}/" \
+                  # empty prefix returns 0 with no output.
+                  TMP_EVICT=/tmp/etcd-evict
+                  aws s3 ls --endpoint-url="${AWS_ENDPOINT_URL}" \
+                    "s3://${S3_BUCKET}/${PREFIX}/" 2>/dev/null \
                     | awk '{print $4}' \
                     | sort -r \
-                    | tail -n +15)
-                  for f in "${to_evict[@]}"; do
-                    [ -z "$f" ] && continue
+                    | tail -n +15 > "${TMP_EVICT}" || true
+                  while IFS= read -r f; do
+                    [ -z "${f}" ] && continue
                     echo "[etcd] evict ${PREFIX}/${f}"
                     aws s3 rm --endpoint-url="${AWS_ENDPOINT_URL}" \
                       "s3://${S3_BUCKET}/${PREFIX}/${f}"
-                  done
-                  echo "[etcd] done (${#files[@]} uploaded)"
+                  done < "${TMP_EVICT}"
+                  echo "[etcd] done (${COUNT} uploaded)"
               volumeMounts:
                 - name: snapshots
                   mountPath: /snapshots
