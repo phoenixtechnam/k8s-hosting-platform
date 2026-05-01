@@ -444,18 +444,27 @@ async function runPurgeOnNode(
   let freedBytes = 0;
 
   const imageList = targets.map(t => `'${t.crictlName.replace(/'/g, "'\\''")}'`).join(' ');
+  // crictl in the rancher/k3s image fatals on missing config even when
+  // --runtime-endpoint is supplied on the command line. It searches
+  // /var/lib/rancher/k3s/agent/etc/crictl.yaml first — write a minimal
+  // config there before invoking it.
   const script = `
 set -u
-SOCKET="unix://${CONTAINERD_SOCKET_PATH}"
 if [ ! -S "${CONTAINERD_SOCKET_PATH}" ]; then
   echo "NOSOCKET"
   exit 0
 fi
+mkdir -p /var/lib/rancher/k3s/agent/etc
+cat > /var/lib/rancher/k3s/agent/etc/crictl.yaml <<EOF
+runtime-endpoint: unix://${CONTAINERD_SOCKET_PATH}
+image-endpoint: unix://${CONTAINERD_SOCKET_PATH}
+timeout: 30
+EOF
 for img in ${imageList}; do
-  if crictl --runtime-endpoint "$SOCKET" rmi "$img" >/tmp/out 2>&1; then
+  if crictl rmi "$img" >/tmp/out 2>&1; then
     echo "REMOVED:$img"
   else
-    echo "FAILED:$img"
+    echo "FAILED:$img cause=$(tr '\\n' ' ' < /tmp/out | head -c 200)"
   fi
 done
 `;
@@ -534,7 +543,10 @@ done
           removedDisplayNames.push(crictlName);
         }
       } else if (line.startsWith('FAILED:')) {
-        const crictlName = line.slice('FAILED:'.length).trim();
+        // Format: "FAILED:<crictlName> cause=<short-error>" — split on first space
+        const rest = line.slice('FAILED:'.length).trim();
+        const sepIdx = rest.indexOf(' cause=');
+        const crictlName = sepIdx >= 0 ? rest.slice(0, sepIdx) : rest;
         const t = crictlByName.get(crictlName);
         failedDisplayNames.push(t?.displayName ?? crictlName);
       }
