@@ -137,6 +137,16 @@ export const drainImpactSchema = z.object({
     replicaName: z.string(),
     /** True when this is the LAST healthy replica — refusing to drain. */
     isLastReplica: z.boolean(),
+    /** Owner namespace if the volume is bound to a PVC. */
+    namespace: z.string().nullable().default(null),
+    /** PVC name if the volume is bound to a PVC. */
+    pvcName: z.string().nullable().default(null),
+    /** Resolved client UUID when the namespace belongs to a tenant. */
+    clientId: z.string().nullable().default(null),
+    /** Resolved client company name when the namespace belongs to a tenant. */
+    clientName: z.string().nullable().default(null),
+    /** Pre-computed display label: client name OR "Platform System (<ns>)". */
+    ownerLabel: z.string().default('Platform System'),
   })),
 });
 export type DrainImpact = z.infer<typeof drainImpactSchema>;

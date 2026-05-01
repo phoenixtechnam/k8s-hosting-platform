@@ -13,8 +13,15 @@ import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 // re-evaluates the new nodeAffinity rules, so we refuse by default.
 // Keep this list in sync with the system-node-affinity Kustomize
 // component (see k8s/components/system-node-affinity/).
+//
+// IMPORTANT: this list also classifies pods in the drain-impact preview
+// as "system" (info-only) vs "non-system" (will be evicted). Anything
+// missing here gets shown to the operator as a tenant pod — which is
+// wrong for cluster-infra namespaces (calico, tigera, kube-system, etc).
 export const SYSTEM_NAMESPACES = Object.freeze([
   'platform',
+  'platform-system',
+  'platform-tenant-ops',
   'flux-system',
   'cert-manager',
   'ingress-nginx',
@@ -22,6 +29,17 @@ export const SYSTEM_NAMESPACES = Object.freeze([
   'mail',
   'dex',
   'oauth2-proxy',
+  // Cluster-infrastructure namespaces — these pods are platform-managed
+  // by their respective operators (Calico CNI, kube-system control plane,
+  // CloudNativePG, kube-prometheus). Treat as system for drain previews.
+  'kube-system',
+  'kube-public',
+  'kube-node-lease',
+  'calico-system',
+  'calico-apiserver',
+  'tigera-operator',
+  'cnpg-system',
+  'monitoring',
 ] as const);
 
 export const NODE_ROLE_LABEL = 'platform.phoenix-host.net/node-role';
@@ -416,7 +434,16 @@ export async function buildDrainImpact(
     isLastReplica: boolean;
     currentNodeSelector: string[];
   }>;
-  longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }>;
+  longhornReplicas: Array<{
+    volumeName: string;
+    replicaName: string;
+    isLastReplica: boolean;
+    namespace: string | null;
+    pvcName: string | null;
+    clientId: string | null;
+    clientName: string | null;
+    ownerLabel: string;
+  }>;
 }> {
   // 1) Cordon state
   let alreadyCordoned = false;
@@ -542,35 +569,84 @@ export async function buildDrainImpact(
   // 5) Longhorn replicas — refuse to drain when this is the LAST healthy
   //    replica for any volume. The custom resource list is best-effort:
   //    if the CRD is absent (cluster without Longhorn) we just skip it.
-  const longhornReplicas: Array<{ volumeName: string; replicaName: string; isLastReplica: boolean }> = [];
+  //    Each entry is enriched with PVC namespace + name and resolved
+  //    owner (client name or "Platform System") so the UI's last-replica
+  //    risk panel can label volumes for the operator.
+  const longhornReplicas: Array<{
+    volumeName: string;
+    replicaName: string;
+    isLastReplica: boolean;
+    namespace: string | null;
+    pvcName: string | null;
+    clientId: string | null;
+    clientName: string | null;
+    ownerLabel: string;
+  }> = [];
   try {
     interface LhReplica {
       metadata?: { name?: string };
       spec?: { volumeName?: string; nodeID?: string };
       status?: { currentState?: string };
     }
-    const list = await k8s.custom.listNamespacedCustomObject({
-      group: 'longhorn.io',
-      version: 'v1beta2',
-      namespace: 'longhorn-system',
-      plural: 'replicas',
-    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhReplica[] };
+    interface LhVolumeMeta {
+      metadata?: { name?: string };
+      status?: { kubernetesStatus?: { pvcName?: string; namespace?: string } };
+    }
+    // Fan out replicas + volumes lookup in parallel — both are cheap LISTs
+    // against longhorn-system, and we need both to attribute owners.
+    const [replicaResp, volumeResp] = await Promise.all([
+      k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'replicas',
+      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhReplica[] }>,
+      k8s.custom.listNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'volumes',
+      } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolumeMeta[] }>,
+    ]);
+
+    // volume name → { namespace, pvcName }
+    const volumeMeta = new Map<string, { namespace: string; pvcName: string }>();
+    for (const v of volumeResp.items ?? []) {
+      const volName = v.metadata?.name ?? '';
+      if (!volName) continue;
+      volumeMeta.set(volName, {
+        namespace: v.status?.kubernetesStatus?.namespace ?? '',
+        pvcName: v.status?.kubernetesStatus?.pvcName ?? '',
+      });
+    }
 
     // Pre-aggregate healthy replicas per volume so we can flag last-replica risk.
     const healthyByVolume = new Map<string, number>();
-    for (const r of list.items ?? []) {
+    for (const r of replicaResp.items ?? []) {
       const vol = r.spec?.volumeName;
       if (!vol) continue;
       if (r.status?.currentState === 'running') {
         healthyByVolume.set(vol, (healthyByVolume.get(vol) ?? 0) + 1);
       }
     }
-    for (const r of list.items ?? []) {
+    for (const r of replicaResp.items ?? []) {
       if (r.spec?.nodeID !== name) continue;
       const vol = r.spec?.volumeName ?? '';
       const replicaName = r.metadata?.name ?? '';
       const isLastReplica = (healthyByVolume.get(vol) ?? 0) <= 1;
-      longhornReplicas.push({ volumeName: vol, replicaName, isLastReplica });
+      const meta = volumeMeta.get(vol);
+      const ns = meta?.namespace || null;
+      const pvcName = meta?.pvcName || null;
+      const client = ns ? clientByNs.get(ns) : undefined;
+      // "Platform System" covers everything not owned by a tenant client:
+      // longhorn-system, platform (postgres), monitoring, mail, etc.
+      const ownerLabel = client?.name ?? (ns ? `Platform System (${ns})` : 'Platform System');
+      longhornReplicas.push({
+        volumeName: vol,
+        replicaName,
+        isLastReplica,
+        namespace: ns,
+        pvcName,
+        clientId: client?.id ?? null,
+        clientName: client?.name ?? null,
+        ownerLabel,
+      });
     }
   } catch (err) {
     const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;

@@ -170,6 +170,90 @@ describe('buildDrainImpact', () => {
     });
   });
 
+  it('classifies pods in cluster-infra namespaces (calico, kube-system) as system', async () => {
+    // Repro: Calico's calico-kube-controllers (Deployment-backed pod in
+    // calico-system) was previously surfaced as a tenant pod because
+    // the namespace wasn't in SYSTEM_NAMESPACES. Same hazard for kube-system,
+    // tigera-operator, cnpg-system, monitoring.
+    const k8s = makeK8s({
+      pods: [
+        {
+          metadata: { namespace: 'calico-system', name: 'calico-kube-controllers-abcde', ownerReferences: [{ kind: 'ReplicaSet', name: 'calico-kube-controllers' }] },
+          spec: { nodeName: 'worker' },
+          status: { phase: 'Running' },
+        },
+        {
+          metadata: { namespace: 'tigera-operator', name: 'tigera-operator-xyz', ownerReferences: [{ kind: 'ReplicaSet', name: 'tigera-operator' }] },
+          spec: { nodeName: 'worker' },
+          status: { phase: 'Running' },
+        },
+        {
+          metadata: { namespace: 'kube-system', name: 'coredns-1', ownerReferences: [{ kind: 'ReplicaSet', name: 'coredns' }] },
+          spec: { nodeName: 'worker' },
+          status: { phase: 'Running' },
+        },
+        {
+          metadata: { namespace: 'cnpg-system', name: 'cnpg-controller-1', ownerReferences: [{ kind: 'ReplicaSet', name: 'cnpg-controller-manager' }] },
+          spec: { nodeName: 'worker' },
+          status: { phase: 'Running' },
+        },
+      ],
+    });
+    const db = makeMockDb([]);
+
+    const impact = await buildDrainImpact(k8s, db, 'worker');
+
+    expect(impact.nonSystemPods).toHaveLength(0);
+    const sysNs = impact.systemPods.map((p) => p.namespace).sort();
+    expect(sysNs).toEqual(['calico-system', 'cnpg-system', 'kube-system', 'tigera-operator']);
+  });
+
+  it('enriches longhornReplicas with PVC + owner attribution (client + platform-system)', async () => {
+    // Two replicas live on `worker`: one tenant volume (Acme/data) and one
+    // platform volume (postgres-1 in cnpg-system). Both should land in
+    // longhornReplicas with ownerLabel populated; the tenant replica also
+    // resolves clientId/clientName.
+    const k8s = makeK8s({
+      longhornVolumes: [
+        {
+          metadata: { name: 'pvc-acme-data' },
+          status: { kubernetesStatus: { pvcName: 'data', namespace: 'client-acme' } },
+        },
+        {
+          metadata: { name: 'pvc-postgres-1' },
+          status: { kubernetesStatus: { pvcName: 'postgres-1', namespace: 'platform' } },
+        },
+      ],
+      longhornReplicas: [
+        { metadata: { name: 'r-acme-data-1' }, spec: { volumeName: 'pvc-acme-data', nodeID: 'worker' }, status: { currentState: 'running' } },
+        { metadata: { name: 'r-postgres-1-w' }, spec: { volumeName: 'pvc-postgres-1', nodeID: 'worker' }, status: { currentState: 'running' } },
+      ],
+    });
+    const db = makeMockDb([{ id: 'acme-id', name: 'Acme Co', ns: 'client-acme' }]);
+
+    const impact = await buildDrainImpact(k8s, db, 'worker');
+
+    expect(impact.longhornReplicas).toHaveLength(2);
+    const acme = impact.longhornReplicas.find((r) => r.volumeName === 'pvc-acme-data');
+    expect(acme).toMatchObject({
+      pvcName: 'data',
+      namespace: 'client-acme',
+      clientId: 'acme-id',
+      clientName: 'Acme Co',
+      ownerLabel: 'Acme Co',
+      isLastReplica: true,
+    });
+    const pg = impact.longhornReplicas.find((r) => r.volumeName === 'pvc-postgres-1');
+    expect(pg).toMatchObject({
+      pvcName: 'postgres-1',
+      namespace: 'platform',
+      clientId: null,
+      clientName: null,
+      ownerLabel: 'Platform System (platform)',
+      isLastReplica: true,
+    });
+  });
+
   it('skips system namespaces from pinnedWorkloads enumeration', async () => {
     const k8s = makeK8s({
       deployments: [{

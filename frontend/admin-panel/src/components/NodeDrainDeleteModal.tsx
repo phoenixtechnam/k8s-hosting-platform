@@ -332,17 +332,42 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
               {/* ─── Platform last-replica risk ─── */}
               {lastReplicaVolumes.length > 0 && (
                 <ImpactSection
-                  title={`Platform last-replica risk (${lastReplicaVolumes.length})`}
+                  title={`Last-replica risk (${lastReplicaVolumes.length})`}
                   tone="danger"
-                  content={`${lastReplicaVolumes.length} platform volume(s) have only this node holding a healthy replica. Drain will be REFUSED unless you tick "force last replica".`}
+                  content={`${lastReplicaVolumes.length} volume(s) have only this node holding a healthy replica. Drain will be REFUSED unless you tick "force last replica".`}
                 >
-                  <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto text-xs">
-                    {lastReplicaVolumes.map((r) => (
-                      <li key={r.replicaName} className="font-mono text-gray-700 dark:text-gray-300">
-                        {r.volumeName}
-                      </li>
-                    ))}
-                  </ul>
+                  <table className="mt-2 w-full text-xs">
+                    <thead className="text-gray-500 dark:text-gray-400">
+                      <tr>
+                        <th className="text-left py-1 pr-2">Owner</th>
+                        <th className="text-left py-1 pr-2">PVC</th>
+                        <th className="text-left py-1">Volume</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lastReplicaVolumes.map((r) => (
+                        <tr key={r.replicaName} className="border-t border-red-200/60 dark:border-red-700/40">
+                          <td className="py-1.5 pr-2">
+                            {r.clientId ? (
+                              <Link
+                                to={`/clients/${r.clientId}`}
+                                className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
+                              >
+                                {r.clientName ?? r.ownerLabel}
+                                <ExternalLink size={10} />
+                              </Link>
+                            ) : (
+                              <span className="text-gray-700 dark:text-gray-300">{r.ownerLabel}</span>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-2 font-mono text-gray-700 dark:text-gray-300">
+                            {r.namespace && r.pvcName ? `${r.namespace}/${r.pvcName}` : <span className="text-gray-400 italic">unbound</span>}
+                          </td>
+                          <td className="py-1.5 font-mono text-gray-500 dark:text-gray-400">{r.volumeName}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                   <label className="mt-2 flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
