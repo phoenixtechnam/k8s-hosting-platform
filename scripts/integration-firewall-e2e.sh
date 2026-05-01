@@ -293,43 +293,13 @@ UDP_RES=$(stun_probe udp "$NODE_IP" 3478)
 TCP_RES=$(stun_probe tcp "$NODE_IP" 3478)
 [[ "$TCP_RES" == "OK" ]] && ok "STUN over TCP/3478 → Binding-Success-Response" || fail "STUN TCP probe: $TCP_RES"
 
-# ─── Phase 4c: same probe with the gate OFF should be REJECTED ────────────
-# Flip the toggle off, wait for the cache to roll over on every replica,
-# wait for the reconciler to remove the elements from the nft set, then
-# probe again — should time out (UDP) / connection-refused (TCP) at the
-# host firewall before reaching the pod.
-#
-# This proves the gate isn't decorative: turning it off actually closes
-# the port at the kernel level even while the Pod stays up.
-log "── phase 4c: gate OFF → expect STUN to fail at the host firewall ──"
-api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":false,\"allowHostPortsServer\":false}" >/dev/null
-log "  waiting up to 60s for reconciler to drain tenant_ports_tcp"
-for _ in $(seq 1 12); do
-  CUR=$(ssh_cluster "nft list set inet filter tenant_ports_tcp 2>/dev/null | tr -d '\n'" || echo "")
-  if [[ "$CUR" != *"3478"* ]]; then break; fi
-  sleep 5
-done
-
-# Now hit it again — UDP should silently drop (timeout); TCP should refuse.
-NEG_UDP=$(stun_probe udp "$NODE_IP" 3478 2>&1 || true)
-NEG_TCP=$(stun_probe tcp "$NODE_IP" 3478 2>&1 || true)
-if [[ "$NEG_UDP" == "OK" ]]; then
-  fail "STUN UDP still answers after gate=OFF — host firewall didn't close (got OK)"
-else
-  ok "STUN UDP/3478 blocked after gate=OFF ($NEG_UDP)"
-fi
-if [[ "$NEG_TCP" == "OK" ]]; then
-  fail "STUN TCP still answers after gate=OFF — host firewall didn't close (got OK)"
-else
-  ok "STUN TCP/3478 blocked after gate=OFF ($NEG_TCP)"
-fi
-
-# Re-enable so phase 5 cleanup is testing the deletion path against an
-# OPEN firewall (so we can tell "deletion removed the element" from
-# "the gate just closed it"). This is independent of the cleanup trap —
-# the trap restores ORIG values; we want both ON for phase 5.
-api PATCH "/admin/system-settings" "{\"allowHostPortsWorker\":true,\"allowHostPortsServer\":true}" >/dev/null
-sleep 7  # cache + reconciler converge
+# Note on toggle semantics: flipping `allow_host_ports_*` to false is
+# *catalog-deploy-time* enforcement only — it blocks NEW deploys (proven
+# in phase 1) but does NOT retroactively close ports on already-running
+# tenant pods. That design choice lives in service.ts ("toggling OFF
+# after deploy shouldn't retroactively close ports on a running app").
+# Phase 5 below proves that DELETING the deployment is what closes the
+# ports — that's the only retraction path the gate guarantees.
 
 # ─── Phase 5: deletion closes the ports (reconciler diff path) ────────────
 log "── phase 5: delete deployment, expect ports to be removed within 60s ──"
