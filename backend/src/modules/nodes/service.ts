@@ -929,18 +929,23 @@ export async function drainNode(
     }
     if (!live) continue;
 
-    const existingSelector = live.spec?.template?.spec?.nodeSelector ?? {};
-    const nextSelector: Record<string, string> = { ...existingSelector };
-    if (target === '') {
-      delete nextSelector['kubernetes.io/hostname'];
-    } else {
-      nextSelector['kubernetes.io/hostname'] = target;
-    }
+    // Build a JSON-Merge-Patch (RFC 7396) body. With merge-patch, null
+    // on a key means "delete this key from the target," which is
+    // exactly how we clear an auto-pin while preserving any other
+    // operator-set selector keys. Strategic-merge would silently
+    // merge {} into the existing selector — leaving the cordoned
+    // hostname in place — which is the bug that broke this drain
+    // path on staging (rePinnedWorkloads counted, but the hostname
+    // selector never actually cleared).
+    const selectorPatch: Record<string, string | null> =
+      target === ''
+        ? { 'kubernetes.io/hostname': null }
+        : { 'kubernetes.io/hostname': target };
 
     const body = {
       spec: {
         template: {
-          spec: { nodeSelector: nextSelector },
+          spec: { nodeSelector: selectorPatch },
         },
       },
     };
@@ -949,12 +954,12 @@ export async function drainNode(
         await k8s.apps.patchNamespacedDeployment({
           namespace: ns, name: wname, body,
         } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-          STRATEGIC_MERGE_PATCH);
+          MERGE_PATCH);
       } else if (kind === 'StatefulSet') {
         await k8s.apps.patchNamespacedStatefulSet({
           namespace: ns, name: wname, body,
         } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
-          STRATEGIC_MERGE_PATCH);
+          MERGE_PATCH);
       }
       // Also persist the platform-side pin record so the next deploy
       // doesn't snap back. Best-effort — failure logged + counted but

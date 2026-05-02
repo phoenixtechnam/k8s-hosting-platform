@@ -339,27 +339,34 @@ H_NEW=$(pods_on_node "$HA_NS"    "app=$HA_DEPL" | head -1)
 [[ "$H_NEW" != "$WORKER_NODE" && -n "$H_NEW" ]] && ok "HA tenant rescheduled to $H_NEW"   || fail "HA tenant: $H_NEW"
 
 # ─── Deployment.nodeSelector wired correctly per tier ────────────────
-log "── verifying Deployment nodeSelector per tier ──"
+# Auto-fill drain path semantics: every pinned workload's hostname
+# selector is *cleared* (the API doesn't pick a replacement node —
+# the scheduler does). So both LOCAL and HA Deployments must end up
+# without a kubernetes.io/hostname selector. Re-pinning to a specific
+# new node only happens when the operator passes an explicit target
+# in workloadPlacement (a flow this auto-path test deliberately does
+# not exercise).
+log "── verifying Deployment nodeSelector per tier (auto path = cleared) ──"
 LOCAL_SEL=$(ssh_cp "kubectl -n $LOCAL_NS get deploy $LOCAL_DEPL -o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\\.io/hostname}'" 2>/dev/null || true)
 HA_SEL=$(ssh_cp "kubectl -n $HA_NS get deploy $HA_DEPL -o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\\.io/hostname}'" 2>/dev/null || true)
-[[ "$LOCAL_SEL" == "$L_NEW" && "$LOCAL_SEL" != "$WORKER_NODE" ]] \
-  && ok "LOCAL Deployment.nodeSelector=$LOCAL_SEL (re-pinned off W)" \
-  || fail "LOCAL nodeSelector=$LOCAL_SEL (expected $L_NEW, ≠ $WORKER_NODE)"
+[[ -z "$LOCAL_SEL" ]] \
+  && ok "LOCAL Deployment.nodeSelector cleared (auto-fill drained off W)" \
+  || fail "LOCAL nodeSelector=$LOCAL_SEL (expected empty after auto-fill — strategic-merge null bug)"
 [[ -z "$HA_SEL" ]] \
-  && ok "HA Deployment.nodeSelector cleared (HA tier soft-pin)" \
-  || fail "HA Deployment.nodeSelector=$HA_SEL (expected empty for HA tier)"
+  && ok "HA Deployment.nodeSelector cleared" \
+  || fail "HA Deployment.nodeSelector=$HA_SEL (expected empty)"
 
-# ─── Longhorn Volume nodeSelector (LOCAL: per-host tag of new node) ──
+# ─── Longhorn Volume placement after drain ───────────────────────────
+# Auto-fill clears the per-host tag in spec.nodeSelector; Longhorn
+# rebinds the volume to wherever the pod actually lands (status.
+# currentNodeID). We assert the pod's destination node ≠ W and that
+# the volume is attached on a non-W node — the platform invariant —
+# without insisting on a specific node identity.
 log "── verifying Longhorn Volume placement after drain ──"
-LOCAL_VOL_SEL=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $LOCAL_PV -o jsonpath='{.spec.nodeSelector}'" 2>/dev/null || true)
-LOCAL_VOL_STATE=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $LOCAL_PV -o jsonpath='{.status.state}{\"|\"}{.status.currentNodeID}'" 2>/dev/null || true)
-LOCAL_VOL_CURR=$(echo "$LOCAL_VOL_STATE" | cut -d'|' -f2)
-echo "$LOCAL_VOL_SEL" | grep -q "node-$L_NEW" \
-  && ok "LOCAL Volume.spec.nodeSelector contains node-$L_NEW tag" \
-  || fail "LOCAL Volume.spec.nodeSelector=$LOCAL_VOL_SEL (expected node-$L_NEW)"
-[[ "$LOCAL_VOL_CURR" == "$L_NEW" ]] \
-  && ok "LOCAL Volume.status.currentNodeID=$L_NEW" \
-  || fail "LOCAL Volume.status.currentNodeID=$LOCAL_VOL_CURR (expected $L_NEW)"
+LOCAL_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $LOCAL_PV -o jsonpath='{.status.currentNodeID}'" 2>/dev/null || true)
+[[ -n "$LOCAL_VOL_CURR" && "$LOCAL_VOL_CURR" != "$WORKER_NODE" ]] \
+  && ok "LOCAL Volume.status.currentNodeID=$LOCAL_VOL_CURR (≠ W)" \
+  || fail "LOCAL Volume.status.currentNodeID=$LOCAL_VOL_CURR (expected ≠ $WORKER_NODE)"
 
 HA_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $HA_PV -o jsonpath='{.status.currentNodeID}'" 2>/dev/null || true)
 [[ -n "$HA_VOL_CURR" && "$HA_VOL_CURR" != "$WORKER_NODE" ]] \
