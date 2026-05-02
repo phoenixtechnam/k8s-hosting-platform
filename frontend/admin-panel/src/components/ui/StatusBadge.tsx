@@ -5,16 +5,24 @@ type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' 
   // Client lifecycle (extends clients.status)
   | 'archived'
   // Storage lifecycle transient states — rendered as their own pill on the clients list.
-  | 'idle' | 'snapshotting' | 'quiescing' | 'resizing' | 'replacing' | 'restoring' | 'unquiescing' | 'archiving';
+  | 'idle' | 'snapshotting' | 'quiescing' | 'resizing' | 'replacing' | 'restoring' | 'unquiescing' | 'archiving'
+  // Domain verification states (migration 0069)
+  | 'unverified' | 'verified'
+  // Domain lifecycle
+  | 'deleted';
 
 const statusStyles: Record<BadgeStatus, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   healthy: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   running: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
   completed: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  // Domain verification states
+  verified: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+  unverified: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
   suspended: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   stopped: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
   cancelled: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  deleted: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   error: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   rolled_back: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',

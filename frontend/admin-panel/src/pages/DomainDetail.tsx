@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
-  CheckCircle, Network, Upload, ShieldCheck,
+  CheckCircle, CheckCircle2, Network, Upload, ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -25,6 +25,7 @@ type Tab = 'routing' | 'dns' | 'ssl';
 export default function DomainDetail() {
   const { clientId, domainId } = useParams<{ clientId: string; domainId: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('routing');
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
   const verifyDomain = useVerifyDomain(clientId);
 
   const { data: domainsData, isLoading: domainLoading } = useDomains(clientId, { limit: 100 });
@@ -68,40 +69,118 @@ export default function DomainDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           {domain.domainName}
         </h1>
-        <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
+        <StatusBadge status={domain.status as 'verified' | 'unverified' | 'active' | 'pending' | 'suspended' | 'deleted'} />
         <button
           type="button"
-          onClick={() => verifyDomain.mutate(domainId!)}
+          onClick={() => {
+            setShowVerifyModal(true);
+            verifyDomain.mutate(domainId!);
+          }}
           disabled={verifyDomain.isPending}
           className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-300 dark:border-brand-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 disabled:opacity-50"
           data-testid="verify-dns-button"
         >
           {verifyDomain.isPending ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-          Verify DNS
+          Verify Now
         </button>
       </div>
-      {verifyDomain.isSuccess && verifyDomain.data?.data && (
-        <div
-          className={clsx(
-            'rounded-lg border px-4 py-3 text-sm',
-            verifyDomain.data.data.verified
-              ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
-              : 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
-          )}
-          data-testid="verify-dns-result"
-        >
-          {verifyDomain.data.data.verified ? 'DNS verification passed.' : 'DNS verification failed.'}
-          {verifyDomain.data.data.checks.map((check) => (
-            <div key={check.type} className="mt-1 text-xs opacity-80">
-              [{check.status.toUpperCase()}] {check.type}: {check.detail}
+
+      {/* Verify DNS Modal */}
+      {showVerifyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-testid="verify-dns-modal">
+          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl">
+            <div className="flex items-start justify-between">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Verification</h3>
+              <button
+                type="button"
+                onClick={() => { setShowVerifyModal(false); verifyDomain.reset(); }}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                data-testid="verify-modal-close"
+              >
+                <X size={18} />
+              </button>
             </div>
-          ))}
-        </div>
-      )}
-      {verifyDomain.isError && (
-        <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300" data-testid="verify-dns-error">
-          <AlertCircle size={14} className="mr-1 inline" />
-          {verifyDomain.error instanceof Error ? verifyDomain.error.message : 'Verification request failed.'}
+
+            {verifyDomain.isPending && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400" data-testid="verify-modal-spinner">
+                <Loader2 size={16} className="animate-spin text-brand-500" />
+                Verifying DNS for <span className="font-medium">{domain.domainName}</span>…
+              </div>
+            )}
+
+            {verifyDomain.isSuccess && verifyDomain.data?.data && (
+              verifyDomain.data.data.verified ? (
+                <div className="mt-4 flex items-center gap-2 text-sm text-green-700 dark:text-green-300" data-testid="verify-modal-success">
+                  <CheckCircle2 size={18} className="shrink-0 text-green-500 dark:text-green-400" />
+                  <span>DNS verification passed</span>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3" data-testid="verify-modal-failure">
+                  <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
+                    <AlertCircle size={18} className="shrink-0 text-red-500 dark:text-red-400" />
+                    DNS verification failed for <span className="font-semibold">{domain.domainName}</span>
+                  </div>
+                  {verifyDomain.data.data.checks.filter((c) => c.status === 'fail').length > 0 && (
+                    <ul className="space-y-1 text-xs text-gray-700 dark:text-gray-300">
+                      {verifyDomain.data.data.checks
+                        .filter((c) => c.status === 'fail')
+                        .map((c) => (
+                          <li key={c.type} className="flex items-start gap-1.5">
+                            <AlertCircle size={12} className="mt-0.5 shrink-0 text-red-400" />
+                            {c.detail}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                  <div className="rounded-lg bg-gray-50 dark:bg-gray-700/50 p-3 text-xs text-gray-600 dark:text-gray-400">
+                    {domain.dnsMode === 'cname' && <>
+                      Update the A/AAAA or CNAME record at the customer's DNS provider so{' '}
+                      <span className="font-medium">{domain.domainName}</span> resolves to a platform cluster IP.
+                      After updating, click <span className="font-medium">Verify Now</span> to recheck.
+                    </>}
+                    {domain.dnsMode === 'primary' && <>
+                      Customer must set nameservers to the platform nameservers at their registrar, then click{' '}
+                      <span className="font-medium">Verify Now</span>.
+                    </>}
+                    {domain.dnsMode === 'secondary' && <>
+                      Confirm the primary DNS server allows AXFR to this platform, then click{' '}
+                      <span className="font-medium">Verify Now</span>.
+                    </>}
+                  </div>
+                </div>
+              )
+            )}
+
+            {verifyDomain.isError && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-red-700 dark:text-red-300" data-testid="verify-modal-error">
+                <AlertCircle size={16} className="shrink-0" />
+                {verifyDomain.error instanceof Error ? verifyDomain.error.message : 'Verification request failed.'}
+              </div>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              {(verifyDomain.isSuccess || verifyDomain.isError) && (
+                <button
+                  type="button"
+                  onClick={() => { verifyDomain.reset(); verifyDomain.mutate(domainId!); }}
+                  disabled={verifyDomain.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-300 dark:border-brand-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 disabled:opacity-50"
+                  data-testid="verify-modal-retry"
+                >
+                  <CheckCircle size={14} />
+                  Verify Now
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => { setShowVerifyModal(false); verifyDomain.reset(); }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                data-testid="verify-modal-close-btn"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -125,7 +204,34 @@ export default function DomainDetail() {
         ))}
       </div>
 
-      {activeTab === 'routing' && <RoutingTab clientId={clientId!} domainId={domainId!} domainName={domain.domainName} dnsMode={domain.dnsMode} />}
+      {activeTab === 'routing' && (
+        <>
+          {(() => {
+            const rawDomain = domain as Record<string, unknown>;
+            const verifiedAt = rawDomain.verifiedAt ? new Date(rawDomain.verifiedAt as string) : null;
+            const cacheAt = rawDomain.verificationCacheAt ? new Date(rawDomain.verificationCacheAt as string) : null;
+            const ago = (d: Date) => {
+              const diffMs = Date.now() - d.getTime();
+              const diffMin = Math.floor(diffMs / 60000);
+              if (diffMin < 60) return `${diffMin}m ago`;
+              const diffH = Math.floor(diffMin / 60);
+              if (diffH < 24) return `${diffH}h ago`;
+              return `${Math.floor(diffH / 24)}d ago`;
+            };
+            if (!verifiedAt && !cacheAt) return null;
+            return (
+              <div className="flex gap-4 text-xs text-gray-500 dark:text-gray-400" data-testid="domain-verification-timestamps">
+                {verifiedAt
+                  ? <span>Last verified: <span className="font-medium">{ago(verifiedAt)}</span></span>
+                  : <span className="italic">Never verified</span>
+                }
+                {cacheAt && <span>Last checked: <span className="font-medium">{ago(cacheAt)}</span></span>}
+              </div>
+            );
+          })()}
+          <RoutingTab clientId={clientId!} domainId={domainId!} domainName={domain.domainName} dnsMode={domain.dnsMode} />
+        </>
+      )}
       {activeTab === 'dns' && <DnsRecordsTab clientId={clientId!} domainId={domainId!} />}
       {activeTab === 'ssl' && <SslTlsTab clientId={clientId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} />}
     </div>
