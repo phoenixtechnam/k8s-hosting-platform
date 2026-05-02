@@ -23,6 +23,19 @@ jobs:
       - run: npm run lint -w @k8s-hosting/backend
       - run: npm run typecheck -w @k8s-hosting/backend
 
+  backups-v2-schema-audit:
+    name: backups-v2 schema audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pure bash + grep + awk + sed; no Node setup needed. Fails when
+      # a new client-FK'd table lands in db/schema.ts without being
+      # added to CONFIG_DUMP_TABLES or the explicit exclusion list in
+      # config.ts. Prevents the silent-drop bug where a new tenant
+      # table stops being backed up because nobody updated the dump.
+      - name: Audit client-FK tables vs CONFIG_DUMP_TABLES + exclusions
+        run: ./scripts/ci-backups-v2-schema-audit.sh
+
   test:
     name: Test
     runs-on: ubuntu-latest
