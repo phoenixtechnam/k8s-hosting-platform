@@ -16,7 +16,7 @@
  * Last-writer-wins on system_settings.last_known_platform_ips is acceptable.
  */
 
-import { and, isNull, lt, not, inArray, or } from 'drizzle-orm';
+import { and, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import { domains, systemSettings } from '../../db/schema.js';
@@ -149,7 +149,10 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
           ),
         ),
       )
-      .orderBy(domains.verificationCacheAt) // oldest cache first — fair scheduling
+      // HIGH fix from code review: PostgreSQL default puts NULLs LAST.
+      // Without NULLS FIRST, freshly created domains (cache_at=null) sort
+      // after stale-cached rows and can starve when the 200-row limit is hit.
+      .orderBy(sql`${domains.verificationCacheAt} ASC NULLS FIRST`)
       .limit(MAX_CANDIDATES_PER_TICK);
   } catch (err) {
     log.warn({ err }, '[verify-cron] failed to fetch candidates — skipping tick');

@@ -18,6 +18,7 @@ vi.mock('../dns-servers/service.js', () => ({
 
 // Mock drizzle-orm (dynamic import in getPlatformIngressIps)
 vi.mock('drizzle-orm', () => ({
+  and: vi.fn().mockReturnValue({ _tag: 'and' }),
   gt: vi.fn().mockReturnValue({ _tag: 'gt' }),
   inArray: vi.fn().mockReturnValue({ _tag: 'inArray' }),
 }));
@@ -27,6 +28,7 @@ vi.mock('../../db/schema.js', () => ({
   clusterNodes: {
     publicIp: 'publicIp_column',
     lastSeenAt: 'lastSeenAt_column',
+    role: 'role_column',
   },
 }));
 

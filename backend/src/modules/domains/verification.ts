@@ -54,13 +54,20 @@ export async function getPlatformIngressIps(
   // the getPlatformConfig function below for the same pattern).
   try {
     const { clusterNodes } = await import('../../db/schema.js');
-    const { gt } = await import('drizzle-orm');
+    const { and, gt, inArray } = await import('drizzle-orm');
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // HIGH fix from code review: explicit role filter — both server and
+    // worker run the ingress DaemonSet today, but documenting the intent
+    // protects us against a future role (e.g. `storage_only`) that
+    // shouldn't accept tenant ingress traffic.
     const nodes = await db
       .select({ publicIp: clusterNodes.publicIp })
       .from(clusterNodes)
       .where(
-        gt(clusterNodes.lastSeenAt, sevenDaysAgo),
+        and(
+          gt(clusterNodes.lastSeenAt, sevenDaysAgo),
+          inArray(clusterNodes.role, ['server', 'worker']),
+        ),
       );
     for (const node of nodes) {
       if (node.publicIp) {

@@ -10,7 +10,7 @@
  * (default false). The email branch has a TODO for wiring in the mail sender.
  */
 
-import { and, eq, gt, isNull, lt } from 'drizzle-orm';
+import { and, eq, gt, isNull, like, lt } from 'drizzle-orm';
 import { notifications, users, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { VerificationResult } from './verification.js';
@@ -71,7 +71,10 @@ export async function notifyDomainRegression(
   domain: { id: string; clientId: string; domainName: string; verifiedAt: Date | null },
   result: VerificationResult,
 ): Promise<{ sent: boolean; reason?: string }> {
-  // 7-day cooldown: don't spam the client if verification keeps failing
+  // 7-day cooldown: don't spam the client if verification keeps failing.
+  // HIGH fix from code review: filter on title prefix so a prior
+  // grace-unverified notification doesn't suppress regression alerts —
+  // they're independent signals.
   const cooldownCutoff = new Date(Date.now() - REGRESSION_COOLDOWN_MS);
   const existing = await db
     .select({ id: notifications.id })
@@ -80,6 +83,7 @@ export async function notifyDomainRegression(
       and(
         eq(notifications.resourceType, 'domain'),
         eq(notifications.resourceId, domain.id),
+        like(notifications.title, 'Domain verification failed:%'),
         gt(notifications.createdAt, cooldownCutoff),
       ),
     )
@@ -129,8 +133,10 @@ export async function notifyDomainGraceUnverified(
   db: Database,
   domain: { id: string; clientId: string; domainName: string; createdAt: Date },
 ): Promise<{ sent: boolean; reason?: string }> {
-  // The 90h-since-creation window is the dedup — we only notify once per domain
-  // (the cron query filters 72h < age < 90h and only inserts when absent)
+  // Dedup: only notify once per domain. HIGH fix — filter on title so a
+  // regression notification doesn't permanently suppress the grace alert
+  // for a domain that briefly verified, regressed, and is otherwise
+  // never-verified-stable.
   const existing = await db
     .select({ id: notifications.id })
     .from(notifications)
@@ -138,6 +144,7 @@ export async function notifyDomainGraceUnverified(
       and(
         eq(notifications.resourceType, 'domain'),
         eq(notifications.resourceId, domain.id),
+        like(notifications.title, 'Domain not yet verified:%'),
       ),
     )
     .limit(1);
