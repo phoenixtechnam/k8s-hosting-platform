@@ -9,12 +9,9 @@ describe('buildFilesComponentJobSpec', () => {
     clientId: 'abc',
     backupId: 'bkp-test',
     jobImage: 'alpine:3.20',
-    hostMount: {
-      volumeSpec: { name: 'platform-bundles', hostPath: { path: '/var/lib/platform/bundles', type: 'DirectoryOrCreate' } },
-      mountPath: '/bundle',
-    },
-    archiveRelative: 'components/files/archive.tar.gz',
-    treeRelative: 'components/files/tree.jsonl.gz',
+    uploadBase: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/files',
+    archiveToken: '1234567890.deadbeef',
+    treeToken: '1234567890.cafebabe',
   };
 
   it('produces a Job with backoffLimit=0 and ttlSecondsAfterFinished=600', () => {
@@ -46,15 +43,39 @@ describe('buildFilesComponentJobSpec', () => {
     expect(spec.metadata.labels['platform.io/backup-id']).toBe('bkp-test');
   });
 
-  it('runs a script that emits both archive.tar.gz and tree.jsonl.gz under /bundle', () => {
+  it('uploads archive + tree to the platform-api internal endpoint with HMAC tokens', () => {
     const spec = buildFilesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).toContain('/bundle/components/files/archive.tar.gz');
-    expect(cmd).toContain('/bundle/components/files/tree.jsonl.gz');
+    expect(cmd).toContain(`${baseInput.uploadBase}/archive.tar.gz?token=${baseInput.archiveToken}`);
+    expect(cmd).toContain(`${baseInput.uploadBase}/tree.jsonl.gz?token=${baseInput.treeToken}`);
+    // Sanity: tar + sha256 + tree.jsonl pipeline still in place.
+    expect(cmd).toContain('tar cf - .');
     expect(cmd).toContain('sha256sum');
-    // tree pipeline produces gzipped JSONL
-    expect(cmd).toContain('gzip -1');
+    expect(cmd).toContain('FILES_TREE_COUNT=');
+  });
+
+  it('uses --upload-file (streaming) NOT --data-binary @ (load whole file into memory)', () => {
+    // Streaming upload is non-negotiable: a 50 GiB tenant PVC would
+    // OOM the 512Mi Job pod with --data-binary @file. Pin this so the
+    // next refactor doesn't accidentally flip back.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('--upload-file /tmp/archive.tar.gz');
+    expect(cmd).toContain('--upload-file /tmp/tree.jsonl.gz');
+    expect(cmd).not.toContain('--data-binary @');
+  });
+
+  it('does not embed the SSH key or any S3 credentials in the Job script', () => {
+    // The whole point of the HTTP-upload pattern is that the Job
+    // never sees off-site target credentials. Defence-in-depth check.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).not.toMatch(/AWS_ACCESS_KEY|AWS_SECRET|BEGIN OPENSSH|BEGIN RSA|s3\.amazonaws/i);
   });
 });

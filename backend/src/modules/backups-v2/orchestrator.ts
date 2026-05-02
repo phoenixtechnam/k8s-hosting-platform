@@ -51,9 +51,16 @@ export interface OrchestratorDeps {
   readonly store: BackupStore;
   readonly platformVersion: string;
   readonly secretsKeyHex: string;
-  /** Hostpath root mounted into the platform-api pod and into every
-   *  files-component Job (so the Job sees the same dir tree as the
-   *  store). Required when `store.kind === 'hostpath'`. */
+  /**
+   * Internal cluster URL of platform-api — passed into the
+   *  files-component Job so it can POST archive + tree uploads back
+   *  to the BackupStore. Format: `http://platform-api.platform.svc:3000`.
+   *  Required for files component capture (Phase 3).
+   */
+  readonly platformApiUrl?: string;
+  /** Legacy — unused since the hostpath production path was retired
+   *  in favour of off-site-only stores. Kept on the type for unit
+   *  tests that still pass it; ignored by the orchestrator. */
   readonly hostpathRoot?: string;
 }
 
@@ -132,6 +139,9 @@ export async function runBundle(
     } else {
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'files', 'archive.tar.gz');
       try {
+        if (!deps.platformApiUrl) {
+          throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
+        }
         const pvcName = await resolveTenantPvc(deps.db, input.clientId);
         filesResult = await captureFilesComponent({
           k8s: deps.k8s,
@@ -141,7 +151,8 @@ export async function runBundle(
           backupId: bundleId,
           store: deps.store,
           handle,
-          hostpathRoot: deps.hostpathRoot,
+          platformApiUrl: deps.platformApiUrl,
+          secretsKeyHex: deps.secretsKeyHex,
         });
         await markComponentDone(
           deps.db,

@@ -548,7 +548,13 @@ print(json.dumps(out))
     local kind="${TKINDS[$i]}"
     i=$((i+1))
     local label="E2E bundle $stamp ($kind)"
-    local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"$label\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+    # Phase 3: opt-in via BUNDLE_INCLUDE_FILES=1 — exercises the
+    # tenant-Job → platform-api HTTP-upload path. Default off so the
+    # multi-target run stays fast (the file-component Job takes ~30s
+    # per target even on an empty tenant PVC).
+    local include_files="false"
+    if [[ "${BUNDLE_INCLUDE_FILES:-}" == "1" ]]; then include_files="true"; fi
+    local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"$label\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":$include_files,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
     local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
     local bundle_id status
     bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
@@ -567,6 +573,9 @@ print(json.dumps(out))
 " 2>/dev/null)
     echo "$check" | grep -q '"config".*"completed"' || { fail "bundle/$kind: config not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
     echo "$check" | grep -q '"secrets".*"completed"' || { fail "bundle/$kind: secrets not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    if [[ "$include_files" == "true" ]]; then
+      echo "$check" | grep -q '"files".*"completed"' || { fail "bundle/$kind: files not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    fi
     echo "$check" | grep -qE '"size":\s*0\b' && { fail "bundle/$kind: at least one component sizeBytes=0: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
     ok "bundle/$kind: components completed, sizeBytes>0"
 

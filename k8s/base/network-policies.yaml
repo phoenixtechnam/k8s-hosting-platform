@@ -267,3 +267,36 @@ spec:
       ports:
         - protocol: TCP
           port: 8089
+
+---
+# Allow backups-v2 files-component Jobs (running in tenant
+# namespaces) to POST archive + tree uploads to platform-api over
+# HTTP. Without this rule the existing allow-ingress-to-platform
+# blocks the connection — it only permits ingress-nginx + same-ns
+# pods. Scoped by Pod label, not namespace, so it applies to every
+# `client-<id>` namespace without enumeration.
+#
+# The orchestrator labels every files-component Job with
+# platform.io/component: backup-files (see backups-v2/components/files.ts).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-files-jobs-to-platform-api
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              platform.io/component: backup-files
+      ports:
+        - protocol: TCP
+          port: 3000

@@ -1,33 +1,44 @@
 /**
- * `files` component capture.
+ * `files` component capture (Phase 3).
  *
- * Per BACKUP_COMPONENT_MODEL.md:
- *   components/files/archive.tar.gz       — tar of the tenant PVC contents
- *   components/files/archive.tar.gz.sha256 — sha-256 sidecar
- *   components/files/tree.jsonl.gz        — per-file path/size/mode/mtime index
+ * Pattern: HTTP-upload-from-tenant-Job-to-platform-api.
  *
- * The tree index powers the file-browser UI in the granular restore path
- * (Phase 4). One JSON-Lines record per path:
+ *   The capture Job runs in the *tenant* namespace because it must
+ *   mount the tenant data PVC. The bundle's off-site target lives in
+ *   the platform namespace (S3 / SSH config rows in `backup_configurations`).
+ *   k8s does NOT support cross-namespace PVC sharing, so the Job
+ *   cannot write directly into a PVC the platform-api manages.
  *
- *   {"path":"/wp-config.php","size":5922,"mode":33188,"mtime":"2026-04-20T17:49:00Z"}
+ *   Instead, the Job tars + gzips the PVC contents and POSTs the
+ *   stream over HTTP to a new internal endpoint on platform-api
+ *   (`/api/v1/internal/bundles/:id/components/:component/:artifact`).
+ *   The endpoint authenticates via a short-lived HMAC token issued by
+ *   the orchestrator, bound to the (bundleId, component, artifact)
+ *   tuple, and streams the request body straight into
+ *   BackupStore.writeComponent. No buffering on the platform-api side.
  *
- * The Job emits both the archive AND the tree in a single pass — `tar -tvf`
- * after the archive write is cheap and stays consistent with the snapshot
- * (no race against pod restarts modifying the PVC).
+ *   Two HTTP uploads happen per files-component capture:
+ *     1. archive.tar.gz   (large)
+ *     2. tree.jsonl.gz    (tens of KB; per-file path/size/mode/mtime
+ *        lines, used by Phase-4 file-tree restore UI)
  *
- * Wiring rules:
- *   - For `hostpath` BackupStore the Job mounts the bundle dir directly
- *     and writes both artifacts in place.
- *   - For `s3` BackupStore the Job uploads via presigned PUT URLs.
- *   - For `ssh` BackupStore: out of scope (Phase 3, see ssh-backup-store.ts).
+ *   Each upload uses its own HMAC token. Tokens expire after 30 min
+ *   so a stuck Job can't replay forever.
  *
- * The bundle handle's _backend tells the orchestrator which path to take.
+ * Tradeoffs:
+ *   + Works uniformly for S3 + SSH targets (the platform-api streams
+ *     to whichever BackupStore is configured).
+ *   + Keeps SSH key out of the tenant Job entirely.
+ *   - Bytes traverse platform-api once. For large tenant PVCs this
+ *     adds I/O on the backend pod. Acceptable for now; can optimise
+ *     to a Job→S3-presigned-URL fast-path in a later phase.
  */
 
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { BackupStore, BundleHandle } from '../bundle-store.js';
 import { componentDir } from '../meta.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { signUploadToken } from '../upload-token.js';
 
 export interface FilesComponentResult {
   readonly sha256: string;
@@ -43,44 +54,39 @@ export interface CaptureFilesComponentOpts {
   readonly backupId: string;
   readonly store: BackupStore;
   readonly handle: BundleHandle;
-  /** Hostpath bundle directory the Job mounts. Required for hostpath store.
-   *  The orchestrator passes the path it got back from `reserveBundle` so
-   *  the components layer never needs to inspect `handle._backend`. */
-  readonly bundleDir?: string;
-  /** Hostpath root volume for the Job mount (e.g. /var/lib/platform/bundles).
-   *  Required for hostpath store. */
-  readonly hostpathRoot?: string;
+  /** Internal cluster URL of platform-api (e.g. http://platform-api.platform.svc:3000). */
+  readonly platformApiUrl: string;
+  /** HMAC key used to sign the upload token. Same OIDC_ENCRYPTION_KEY. */
+  readonly secretsKeyHex: string;
   readonly jobImage?: string;
   readonly timeoutMs?: number;
   readonly onProgress?: (msg: string) => Promise<void> | void;
 }
 
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 min for the largest PVCs
+const UPLOAD_TOKEN_TTL_SEC = 30 * 60; // matches Job timeout
 
-/**
- * The Job script — emits archive + sha256 + tree.jsonl.gz in one pass.
- *
- * Implementation notes:
- *   - The tar pass produces the archive.
- *   - A `find` walk + `stat -c` produces the tree.jsonl. We don't reuse
- *     `tar -tvf` because parsing tar's output is fragile across busybox/
- *     GNU tar versions; `find` + `stat` is rock-solid.
- *   - mtimes are in RFC3339 to match meta.json's `capturedAt` style.
- */
-function buildScript(opts: { archivePath: string; treePath: string; sha256SidecarPath: string }): string {
-  const lines = [
+const ARCHIVE_FILENAME = 'archive.tar.gz';
+const TREE_FILENAME = 'tree.jsonl.gz';
+
+function buildScript(opts: { uploadBase: string; archiveToken: string; treeToken: string }): string {
+  // The Job script:
+  //   1. tar+gzip /source → /tmp/archive.tar.gz, computing sha256 alongside
+  //   2. find /source → /tmp/tree.tsv, awk into JSONL, gzip → /tmp/tree.jsonl.gz
+  //   3. curl PUT both files with HMAC tokens. The internal endpoint
+  //      validates the token + streams the body to BackupStore.
+  //   4. echo FILES_DONE + FILES_TREE_COUNT for the orchestrator to parse
+  //
+  // alpine image — busybox tar + curl + sha256sum + awk all available.
+  return [
     'set -e',
-    `mkdir -p "$(dirname "${opts.archivePath}")"`,
-    `mkdir -p "$(dirname "${opts.treePath}")"`,
     'cd /source',
-    `tar cf - . 2>/tmp/tar.err | gzip -1 > "${opts.archivePath}"`,
+    'echo "Tarballing tenant PVC..."',
+    'tar cf - . 2>/tmp/tar.err | gzip -1 > /tmp/archive.tar.gz',
     'TAR_RC=$?',
-    `[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }`,
-    `sha256sum "${opts.archivePath}" | awk '{print $1}' > "${opts.sha256SidecarPath}"`,
-    'echo "Building tree index…"',
-    // Walk the source PVC, emit one JSONL record per file. We escape
-    // the path with sed to keep JSON valid for the most common path
-    // characters (backslash + double-quote).
+    '[ "$TAR_RC" = "0" ] || { echo "tar failed (rc=$TAR_RC):"; cat /tmp/tar.err; exit 1; }',
+    'sha256sum /tmp/archive.tar.gz | awk \'{print $1}\' > /tmp/archive.sha256',
+    'echo "Building tree index..."',
     'find . -type f -printf \'%p\\t%s\\t%m\\t%T@\\n\' > /tmp/tree.tsv',
     'awk -F"\\t" \'{ ' +
       'gsub(/\\\\/, "\\\\\\\\", $1); ' +
@@ -88,19 +94,30 @@ function buildScript(opts: { archivePath: string; treePath: string; sha256Sideca
       'cmd = "date -u -d @"$4" +%Y-%m-%dT%H:%M:%SZ"; ' +
       'cmd | getline mt; close(cmd); ' +
       'printf "{\\"path\\":\\"%s\\",\\"size\\":%s,\\"mode\\":%s,\\"mtime\\":\\"%s\\"}\\n", $1, $2, $3, mt; ' +
-    '}\' /tmp/tree.tsv | gzip -1 > "' + opts.treePath + '"',
-    `wc -l /tmp/tree.tsv | awk '{print "FILES_TREE_COUNT="$1}'`,
-    `ls -l "${opts.archivePath}" "${opts.treePath}"`,
-    `echo "FILES_DONE sha256=$(cat "${opts.sha256SidecarPath}")"`,
-  ];
-  return lines.join('\n');
+    '}\' /tmp/tree.tsv | gzip -1 > /tmp/tree.jsonl.gz',
+    'TREE_COUNT=$(wc -l < /tmp/tree.tsv)',
+    'echo "FILES_TREE_COUNT=$TREE_COUNT"',
+    // Ensure curl is present. alpine:3.20 ships without curl; install
+    // on demand. If apk fails (network partition to the Alpine CDN),
+    // surface a clear error rather than the confusing "curl: not
+    // found" we'd otherwise emit.
+    'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl unavailable and apk install failed"; exit 1; }',
+    'echo "Uploading archive.tar.gz..."',
+    // --upload-file streams from disk; --data-binary @file would
+    // read the whole archive into memory and OOM the 512Mi Job pod
+    // on any non-trivial PVC. Phase-3 review HIGH catch.
+    `curl --fail-with-body -sS --upload-file /tmp/archive.tar.gz \\\n      -H "Content-Type: application/gzip" \\\n      "${opts.uploadBase}/${ARCHIVE_FILENAME}?token=${opts.archiveToken}"`,
+    'echo "Uploading tree.jsonl.gz..."',
+    `curl --fail-with-body -sS --upload-file /tmp/tree.jsonl.gz \\\n      -H "Content-Type: application/gzip" \\\n      "${opts.uploadBase}/${TREE_FILENAME}?token=${opts.treeToken}"`,
+    'echo "FILES_DONE sha256=$(cat /tmp/archive.sha256) size=$(stat -c%s /tmp/archive.tar.gz)"',
+  ].join('\n');
 }
 
 /**
  * Build the K8s Job spec for the files-component capture.
  *
- * Pure function — exposed so unit tests can assert on the spec without
- * spinning up a kube client.
+ * Pure function — exposed so unit tests can assert on the spec
+ * without spinning up a kube client.
  */
 export function buildFilesComponentJobSpec(input: {
   jobName: string;
@@ -109,14 +126,15 @@ export function buildFilesComponentJobSpec(input: {
   clientId: string;
   backupId: string;
   jobImage: string;
-  hostMount: { volumeSpec: Record<string, unknown>; mountPath: string };
-  archiveRelative: string;
-  treeRelative: string;
+  uploadBase: string;
+  archiveToken: string;
+  treeToken: string;
 }): Record<string, unknown> {
-  const archivePath = `${input.hostMount.mountPath}/${input.archiveRelative}`;
-  const treePath = `${input.hostMount.mountPath}/${input.treeRelative}`;
-  const sha256SidecarPath = `${archivePath}.sha256`;
-  const script = buildScript({ archivePath, treePath, sha256SidecarPath });
+  const script = buildScript({
+    uploadBase: input.uploadBase,
+    archiveToken: input.archiveToken,
+    treeToken: input.treeToken,
+  });
   return {
     metadata: {
       name: input.jobName,
@@ -152,12 +170,15 @@ export function buildFilesComponentJobSpec(input: {
             },
             volumeMounts: [
               { name: 'source', mountPath: '/source', readOnly: true },
-              { name: input.hostMount.volumeSpec.name as string, mountPath: input.hostMount.mountPath },
+              // emptyDir for tar/tree intermediate files. Sized
+              // generously — a Phase-3 follow-up will tie this to
+              // the client's plan.max_backup_size_bytes.
+              { name: 'scratch', mountPath: '/tmp' },
             ],
           }],
           volumes: [
             { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
-            input.hostMount.volumeSpec,
+            { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
           ],
         },
       },
@@ -166,50 +187,85 @@ export function buildFilesComponentJobSpec(input: {
 }
 
 /**
- * Capture the `files` component of a backup.
+ * Capture the `files` component.
  *
- * **Hostpath store path** (the only path wired today; S3 + SSH are
- * orchestrator-side stubs that throw `FILES_COMPONENT_BACKEND_PENDING`).
- *
- * Spawns a single Job that writes archive.tar.gz + tree.jsonl.gz into the
- * bundle dir on the hostpath volume. Polls the Job until it completes,
- * then reads the size + sha256 back via the BackupStore interface.
+ * Generates two HMAC tokens (archive + tree), spawns the tar+gzip+
+ * upload Job, polls until completion. After Job returns we stat the
+ * artifact through the BackupStore (which is what actually received
+ * the bytes) to get authoritative size + sha256.
  */
 export async function captureFilesComponent(
   opts: CaptureFilesComponentOpts,
 ): Promise<FilesComponentResult> {
-  // Phase 2 limitation: the bundle store now lives on a Longhorn RWX
-  // PVC in the `platform` namespace, but the files-component Job
-  // historically ran in the *tenant* namespace (so it can mount the
-  // tenant data PVC). Cross-namespace PVC sharing isn't supported in
-  // k8s, so the Job can't directly write into the platform-bundles
-  // volume. Phase 3 will rework this to either:
-  //   (a) stream the tar via HTTP from the Job back to platform-api
-  //       (which writes to the PVC in-process via writeComponent), or
-  //   (b) mount a second per-tenant RWX volume and have platform-api
-  //       copy the artifact across after the Job finishes.
-  // Until that lands, the orchestrator must call captureFilesComponent
-  // only with components.files=false (the integration test honours
-  // this; the admin UI for Phase 2 surfaces the toggle).
-  const err = new Error(
-    'files component capture is deferred to Phase 3 (cross-namespace PVC limitation). ' +
-    'Set components.files=false on the bundle request.',
+  const archiveToken = signUploadToken(
+    { bundleId: opts.backupId, component: 'files', artifactName: ARCHIVE_FILENAME, ttlSeconds: UPLOAD_TOKEN_TTL_SEC },
+    opts.secretsKeyHex,
   );
-  (err as Error & { code?: string }).code = 'FILES_COMPONENT_PHASE_3_PENDING';
-  throw err;
+  const treeToken = signUploadToken(
+    { bundleId: opts.backupId, component: 'files', artifactName: TREE_FILENAME, ttlSeconds: UPLOAD_TOKEN_TTL_SEC },
+    opts.secretsKeyHex,
+  );
+
+  const uploadBase = `${opts.platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${opts.backupId}/components/files`;
+  const jobName = `bk-files-${opts.backupId}`.slice(0, 63);
+  const spec = buildFilesComponentJobSpec({
+    jobName,
+    namespace: opts.namespace,
+    pvcName: opts.pvcName,
+    clientId: opts.clientId,
+    backupId: opts.backupId,
+    jobImage: opts.jobImage ?? 'alpine:3.20',
+    uploadBase,
+    archiveToken,
+    treeToken,
+  });
+
+  await (opts.k8s.batch as unknown as {
+    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
+  }).createNamespacedJob({ namespace: opts.namespace, body: spec });
+
+  await waitForJob(opts.k8s, opts.namespace, jobName, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.onProgress);
+
+  // Stat the archive via the store — this is the authoritative size.
+  // sha256 came from the upload sidecar but the store doesn't know
+  // about it; the Job emitted it in its log line which we parse below.
+  const archiveStat = await opts.store.stat(opts.handle, 'files', ARCHIVE_FILENAME);
+  if (!archiveStat) {
+    throw new Error(`files-component: archive missing on remote target after Job completion (jobName=${jobName})`);
+  }
+
+  const log = await readEndOfJobLog(opts.k8s, opts.namespace, jobName);
+  const sha = parseFilesDoneSha(log) ?? '';
+  const fileCount = parseTreeCount(log);
+
+  if (!sha) {
+    throw new Error(`files-component: could not parse sha256 from Job log (jobName=${jobName})`);
+  }
+
+  return {
+    sha256: sha,
+    sizeBytes: archiveStat.sizeBytes,
+    fileCount,
+  };
 }
 
-async function readFileCountFromJobLog(k8s: K8sClients, namespace: string, jobName: string): Promise<number> {
+async function readEndOfJobLog(k8s: K8sClients, namespace: string, jobName: string): Promise<string> {
   try {
-    // Pull the last ~30 lines so we catch FILES_TREE_COUNT=N in the
-    // Job's stdout regardless of how chatty awk was.
     const last = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 5000 });
-    if (!last) return 0;
-    const m = last.match(/FILES_TREE_COUNT=(\d+)/);
-    return m ? Number(m[1]) : 0;
+    return last ?? '';
   } catch {
-    return 0;
+    return '';
   }
+}
+
+function parseFilesDoneSha(log: string): string | null {
+  const m = log.match(/FILES_DONE sha256=([0-9a-f]{64})/);
+  return m ? m[1]! : null;
+}
+
+function parseTreeCount(log: string): number {
+  const m = log.match(/FILES_TREE_COUNT=(\d+)/);
+  return m ? Number(m[1]) : 0;
 }
 
 async function waitForJob(

@@ -127,12 +127,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     const targetUri = `${store.kind}://${input.targetConfigId}`;
 
+    // Internal cluster URL the files-component Job uses to POST
+    // archive + tree uploads back to platform-api. Falls back to the
+    // standard k8s service DNS when not explicitly configured.
+    const platformApiUrl = (app.config as Record<string, unknown>).PLATFORM_API_INTERNAL_URL as string | undefined
+      ?? process.env.PLATFORM_API_INTERNAL_URL
+      ?? 'http://platform-api.platform.svc:3000';
+
     const result = await runBundle(
-      // hostpathRoot is unused in production (S3/SSH stores stream
-      // straight to the off-site target); it remains a parameter so
-      // the orchestrator's signature is stable for unit tests that
-      // wire a tmpdir-backed LocalHostPathBackupStore.
-      { db: app.db, k8s, store, platformVersion, secretsKeyHex },
+      { db: app.db, k8s, store, platformVersion, secretsKeyHex, platformApiUrl },
       {
         clientId: input.clientId,
         initiator: input.initiator,
