@@ -45,7 +45,9 @@ export default function BackupBundlesSection({ configs }: Props) {
   const verify = useVerifyBundle();
   const del = useDeleteBundle();
 
-  const bundles = bundlesResp?.data ?? [];
+  // Wire shape is { data: { data: BundleSummary[], pagination: {...} } }
+  // (success-envelope around the paginated payload).
+  const bundles = bundlesResp?.data?.data ?? [];
   const activeTargets = configs.filter((c) => c.active);
 
   const onVerify = async (bundleId: string) => {

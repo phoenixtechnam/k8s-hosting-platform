@@ -7,9 +7,18 @@ import type {
   VerifyBundleResponse,
 } from '@k8s-hosting/api-contracts';
 
+/**
+ * apiFetch returns raw wire JSON (no envelope unwrap), and the
+ * routes wrap their payload with `success(...)` which adds an outer
+ * `{ data: ... }`. So a list response on the wire is
+ * `{ data: { data: BundleSummary[], pagination: {...} } }`.
+ * Mirroring the convention in use-backup-config.ts.
+ */
 interface ListResponse {
-  data: BundleSummary[];
-  pagination: { total_count: number; cursor: string | null; has_more: boolean; page_size: number };
+  data: {
+    data: BundleSummary[];
+    pagination: { total_count: number; cursor: string | null; has_more: boolean; page_size: number };
+  };
 }
 
 interface SingleResponse<T> { data: T }
