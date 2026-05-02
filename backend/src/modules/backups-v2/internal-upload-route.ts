@@ -62,7 +62,13 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // archives that may be tens of GiB.
   app.addContentTypeParser('*', (_req, _payload, done) => done(null));
 
-  app.post('/internal/bundles/:bundleId/components/:component/:artifactName', {
+  // PUT, not POST — `curl --upload-file` (which the files-component
+  // Job uses for streaming uploads from disk) defaults to HTTP PUT,
+  // and the semantics here are "store at this exact path", which
+  // PUT expresses correctly. Caught E2E 2026-05-02 when the Job
+  // tried PUT and Fastify returned 404 because the registered
+  // method was POST.
+  app.put('/internal/bundles/:bundleId/components/:component/:artifactName', {
     schema: { tags: ['BackupsV2-Internal'], summary: 'Stream a component artifact upload from a tenant Job' },
   }, async (request, reply) => {
     const { bundleId, component, artifactName } = request.params as {
