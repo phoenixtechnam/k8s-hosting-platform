@@ -62,7 +62,7 @@ export const storageSnapshotStatusEnum = pgEnum('storage_snapshot_status', [
   'creating', 'ready', 'expired', 'failed',
 ]);
 export const provisioningStatusEnum = pgEnum('provisioning_status', ['unprovisioned', 'provisioning', 'provisioned', 'failed']);
-export const domainStatusEnum = pgEnum('domain_status', ['active', 'pending', 'suspended', 'deleted']);
+export const domainStatusEnum = pgEnum('domain_status', ['unverified', 'verified', 'active', 'pending', 'suspended', 'deleted']);
 export const dnsModeEnum = pgEnum('dns_mode', ['primary', 'cname', 'secondary']);
 export const dnsProviderTypeEnum = pgEnum('dns_provider_type', ['powerdns', 'rndc', 'cloudflare', 'route53', 'hetzner', 'cloudns', 'mock']);
 export const zoneDefaultKindEnum = pgEnum('zone_default_kind', ['Native', 'Master']);
@@ -1622,6 +1622,13 @@ export const systemSettings = pgTable('system_settings', {
   imageGcHighThreshold: integer('image_gc_high_threshold').notNull().default(70),
   imageGcLowThreshold: integer('image_gc_low_threshold').notNull().default(60),
   imageGcMinTtlMinutes: integer('image_gc_min_ttl_minutes').notNull().default(60),
+  // 0069: last-known cluster IP set for domain-verification cron. Stored as
+  // { v4: string[], v6: string[] }. Used to suppress false regression
+  // notifications when the platform's own IPs change.
+  lastKnownPlatformIps: jsonb('last_known_platform_ips').$type<{ v4: string[]; v6: string[] } | null>(),
+  // 0069: when true, domain verification failure notifications are also
+  // dispatched via email (in addition to in-app). Default false.
+  notifyDnsFailuresViaEmail: boolean('notify_dns_failures_via_email').notNull().default(false),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

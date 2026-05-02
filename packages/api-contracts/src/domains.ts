@@ -15,7 +15,7 @@ export const createDomainSchema = z.object({
 export const updateDomainSchema = z.object({
   dns_mode: z.enum(['primary', 'cname', 'secondary']).optional(),
   ssl_auto_renew: z.boolean().optional(),
-  status: z.enum(['active', 'pending', 'suspended', 'deleted']).optional(),
+  status: z.enum(['unverified', 'verified', 'active', 'pending', 'suspended', 'deleted']).optional(),
   deployment_id: uuidField.nullable().optional(),
   dns_group_id: uuidField.nullable().optional(),
 });
