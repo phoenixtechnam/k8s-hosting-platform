@@ -65,6 +65,7 @@ import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/r
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
 import { registerAllLifecycleHooks } from './modules/client-lifecycle/hooks/index.js';
+import { clientLifecycleRoutes } from './modules/client-lifecycle/routes.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
@@ -304,6 +305,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
+  await app.register(clientLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
@@ -449,8 +451,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const storageK8s = createK8s(kubeconfigPath);
         const storageLifecycleHandle = startStorageLifecycleScheduler(app.db, storageK8s, app.config as Record<string, unknown>);
         app.addHook('onClose', () => storageLifecycleHandle.stop());
+
+        // Phase 5: lifecycle-hook retry tick. Drains failed
+        // client_lifecycle_hook_runs rows whose next_attempt_at has
+        // passed. Per-hook circuit-breaker bounded in-memory.
+        const { startLifecycleHookRetryScheduler } = await import('./modules/client-lifecycle/scheduler.js');
+        const lifecycleRetryStop = startLifecycleHookRetryScheduler(app.db, storageK8s);
+        app.addHook('onClose', () => lifecycleRetryStop());
       } catch (err) {
-        app.log.warn({ err }, 'storage-lifecycle scheduler: startup skipped');
+        app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
       }
 
       // Phase 3 T1.1: DKIM rotation scheduler. Auto-rotates primary-mode
