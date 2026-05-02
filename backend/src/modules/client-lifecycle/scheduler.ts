@@ -218,6 +218,37 @@ export async function runRetryTick(db: Database, k8s: K8sClients): Promise<{
         })
         .where(eq(clientLifecycleHookRuns.id, row.id));
       succeeded++;
+
+      // Re-evaluate parent transition state. If THIS hook was the
+      // last `failed` row for the transition, the transition flips
+      // from `failed_partial` (or `failed_blocking`) to `completed`.
+      // Otherwise leave it as-is — the operator's audit trail still
+      // shows the original failed_partial signal (one or more hooks
+      // had to retry), and a future tick will lift the state when
+      // remaining hooks drain.
+      try {
+        const remainingFailed = await db.select({ id: clientLifecycleHookRuns.id })
+          .from(clientLifecycleHookRuns)
+          .where(and(
+            eq(clientLifecycleHookRuns.transitionId, parent.id),
+            eq(clientLifecycleHookRuns.state, 'failed'),
+          ))
+          .limit(1);
+        const remainingPending = await db.select({ id: clientLifecycleHookRuns.id })
+          .from(clientLifecycleHookRuns)
+          .where(and(
+            eq(clientLifecycleHookRuns.transitionId, parent.id),
+            eq(clientLifecycleHookRuns.state, 'pending'),
+          ))
+          .limit(1);
+        if (remainingFailed.length === 0 && remainingPending.length === 0) {
+          await db.update(clientLifecycleTransitions)
+            .set({ state: 'completed', completedAt })
+            .where(eq(clientLifecycleTransitions.id, parent.id));
+        }
+      } catch {
+        // Re-evaluation is best-effort — do not crash the tick.
+      }
       continue;
     }
 

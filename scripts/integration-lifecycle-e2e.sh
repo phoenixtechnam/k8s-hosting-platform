@@ -357,31 +357,62 @@ else
   done
 
   # DELETE the client. applyDeleted dispatches the registry, then deletes
-  # the namespace + DB row.
-  api DELETE "/clients/$DEL_CID" >/dev/null
+  # the namespace + DB row. We use a non-retrying curl because the
+  # cascade can take 60-90 s (pv-cleanup-released polls for the PV to
+  # reach Released phase). With --retry-all-errors curl would retry on
+  # any timeout and the SECOND DELETE would create a SECOND transition
+  # row — exactly the duplicate-transition bug an earlier run of this
+  # harness exposed.
+  curl -sk --max-time 240 -X DELETE \
+    "$ADMIN_HOST/api/v1/clients/$DEL_CID" \
+    -H "Authorization: Bearer $TOKEN" >/dev/null
   ok "DELETE /clients/$DEL_CID returned"
 
-  # Poll for the transition to finish (hooks may take a few seconds).
+  # Poll for the transition(s) to finish (hooks may take a few seconds).
+  # NOTE: there can be MORE THAN ONE 'deleted' transition row for the
+  # same client_id when an upstream auto-archive/cron also drove a
+  # delete (lifecycle-collapse). Accept that and assert every row
+  # reached a terminal state.
   for i in $(seq 1 30); do
-    DEL_TX=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted'")
-    [[ "$DEL_TX" == "completed" || "$DEL_TX" == "failed_partial" ]] && break
+    PENDING=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted'" \
+      | awk 'NF>0 && $1!="completed" && $1!="failed_partial" && $1!="failed_blocking" {n++} END {print n+0}')
+    [[ "$PENDING" == "0" ]] && break
     sleep 2
   done
-  [[ "$DEL_TX" == "completed" || "$DEL_TX" == "failed_partial" ]] \
-    && ok "deleted transition reached terminal state ($DEL_TX)" \
-    || fail "deleted transition did not reach terminal state (last=$DEL_TX)"
+  DEL_STATES=$(PSQL "SELECT state FROM client_lifecycle_transitions WHERE client_id='$DEL_CID' AND transition_kind='deleted'" | tr '\n' ',')
+  if [[ "$PENDING" == "0" ]]; then
+    ok "every deleted transition reached a terminal state (states=$DEL_STATES)"
+  else
+    fail "$PENDING deleted transition(s) stuck in non-terminal state (states=$DEL_STATES)"
+  fi
 
-  # Confirm hook_runs for the deleted transition include the Phase 4
+  # Confirm hook_runs for the deleted transition(s) include the Phase 4
   # hooks. With no domains/backup_bundles attached, dns-zone-cleanup +
   # backups-v2-bundle-cleanup return noop — both states are acceptable.
-  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY h.hook_order")
+  DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
   for hook in dns-zone-cleanup backups-v2-bundle-cleanup; do
-    if echo "$DEL_HOOKS" | grep -q "$hook"; then
+    if echo "$DEL_HOOKS" | grep -q "^$hook|"; then
       ok "hook_run row for $hook recorded"
     else
       fail "no hook_run row for $hook (got: $DEL_HOOKS)"
     fi
   done
+
+  # Poll hook_runs until they reach ok|noop. Phase 5's retry scheduler
+  # ticks every 2 min so a freshly-failed hook (e.g. pv-cleanup-released
+  # returning retry on a fast-create-then-delete client) takes one
+  # tick to drain. Wait up to 4 min before declaring failure.
+  for i in $(seq 1 80); do
+    DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
+    BAD_HOOKS=$(echo "$DEL_HOOKS" | awk -F'|' 'NF>=2 && $2!="ok" && $2!="noop"')
+    [[ -z "$BAD_HOOKS" ]] && break
+    sleep 3
+  done
+  if [[ -z "$BAD_HOOKS" ]]; then
+    ok "every deleted-transition hook_run is ok|noop (after retry-drain)"
+  else
+    fail "non-terminal hook_runs after retry window: $BAD_HOOKS"
+  fi
 
   # Namespace must be gone (cascade-deleted by kube-apiserver).
   for i in $(seq 1 30); do
