@@ -116,13 +116,19 @@ export async function buildConfigDump(
 }
 
 /**
- * Per-table SELECT helper. Most tables have `client_id`; users joins
- * via `clients.user_id` (since a client is owned by a user, not the
- * other way round). Mailboxes / aliases join through email_domains.
+ * Per-table SELECT helper. Most tables have a direct `client_id`
+ * column. Two exceptions audited 2026-05-02 against the live schema:
  *
- * For now we use raw SQL via drizzle's sql template — we don't want to
- * couple to the per-table column shape since the dump is intentionally
- * format-agnostic (restore code re-parses it).
+ *   - users: client_id (a client owns 1..N users; sub-users included)
+ *   - ingress_auth_configs: NO client_id column. Joined through
+ *     ingress_routes → domains → clients.
+ *
+ * Mailboxes / email_aliases also have a direct client_id column —
+ * earlier dev assumed they only joined through email_domains, but
+ * the platform writes client_id directly on every row.
+ *
+ * Raw SQL via drizzle's sql template keeps this format-agnostic
+ * (restore code re-parses the JSON dump, doesn't import the schema).
  */
 async function selectClientRows(
   db: Database,
@@ -145,19 +151,13 @@ async function selectClientRows(
       return r.rows;
     }
     case 'emailAliases': {
-      const r = await rawDb.execute(sql`
-        SELECT ea.* FROM email_aliases ea
-        JOIN email_domains ed ON ed.id = ea.email_domain_id
-        WHERE ed.client_id = ${clientId}
-      `);
+      // email_aliases has a direct client_id column.
+      const r = await rawDb.execute(sql`SELECT * FROM email_aliases WHERE client_id = ${clientId}`);
       return r.rows;
     }
     case 'mailboxes': {
-      const r = await rawDb.execute(sql`
-        SELECT mb.* FROM mailboxes mb
-        JOIN email_domains ed ON ed.id = mb.email_domain_id
-        WHERE ed.client_id = ${clientId}
-      `);
+      // mailboxes has a direct client_id column.
+      const r = await rawDb.execute(sql`SELECT * FROM mailboxes WHERE client_id = ${clientId}`);
       return r.rows;
     }
     case 'mailSubmitCredentials': {
@@ -165,7 +165,14 @@ async function selectClientRows(
       return r.rows;
     }
     case 'ingressAuthConfigs': {
-      const r = await rawDb.execute(sql`SELECT * FROM ingress_auth_configs WHERE client_id = ${clientId}`);
+      // ingress_auth_configs has no direct client_id — chain through
+      // ingress_routes → domains → client. Audited 2026-05-02.
+      const r = await rawDb.execute(sql`
+        SELECT iac.* FROM ingress_auth_configs iac
+        JOIN ingress_routes ir ON ir.id = iac.ingress_route_id
+        JOIN domains d ON d.id = ir.domain_id
+        WHERE d.client_id = ${clientId}
+      `);
       return r.rows;
     }
     case 'sftpUsers': {
