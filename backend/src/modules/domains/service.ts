@@ -13,8 +13,77 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
+import type { VerificationResult } from './verification.js';
 
 const EXPIRING_THRESHOLD_DAYS = 30;
+
+// ─── Verification Status Helpers ─────────────────────────────────────────────
+
+export type VerificationTransition =
+  | 'first_pass'   // pending|unverified → verified, verifiedAt was null
+  | 'recovery'     // unverified → verified, verifiedAt was already set
+  | 'regression'   // verified → unverified
+  | 'first_fail'   // pending|unverified → unverified, verifiedAt was null
+  | 'no_change';   // any other / same status
+
+/**
+ * Atomically update a domain's verification status and cache, then return
+ * the old status, new status, and lifecycle transition type.
+ *
+ * Call this after every DNS verification run (cron or manual).
+ * Reads the current row inside the function to derive the transition type.
+ */
+export async function setDomainVerificationStatus(
+  db: Database,
+  domainId: string,
+  result: VerificationResult,
+): Promise<{ previousStatus: string; newStatus: 'verified' | 'unverified'; transition: VerificationTransition }> {
+  const [current] = await db
+    .select({ status: domains.status, verifiedAt: domains.verifiedAt })
+    .from(domains)
+    .where(eq(domains.id, domainId));
+
+  if (!current) {
+    throw new ApiError('DOMAIN_NOT_FOUND', `Domain ${domainId} not found`, 404);
+  }
+
+  const previousStatus = current.status;
+  const newStatus: 'verified' | 'unverified' = result.verified ? 'verified' : 'unverified';
+  const wasVerified = previousStatus === 'verified';
+  const hadVerifiedAt = current.verifiedAt !== null && current.verifiedAt !== undefined;
+
+  let transition: VerificationTransition;
+  if (result.verified) {
+    if (wasVerified) {
+      transition = 'no_change';
+    } else if (hadVerifiedAt) {
+      transition = 'recovery';
+    } else {
+      transition = 'first_pass';
+    }
+  } else {
+    if (wasVerified) {
+      transition = 'regression';
+    } else if (!hadVerifiedAt) {
+      transition = 'first_fail';
+    } else {
+      transition = 'no_change';
+    }
+  }
+
+  const updateValues: Record<string, unknown> = {
+    status: newStatus,
+    verificationCacheAt: new Date(),
+    verificationCacheResult: result,
+  };
+  if (transition === 'first_pass') {
+    updateValues.verifiedAt = new Date();
+  }
+
+  await db.update(domains).set(updateValues).where(eq(domains.id, domainId));
+
+  return { previousStatus, newStatus, transition };
+}
 
 /** Enrich domain rows with TLS cert summary from ssl_certificates. */
 async function enrichWithCertInfo(
@@ -110,7 +179,7 @@ export async function createDomain(db: Database, clientId: string, input: Create
     masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
     deploymentId: input.deployment_id ?? null,
     dnsGroupId,
-    status: 'pending',
+    status: 'unverified',
   });
 
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
@@ -202,6 +271,21 @@ export async function createDomain(db: Database, clientId: string, input: Create
       console.warn(`[domains.createDomain] ensureDomainCertificate failed for ${input.domain_name}: ${(err as Error).message}`);
     }
   }
+
+  // Phase 2: fire-and-forget post-create DNS verification. No notification on
+  // the immediate result — DNS may not have propagated. The 72h grace
+  // notification (in the verification cron) covers brand-new domains.
+  void (async () => {
+    try {
+      const { verifyDomain: runVerify, getPlatformConfig } = await import('./verification.js');
+      const platformConfig = await getPlatformConfig(db);
+      const result = await runVerify(input.domain_name, input.dns_mode, platformConfig, db);
+      await setDomainVerificationStatus(db, id, result);
+    } catch (err) {
+      // Non-fatal — domain stays 'unverified' until next cron tick
+      console.warn(`[domains.createDomain] post-create verify failed: ${(err as Error).message}`);
+    }
+  })();
 
   return created;
 }
