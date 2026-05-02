@@ -63,6 +63,26 @@ const FLAGS: Record<string, FlagDef> = {
    *     record of every cascade
    */
   'db-cascades': { env: 'LIFECYCLE_HOOK_DB_CASCADES', default: 'legacy' },
+
+  /**
+   * Phase 4: dns-zone-cleanup and backups-v2-bundle-cleanup.
+   *
+   * NEW behaviour — there is no legacy parallel path because no inline
+   * code in cascades.applyDeleted called provider.deleteZone or
+   * store.delete before. Default `hook` so a fresh deploy starts
+   * cleaning up zones + bundles immediately.
+   *
+   * `disable` (rather than `legacy`) is the kill-switch value for
+   * these hooks — set when a DNS provider outage or S3 outage is
+   * causing every client delete to slow-fail through retries:
+   *   LIFECYCLE_HOOK_DNS_ZONE_CLEANUP=disable
+   *   LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP=disable
+   * The hook then short-circuits with status='noop' and the operator
+   * can clean up manually via DELETE /api/v1/admin/backups/bundles/:id
+   * and similar.
+   */
+  'dns-zone-cleanup': { env: 'LIFECYCLE_HOOK_DNS_ZONE_CLEANUP', default: 'hook' },
+  'backups-v2-bundle-cleanup': { env: 'LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP', default: 'hook' },
 };
 
 const _testOverrides = new Map<string, 'legacy' | 'hook'>();
@@ -74,7 +94,12 @@ export function isHookAuthoritative(name: string): boolean {
   if (!def) return false;
   const raw = (process.env[def.env] ?? '').trim().toLowerCase();
   if (raw === 'hook') return true;
-  if (raw === 'legacy') return false;
+  // `legacy` and `disable` both resolve to "the hook is NOT authoritative".
+  // The two values document different operator intent — `legacy` means
+  // "fall back to the inline cascade code", `disable` means "neither
+  // hook nor legacy runs, the cleanup is deferred to manual ops" — but
+  // either way the hook short-circuits.
+  if (raw === 'legacy' || raw === 'disable') return false;
   return def.default === 'hook';
 }
 

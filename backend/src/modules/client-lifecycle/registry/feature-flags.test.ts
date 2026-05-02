@@ -51,4 +51,17 @@ describe('feature-flags', () => {
     process.env.LIFECYCLE_HOOK_PV_CLEANUP = 'HOOK';
     expect(isHookAuthoritative('pv-cleanup-released')).toBe(true);
   });
+
+  it('respects "disable" as an explicit kill-switch (returns false)', () => {
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'disable';
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(false);
+    delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
+  });
+
+  it('Phase 4 hooks default to authoritative when env unset', () => {
+    delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
+    delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
+    expect(isHookAuthoritative('backups-v2-bundle-cleanup')).toBe(true);
+  });
 });
