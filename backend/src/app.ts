@@ -616,8 +616,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       // Domain verification cron — hourly DNS re-check with regression notifications.
       // Does not require k8s clients; uses only DB + DNS resolution.
+      //
+      // Register the onClose hook SYNCHRONOUSLY with a closure that captures
+      // the handle as it resolves — `addHook` after the server starts
+      // listening throws FST_ERR_INSTANCE_ALREADY_LISTENING, which is what
+      // happened on the first staging deploy of this feature.
+      let verificationCronHandle: { stop: () => void } | null = null;
+      app.addHook('onClose', () => verificationCronHandle?.stop());
       void startVerificationCron(app.db, app.log).then((handle) => {
-        app.addHook('onClose', () => handle.stop());
+        verificationCronHandle = handle;
       }).catch((err) => {
         app.log.warn({ err }, 'verification-cron: startup failed');
       });

@@ -164,17 +164,14 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     const dnsMode = domain.dnsMode as 'primary' | 'cname' | 'secondary';
     const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, app.db);
 
-    // Update verification timestamps + cache
+    // Use the shared helper so status transitions (unverified ↔ verified)
+    // happen on this manual path too — earlier E2E showed this route was
+    // writing the cache + verifiedAt directly and silently leaving `status`
+    // stuck at its previous value. Helper also writes verification_cache_at
+    // and verification_cache_result; we add lastVerifiedAt separately.
     const now = new Date();
-    const updateValues: Record<string, unknown> = {
-      lastVerifiedAt: now,
-      verificationCacheAt: now,
-      verificationCacheResult: result,
-    };
-    if (result.verified && !domain.verifiedAt) {
-      updateValues.verifiedAt = now;
-    }
-    await app.db.update(domains).set(updateValues).where(eq(domains.id, domainId));
+    await service.setDomainVerificationStatus(app.db, domainId, result);
+    await app.db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, domainId));
 
     return success({ ...result, domainId, domainName: domain.domainName, cached: false });
   });

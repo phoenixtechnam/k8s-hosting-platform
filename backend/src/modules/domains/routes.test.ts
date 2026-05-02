@@ -31,6 +31,11 @@ vi.mock('./service.js', () => ({
     ingressRoutes: [],
     webmailIngressHostname: null,
   }),
+  setDomainVerificationStatus: vi.fn().mockResolvedValue({
+    previousStatus: 'unverified',
+    newStatus: 'verified',
+    transition: 'first_pass',
+  }),
 }));
 
 vi.mock('./verification.js', () => ({
