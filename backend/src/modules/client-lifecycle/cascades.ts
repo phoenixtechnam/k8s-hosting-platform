@@ -14,6 +14,7 @@ import {
   resumeNamespaceIngresses,
 } from './ingress-suspend.js';
 import { runTransition, type Transition } from './registry/index.js';
+import { isHookAuthoritative } from './registry/feature-flags.js';
 
 /**
  * Phase 1 dispatcher hook: every cascade calls this AFTER its inline
@@ -285,25 +286,26 @@ export async function applyDeleted(
   // cascade) so the deletion event stays auditable.
   await ctx.db.delete(clients).where(eq(clients.id, clientId));
 
-  // Released PV + Longhorn volume cleanup. Runs in the background
-  // (no await on the caller) — `deleteNamespace()` returns while the
-  // namespace is still Terminating, so we have to poll for the PVCs
-  // to actually go away (which transitions PVs Bound → Released)
-  // before we can delete them. Without this, every client deletion
-  // leaves orphan PVs that fill up storageScheduled until Longhorn
-  // refuses new replicas with "insufficient storage".
+  // Released PV + Longhorn volume cleanup.
   //
-  // We always kick off the poll — even with an empty pre-snapshot —
-  // because PVC binding is async. A test that creates+deletes a
-  // client within ~5s sees the cascade fire BEFORE Longhorn has
-  // allocated the PV (PVC still Pending, no claimRef on any PV).
-  // Pre-snapshot returns empty in that race, but the PV binds
-  // moments later and becomes a Released orphan. The poll
-  // continually re-discovers PVs by claimRef.namespace so a
-  // late-binding PV still gets cleaned up.
-  void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
-    console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
-  });
+  // Phase 2 migration: when the `pv-cleanup-released` hook is
+  // authoritative, the registry-driven hook runs the same poll +
+  // delete logic with durable retry. The legacy fire-and-forget
+  // path stays in place but early-returns so we don't double-cleanup.
+  //
+  // Default state (LIFECYCLE_HOOK_PV_CLEANUP unset) is `legacy`:
+  // legacy still runs, hook still runs (purely observational —
+  // dispatcher records its outcome to client_lifecycle_hook_runs).
+  // Operator flips to `hook` after staging confirms zero divergence.
+  if (isHookAuthoritative('pv-cleanup-released')) {
+    console.log(`[cascades.applyDeleted] pv-cleanup-released hook is authoritative; legacy poll skipped for ${namespace}`);
+  } else {
+    // Legacy path. Identical semantics to before Phase 2: poll for up
+    // to 60s, reap each Released PV + matching Longhorn volume CR.
+    void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
+      console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
+    });
+  }
 }
 
 /**
