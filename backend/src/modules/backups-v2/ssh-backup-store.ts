@@ -48,7 +48,7 @@
  * meta.json is the bundle's commit marker.
  */
 
-import { Client, type ClientChannel, type ConnectConfig, type SFTPWrapper } from 'ssh2';
+import { Client, type ClientChannel, type ConnectConfig, type SFTPWrapper, type FileEntry, type Stats } from 'ssh2';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
@@ -397,10 +397,10 @@ export class SshBackupStore implements BackupStore {
 
   /** SFTP has no `rm -rf`. Walk the tree and remove. */
   private async rmRf(sftp: SFTPWrapper, dir: string): Promise<void> {
-    const entries = await new Promise<{ filename: string; attrs: { isDirectory?: () => boolean; mode?: number } }[]>((resolve) => {
-      sftp.readdir(dir, (err, list) => {
+    const entries = await new Promise<FileEntry[]>((resolve) => {
+      sftp.readdir(dir, (err: Error | undefined, list: FileEntry[]) => {
         if (err) return resolve([]);
-        resolve(list as unknown as { filename: string; attrs: { mode?: number } }[]);
+        resolve(list);
       });
     });
     for (const e of entries) {
@@ -411,8 +411,8 @@ export class SshBackupStore implements BackupStore {
         continue;
       }
       const path = `${dir}/${e.filename}`;
-      const stat = await new Promise<{ isDir: boolean }>((resolve, reject) => {
-        sftp.stat(path, (err, stats) => {
+      const stat = await new Promise<{ isDir: boolean }>((resolve) => {
+        sftp.stat(path, (err: Error | undefined, stats: Stats) => {
           if (err) return resolve({ isDir: false });
           resolve({ isDir: stats.isDirectory() });
         });
