@@ -136,10 +136,12 @@ async function selectClientRows(
       return r.rows;
     }
     case 'users': {
-      // Owner user (clients.user_id) plus any sub-users linked via clients.id.
-      const r = await rawDb.execute(sql`
-        SELECT * FROM users WHERE id = (SELECT user_id FROM clients WHERE id = ${clientId})
-      `);
+      // The platform's user ↔ client relationship is users.client_id
+      // → clients.id (a client owns 1..N users — owner + sub-users).
+      // Earlier dev code had this inverted (`clients.user_id`) and
+      // wedged the config component capture on every bundle until E2E
+      // hit it; fixed here.
+      const r = await rawDb.execute(sql`SELECT * FROM users WHERE client_id = ${clientId}`);
       return r.rows;
     }
     case 'emailAliases': {

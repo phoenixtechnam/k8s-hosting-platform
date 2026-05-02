@@ -141,6 +141,51 @@ export type BundleDetail = z.infer<typeof bundleDetailSchema>;
 export const bundleListResponseSchema = paginatedResponseSchema(bundleSummarySchema);
 export type BundleListResponse = z.infer<typeof bundleListResponseSchema>;
 
+// ─── Verify response (round-trip integrity report) ──────────────────────────
+//
+// POST /admin/backups/bundles/{id}/verify reads every component back
+// from the off-site target, decrypts secrets, decompresses config,
+// and reports per-component health. No DB writes. Used by the admin
+// panel "Verify" button + by integration tests to assert round-trip.
+
+export const verifyBundleFilesComponentSchema = z.object({
+  reachable: z.boolean(),
+  sizeBytes: z.number().int().nonnegative(),
+});
+
+export const verifyBundleConfigComponentSchema = z.object({
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string(),
+  rowCounts: z.record(z.string(), z.number().int().nonnegative()),
+  parseError: z.string().nullable(),
+});
+
+export const verifyBundleSecretsComponentSchema = z.object({
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string(),
+  encryptionKeyId: z.string(),
+  secretCount: z.number().int().nonnegative(),
+  decryptError: z.string().nullable(),
+});
+
+export const verifyBundleResponseSchema = z.object({
+  bundleId: z.string(),
+  meta: z.object({
+    schemaVersion: z.number().int(),
+    capturedAt: z.string(),
+    platformVersion: z.string(),
+    initiator: backupInitiatorSchema,
+    retentionDays: z.number().int(),
+    expiresAt: z.string().nullable(),
+  }),
+  components: z.object({
+    files: verifyBundleFilesComponentSchema.optional(),
+    config: verifyBundleConfigComponentSchema.optional(),
+    secrets: verifyBundleSecretsComponentSchema.optional(),
+  }),
+});
+export type VerifyBundleResponse = z.infer<typeof verifyBundleResponseSchema>;
+
 // ─── Create bundle (admin/system initiator) ─────────────────────────────────
 
 const componentToggleSchema = z.object({

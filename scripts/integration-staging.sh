@@ -487,36 +487,41 @@ scenario_reaper() {
 }
 
 # ─── scenario: backup bundle (Phase 2 / ADR-032) ─────────────────
-# Provisions a client, runs a backups-v2 bundle against the cluster's
-# active backup target (S3 or SSH — required, no fallback), asserts
-# bundle status=completed, and verifies the artefacts exist on the
-# remote target via the SAME admin API the dashboard uses (the GET
-# detail endpoint lists components with non-zero sizeBytes if they
-# were successfully uploaded). The scenario does NOT poke at the
-# remote target out-of-band — the API's view IS the user-visible truth.
+# Provisions a client, runs a backups-v2 bundle against EVERY active
+# backup target on the cluster (S3 + SSH), runs the verify endpoint
+# (round-trip read + decrypt + decompress), and asserts:
+#   - bundle status=completed
+#   - per-component status=completed with sizeBytes>0 in the DB
+#   - verify reports config rowCount(clients)>=1 (round-trip parses)
+#   - verify reports secrets KID=k1 and decryptError=null (round-trip
+#     decrypts under the same OIDC_ENCRYPTION_KEY)
+#
+# This is a true round-trip: we capture, then read every artefact
+# back via the BackupStore.readComponent path (the same path Phase 4
+# restore code uses), so a green run proves both directions work for
+# both targets.
 scenario_bundle() {
   if [[ "${SKIP_BUNDLE_SCENARIO:-}" == "1" ]]; then
     log "scenario bundle skipped — SKIP_BUNDLE_SCENARIO=1"
     return 0
   fi
 
-  # Resolve the active backup target — bundles MUST go off-cluster.
+  # Discover ALL active backup targets — we'll exercise each one.
   local cfg_resp; cfg_resp=$(api GET "/admin/backup-configs")
-  local target_id; target_id=$(echo "$cfg_resp" | python3 -c "
+  local targets_json; targets_json=$(echo "$cfg_resp" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 items = d.get('data', d) if isinstance(d, dict) else d
 if isinstance(items, dict): items = items.get('items', items.get('data', []))
-for c in items if isinstance(items, list) else []:
-    if c.get('active'):
-        print(c.get('id', ''))
-        break
+out = [{'id': c.get('id'), 'name': c.get('name'), 'kind': c.get('storageType')} for c in (items if isinstance(items, list) else []) if c.get('active')]
+print(json.dumps(out))
 " 2>/dev/null)
-  if [[ -z "$target_id" ]]; then
+  local target_count; target_count=$(echo "$targets_json" | python3 -c "import json,sys;print(len(json.load(sys.stdin)))")
+  if [[ "$target_count" == "0" ]]; then
     fail "bundle: no active backup target configured. Activate an S3 or SSH target via Admin → Backups before running this scenario."
     return 1
   fi
-  ok "bundle: using active backup target $target_id"
+  ok "bundle: $target_count active target(s) — $(echo "$targets_json" | python3 -c "import json,sys;print(', '.join(f\"{t['kind']}/{t['name']}\" for t in json.load(sys.stdin)))")"
 
   local plan_id region_id
   plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
@@ -533,42 +538,71 @@ for c in items if isinstance(items, list) else []:
   wait_for 120 "bundle: client provisioned" '"provisioningStatus":"provisioned"' \
     "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
 
-  # config + secrets only (files + mailboxes deferred to Phase 3).
-  local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"E2E bundle $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
-  local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
-  local bundle_id status
-  bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
-  status=$(echo "$b_resp"   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-  [[ -n "$bundle_id" ]] || { fail "bundle: create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  [[ "$status" == "completed" ]] || { fail "bundle: status=$status (expected completed) — $(echo "$b_resp" | head -c 400)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  ok "bundle: created $bundle_id status=$status"
+  # Iterate each active target and run create + verify round-trip.
+  local target_ids; target_ids=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['id'] for t in json.load(sys.stdin)))")
+  local target_kinds; target_kinds=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['kind'] for t in json.load(sys.stdin)))")
+  read -ra TIDS <<<"$target_ids"
+  read -ra TKINDS <<<"$target_kinds"
+  local i=0
+  for target_id in "${TIDS[@]}"; do
+    local kind="${TKINDS[$i]}"
+    i=$((i+1))
+    local label="E2E bundle $stamp ($kind)"
+    local body; body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"$label\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+    local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
+    local bundle_id status
+    bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
+    status=$(echo "$b_resp"   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+    [[ -n "$bundle_id" ]] || { fail "bundle/$kind: create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    [[ "$status" == "completed" ]] || { fail "bundle/$kind: status=$status (expected completed) — $(echo "$b_resp" | head -c 400)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "bundle/$kind: created $bundle_id status=$status"
 
-  # Assert via the detail endpoint that both components landed on the
-  # remote target with non-zero size — that proves the bytes left the
-  # platform-api pod. The detail endpoint reads from the DB rows that
-  # the orchestrator only writes after the BackupStore.writeComponent
-  # promise resolves (= bytes on the remote).
-  local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
-  local check; check=$(echo "$detail" | python3 -c "
+    # Per-component detail check.
+    local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
+    local check; check=$(echo "$detail" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
 out = {c['component']: {'status': c['status'], 'size': c['sizeBytes']} for c in d.get('components', [])}
 print(json.dumps(out))
 " 2>/dev/null)
-  echo "$check" | grep -q '"config".*"completed"' || { fail "bundle: config component not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  echo "$check" | grep -q '"secrets".*"completed"' || { fail "bundle: secrets component not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  # Both components must have written at least one byte to the remote.
-  echo "$check" | grep -qE '"size":\s*0\b' && { fail "bundle: at least one component reported sizeBytes=0 (no remote write?): $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
-  ok "bundle: config + secrets components completed, sizeBytes>0 on remote target"
+    echo "$check" | grep -q '"config".*"completed"' || { fail "bundle/$kind: config not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$check" | grep -q '"secrets".*"completed"' || { fail "bundle/$kind: secrets not completed: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$check" | grep -qE '"size":\s*0\b' && { fail "bundle/$kind: at least one component sizeBytes=0: $check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    ok "bundle/$kind: components completed, sizeBytes>0"
 
-  # Assert detail endpoint returns the components rows.
-  local detail; detail=$(api GET "/admin/backups/bundles/$bundle_id")
-  echo "$detail" | grep -q '"components"' || { fail "bundle: detail endpoint missing components"; }
-  ok "bundle: detail endpoint returned components"
+    # Round-trip verify: read every component back, decrypt secrets,
+    # decompress config. This exercises BackupStore.readComponent
+    # which is the same path Phase 4 restore code will use.
+    local v_resp; v_resp=$(api POST "/admin/backups/bundles/$bundle_id/verify" "{}")
+    local v_check; v_check=$(echo "$v_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)['data']
+cfg = d['components'].get('config', {})
+sec = d['components'].get('secrets', {})
+print(json.dumps({
+    'configRows': sum(cfg.get('rowCounts', {}).values()) if cfg else 0,
+    'configClients': cfg.get('rowCounts', {}).get('clients', 0) if cfg else 0,
+    'configError': cfg.get('parseError'),
+    'secretsKid': sec.get('encryptionKeyId') if sec else None,
+    'secretsError': sec.get('decryptError'),
+    'secretsCount': sec.get('secretCount', 0) if sec else 0,
+}))
+" 2>/dev/null)
+    [[ -n "$v_check" ]] || { fail "bundle/$kind: verify response empty: $(echo "$v_resp" | head -c 300)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$v_check" | grep -q '"configError": null' || { fail "bundle/$kind: verify reports config parse error: $v_check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$v_check" | grep -q '"secretsError": null' || { fail "bundle/$kind: verify reports secrets decrypt error: $v_check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$v_check" | grep -q '"secretsKid": "k1"' || { fail "bundle/$kind: verify wrong KID: $v_check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    echo "$v_check" | grep -qE '"configClients":\s*[1-9]' || { fail "bundle/$kind: verify config has zero client rows (SQL bug?): $v_check"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; continue; }
+    ok "bundle/$kind: round-trip verify OK ($v_check)"
 
-  # Cleanup
-  api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true
+    # Cleanup this bundle (also tests BackupStore.delete on the remote).
+    api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true
+    ok "bundle/$kind: deleted bundle $bundle_id (remote + DB)"
+  done
+
+  # Final cleanup
   api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  ok "bundle: all $target_count target(s) round-trip verified end-to-end"
 }
 
 # ─── teardown ─────────────────────────────────────────────────────

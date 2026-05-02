@@ -16,6 +16,10 @@ import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
+import { decryptSecretsPayload } from './components/secrets.js';
+import { createHash } from 'node:crypto';
+import { gunzip } from 'node:zlib';
+import type { Readable } from 'node:stream';
 
 // Backups-v2 stores bundles OFF-CLUSTER only (S3 / SSH). The cluster's
 // disk is reserved for live tenant data — backups must never compete
@@ -156,6 +160,109 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success({ bundleId: result.bundleId, status: result.status, meta: result.meta }));
   });
 
+  // ── POST /api/v1/admin/backups/bundles/:id/verify ──────────────────
+  //
+  // Read every component artifact back from the off-site target,
+  // decrypt secrets, decompress config, and report:
+  //   - meta.json schemaVersion + initiator + timestamps
+  //   - per-component byte count + SHA-256 (computed live, no sidecar)
+  //   - secrets KID + decrypt success + count of TLS Secrets
+  //   - config JSON parse success + per-table row counts
+  //
+  // Operators run this from the admin panel after a backup to confirm
+  // the bytes left the pod and round-trip cleanly. No DB writes; safe
+  // to run any number of times.
+  app.post('/admin/backups/bundles/:id/verify', {
+    schema: { tags: ['BackupsV2'], summary: 'Verify a bundle round-trip', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (!job.targetConfigId) {
+      throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id (pre-D-redesign row); cannot verify.', 400);
+    }
+    const store = await resolveStore(app, job.targetConfigId, { requireActive: false });
+    const handle = await store.open(id);
+    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
+
+    // meta.json
+    const meta = await store.getMeta(handle);
+
+    const components: Record<string, unknown> = {};
+
+    // files component — Phase 3 deferred, listed here so the operator
+    // sees that the verifier is aware of it.
+    if (meta.components.files) {
+      const stat = await store.stat(handle, 'files', 'archive.tar.gz').catch(() => null);
+      components.files = { reachable: !!stat, sizeBytes: stat?.sizeBytes ?? 0 };
+    }
+
+    // config component — gunzip + JSON.parse + count rows per table
+    if (meta.components.config) {
+      const stream = await store.readComponent(handle, 'config', 'db-rows.json.gz');
+      const buf = await streamToBuffer(stream);
+      const sha256 = createHash('sha256').update(buf).digest('hex');
+      const rowCounts: Record<string, number> = {};
+      let parseError: string | null = null;
+      try {
+        const decompressed = await new Promise<Buffer>((resolve, reject) => {
+          gunzip(buf, (err, out) => (err ? reject(err) : resolve(out)));
+        });
+        const dump = JSON.parse(decompressed.toString('utf8'));
+        for (const [table, rows] of Object.entries(dump.tables ?? {})) {
+          rowCounts[table] = Array.isArray(rows) ? rows.length : 0;
+        }
+      } catch (err) {
+        parseError = (err as Error).message;
+      }
+      components.config = {
+        sizeBytes: buf.length,
+        sha256,
+        rowCounts,
+        parseError,
+      };
+    }
+
+    // secrets component — decrypt with k1 + JSON.parse
+    if (meta.components.secrets) {
+      const stream = await store.readComponent(handle, 'secrets', 'tls.json.gz.enc');
+      const buf = await streamToBuffer(stream);
+      const sha256 = createHash('sha256').update(buf).digest('hex');
+      let secretCount = 0;
+      let decryptError: string | null = null;
+      try {
+        const plaintext = decryptSecretsPayload(buf.toString('utf8'), secretsKeyHex);
+        const decompressed = await new Promise<Buffer>((resolve, reject) => {
+          gunzip(plaintext, (err, out) => (err ? reject(err) : resolve(out)));
+        });
+        const dump = JSON.parse(decompressed.toString('utf8'));
+        secretCount = Array.isArray(dump.secrets) ? dump.secrets.length : 0;
+      } catch (err) {
+        decryptError = (err as Error).message;
+      }
+      components.secrets = {
+        sizeBytes: buf.length,
+        sha256,
+        encryptionKeyId: meta.components.secrets.encryptionKeyId,
+        secretCount,
+        decryptError,
+      };
+    }
+
+    return success({
+      bundleId: id,
+      meta: {
+        schemaVersion: meta.schemaVersion,
+        capturedAt: meta.capturedAt,
+        platformVersion: meta.platformVersion,
+        initiator: meta.initiator,
+        retentionDays: meta.retentionDays,
+        expiresAt: meta.expiresAt,
+      },
+      components,
+    });
+  });
+
   // ── DELETE /api/v1/admin/backups/bundles/:id ───────────────────────
   app.delete('/admin/backups/bundles/:id', {
     schema: { tags: ['BackupsV2'], summary: 'Delete a bundle (also from store)', security: [{ bearerAuth: [] }] },
@@ -252,6 +359,14 @@ async function resolveStore(
 
   throw new ApiError('NOT_IMPLEMENTED',
     `Backup store kind '${cfg.storageType}' is not supported`, 501);
+}
+
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {

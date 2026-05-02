@@ -3,6 +3,7 @@ import { HardDrive, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, Clo
 import StatusBadge from '@/components/ui/StatusBadge';
 import BackupHealthBanner from '@/components/BackupHealthBanner';
 import BackupHealthTable from '@/components/BackupHealthTable';
+import BackupBundlesSection from '@/components/BackupBundlesSection';
 import { useBackupHealth } from '@/hooks/use-backup-health';
 import {
   useBackupConfigs,
@@ -524,6 +525,11 @@ export default function BackupSettings() {
       )}
 
       <RecentBackupsPanel activeConfigId={configs.find((c) => c.active)?.id ?? null} />
+
+      {/* Tenant bundles (backups-v2 / ADR-032) — component-oriented
+          off-site backups. Distinct from Longhorn-target Recent Backups
+          above (those are PVC-level Longhorn snapshots). */}
+      <BackupBundlesSection configs={configs} />
 
       {/* DR Job Health table — discovers Jobs cluster-wide via labels.
           Adding a new backup job (with the
