@@ -167,7 +167,7 @@ export default function Domains() {
                         {clientMap.get(domain.clientId) ?? '\u2014'}
                       </td>
                       <td className="px-5 py-3.5">
-                        <StatusBadge status={domain.status as 'active' | 'pending' | 'suspended'} />
+                        <StatusBadge status={domain.status as 'active' | 'pending' | 'unverified' | 'verified' | 'suspended' | 'deleted'} />
                       </td>
                       <td className="hidden px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400 uppercase md:table-cell">
                         {domain.dnsMode}
