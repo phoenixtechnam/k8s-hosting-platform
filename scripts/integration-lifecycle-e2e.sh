@@ -343,7 +343,7 @@ fi
 log "── Scenario 9: orphan-prevention hooks fire on client delete ──"
 
 DEL_NAME="lifecycle-del-$(date +%s)"
-DEL_RESP=$(api POST "/clients" "{\"company_name\":\"$DEL_NAME\",\"contact_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\"}")
+DEL_RESP=$(api POST "/clients" "{\"company_name\":\"$DEL_NAME\",\"company_email\":\"$DEL_NAME@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
 DEL_CID=$(echo "$DEL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
 if [[ -z "$DEL_CID" ]]; then
   fail "could not provision throwaway client for delete-cleanup scenario — body: $(echo "$DEL_RESP" | head -c 200)"
