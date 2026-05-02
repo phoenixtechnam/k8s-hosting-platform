@@ -154,7 +154,7 @@ done
 [[ -n "$NS2" ]] && ok "race ns=$NS2" || { fail "no race ns"; exit 1; }
 
 # DELETE within ~3s — Longhorn won't have bound the PV yet, exercising
-# the late-binding tracking in cleanupReleasedPvs.
+# the late-binding tracking in the pv-cleanup-released hook.
 sleep 1
 DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
 echo "$DEL2" | tail -1 | grep -q "204" && ok "race delete 204" || fail "race delete failed: $DEL2"

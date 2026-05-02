@@ -1,27 +1,43 @@
 import { eq } from 'drizzle-orm';
-import {
-  clients,
-  domains,
-  deployments,
-  cronJobs,
-  mailboxes,
-  emailAliases,
-} from '../../db/schema.js';
+import { clients } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import {
-  suspendNamespaceIngresses,
-  resumeNamespaceIngresses,
-} from './ingress-suspend.js';
 import { runTransition, type Transition } from './registry/index.js';
-import { isHookAuthoritative } from './registry/feature-flags.js';
 
 /**
- * Phase 1 dispatcher hook: every cascade calls this AFTER its inline
- * work so the registry sees the transition. Until later phases register
- * hooks, this is a no-op apart from writing one row to
- * `client_lifecycle_transitions`. We swallow errors — a registry write
- * failure must not corrupt an otherwise-successful transition.
+ * Client-lifecycle cascades.
+ *
+ * Every state transition (active, suspended, archived, deleted) goes
+ * through ONE of these functions so we have a single place to reason
+ * about what each state means for every resource type the platform
+ * manages.
+ *
+ * All functions are idempotent: re-running `applySuspended` on an
+ * already-suspended client is a no-op. That's critical because the
+ * storage-lifecycle ops, the subscription-expiry cron, and the admin
+ * API all call into here and can race.
+ *
+ * Storage lifecycle (snapshots, PVC delete) is intentionally NOT here:
+ * those operations live in storage-lifecycle/service.ts and invoke
+ * these cascades at the right moments.
+ *
+ * Phase 6: every state-mutation step previously inlined here is now
+ * a registered LifecycleHook. These wrappers exist solely to
+ * dispatch the transition through the registry so the hook runs +
+ * audit trail land. The actual work is in
+ * `client-lifecycle/hooks/*.ts`.
+ */
+
+export interface CascadeCtx {
+  readonly db: Database;
+  readonly k8s: K8sClients;
+}
+
+/**
+ * Run a transition through the registry. Errors from the dispatcher
+ * are swallowed so a registry write failure cannot corrupt the
+ * outer cascade — the orphan scanner + retry scheduler are the
+ * safety nets if the in-band call fails.
  */
 async function dispatchTransition(
   ctx: CascadeCtx,
@@ -42,29 +58,6 @@ async function dispatchTransition(
   }
 }
 
-/**
- * Client-lifecycle cascades.
- *
- * Every state transition (active, suspended, archived, deleted) goes
- * through ONE of these functions so we have a single place to reason
- * about what each state means for every resource type the platform
- * manages.
- *
- * All functions are idempotent: re-running `applySuspended` on an
- * already-suspended client is a no-op. That's critical because the
- * storage-lifecycle ops, the subscription-expiry cron, and the admin
- * API all call into here and can race.
- *
- * Storage lifecycle (snapshots, PVC delete) is intentionally NOT here:
- * those operations live in storage-lifecycle/service.ts and invoke
- * these cascades at the right moments.
- */
-
-export interface CascadeCtx {
-  readonly db: Database;
-  readonly k8s: K8sClients;
-}
-
 // ─── suspended → active ─────────────────────────────────────────────────
 
 /**
@@ -72,65 +65,17 @@ export interface CascadeCtx {
  * restore the ingress backends. Does NOT scale workloads back up —
  * that's the storage-lifecycle resume op's responsibility (it needs
  * to know the pre-suspend replica counts from the QuiesceSnapshot).
+ *
+ * Hooks fired (in topo order):
+ *   domains-status, cronjobs-enable, mailboxes-status,
+ *   email-aliases-enable, deployments-status, clients-status-stamp,
+ *   ingress-resume, ingress-reconcile.
  */
 export async function applyActive(
   ctx: CascadeCtx,
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // Phase 3: when LIFECYCLE_HOOK_DB_CASCADES=hook, all of the inline
-  // work below is owned by registered hooks. Dispatcher.runTransition
-  // executes them in topo order, with full hook_runs observability.
-  // Default `legacy`: inline still runs AND hooks run (parallel/
-  // observational; every write below is idempotent).
-  if (!isHookAuthoritative('db-cascades')) {
-    // DB cascades — the four tables are independent so fire in parallel.
-    // `allSettled` (not `all`) so one table failing (e.g. a FK constraint
-    // edge case) doesn't abort the rest — the reconciler picks up the
-    // remainder on the next cycle. Per-failure logging surfaces which
-    // cascade needs attention.
-    const results = await Promise.allSettled([
-      ctx.db.update(domains).set({ status: 'active' }).where(eq(domains.clientId, clientId)),
-      ctx.db.update(cronJobs).set({ enabled: 1 }).where(eq(cronJobs.clientId, clientId)),
-      ctx.db.update(mailboxes).set({ status: 'active' }).where(eq(mailboxes.clientId, clientId)),
-      ctx.db.update(emailAliases).set({ enabled: 1 }).where(eq(emailAliases.clientId, clientId)),
-    ]);
-    const labels = ['domains', 'cronJobs', 'mailboxes', 'emailAliases'];
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        console.warn(`[cascades.applyActive] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
-      }
-    });
-
-    // K8s: first remove the suspend markers, then tell the ingress
-    // reconciler to rebuild from `ingress_routes` — this handles both
-    // the redirect-annotation suspend (new) and any historical ingress
-    // swap (in case we're resuming a client that was suspended under
-    // an older code path).
-    try {
-      await resumeNamespaceIngresses(ctx.k8s, namespace);
-    } catch (err) {
-      console.warn(`[cascades.applyActive] resumeNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
-    }
-    try {
-      const { reconcileIngress } = await import('../domains/k8s-ingress.js');
-      await reconcileIngress(ctx.db, ctx.k8s, clientId, namespace);
-    } catch (err) {
-      console.warn(`[cascades.applyActive] reconcileIngress failed for ${namespace}: ${(err as Error).message}`);
-    }
-
-    // Clear suspendedAt/archivedAt on active so the auto-archive clock
-    // resets cleanly if the client is re-suspended later.
-    await ctx.db.update(clients)
-      .set({ status: 'active', suspendedAt: null, archivedAt: null })
-      .where(eq(clients.id, clientId));
-  } else {
-    console.log(`[cascades.applyActive] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
-  }
-
-  // Phase 1+: dispatch through the registry. Hooks: domains-status,
-  // cronjobs-enable, mailboxes-status, email-aliases-enable, ingress-
-  // resume, ingress-reconcile, clients-status-stamp.
   await dispatchTransition(ctx, clientId, namespace, 'active', null, 'active');
 }
 
@@ -151,40 +96,6 @@ export async function applySuspended(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  if (!isHookAuthoritative('db-cascades')) {
-    // See applyActive for the allSettled rationale.
-    const results = await Promise.allSettled([
-      ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId)),
-      ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId)),
-      ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId)),
-      ctx.db.update(mailboxes).set({ status: 'disabled' }).where(eq(mailboxes.clientId, clientId)),
-      ctx.db.update(emailAliases).set({ enabled: 0 }).where(eq(emailAliases.clientId, clientId)),
-    ]);
-    const labels = ['domains', 'deployments', 'cronJobs', 'mailboxes', 'emailAliases'];
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        console.warn(`[cascades.applySuspended] ${labels[i]} update failed for client ${clientId}: ${(r.reason as Error).message}`);
-      }
-    });
-
-    // K8s: swap tenant ingresses to platform-suspended.
-    try {
-      await suspendNamespaceIngresses(ctx.k8s, namespace);
-    } catch (err) {
-      console.warn(`[cascades.applySuspended] suspendNamespaceIngresses failed for ${namespace}: ${(err as Error).message}`);
-    }
-
-    // Stamp suspendedAt unconditionally — auto-archive cron compares this
-    // to its threshold. Idempotent: re-suspending an already-suspended
-    // client bumps the timestamp, which is the right semantic (fresh
-    // suspension, restart the clock).
-    await ctx.db.update(clients)
-      .set({ status: 'suspended', suspendedAt: new Date() })
-      .where(eq(clients.id, clientId));
-  } else {
-    console.log(`[cascades.applySuspended] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
-  }
-
   await dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
 }
 
@@ -204,29 +115,6 @@ export async function applyArchived(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  if (!isHookAuthoritative('db-cascades')) {
-    // Delete mailboxes + aliases — the user confirmed these should go on
-    // archive (no 90d alias retention). Stalwart picks this up via the
-    // `stalwart.*` views; bodies stored on Stalwart's side are GC'd by
-    // its own retention.
-    await ctx.db.delete(mailboxes).where(eq(mailboxes.clientId, clientId));
-    await ctx.db.delete(emailAliases).where(eq(emailAliases.clientId, clientId));
-
-    // Domains and DNS: mark domains archived (status=suspended — no
-    // "archived" state on domain_status enum) and let the DNS reconciler
-    // stop publishing records. The actual DNS zone in PowerDNS is owned
-    // by the DNS module which will pick up the status change.
-    await ctx.db.update(domains).set({ status: 'suspended' }).where(eq(domains.clientId, clientId));
-    await ctx.db.update(deployments).set({ status: 'stopped' }).where(eq(deployments.clientId, clientId));
-    await ctx.db.update(cronJobs).set({ enabled: 0 }).where(eq(cronJobs.clientId, clientId));
-
-    await ctx.db.update(clients)
-      .set({ status: 'archived', archivedAt: new Date() })
-      .where(eq(clients.id, clientId));
-  } else {
-    console.log(`[cascades.applyArchived] db-cascades hook is authoritative; legacy block skipped for ${clientId}`);
-  }
-
   await dispatchTransition(ctx, clientId, namespace, 'archived', null, 'archived');
 }
 
@@ -234,9 +122,17 @@ export async function applyArchived(
 
 /**
  * Delete cascades: hard-remove EVERYTHING owned by this client.
- * The namespace cascade-delete handles most k8s resources; DB rows
- * with `ON DELETE CASCADE` (domains, deployments, mailboxes, backups,
- * sftp_users, etc.) go away with the client row.
+ * Sequence:
+ *   1. Open a transitions row + run the registry's `deleted` hooks
+ *      (pv-cleanup-released, dns-zone-cleanup, backups-v2-bundle-
+ *      cleanup, etc.). This happens BEFORE the FK cascade so the
+ *      hooks can read domains/backup_jobs rows.
+ *   2. Drop the k8s namespace — brings pods, PVCs, ingress, services,
+ *      configmaps, secrets with it.
+ *   3. Drop the client row — FK cascades reap domains, deployments,
+ *      mailboxes, sftp_users, backups, etc. `audit_logs` and
+ *      `client_lifecycle_transitions` intentionally retain
+ *      `client_id` as a tombstone.
  *
  * Storage-lifecycle snapshots for this client are purged by the
  * caller (storage-lifecycle/service.ts handles snapshot store
@@ -247,43 +143,12 @@ export async function applyDeleted(
   clientId: string,
   namespace: string,
 ): Promise<void> {
-  // Phase 1: open a transitions row BEFORE the FK cascade nukes the
-  // client row. The transitions table is intentionally NOT cascade-on-
-  // client-delete (audit-log style tombstone), so this row survives the
-  // delete and provides a queryable trail for the operator.
+  // Step 1: dispatch hooks while domains/backup_jobs rows still exist.
   await dispatchTransition(ctx, clientId, namespace, 'deleted', null, 'deleted');
 
-  // Snapshot which PVs claim this namespace BEFORE the namespace is
-  // deleted. The tenant SC uses reclaimPolicy=Retain (intentional —
-  // protects against accidental data loss), so when the namespace
-  // cascade-deletes the PVCs, the underlying PVs flip to Released
-  // rather than disappearing. We need to identify them up-front
-  // because once `deleteNamespace()` returns, the PVCs are still
-  // present (Terminating) and `claimRef` is still on the PV — but
-  // the moment the PVC actually goes away, the PV becomes a Released
-  // orphan with no easy way to associate it back to a namespace.
-  interface PvLite {
-    metadata?: { name?: string };
-    spec?: { claimRef?: { namespace?: string } };
-    status?: { phase?: string };
-  }
-  const pvCandidates = new Set<string>();
-  try {
-    const pvsBefore = await ctx.k8s.core.listPersistentVolume({});
-    for (const p of ((pvsBefore as { items?: PvLite[] }).items ?? [])) {
-      const name = p.metadata?.name;
-      if (name && p.spec?.claimRef?.namespace === namespace) {
-        pvCandidates.add(name);
-      }
-    }
-  } catch (err) {
-    console.warn(`[cascades.applyDeleted] PV pre-snapshot failed: ${(err as Error).message}`);
-  }
-
-  // Drop the k8s namespace — brings pods, PVC, ingress, services,
-  // configmaps, secrets with it. `clients.kubernetes_namespace` is
+  // Step 2: drop the k8s namespace. `clients.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
-  // indicate a seed-bug upstream and should surface as an error.
+  // indicate a seed bug upstream and should surface as an error.
   try {
     await ctx.k8s.core.deleteNamespace({ name: namespace });
   } catch (err) {
@@ -295,122 +160,6 @@ export async function applyDeleted(
     }
   }
 
-  // DB: rely on FK cascades. `clients.id` is referenced by domains,
-  // deployments, mailboxes, email_aliases, sftp_users, backups, etc.
-  // with ON DELETE CASCADE so this one statement reaps the lot.
-  // `audit_logs` intentionally keeps client_id as a tombstone (no
-  // cascade) so the deletion event stays auditable.
+  // Step 3: drop the client row. FK cascades take care of children.
   await ctx.db.delete(clients).where(eq(clients.id, clientId));
-
-  // Released PV + Longhorn volume cleanup.
-  //
-  // Phase 2 migration: when the `pv-cleanup-released` hook is
-  // authoritative, the registry-driven hook runs the same poll +
-  // delete logic with durable retry. The legacy fire-and-forget
-  // path stays in place but early-returns so we don't double-cleanup.
-  //
-  // Default state (LIFECYCLE_HOOK_PV_CLEANUP unset) is `legacy`:
-  // legacy still runs, hook still runs (purely observational —
-  // dispatcher records its outcome to client_lifecycle_hook_runs).
-  // Operator flips to `hook` after staging confirms zero divergence.
-  if (isHookAuthoritative('pv-cleanup-released')) {
-    console.log(`[cascades.applyDeleted] pv-cleanup-released hook is authoritative; legacy poll skipped for ${namespace}`);
-  } else {
-    // Legacy path. Identical semantics to before Phase 2: poll for up
-    // to 60s, reap each Released PV + matching Longhorn volume CR.
-    void cleanupReleasedPvs(ctx, namespace, pvCandidates).catch((err) => {
-      console.warn(`[cascades.applyDeleted] PV cleanup failed: ${(err as Error).message}`);
-    });
-  }
-}
-
-/**
- * Background poll: wait up to 60s for each candidate PV to transition
- * to Released (or disappear), then delete the PV + the matching
- * Longhorn volume CR. Runs detached from the request lifecycle —
- * `applyDeleted` returns immediately after kicking this off.
- */
-async function cleanupReleasedPvs(
-  ctx: CascadeCtx,
-  namespace: string,
-  candidates: Set<string>,
-): Promise<void> {
-  interface PvLite {
-    metadata?: { name?: string };
-    spec?: { claimRef?: { namespace?: string } };
-    status?: { phase?: string };
-  }
-  const handled = new Set<string>();
-  // The tracking set grows during the poll — late-binding PVs (PVC
-  // was Pending when applyDeleted ran) get added the moment Longhorn
-  // populates claimRef.namespace.
-  const tracked = new Set<string>(candidates);
-  const startedAt = Date.now();
-
-  // Always poll for the full 60s window — a fast create+delete may
-  // see candidates=∅ at start, then the PV appears mid-loop. We need
-  // to keep watching until either every tracked PV is handled OR the
-  // window closes.
-  while (Date.now() - startedAt < 60_000) {
-    const pvsNow = await ctx.k8s.core.listPersistentVolume({}).catch(() => null);
-    if (!pvsNow) {
-      await new Promise((r) => setTimeout(r, 2_000));
-      continue;
-    }
-    const items = (pvsNow as { items?: PvLite[] }).items ?? [];
-    const stillPresent = new Set<string>();
-    for (const p of items) {
-      const name = p.metadata?.name;
-      if (!name) continue;
-      stillPresent.add(name);
-      // Discover late-binding PVs whose claimRef points at our
-      // soon-to-be-deleted namespace.
-      if (p.spec?.claimRef?.namespace === namespace) tracked.add(name);
-      if (!tracked.has(name) || handled.has(name)) continue;
-      if (p.status?.phase === 'Released') handled.add(name);
-    }
-    // Tolerate a candidate that disappeared on its own (Delete reclaim).
-    for (const c of tracked) {
-      if (!stillPresent.has(c)) handled.add(c);
-    }
-    // Exit early once we've seen at least one PV and all are handled.
-    if (tracked.size > 0 && handled.size >= tracked.size) break;
-    await new Promise((r) => setTimeout(r, 2_000));
-  }
-
-  let cleaned = 0;
-  for (const pvName of handled) {
-    try {
-      await ctx.k8s.core.deletePersistentVolume({ name: pvName });
-      cleaned++;
-    } catch (err) {
-      const status = (err as { statusCode?: number; code?: number }).statusCode
-        ?? (err as { code?: number }).code;
-      if (status !== 404) {
-        console.warn(`[cascades.applyDeleted] failed to delete Released PV ${pvName}: ${(err as Error).message}`);
-      }
-    }
-    // Cascade to Longhorn volume CR (CSI volume name == PV name).
-    // PV deletion alone leaves a "detached" longhorn.io/volume that
-    // still counts against storageScheduled.
-    try {
-      await ctx.k8s.custom.deleteNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'volumes', name: pvName,
-      } as unknown as Parameters<typeof ctx.k8s.custom.deleteNamespacedCustomObject>[0]);
-    } catch (err) {
-      const status = (err as { statusCode?: number; code?: number }).statusCode
-        ?? (err as { code?: number }).code;
-      if (status !== 404) {
-        console.warn(`[cascades.applyDeleted] failed to delete Longhorn volume ${pvName}: ${(err as Error).message}`);
-      }
-    }
-  }
-
-  if (cleaned > 0) {
-    console.log(`[cascades.applyDeleted] cleaned up ${cleaned} Released PV(s) + Longhorn volume(s) for namespace ${namespace}`);
-  }
-  if (tracked.size > handled.size) {
-    console.warn(`[cascades.applyDeleted] ${tracked.size - handled.size} PV(s) for ${namespace} did not reach Released within 60s — leaving for manual cleanup`);
-  }
 }

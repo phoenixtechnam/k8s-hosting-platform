@@ -27,12 +27,10 @@ import {
  *   delete a client; better to mark the hook failed_partial and let
  *   the scheduler retry.
  *
- * Why we still keep the legacy `cleanupReleasedPvs` until Phase 6:
- *   The feature flag (LIFECYCLE_HOOK_PV_CLEANUP) defaults to `legacy`.
- *   When `legacy`, the hook still runs but the legacy code is also
- *   running — so the hook records observability data without changing
- *   behaviour. When operator flips to `hook`, the legacy path early-
- *   returns and the hook becomes the only cleaner.
+ * Phase 6: this hook is now the ONLY PV cleanup mechanism — the
+ * legacy fire-and-forget `cleanupReleasedPvs` was removed from
+ * cascades.applyDeleted. The Phase 5 retry scheduler tick is the
+ * safety net for slow-binding PVs that miss the empty-poll grace.
  */
 
 interface PvLite {
@@ -48,14 +46,11 @@ const POLL_INTERVAL_MS = 2_000;
 // within seconds — burning the full 60 s on a no-storage client just to
 // confirm nothing claimed the namespace is wasteful.
 //
-// IMPORTANT timing risk: a PVC that binds AFTER this grace window but
-// before the legacy 60 s window is missed when LIFECYCLE_HOOK_PV_CLEANUP=
-// hook is set. The legacy poll catches it because it always burns the
-// full 60 s. Until the Phase 5 scheduler retry tick lands, operators
-// flipping the flag to `hook` accept a narrow miss window (~6 s to
-// 60 s post-delete) for unusually slow PVC binding. The orphan-volumes
-// scanner is the operator-visible safety net — anything missed shows
-// up there for manual Purge.
+// Late-binding PVs that miss the grace window get caught by:
+//   1. The dispatcher returns status='retry' on miss → Phase 5
+//      scheduler re-runs the hook on its next 2-min tick.
+//   2. The orphan-volumes scanner UI is the operator-visible
+//      safety net — manual Purge All cleans anything stranded.
 const EMPTY_POLL_GRACE_CYCLES = 3;
 
 async function reapPvsForNamespace(

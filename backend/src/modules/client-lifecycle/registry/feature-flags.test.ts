@@ -4,64 +4,72 @@ import {
   _setHookFlagForTests,
 } from './feature-flags.js';
 
+/**
+ * Phase 6 left only the dns-zone-cleanup and backups-v2-bundle-
+ * cleanup hooks behind feature flags (both default `hook`). These
+ * tests exercise the same resolver logic the retired Phase 2/3 flags
+ * used; the flag map shape is unchanged so the contract is stable.
+ */
 describe('feature-flags', () => {
-  let originalEnv: string | undefined;
+  let savedDns: string | undefined;
+  let savedS3: string | undefined;
 
   beforeEach(() => {
-    originalEnv = process.env.LIFECYCLE_HOOK_PV_CLEANUP;
-    delete process.env.LIFECYCLE_HOOK_PV_CLEANUP;
-    _setHookFlagForTests('pv-cleanup-released', undefined);
+    savedDns = process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
+    savedS3 = process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
+    delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
+    delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
+    _setHookFlagForTests('dns-zone-cleanup', undefined);
+    _setHookFlagForTests('backups-v2-bundle-cleanup', undefined);
   });
   afterEach(() => {
-    if (originalEnv == null) delete process.env.LIFECYCLE_HOOK_PV_CLEANUP;
-    else process.env.LIFECYCLE_HOOK_PV_CLEANUP = originalEnv;
-    _setHookFlagForTests('pv-cleanup-released', undefined);
+    if (savedDns == null) delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
+    else process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = savedDns;
+    if (savedS3 == null) delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
+    else process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP = savedS3;
+    _setHookFlagForTests('dns-zone-cleanup', undefined);
+    _setHookFlagForTests('backups-v2-bundle-cleanup', undefined);
   });
 
-  it('returns false (legacy) when env unset and default is legacy', () => {
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(false);
+  it('returns true (default hook) when env unset', () => {
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
+    expect(isHookAuthoritative('backups-v2-bundle-cleanup')).toBe(true);
   });
 
-  it('returns true (hook) when env=hook', () => {
-    process.env.LIFECYCLE_HOOK_PV_CLEANUP = 'hook';
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(true);
+  it('returns true when env=hook', () => {
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'hook';
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
   });
 
-  it('returns false when env=legacy explicitly', () => {
-    process.env.LIFECYCLE_HOOK_PV_CLEANUP = 'legacy';
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(false);
+  it('returns false when env=disable (kill-switch)', () => {
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'disable';
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(false);
+  });
+
+  it('returns false when env=legacy', () => {
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'legacy';
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(false);
   });
 
   it('test override beats env', () => {
-    process.env.LIFECYCLE_HOOK_PV_CLEANUP = 'legacy';
-    _setHookFlagForTests('pv-cleanup-released', 'hook');
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(true);
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'disable';
+    _setHookFlagForTests('dns-zone-cleanup', 'hook');
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
   });
 
-  it('returns false for unknown flag names', () => {
+  it('returns false for unknown flag names (e.g. retired Phase 2/3 names)', () => {
+    expect(isHookAuthoritative('pv-cleanup-released')).toBe(false);
+    expect(isHookAuthoritative('db-cascades')).toBe(false);
     expect(isHookAuthoritative('unknown-flag')).toBe(false);
   });
 
   it('handles empty/whitespace env value as default', () => {
-    process.env.LIFECYCLE_HOOK_PV_CLEANUP = '   ';
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(false);
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = '   ';
+    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
   });
 
   it('is case-insensitive on env value', () => {
-    process.env.LIFECYCLE_HOOK_PV_CLEANUP = 'HOOK';
-    expect(isHookAuthoritative('pv-cleanup-released')).toBe(true);
-  });
-
-  it('respects "disable" as an explicit kill-switch (returns false)', () => {
-    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'disable';
+    process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP = 'DISABLE';
     expect(isHookAuthoritative('dns-zone-cleanup')).toBe(false);
-    delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
-  });
-
-  it('Phase 4 hooks default to authoritative when env unset', () => {
-    delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
-    delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
-    expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
-    expect(isHookAuthoritative('backups-v2-bundle-cleanup')).toBe(true);
   });
 });

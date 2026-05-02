@@ -325,7 +325,7 @@ else
   # ok/noop. A failed/pending row indicates a registered hook regressed.
   HOOK_RUNS=$(PSQL "SELECT t.transition_kind, h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$CID' ORDER BY t.started_at, h.hook_order")
   if [[ -z "$HOOK_RUNS" ]]; then
-    log "no hook_runs rows yet — Phase 3 hooks may not be registered or db-cascades flag is legacy with empty registry side. Treating as informational."
+    fail "no hook_runs rows for client $CID — Phase 3 hooks are not running"
   else
     HOOK_BAD=$(echo "$HOOK_RUNS" | awk -F'|' 'NF>=3 && $3!="ok" && $3!="noop" {bad++} END {print bad+0}')
     [[ "$HOOK_BAD" == "0" ]] && ok "every hook_run is ok|noop ($HOOK_RUNS)" \
