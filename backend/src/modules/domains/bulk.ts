@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { domains } from '../../db/schema.js';
 import { verifyDomain, getPlatformConfig } from './verification.js';
+import { setDomainVerificationStatus } from './service.js';
 import { reconcileIngress } from './k8s-ingress.js';
 import { getClientById } from '../clients/service.js';
 import type { Database } from '../../db/index.js';
@@ -33,16 +34,11 @@ export async function bulkVerifyDomains(
       const dnsMode = domain.dnsMode as 'primary' | 'cname' | 'secondary';
       const result = await verifyDomain(domain.domainName, dnsMode, platformConfig, db);
 
+      // Use the shared helper so status transitions consistently across
+      // every entry point (manual verify, cron, create-time, bulk).
       const now = new Date();
-      const updateValues: Record<string, unknown> = {
-        lastVerifiedAt: now,
-        verificationCacheAt: now,
-        verificationCacheResult: result,
-      };
-      if (result.verified && !domain.verifiedAt) {
-        updateValues.verifiedAt = now;
-      }
-      await db.update(domains).set(updateValues).where(eq(domains.id, id));
+      await setDomainVerificationStatus(db, id, result);
+      await db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, id));
 
       succeeded.push(id);
     } catch (err) {
