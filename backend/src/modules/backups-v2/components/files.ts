@@ -178,67 +178,25 @@ export function buildFilesComponentJobSpec(input: {
 export async function captureFilesComponent(
   opts: CaptureFilesComponentOpts,
 ): Promise<FilesComponentResult> {
-  if (opts.store.kind !== 'hostpath') {
-    const err = new Error(
-      `files component capture is not yet wired for store kind '${opts.store.kind}' (Phase 3).`,
-    );
-    (err as Error & { code?: string }).code = 'FILES_COMPONENT_BACKEND_PENDING';
-    throw err;
-  }
-
-  if (!opts.hostpathRoot) {
-    throw new Error('files-component: hostpathRoot is required for hostpath store');
-  }
-
-  const archiveRel = `${componentDir('files')}/archive.tar.gz`;
-  const treeRel = `${componentDir('files')}/tree.jsonl.gz`;
-
-  const hostMount = {
-    volumeSpec: {
-      name: 'platform-bundles',
-      hostPath: { path: opts.hostpathRoot, type: 'DirectoryOrCreate' },
-    },
-    mountPath: '/bundle',
-  };
-  const jobName = `bk-files-${opts.backupId}`.slice(0, 63);
-
-  const spec = buildFilesComponentJobSpec({
-    jobName,
-    namespace: opts.namespace,
-    pvcName: opts.pvcName,
-    clientId: opts.clientId,
-    backupId: opts.backupId,
-    jobImage: opts.jobImage ?? 'alpine:3.20',
-    hostMount,
-    archiveRelative: archiveRel,
-    treeRelative: treeRel,
-  });
-
-  await (opts.k8s.batch as unknown as {
-    createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace: opts.namespace, body: spec });
-
-  // Poll until done.
-  await waitForJob(opts.k8s, opts.namespace, jobName, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.onProgress);
-
-  // Read size + sha256 back via the store.
-  const archiveStat = await opts.store.stat(opts.handle, 'files', 'archive.tar.gz');
-  if (!archiveStat) throw new Error('files-component: archive.tar.gz missing after Job completion');
-
-  // Read the Job pod log for FILES_TREE_COUNT=N — emitted right before
-  // FILES_DONE. Best-effort: if pod-log RBAC or the pod is gone, we
-  // surface fileCount=0 rather than failing the whole component.
-  const fileCount = await readFileCountFromJobLog(opts.k8s, opts.namespace, jobName);
-
-  if (!archiveStat.sha256) {
-    throw new Error('files-component: sha256 sidecar missing');
-  }
-
-  return {
-    sha256: archiveStat.sha256,
-    sizeBytes: archiveStat.sizeBytes,
-    fileCount,
-  };
+  // Phase 2 limitation: the bundle store now lives on a Longhorn RWX
+  // PVC in the `platform` namespace, but the files-component Job
+  // historically ran in the *tenant* namespace (so it can mount the
+  // tenant data PVC). Cross-namespace PVC sharing isn't supported in
+  // k8s, so the Job can't directly write into the platform-bundles
+  // volume. Phase 3 will rework this to either:
+  //   (a) stream the tar via HTTP from the Job back to platform-api
+  //       (which writes to the PVC in-process via writeComponent), or
+  //   (b) mount a second per-tenant RWX volume and have platform-api
+  //       copy the artifact across after the Job finishes.
+  // Until that lands, the orchestrator must call captureFilesComponent
+  // only with components.files=false (the integration test honours
+  // this; the admin UI for Phase 2 surfaces the toggle).
+  const err = new Error(
+    'files component capture is deferred to Phase 3 (cross-namespace PVC limitation). ' +
+    'Set components.files=false on the bundle request.',
+  );
+  (err as Error & { code?: string }).code = 'FILES_COMPONENT_PHASE_3_PENDING';
+  throw err;
 }
 
 async function readFileCountFromJobLog(k8s: K8sClients, namespace: string, jobName: string): Promise<number> {

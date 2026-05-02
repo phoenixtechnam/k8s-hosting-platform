@@ -1,0 +1,33 @@
+# RWX PVC backing the backups-v2 bundle store (ADR-032).
+#
+# Why RWX: the platform-api Deployment runs 3 replicas spread across
+# nodes via topology-spread. The bundle store needs every replica to
+# see the same files (so a GET that lands on replica B can serve a
+# bundle written by replica A). hostPath fails this — it's per-node.
+#
+# Why Longhorn: the platform's HA system already runs Longhorn for
+# tenant + system PVCs. Adding a fourth volume in the same SC keeps
+# operational surface flat. No new dependency on NFS / Ceph / etc.
+#
+# RWX on Longhorn auto-spins a `share-manager` pod that NFS-exports
+# the volume. Performance isn't critical here (component artifacts
+# are written once per bundle, read at restore time).
+#
+# Initial size: 50Gi. The retention sweeper will keep this in check;
+# growth tracking is handled by the existing storage_snapshots health
+# scheduler since `backup_jobs` mirrors that pattern.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: platform-bundles
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: backups-v2
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn-system-ha
+  resources:
+    requests:
+      storage: 50Gi

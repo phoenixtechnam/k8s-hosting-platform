@@ -528,10 +528,13 @@ scenario_bundle() {
 
   # Assert meta.json + config + secrets exist on the platform-data PVC.
   local found_meta found_config found_secrets
-  local bundle_root="/var/lib/platform/snapshots/_bundles_v2/$bundle_id"
-  found_meta=$(ssh_cp "ls $bundle_root/meta.json 2>/dev/null && echo OK" || true)
-  found_config=$(ssh_cp "ls $bundle_root/components/config/db-rows.json.gz 2>/dev/null && echo OK" || true)
-  found_secrets=$(ssh_cp "ls $bundle_root/components/secrets/tls.json.gz.enc 2>/dev/null && echo OK" || true)
+  # Bundles live on a Longhorn RWX PVC mounted into platform-api at
+  # /bundles. We can read them via `kubectl exec` into any platform-api
+  # replica — no node-side path lookup needed.
+  local kx="ssh_cp kubectl -n platform exec deploy/platform-api -c api --"
+  found_meta=$($kx ls /bundles/$bundle_id/meta.json 2>/dev/null && echo OK || true)
+  found_config=$($kx ls /bundles/$bundle_id/components/config/db-rows.json.gz 2>/dev/null && echo OK || true)
+  found_secrets=$($kx ls /bundles/$bundle_id/components/secrets/tls.json.gz.enc 2>/dev/null && echo OK || true)
 
   [[ "$found_meta" =~ OK ]]    || { fail "bundle: meta.json missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
   [[ "$found_config" =~ OK ]]  || { fail "bundle: config component missing on disk"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }

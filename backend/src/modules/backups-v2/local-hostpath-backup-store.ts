@@ -26,7 +26,6 @@ import { join, dirname, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
 import type { BackupComponentName, BackupMetaV1 } from '@k8s-hosting/api-contracts';
-import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type {
   BackupStore,
   BundleHandle,
@@ -35,38 +34,6 @@ import type {
   WriteComponentOptions,
 } from './bundle-store.js';
 import { META_FILENAME, componentDir, parseMeta, serializeMeta } from './meta.js';
-import { ensureHostpathDirs } from './hostpath-job.js';
-
-/**
- * Constructor input for the production wiring (Phase 2).
- *
- * Exists because the platform-api pod runs as uid 1000 but the
- * /var/lib/platform/snapshots hostPath on every node is owned by
- * root:root 0755 — so the pod can't `mkdir` under it directly.
- *
- * The store delegates the parent-directory create to a one-shot Job
- * (running as root in PLATFORM_TENANT_OPS_NS) the first time
- * `reserveBundle` is called for a given root. After that, the parent
- * is 0777 and the pod can create per-bundle subdirs in-process.
- *
- * The unit-test wiring (single-arg `new LocalHostPathBackupStore(tmpdir)`)
- * skips the Job entirely; tmpdirs are pod-writable.
- */
-export interface LocalHostPathStoreConfig {
-  /** In-pod path the store reads/writes (e.g. /snapshots/_bundles_v2). */
-  readonly inPodRoot: string;
-  /** Node-side hostPath the snapshots volume is backed by (e.g.
-   *  /var/lib/platform/snapshots). The Job mounts this. */
-  readonly hostpathRoot: string;
-  /** In-Job mount path of that hostPath (matches platform-api's
-   *  mountPath, typically /snapshots). */
-  readonly mountPath: string;
-  /** K8s client. When undefined the store skips the Job (tests). */
-  readonly k8s?: K8sClients;
-  /** Optional logger — typically `(level, ctx, msg) => app.log[level](ctx, msg)`.
-   *  Used for forensic-trail entries on privileged-Job spawns. */
-  readonly logFn?: (level: 'info' | 'warn' | 'error', ctx: Record<string, unknown>, msg: string) => void;
-}
 
 interface HostPathBackend {
   readonly root: string;
@@ -82,92 +49,24 @@ function isHostPathBackend(b: unknown): b is HostPathBackend {
 export class LocalHostPathBackupStore implements BackupStore {
   readonly kind = 'hostpath' as const;
 
-  private readonly root: string;
   private readonly normalizedRoot: string;
-  private readonly hostpathRoot?: string;
-  private readonly mountPath?: string;
-  private readonly k8s?: K8sClients;
-  private readonly logFn?: LocalHostPathStoreConfig['logFn'];
-  /**
-   * Memoised promise — the dir-create Job runs at most once per
-   * process per root. Concurrent reserveBundle callers all share this
-   * one promise instead of each spawning their own Job. On error the
-   * promise is reset to null so the next call can retry.
-   */
-  private parentEnsuredPromise: Promise<void> | null = null;
 
   /**
-   * Two construction modes:
-   *   1. Test wiring — `new LocalHostPathBackupStore('/tmp/xxx')`. The
-   *      tmpdir is already pod-writable, no Job needed.
-   *   2. Production wiring — `new LocalHostPathBackupStore({ inPodRoot, hostpathRoot, mountPath, k8s })`.
-   *      The store will run a one-shot root-Job to ensure the parent
-   *      hostPath dir is 0777 before the pod tries to mkdir under it.
-   */
-  constructor(config: string | LocalHostPathStoreConfig) {
-    if (typeof config === 'string') {
-      this.root = config;
-    } else {
-      this.root = config.inPodRoot;
-      this.hostpathRoot = config.hostpathRoot;
-      this.mountPath = config.mountPath;
-      this.k8s = config.k8s;
-      this.logFn = config.logFn;
-    }
-    this.normalizedRoot = resolve(this.root);
-  }
-
-  /**
-   * Ensure the in-pod parent dir exists with 0777 perms by running a
-   * one-shot root Job that does `install -d -m 0777` on the
-   * corresponding host path. Called lazily on first reserveBundle.
+   * `root` is the in-pod path where the store reads/writes bundles.
    *
-   * Idempotent — `install -d` is a no-op when the dir already has the
-   * right mode, and we memoise the result for the lifetime of the
-   * process so the Job runs at most once per platform-api pod.
+   * Production: `/bundles` — backed by a Longhorn RWX PVC mounted into
+   * platform-api (see k8s/base/backups-v2-pvc.yaml). All 3 replicas
+   * see the same files, so a GET that lands on replica B can serve a
+   * bundle written by replica A.
+   *
+   * Tests: any pod-writable tmpdir.
+   *
+   * The path must be writable by the running process (uid 1000 in
+   * production); the PVC is provisioned with mode 0777 by Longhorn's
+   * share-manager.
    */
-  private ensureParentWritable(bundleId: string, clientId: string): Promise<void> {
-    if (!this.k8s || !this.hostpathRoot || !this.mountPath) {
-      // Test/dev wiring — assume the parent is already pod-writable
-      // (e.g. an mkdtemp under /tmp). Skip the Job.
-      return Promise.resolve();
-    }
-    // Memoise the promise: every concurrent caller shares the same
-    // Job spawn + poll. On failure we reset to null so the next call
-    // can retry (e.g. transient apiserver 5xx, expired Job ttl).
-    if (this.parentEnsuredPromise) return this.parentEnsuredPromise;
-
-    // Compute the node-side path for the in-pod root. We rely on the
-    // caller having configured `mountPath` to match where the platform-api
-    // pod mounts `hostpathRoot`. So `inPodRoot` should sit under `mountPath`.
-    if (!this.root.startsWith(this.mountPath)) {
-      return Promise.reject(new Error(
-        `LocalHostPathBackupStore: inPodRoot '${this.root}' must be under mountPath '${this.mountPath}'`,
-      ));
-    }
-    const subPath = this.root.slice(this.mountPath.length).replace(/^\/+/, '');
-    const hostParent = subPath ? `${this.hostpathRoot}/${subPath}` : this.hostpathRoot;
-    // Capture the host-side path in the in-memory log so a future
-    // forensic review can reconstruct when bundle dirs were created
-    // on this node. The orchestrator writes the backup_jobs row
-    // separately; this line specifically covers the privileged dir
-    // create.
-    this.logFn?.('info', { bundleId, clientId, hostParent, ns: 'platform-tenant-ops' },
-      'backups-v2: ensuring bundle hostpath parent (root Job)');
-    this.parentEnsuredPromise = ensureHostpathDirs({
-      k8s: this.k8s,
-      bundleId,
-      clientId,
-      hostpathRoot: this.hostpathRoot,
-      mountPath: this.mountPath,
-      paths: [hostParent],
-    }).catch((err) => {
-      // Reset so a transient failure doesn't permanently wedge the
-      // process — the next reserveBundle gets a fresh attempt.
-      this.parentEnsuredPromise = null;
-      throw err;
-    });
-    return this.parentEnsuredPromise;
+  constructor(private readonly root: string) {
+    this.normalizedRoot = resolve(root);
   }
 
   /**
@@ -196,10 +95,6 @@ export class LocalHostPathBackupStore implements BackupStore {
   }
 
   async reserveBundle(input: { backupId: string; clientId: string }): Promise<BundleHandle> {
-    // Make sure the parent root is pod-writable before the in-process
-    // mkdir. Idempotent + memoised — first call spawns a tiny Job, all
-    // subsequent calls in the same process are no-ops.
-    await this.ensureParentWritable(input.backupId, input.clientId);
     const bundleDir = this.safeBundleDir(input.backupId);
     // Create the bundle root + four component subdirs up-front so component
     // writers don't race on mkdir for sibling artifacts.

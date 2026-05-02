@@ -3,7 +3,7 @@ import { eq, desc, sql } from 'drizzle-orm';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { backupJobs, backupComponents, backupConfigurations, clients } from '../../db/schema.js';
 import {
   createBundleSchema,
@@ -17,20 +17,14 @@ import type { BackupStore } from './bundle-store.js';
 import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 
-// Bundles share the same hostPath as `/snapshots` (mounted at /snapshots
-// in the platform-api Deployment, backed by /var/lib/platform/snapshots
-// on the node). Keeping them as a sibling subdir avoids a new
-// volumeMount and keeps Phase 2 a code-only deploy. Phase 3 may move to
-// a dedicated PVC-backed location.
-//
-// The pod runs as uid 1000 but the hostPath root is root:0755, so the
-// store delegates the parent-dir create to a one-shot root-Job (see
-// hostpath-job.ts). hostpathRoot/mountPath here must match what the
-// platform-api Deployment mounts.
-const PLATFORM_BUNDLES_INPOD_ROOT = '/snapshots/_bundles_v2';
-const PLATFORM_BUNDLES_HOSTPATH = '/var/lib/platform/snapshots/_bundles_v2';
-const PLATFORM_SNAPSHOTS_HOSTPATH_ROOT = '/var/lib/platform/snapshots';
-const PLATFORM_SNAPSHOTS_MOUNT_PATH = '/snapshots';
+// Bundles live on a Longhorn RWX PVC mounted into platform-api at
+// /bundles (see k8s/base/backups-v2-pvc.yaml + backend-deployment.yaml).
+// All 3 replicas share the same view, so a GET that lands on replica B
+// can serve a bundle written by replica A. The PVC is provisioned by
+// Longhorn's share-manager with mode 0777, so the pod (uid 1000) can
+// mkdir bundle subdirs in-process — no privileged Job required.
+const PLATFORM_BUNDLES_INPOD_ROOT = '/bundles';
+const PLATFORM_BUNDLES_TARGET_URI = `pvc://platform-bundles${PLATFORM_BUNDLES_INPOD_ROOT}`;
 
 export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -122,14 +116,15 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     }
 
     const targetUri = store.kind === 'hostpath'
-      ? `hostpath://${PLATFORM_BUNDLES_HOSTPATH}`
+      ? PLATFORM_BUNDLES_TARGET_URI
       : `${store.kind}://${input.targetConfigId ?? 'unknown'}`;
 
     const result = await runBundle(
-      // The Job needs the *node* path so its hostPath volume sees the
-      // same files the platform-api pod sees through /snapshots.
-      // Phase 3 will swap to a PVC-backed mount and unify the paths.
-      { db: app.db, k8s, store, platformVersion, secretsKeyHex, hostpathRoot: PLATFORM_BUNDLES_HOSTPATH },
+      // For the PVC-backed bundle store the pod path IS the canonical
+      // path everywhere (no host vs container divergence), so the
+      // files-component Job mounts the same PVC at /bundles via a
+      // sub-path. hostpathRoot is unused in that path.
+      { db: app.db, k8s, store, platformVersion, secretsKeyHex, hostpathRoot: PLATFORM_BUNDLES_INPOD_ROOT },
       {
         clientId: input.clientId,
         initiator: input.initiator,
@@ -140,8 +135,14 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         targetConfigId: input.targetConfigId ?? null,
         targetUri,
         components: {
-          files: input.components?.files ?? true,
-          mailboxes: input.components?.mailboxes ?? true,
+          // files + mailboxes are deferred to Phase 3 (cross-namespace
+          // PVC + Stalwart export wiring). Default to false so a request
+          // that omits `components` doesn't get a misleading `partial`
+          // status. Callers wanting an explicit Phase-3 attempt can
+          // still set them to true and watch the orchestrator surface
+          // the deferred-component error.
+          files: input.components?.files ?? false,
+          mailboxes: input.components?.mailboxes ?? false,
           config: input.components?.config ?? true,
           secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
         },
@@ -168,26 +169,10 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
 async function resolveStore(app: FastifyInstance, targetConfigId: string | null): Promise<BackupStore> {
   if (!targetConfigId) {
-    // Production wiring: pass the K8s client so the store can spawn a
-    // root-Job to chmod the parent dir on first use. K8s client is
-    // best-effort — if the in-cluster config isn't loadable (vitest
-    // runs), the store falls back to skipping the Job which is fine
-    // for tmpdirs.
-    let k8s: K8sClients | undefined;
-    try {
-      const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      k8s = createK8sClients(kc);
-    } catch (err) {
-      app.log.warn({ err }, 'backups-v2: k8s client unavailable for hostpath init Job');
-      k8s = undefined;
-    }
-    return new LocalHostPathBackupStore({
-      inPodRoot: PLATFORM_BUNDLES_INPOD_ROOT,
-      hostpathRoot: PLATFORM_SNAPSHOTS_HOSTPATH_ROOT,
-      mountPath: PLATFORM_SNAPSHOTS_MOUNT_PATH,
-      k8s,
-      logFn: (level, ctx, msg) => app.log[level](ctx, msg),
-    });
+    // PVC-backed default store. Mount + access mode are defined in the
+    // manifest; the pod sees /bundles as a regular pod-writable dir
+    // shared across all 3 replicas (Longhorn RWX share-manager).
+    return new LocalHostPathBackupStore(PLATFORM_BUNDLES_INPOD_ROOT);
   }
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);

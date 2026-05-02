@@ -1,10 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, rm, readdir, stat as fsStat, writeFile, readFile } from 'node:fs/promises';
+import { describe, it, expect } from 'vitest';
+import { mkdtemp, rm, readdir, stat as fsStat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { BACKUP_META_SCHEMA_VERSION, type BackupMetaV1 } from '@k8s-hosting/api-contracts';
-import { LocalHostPathBackupStore, LocalHostPathBackupStore as LocalHostPathBackupStoreImport } from './local-hostpath-backup-store.js';
+import { LocalHostPathBackupStore } from './local-hostpath-backup-store.js';
 
 const VALID_META: BackupMetaV1 = {
   schemaVersion: BACKUP_META_SCHEMA_VERSION,
@@ -111,42 +111,6 @@ describe('LocalHostPathBackupStore', () => {
     });
   });
 
-  it('production wiring: concurrent reserveBundle calls share one ensure-Job', async () => {
-    // Spy on the shared ensure-Job — even with 5 concurrent reserveBundle
-    // calls, the underlying Job spec should be created exactly once.
-    const createCalls: number[] = [];
-    const fakeK8s = {
-      batch: {
-        createNamespacedJob: vi.fn(async () => { createCalls.push(Date.now()); }),
-        readNamespacedJob: vi.fn(async () => ({ status: { succeeded: 1 } })),
-      },
-      core: { listNamespacedPod: vi.fn(async () => ({ items: [] })) },
-    } as unknown as Parameters<typeof LocalHostPathBackupStoreImport>[0];
-    const root = await mkdtemp(join(tmpdir(), 'bundle-store-mc-'));
-    try {
-      // Seed the parent dir so the in-pod mkdir succeeds (the Job is mocked).
-      const { mkdir: mkdirFs } = await import('node:fs/promises');
-      await mkdirFs(join(root, 'sub'), { recursive: true });
-      const store = new LocalHostPathBackupStoreImport({
-        inPodRoot: join(root, 'sub'),
-        hostpathRoot: root,
-        mountPath: root,
-        k8s: fakeK8s as unknown as never,
-      });
-      const handles = await Promise.all(
-        Array.from({ length: 5 }, (_, i) => store.reserveBundle({
-          backupId: `bkp-mc-${i}-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`.slice(0, 64),
-          clientId: '4ec7436d-6159-4bf0-9282-d7e4cc19410b',
-        })),
-      );
-      expect(handles).toHaveLength(5);
-      // The big assertion: ensure-Job is created exactly once across
-      // all five concurrent reserveBundle calls.
-      expect(createCalls).toHaveLength(1);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 
   it('delete removes the entire bundle dir', async () => {
     await withStore(async (store, root) => {

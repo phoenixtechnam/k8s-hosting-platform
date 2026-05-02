@@ -274,11 +274,19 @@ spec:
             # and later reaps expired ones).
             - name: platform-snapshots
               mountPath: /snapshots
+            # Backups-v2 bundle store (ADR-032). RWX Longhorn PVC so
+            # all 3 platform-api replicas share the same view; the
+            # bundle store reads/writes meta.json + components in-process.
+            - name: platform-bundles
+              mountPath: /bundles
       volumes:
         - name: platform-snapshots
           hostPath:
             path: /var/lib/platform/snapshots
             type: DirectoryOrCreate
+        - name: platform-bundles
+          persistentVolumeClaim:
+            claimName: platform-bundles
 ---
 apiVersion: v1
 kind: Service

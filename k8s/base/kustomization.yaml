@@ -18,6 +18,8 @@ resources:
   # imperatively by bootstrap.sh with the correct ACME email address.
   # See scripts/bootstrap.sh install_cert_manager() function.
   - database.yaml
+  # RWX PVC mounted into platform-api at /bundles (ADR-032 backups-v2).
+  - backups-v2-pvc.yaml
   - backend-deployment.yaml
   - admin-deployment.yaml
   - client-deployment.yaml
