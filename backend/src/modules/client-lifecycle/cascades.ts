@@ -13,6 +13,33 @@ import {
   suspendNamespaceIngresses,
   resumeNamespaceIngresses,
 } from './ingress-suspend.js';
+import { runTransition, type Transition } from './registry/index.js';
+
+/**
+ * Phase 1 dispatcher hook: every cascade calls this AFTER its inline
+ * work so the registry sees the transition. Until later phases register
+ * hooks, this is a no-op apart from writing one row to
+ * `client_lifecycle_transitions`. We swallow errors — a registry write
+ * failure must not corrupt an otherwise-successful transition.
+ */
+async function dispatchTransition(
+  ctx: CascadeCtx,
+  clientId: string,
+  namespace: string,
+  transition: Transition,
+  fromStatus: string | null,
+  toStatus: string,
+): Promise<void> {
+  try {
+    await runTransition(ctx.db, ctx.k8s, {
+      clientId, namespace, transition, fromStatus, toStatus,
+    });
+  } catch (err) {
+    console.warn(
+      `[cascades.dispatchTransition] registry write failed for client ${clientId} ${transition}: ${(err as Error).message}`,
+    );
+  }
+}
 
 /**
  * Client-lifecycle cascades.
@@ -90,6 +117,12 @@ export async function applyActive(
   await ctx.db.update(clients)
     .set({ status: 'active', suspendedAt: null, archivedAt: null })
     .where(eq(clients.id, clientId));
+
+  // Phase 1: dispatch through the registry so future phases can register
+  // hooks without re-touching this file. From-status unknown here (the
+  // caller mutated the row already); pass null so the registry writes
+  // it as NULL — historical accuracy is the caller's job in Phase 2.
+  await dispatchTransition(ctx, clientId, namespace, 'active', null, 'active');
 }
 
 // ─── active → suspended ──────────────────────────────────────────────────
@@ -138,6 +171,8 @@ export async function applySuspended(
   await ctx.db.update(clients)
     .set({ status: 'suspended', suspendedAt: new Date() })
     .where(eq(clients.id, clientId));
+
+  await dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
 }
 
 // ─── * → archived ────────────────────────────────────────────────────────
@@ -154,7 +189,7 @@ export async function applySuspended(
 export async function applyArchived(
   ctx: CascadeCtx,
   clientId: string,
-  _namespace: string,
+  namespace: string,
 ): Promise<void> {
   // Delete mailboxes + aliases — the user confirmed these should go on
   // archive (no 90d alias retention). Stalwart picks this up via the
@@ -174,6 +209,8 @@ export async function applyArchived(
   await ctx.db.update(clients)
     .set({ status: 'archived', archivedAt: new Date() })
     .where(eq(clients.id, clientId));
+
+  await dispatchTransition(ctx, clientId, namespace, 'archived', null, 'archived');
 }
 
 // ─── * → deleted (hard remove) ──────────────────────────────────────────
@@ -193,6 +230,12 @@ export async function applyDeleted(
   clientId: string,
   namespace: string,
 ): Promise<void> {
+  // Phase 1: open a transitions row BEFORE the FK cascade nukes the
+  // client row. The transitions table is intentionally NOT cascade-on-
+  // client-delete (audit-log style tombstone), so this row survives the
+  // delete and provides a queryable trail for the operator.
+  await dispatchTransition(ctx, clientId, namespace, 'deleted', null, 'deleted');
+
   // Snapshot which PVs claim this namespace BEFORE the namespace is
   // deleted. The tenant SC uses reclaimPolicy=Retain (intentional —
   // protects against accidental data loss), so when the namespace

@@ -291,6 +291,38 @@ else
   log "── Scenario 6: skipped (no plan smaller than Starter on this cluster) ──"
 fi
 
+# ─── Scenario 8: lifecycle hook registry — Phase 1 wiring proof ──────
+# The dispatcher runs after every cascades.apply* call. With zero hooks
+# registered (Phase 1) we expect at least one row per status transition
+# the test drove. Phase 1 dispatches:
+#   - 'active'    on resume from suspend AND on restore from archive
+#                 (Phase 3 splits restore into its own 'restored' kind
+#                 once applyRestored entry point lands)
+#   - 'suspended' on suspend
+#   - 'archived'  on archive
+#   - 'deleted'   on delete (this scenario does not delete the test
+#                 client because subsequent scenarios still need it,
+#                 so 'deleted' is exempted from the assertion below)
+log "── Scenario 8: client_lifecycle_transitions has rows for this run ──"
+
+PG_POD="$(ssh_cp 'kubectl -n platform get pod -l cnpg.io/cluster=postgres -o jsonpath="{.items[0].metadata.name}"' || true)"
+if [[ -z "$PG_POD" ]]; then
+  fail "could not locate cnpg postgres pod for transitions probe"
+else
+  TRANSITIONS_JSON=$(ssh_cp "kubectl -n platform exec $PG_POD -c postgres -- psql -U postgres -d hosting_platform -At -F'|' -c \"SELECT transition_kind, state FROM client_lifecycle_transitions WHERE client_id='$CID' ORDER BY started_at;\"" 2>/dev/null || echo "")
+  KINDS=$(echo "$TRANSITIONS_JSON" | awk -F'|' '{print $1}' | sort -u | paste -sd,)
+  ALL_TERMINAL=$(echo "$TRANSITIONS_JSON" | awk -F'|' 'NF>=2 && $2!="completed" && $2!="failed_partial" {bad++} END {print bad+0}')
+  for want in suspended active archived; do
+    if echo "$KINDS" | grep -q "$want"; then
+      ok "transitions row recorded for kind=$want"
+    else
+      fail "no transitions row for kind=$want (got: $KINDS)"
+    fi
+  done
+  [[ "$ALL_TERMINAL" == "0" ]] && ok "every transitions row reached a terminal state" \
+    || fail "$ALL_TERMINAL transitions row(s) stuck in non-terminal state"
+fi
+
 # ─── summary ─────────────────────────────────────────────────────────
 echo
 log "── done ──"

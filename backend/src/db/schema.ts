@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
 // declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
@@ -1766,6 +1767,91 @@ export const storageOperations = pgTable('storage_operations', {
   index('storage_operations_client_idx').on(table.clientId),
   index('storage_operations_state_idx').on(table.state),
   index('storage_operations_created_idx').on(table.createdAt),
+]);
+
+// ─── Client lifecycle hook registry (migration 0069) ───
+//
+// One row per state transition the dispatcher kicks off + one row per
+// (transition, hook) it tries to run. Mirrors the storage_operations
+// shape so the existing progress-trail UI can render hook_runs once
+// Phase 5 wires it up.
+//
+// Intentionally NOT cascade-on-client-delete: keeps history available
+// for audit. Storage cron may prune rows older than N days.
+
+export const clientLifecycleTransitionKindEnum = pgEnum('client_lifecycle_transition_kind', [
+  'active',
+  'suspended',
+  'archived',
+  'restored',
+  'deleted',
+]);
+
+export const clientLifecycleTransitionStateEnum = pgEnum('client_lifecycle_transition_state', [
+  'running',
+  'completed',
+  'failed_partial',
+  'failed_blocking',
+]);
+
+export const clientLifecycleHookRunStateEnum = pgEnum('client_lifecycle_hook_run_state', [
+  'pending',
+  'running',
+  'ok',
+  'noop',
+  'failed',
+]);
+
+export const clientLifecycleTransitions = pgTable('client_lifecycle_transitions', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 }).notNull(),
+  transitionKind: clientLifecycleTransitionKindEnum('transition_kind').notNull(),
+  fromStatus: varchar('from_status', { length: 32 }),
+  toStatus: varchar('to_status', { length: 32 }).notNull(),
+  triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
+  state: clientLifecycleTransitionStateEnum('state').notNull().default('running'),
+  startedAt: timestamp('started_at').notNull().defaultNow(),
+  completedAt: timestamp('completed_at'),
+  detail: jsonb('detail').$type<Record<string, unknown> | null>(),
+}, (table) => [
+  index('client_lifecycle_transitions_client_idx').on(table.clientId, table.startedAt),
+  // Partial index — Phase 5 scheduler scans for stuck transitions.
+  // Drizzle's index().where() emits this as `WHERE …` in the
+  // generated migration; we keep the migration SQL hand-written for
+  // 0069 so this entry exists purely to keep `drizzle-kit` from
+  // flagging schema drift.
+  index('client_lifecycle_transitions_state_idx')
+    .on(table.state)
+    .where(sql`state IN ('running', 'failed_blocking')`),
+]);
+
+export const clientLifecycleHookRuns = pgTable('client_lifecycle_hook_runs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  transitionId: varchar('transition_id', { length: 36 })
+    .notNull()
+    .references(() => clientLifecycleTransitions.id, { onDelete: 'cascade' }),
+  hookName: varchar('hook_name', { length: 64 }).notNull(),
+  hookOrder: integer('hook_order').notNull(),
+  // 'abort' | 'continue' — declared by the hook, copied here at run time
+  // so historical rows survive a hook re-classification.
+  blocking: varchar('blocking', { length: 8 }).notNull(),
+  state: clientLifecycleHookRunStateEnum('state').notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(5),
+  // OperatorError envelope on failure; UI parses + renders via <ErrorPanel>.
+  lastError: jsonb('last_error').$type<Record<string, unknown> | null>(),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  // Set on retryable failure; scheduler picks rows where now() >= next_attempt_at.
+  nextAttemptAt: timestamp('next_attempt_at'),
+}, (table) => [
+  index('client_lifecycle_hook_runs_transition_idx').on(table.transitionId, table.hookOrder),
+  uniqueIndex('client_lifecycle_hook_runs_uniq_idx').on(table.transitionId, table.hookName),
+  // Phase 5 retry tick scans this. Partial index avoids dragging
+  // ok/noop rows into every retry pass.
+  index('client_lifecycle_hook_runs_retry_idx')
+    .on(table.nextAttemptAt)
+    .where(sql`state = 'failed' AND next_attempt_at IS NOT NULL`),
 ]);
 
 // ─── M1 Node-role Taxonomy (migration 0046) ───
