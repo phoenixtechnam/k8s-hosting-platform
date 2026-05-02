@@ -64,7 +64,7 @@ import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
-import { registerPvCleanupReleasedHook } from './modules/client-lifecycle/hooks/pv-cleanup-released.js';
+import { registerAllLifecycleHooks } from './modules/client-lifecycle/hooks/index.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
@@ -131,7 +131,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // hooks (declared via the registry's `order` + `after` graph) but
   // the registration calls themselves are idempotent — re-importing
   // this module under hot-reload is safe.
-  registerPvCleanupReleasedHook();
+  registerAllLifecycleHooks();
 
   const app = Fastify({
     logger: deps.config.NODE_ENV !== 'test' && {

@@ -44,6 +44,25 @@ const FLAGS: Record<string, FlagDef> = {
    * window catches more by design.
    */
   'pv-cleanup-released': { env: 'LIFECYCLE_HOOK_PV_CLEANUP', default: 'legacy' },
+
+  /**
+   * Phase 3: db-cascades. SINGLE meta-flag that gates the entire set
+   * of DB+ingress hooks (domains-status, cronjobs-enable, mailboxes-
+   * status, email-aliases-enable, deployments-status, clients-status-
+   * stamp + ingress-suspend/resume/reconcile).
+   *
+   * Default `legacy` so the inline DB updates in cascades.applyActive/
+   * Suspended/Archived continue to be the source of truth. The hooks
+   * still run on every transition (purely observational — every write
+   * is idempotent), recording outcomes to client_lifecycle_hook_runs.
+   *
+   * When flipped to `hook` via LIFECYCLE_HOOK_DB_CASCADES=hook:
+   *   - cascades.applyActive/Suspended/Archived skip their inline DB
+   *     blocks (the hooks become authoritative)
+   *   - the dispatcher's hook_runs table is the operator-visible
+   *     record of every cascade
+   */
+  'db-cascades': { env: 'LIFECYCLE_HOOK_DB_CASCADES', default: 'legacy' },
 };
 
 const _testOverrides = new Map<string, 'legacy' | 'hook'>();
