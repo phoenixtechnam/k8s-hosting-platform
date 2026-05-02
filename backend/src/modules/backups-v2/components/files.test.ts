@@ -56,6 +56,17 @@ describe('buildFilesComponentJobSpec', () => {
     expect(cmd).toContain('FILES_TREE_COUNT=');
   });
 
+  it('installs GNU findutils up front (alpine busybox find lacks -printf)', () => {
+    // Pinned: caught E2E 2026-05-02 when files-Job crashed with
+    // `find --help` dump because busybox find doesn't support
+    // -printf. Without findutils the tree-index pipeline fails.
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('apk add --no-cache findutils');
+  });
+
   it('uses --upload-file (streaming) NOT --data-binary @ (load whole file into memory)', () => {
     // Streaming upload is non-negotiable: a 50 GiB tenant PVC would
     // OOM the 512Mi Job pod with --data-binary @file. Pin this so the

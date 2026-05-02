@@ -80,6 +80,13 @@ function buildScript(opts: { uploadBase: string; archiveToken: string; treeToken
   // alpine image — busybox tar + curl + sha256sum + awk all available.
   return [
     'set -e',
+    // Install GNU findutils + curl up front. alpine:3.20 ships
+    // busybox find which does NOT support `-printf` (GNU-find
+    // feature). Without findutils the tree-index pipeline below
+    // fails with `find --help` dumped to stderr and the whole Job
+    // crashes with no upload. Caught E2E 2026-05-02.
+    'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
+    'apk add --no-cache findutils >/dev/null 2>&1 || { echo "ERROR: findutils install failed"; exit 1; }',
     'cd /source',
     'echo "Tarballing tenant PVC..."',
     'tar cf - . 2>/tmp/tar.err | gzip -1 > /tmp/archive.tar.gz',
@@ -97,11 +104,6 @@ function buildScript(opts: { uploadBase: string; archiveToken: string; treeToken
     '}\' /tmp/tree.tsv | gzip -1 > /tmp/tree.jsonl.gz',
     'TREE_COUNT=$(wc -l < /tmp/tree.tsv)',
     'echo "FILES_TREE_COUNT=$TREE_COUNT"',
-    // Ensure curl is present. alpine:3.20 ships without curl; install
-    // on demand. If apk fails (network partition to the Alpine CDN),
-    // surface a clear error rather than the confusing "curl: not
-    // found" we'd otherwise emit.
-    'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl unavailable and apk install failed"; exit 1; }',
     'echo "Uploading archive.tar.gz..."',
     // --upload-file streams from disk; --data-binary @file would
     // read the whole archive into memory and OOM the 512Mi Job pod
