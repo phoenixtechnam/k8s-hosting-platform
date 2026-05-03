@@ -47,10 +47,12 @@ spec:
   # No retry — if the apply fails, the operator needs to investigate.
   # Incremented retries with the same plan can duplicate objects in the DB.
   backoffLimit: 0
-  # Clean up the completed Job after 1 hour so it doesn't clutter
-  # `kubectl get jobs -n mail`. The pod logs remain available via
-  # `kubectl logs -n mail <pod>` until the TTL fires.
-  ttlSecondsAfterFinished: 3600
+  # Keep the completed Job (and its pod logs) for 24 hours.  Mail bootstrap
+  # is a once-ever, hard-to-reproduce operation; if it fails or behaves
+  # unexpectedly the operator is likely to investigate the next morning,
+  # not within an hour.  HIGH fix from code review 2026-05-03 — the
+  # original 1-hour TTL deleted evidence too aggressively.
+  ttlSecondsAfterFinished: 86400
   template:
     metadata:
       labels:
