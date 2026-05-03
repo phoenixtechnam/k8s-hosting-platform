@@ -179,18 +179,26 @@ secret = "%{env:MASTER_SECRET}%"
 # ─── Security: IP allowlist ────────────────────────────────────────────
 # Allowlist for cluster-internal traffic.
 #
-# The stalwart-mail Service is type: ClusterIP with externalIPs.
-# K8s kube-proxy SNATs all traffic to the node IP regardless of
-# externalTrafficPolicy (that field is only honoured on LoadBalancer/
-# NodePort types). Stalwart therefore sees external SMTP submission as
-# coming from a cluster-node IP and triggers its security.ip-blocked
-# anti-loop heuristic. This CIDR allowlist is the defence:
-# cluster-node IPs and pod/service CIDRs are explicitly trusted.
+# Service-type behaviour by overlay:
+#   - base:       type=LoadBalancer + externalTrafficPolicy=Local. Cloud
+#                 LB controllers preserve client IP — `Local` works.
+#   - staging:    overlay patches to type=ClusterIP + externalIPs (no
+#                 cloud LB on this single-node-style cluster). With
+#                 ClusterIP+externalIPs kube-proxy SNATs to the node IP
+#                 regardless of externalTrafficPolicy (that field only
+#                 affects LoadBalancer/NodePort), so external SMTP
+#                 traffic arrives at Stalwart looking like it came from
+#                 the node's own public IP — Stalwart's security.ip-
+#                 blocked anti-loop heuristic then drops it.
+#   - production: TBD per cloud provider.
 #
-# Each environment overlay's reloader-patch.yaml MUST extend this list
-# with its own cluster node IPs (server + worker public IPs). The base
-# lists only the universal CIDRs below; staging / production overlays
-# patch in their actual node IPs.
+# This allowlist is the defence: explicitly trust pod/service CIDRs (so
+# in-cluster app → Stalwart works), plus loopback (health probes).
+# Staging/production overlays MUST extend this list with their cluster
+# node public IPs IF external traffic to Stalwart is required (e.g.,
+# tenant apps outside the cluster, external mail clients on dynamic
+# IPs). Tenant apps running INSIDE the cluster need no extra entries —
+# their pod IP is already in 10.42.0.0/16.
 #
 # CIDRs:
 #   127.0.0.0/8, ::1/128  — loopback (health probes, local CLI)
