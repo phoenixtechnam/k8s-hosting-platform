@@ -418,8 +418,7 @@ async function wrapVolumeSnapshot(
   k8s: K8sClients,
   namespace: string,
   longhornSnapshotName: string,
-  pvcName: string,
-  pvcSize: string,
+  longhornVolumeName: string,
 ): Promise<{ readonly volumeSnapshotName: string; readonly contentName: string }> {
   const safeName = longhornSnapshotName.replace(/[^a-z0-9-]/g, '-').slice(0, 50);
   const ts = Date.now();
@@ -435,12 +434,16 @@ async function wrapVolumeSnapshot(
         deletionPolicy: 'Delete',
         driver: 'driver.longhorn.io',
         source: {
-          // Longhorn's snapshotHandle for a pre-existing snapshot is
-          // `bs://<volume-name>/<snapshot-name>` for backups, or the
-          // CSI snapshot ID for in-volume snapshots. For pre-provisioned
-          // VolumeSnapshotContent referencing an in-cluster Longhorn
-          // snapshot, the handle is the snapshot CR's name directly.
-          snapshotHandle: longhornSnapshotName,
+          // Longhorn 1.11 CSI driver snapshotHandle format for in-volume
+          // snapshots is `snap://<volume-name>/<snapshot-name>` (the
+          // legacy `<volume>/<snapshot>` form is also accepted but the
+          // prefixed form is what longhorn-manager emits and what its
+          // CreateVolume parser prefers). Backups use `bs://`. Without
+          // the volume-name segment, the CSI driver fails to look up
+          // the source snapshot and the resulting PVC binds to an
+          // empty volume — CNPG then sits at "Setting up primary"
+          // forever because pg_data is empty.
+          snapshotHandle: `snap://${longhornVolumeName}/${longhornSnapshotName}`,
         },
         volumeSnapshotClassName: 'longhorn',
         volumeSnapshotRef: {
@@ -464,7 +467,6 @@ async function wrapVolumeSnapshot(
     },
   });
 
-  void pvcName; void pvcSize;
   return { volumeSnapshotName: vsName, contentName };
 }
 
@@ -553,10 +555,13 @@ export async function promotePostgresFromSnapshot(
     pre = await preflight(deps.k8s, deps.kubeconfigPath, inputs, steps);
     steps.push({ step: 'preflight', ok: true, elapsedMs: nowMs() - t0, detail: `primary=${pre.primaryPvc}` });
 
-    // 2. Wrap snapshot
+    // 2. Wrap snapshot. The Longhorn volume name == the PV name backing
+    // the source PVC; preflight already resolved this via the snap CR's
+    // .spec.volume field (and verified it matches a CNPG-managed PVC).
     const t1 = nowMs();
-    const pvcSize = pre.cluster.spec?.storage?.size ?? '10Gi';
-    wrapped = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, inputs.snapshotName, pre.primaryPvc, pvcSize);
+    const sourceLonghornVolume = pre.snap.spec?.volume;
+    if (!sourceLonghornVolume) throw new Error('snapshot has no spec.volume — cannot wrap');
+    wrapped = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, inputs.snapshotName, sourceLonghornVolume);
     steps.push({ step: 'wrap-volume-snapshot', ok: true, elapsedMs: nowMs() - t1, detail: wrapped.volumeSnapshotName });
 
     // 3. Bootstrap temp cluster
@@ -591,15 +596,22 @@ export async function promotePostgresFromSnapshot(
 
     // 6. Snapshot the temp cluster's primary PVC so we can re-bootstrap
     //    the source Cluster name from the same point-in-time data.
+    //    Longhorn snapshot CRs reference volumes by their Longhorn name
+    //    (== PV name backing the PVC), not the PVC name. Look it up.
     const t6 = nowMs();
     const tempPrimaryPvc = tempHealth.primary;
+    const tempPvcObj = await deps.k8s.core.readNamespacedPersistentVolumeClaim({
+      namespace: inputs.clusterNamespace, name: tempPrimaryPvc,
+    } as unknown as Parameters<typeof deps.k8s.core.readNamespacedPersistentVolumeClaim>[0]) as { spec?: { volumeName?: string } };
+    const tempLonghornVolume = tempPvcObj.spec?.volumeName;
+    if (!tempLonghornVolume) throw new Error(`Temp primary PVC ${tempPrimaryPvc} has no .spec.volumeName — cannot snapshot`);
     tempSnapName = `pitr-handoff-${Date.now()}`;
     await createCustom(deps.k8s, {
       group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots',
       body: {
         apiVersion: `${LH_GROUP}/${LH_VERSION}`, kind: 'Snapshot',
         metadata: { name: tempSnapName, namespace: LH_NS },
-        spec: { volume: tempPrimaryPvc, createSnapshot: true },
+        spec: { volume: tempLonghornVolume, createSnapshot: true },
       },
     });
     // Wait for ready
@@ -612,7 +624,7 @@ export async function promotePostgresFromSnapshot(
       } catch { /* keep */ }
     }
     if (!tempSnapReady) throw new Error('Temp cluster handoff snapshot did not become ready');
-    tempSnap = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnapName, tempPrimaryPvc, pvcSize);
+    tempSnap = await wrapVolumeSnapshot(deps.k8s, inputs.clusterNamespace, tempSnapName, tempLonghornVolume);
     steps.push({ step: 'snapshot-temp-primary', ok: true, elapsedMs: nowMs() - t6, detail: tempSnap.volumeSnapshotName });
 
     // Persist crash-safe marker BEFORE the destructive cutover. If
