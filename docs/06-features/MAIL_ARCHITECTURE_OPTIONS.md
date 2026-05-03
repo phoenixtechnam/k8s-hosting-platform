@@ -499,12 +499,33 @@ Confirmed unavailable in Calico OSS v3.31.5 on staging — no `EgressGateway` CR
 - **Q3 (database)**: dedicated `stalwart_app` database within existing platform CNPG cluster (no second cluster). Role limits applied.
 - **Local testing**: spike harness `scripts/stalwart-016-spike.sh` for local DinD.
 
-### Open items requiring further work
+### M11–M14 delivery status (as of 2026-05-03)
 
-- Validate the exact `config.json` schema for the postgresql data backend (spike currently uses RocksDB; need to confirm PG works the same).
-- Build a baseline `stalwart-cli apply` plan template (listeners, ACME, default domain, admin account).
-- Confirm Outbound MTA role fits multi-node-egress requirement; otherwise plan hostNetwork-relay fallback.
-- platform-api JMAP client implementation: Node.js JMAP libraries are sparse (`jmap-client-ts` is the most maintained). Decide whether to use a library or do raw HTTP calls.
-- Rewrite admin-panel's mail iframe + password rotation against the new WebUI URL.
-- Audit + retire the platform-side DKIM rotation cron + `email_dkim_keys` table once Stalwart 0.16 owns it.
-- Audit + retire the platform-side DNS provisioning paths that overlap with Stalwart's auto-DNS.
+The four-milestone cut landed on branch `main` via four atomic commits:
+
+| Milestone | Commit | Status | Summary |
+|-----------|--------|--------|---------|
+| M11 | `8f089e3` | SHIPPED | JMAP-backed mailbox + domain CRUD, principals-sync reconciler, admin password rotation, migrations 0072+0073 |
+| M12 | `ec2638e` | SHIPPED | Platform-side DKIM rotation retired. `email_dkim_keys` renamed to `email_dkim_keys_legacy` (migration 0074). Read-only DKIM status endpoint (`GET /dkim-status`) reads Stalwart's `dnsZoneFile` via JMAP. Admin panel DKIM UI replaced with read-only status modal linking to `/__stalwart/`. |
+| M13 | `5f102b6` | SHIPPED | `email_dkim_keys_legacy` and `dkim_*` columns dropped (migration 0075). `k8s/base/stalwart` → `stalwart-v015-deprecated`. Dev overlay deleted (local DinD now uses `stalwart-v016`). `scripts/cutover-stalwart-v015-to-v016.sh` added for staging operator to run. 198/198 unit tests green; typecheck + build clean. |
+| M14 | (this doc) | SHIPPED | `scripts/integration-stalwart-v016-local.sh` finalised with 9 JMAP steps (healthz, session auth, domain create/list/delete, mailbox create/delete, DKIM cleanup). DinD run not reproducible from the agent context; script written to be self-contained via `DOCKER_HOST` detection. |
+
+### What was removed vs kept
+
+| Item | Decision |
+|------|----------|
+| `email_dkim_keys` table | DROPPED (M13, migration 0075) |
+| Platform DKIM rotation cron | DROPPED (M12) |
+| `dkim_selector`, `dkim_private_key_encrypted`, `dkim_public_key` columns | DROPPED (M13) |
+| `email-dkim/service.ts`, `routes.ts`, `scheduler.ts` | DELETED (M12) |
+| `generateDkimKeyPair` / `encrypt` imports in email-domains | REMOVED (M13) |
+| Platform DNS provisioning for MX/SPF/DMARC/SRV | KEPT — Stalwart's `dnsZoneFile` covers only the DKIM TXT; the platform still owns MX, SPF, DMARC, SRV via `dns-provisioning.ts` |
+| Admin-panel DKIM rotation modal | REPLACED with read-only `DkimStatusModal` (M12) |
+| `stalwart-v015-deprecated` k8s base | KEPT until staging operator runs `cutover-stalwart-v015-to-v016.sh` |
+
+### Remaining open items
+
+- Validate exact `config.json` shape for postgresql data backend (spike used RocksDB; PG path needs confirming in staging).
+- Build baseline `stalwart-cli apply` plan template (listeners, ACME, default domain, admin account) — required before staging can upgrade.
+- Confirm Outbound MTA role covers multi-node-egress requirement; otherwise plan `hostNetwork`-relay fallback.
+- Staging operator: run `scripts/cutover-stalwart-v015-to-v016.sh` (pre-flight rejects if any `email_domains` rows exist — wipe or migrate first).
