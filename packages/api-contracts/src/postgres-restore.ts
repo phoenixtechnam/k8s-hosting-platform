@@ -37,13 +37,16 @@ export const pitrStatusSchema = z.object({
 export type PitrStatus = z.infer<typeof pitrStatusSchema>;
 
 // 202 response from POST /admin/postgres-restore — orchestration kicked
-// off in background. Operator polls pitrStatusSchema for progress.
+// off as a one-shot Kubernetes Job. jobName + jobNamespace let the
+// operator tail the run via `kubectl logs -n <ns> job/<name> -f`.
 export const pitrAcceptedSchema = z.object({
   status: z.literal('started'),
   clusterNamespace: z.string(),
   clusterName: z.string(),
   snapshotName: z.string(),
   recoveryTargetTime: z.string().nullable(),
+  jobName: z.string(),
+  jobNamespace: z.string(),
   pollUrl: z.string(),
   message: z.string(),
 });

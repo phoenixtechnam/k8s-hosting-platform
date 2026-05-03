@@ -4,10 +4,11 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
-  promotePostgresFromSnapshot,
   isPostgresRestoreInProgressClusterWide,
   acquirePitrLockOrThrow,
-  type PitrStep,
+  releasePitrLock,
+  createPitrJob,
+  getPlatformApiImage,
 } from './service.js';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
@@ -33,22 +34,25 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
   // POST /api/v1/admin/postgres-restore
   // Body: { clusterNamespace, clusterName, snapshotName, recoveryTargetTime? }
   //
-  // ASYNC: returns 202 immediately after preflight passes. The
-  // orchestration runs in the background (~5-10 min). Poll
-  // GET /admin/postgres-restore/status for progress + final result.
+  // ASYNC: spawns a one-shot Kubernetes Job that runs the orchestration
+  // in a dedicated pod, then returns 202 immediately. The Job's pod
+  // has no postgres-readiness dependency, so the cutover window
+  // (postgres briefly down) does not kill the orchestrator the way it
+  // did when this ran inside platform-api. Poll
+  // GET /admin/postgres-restore/status for progress; the orchestrator
+  // updates the DB-backed lock with phase markers as it progresses.
   //
-  // Why async: nginx ingress kills synchronous requests after ~5 min
-  // (proxy_read_timeout). Even if we extend that, holding an HTTP
-  // connection across the cutover (when source postgres is briefly
-  // unreachable) was producing 502s for the operator. Detaching the
-  // orchestration from the request lifecycle decouples HTTP from the
-  // long-running CNPG bootstrap dance. recoverInterruptedRestore at
-  // platform-api startup picks up any in-flight orchestration that
-  // crashed mid-flight.
+  // Race semantics: pre-checks the cluster-wide lock and refuses 409
+  // if a PITR is already in flight. The Job itself also acquires the
+  // lock atomically (race-safe critical section in
+  // acquirePitrLockOrThrow), so two near-simultaneous POSTs that both
+  // pass the route's pre-check will result in one Job winning and the
+  // other Job failing-fast with 409 — which surfaces as a sticky
+  // admin notification, not silent corruption.
   app.post('/admin/postgres-restore', {
     schema: {
       tags: ['PostgresRestore'],
-      summary: 'PITR restore (async): bootstrap from a Longhorn snapshot, optionally with WAL replay, then auto-promote (replace source cluster). Returns 202 immediately; poll /status for progress.',
+      summary: 'PITR restore (async, runs in dedicated k8s Job): bootstrap from a Longhorn snapshot, optionally with WAL replay, then auto-promote (replace source cluster). Returns 202 with the Job name; poll /status for progress.',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
@@ -77,15 +81,13 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
     const k8s = createK8sClients(kc);
     const actor = (request as unknown as { user?: { sub?: string } }).user;
 
-    // Race-safe lock acquisition. acquirePitrLockOrThrow does:
-    //   1. cluster-wide check (in-memory + DB)
-    //   2. SYNCHRONOUS in-memory set (no awaits between check and set)
-    //   3. DB lock write
-    // If two POSTs arrive in the same Node event-loop tick, only the
-    // first reaches step 2 — the second sees the in-memory lock and
-    // gets 409. This closes the race window the prior `void
-    // promotePostgresFromSnapshot(...)` left open (where the route
-    // returned 202 before the detached function had set its lock).
+    // Race-safe lock acquisition. Synchronous critical section
+    // between cluster-wide check and in-memory set, then DB write,
+    // before the Job is created. This prevents two concurrent POSTs
+    // from both creating Jobs that race on the lock from inside the
+    // Job pods (where the loser would emit a misleading "INTERRUPTED"
+    // admin notification). Only ONE POST passes the lock acquire;
+    // the other gets 409 here, before any Job is spawned.
     try {
       await acquirePitrLockOrThrow(app.db, {
         clusterNamespace: body.clusterNamespace,
@@ -100,25 +102,32 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
       throw err;
     }
 
-    // Lock is held. Detach the orchestration — it sees `activeRestore`
-    // already set and skips its own lock acquisition. Errors are
-    // logged + admin-notified by the orchestrator's catch block; the
-    // finally block always releases both locks.
-    void promotePostgresFromSnapshot(
-      { k8s, db: app.db, kubeconfigPath: kc },
-      {
+    // From here on, ALL failure paths must release the lock — the
+    // Job hasn't been created yet so the orchestration's finally
+    // can't run. Only release on errors before createPitrJob; once
+    // the Job is created, it owns the lock release.
+    let image: string;
+    try {
+      image = await getPlatformApiImage(k8s);
+    } catch (err) {
+      await releasePitrLock(app.db).catch(() => undefined);
+      throw new ApiError('PITR_FAILED', `Failed to resolve platform-api image: ${(err as Error).message}`, 500);
+    }
+
+    let job;
+    try {
+      job = await createPitrJob(k8s, {
         clusterNamespace: body.clusterNamespace,
         clusterName: body.clusterName,
         snapshotName: body.snapshotName,
         recoveryTargetTime: body.recoveryTargetTime ?? null,
         actorUserId: actor?.sub ?? null,
-      },
-    ).catch((err: Error & { steps?: readonly PitrStep[] }) => {
-      app.log.error(
-        { err, steps: err.steps, snapshot: body.snapshotName },
-        'PITR background orchestration failed',
-      );
-    });
+        image,
+      });
+    } catch (err) {
+      await releasePitrLock(app.db).catch(() => undefined);
+      throw new ApiError('PITR_FAILED', `Failed to create PITR Job: ${(err as Error).message}`, 500);
+    }
 
     reply.code(202);
     return success({
@@ -127,8 +136,10 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
       clusterName: body.clusterName,
       snapshotName: body.snapshotName,
       recoveryTargetTime: body.recoveryTargetTime ?? null,
+      jobName: job.jobName,
+      jobNamespace: job.namespace,
       pollUrl: '/api/v1/admin/postgres-restore/status',
-      message: 'PITR orchestration started in background (~5-10 min). Poll status for progress + final result.',
+      message: `PITR Job ${job.jobName} created in namespace ${job.namespace}. Orchestration runs in a dedicated pod (~5-10 min). Poll status for progress; tail logs via: kubectl logs -n ${job.namespace} job/${job.jobName} -f.`,
     });
   });
 }

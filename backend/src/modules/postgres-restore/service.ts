@@ -10,14 +10,24 @@ import { inArray, eq } from 'drizzle-orm';
  * snapshot, optionally with WAL replay forward to a sub-hour target,
  * then auto-promote (replace the source cluster).
  *
- * Flow (sync HTTP, ~5–10 min wall-clock):
+ * Architecture: the route handler returns 202 immediately after
+ * creating a one-shot Kubernetes Job (createPitrJob below) that runs
+ * the orchestration in a dedicated pod. Decouples the orchestration
+ * from the platform-api process — critical because during cutover
+ * (postgres briefly unreachable), platform-api's pg connection pool
+ * retries saturate the Node event loop, /healthz can't respond, and
+ * k8s liveness probe SIGKILLs the pod mid-orchestration. The Job pod
+ * has no postgres-readiness dependency and survives the window
+ * cleanly.
+ *
+ * Flow (~5–10 min wall-clock, runs inside the Job pod):
  *
  *   1. Pre-flight: membership, snapshot freshness, WAL coverage, lock
  *   2. Wrap the Longhorn snapshot as a Pre-provisioned VolumeSnapshot
  *   3. Bootstrap a TEMP CNPG Cluster from the VolumeSnapshot
  *   4. Wait for temp cluster healthy + run psql sanity probes
  *   5. Quiesce Stalwart (scale to 0); platform-api stays running
- *      (orchestration is hosted there — scaling to 0 would self-kill)
+ *      (Job runs in its own pod — no self-kill risk)
  *   6. Snapshot the temp cluster's primary PVC
  *   7. Delete source Cluster (PVCs survive: reclaimPolicy=Retain)
  *   8. Re-create source Cluster CR with the same name, bootstrap from
@@ -56,6 +66,10 @@ interface PersistedLock {
   readonly clusterNamespace: string;
   readonly clusterName: string;
   readonly tempClusterName: string;
+  /** Name of the k8s Job running the orchestration (set by the route
+   * handler when it creates the Job). recoverInterruptedRestore uses
+   * this to locate + delete an orphan Job at startup. */
+  readonly jobName?: string;
   // 'preflight' = orchestration started but source not yet deleted.
   //   Crash here is benign — recoverInterruptedRestore just clears
   //   the lock; no source data was touched.
@@ -135,6 +149,20 @@ export async function isPostgresRestoreInProgressClusterWide(
  * `void promotePostgresFromSnapshot(...)` returned 202 before its
  * own first await reached the lock-write.
  */
+/**
+ * Release the PITR lock held by acquirePitrLockOrThrow. Used by the
+ * route handler to roll back the lock if Job creation fails (so the
+ * lock isn't stuck holding writes blocked forever for a Job that
+ * never started). Once the Job is successfully created, the orchestration's
+ * own finally block in promotePostgresFromSnapshot owns the release.
+ *
+ * Always succeeds — best-effort; clears both in-memory and DB lock.
+ */
+export async function releasePitrLock(db: Database): Promise<void> {
+  activeRestore = null;
+  await clearPersistedLock(db).catch(() => undefined);
+}
+
 export async function acquirePitrLockOrThrow(
   db: Database,
   inputs: { clusterNamespace: string; clusterName: string; snapshotName: string },
@@ -202,6 +230,27 @@ export async function recoverInterruptedRestore(
   // set on every PITR-created resource via pitrLabels() (see step 6
   // and wrapVolumeSnapshot below).
   const labelSelector = `platform.phoenix-host.net/pitr-restore=true,platform.phoenix-host.net/pitr-namespace=${lock.clusterNamespace}`;
+
+  // CRITICAL: with the Job-based design, a platform-api restart (rolling
+  // deploy, liveness kill) is NOT correlated with the orchestration's
+  // health — the Job pod runs independently. Before destroying any
+  // resources, check whether a live PITR Job is still running. If yes,
+  // skip cleanup + clear-lock entirely; the Job owns those resources
+  // and will release the lock itself when done.
+  if (k8s) {
+    try {
+      const jobList = await (k8s.batch as unknown as {
+        listNamespacedJob: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string }; status?: { active?: number; succeeded?: number; failed?: number } }> }>;
+      }).listNamespacedJob({ namespace: 'platform', labelSelector });
+      const liveJob = (jobList.items ?? []).find((j) => (j.status?.active ?? 0) > 0);
+      if (liveJob) {
+        // A Job is still running. This is NOT an interrupted restore —
+        // it's a normal platform-api restart while the Job pod is
+        // healthy. Don't touch any resources, don't clear the lock.
+        return { recovered: false };
+      }
+    } catch { /* best effort — fall through to cleanup */ }
+  }
 
   let cleanedTempClusters = 0;
   let cleanedVolumeSnapshots = 0;
@@ -276,6 +325,25 @@ export async function recoverInterruptedRestore(
         if (name) {
           await deleteCustom(k8s, { group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name }).catch(() => undefined);
           cleanedLonghornSnapshots++;
+        }
+      }
+    } catch { /* best effort */ }
+
+    // Orphan PITR Jobs (in the platform namespace — that's where the
+    // route always creates them). Use the same labelSelector. A
+    // completed Job's pod stays around for ttlSecondsAfterFinished;
+    // delete the Job CR + its pod entirely so a re-run doesn't see
+    // them.
+    try {
+      const jobList = await (k8s.batch as unknown as {
+        listNamespacedJob: (a: { namespace: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
+      }).listNamespacedJob({ namespace: 'platform', labelSelector });
+      for (const j of jobList.items ?? []) {
+        const name = j.metadata?.name;
+        if (name) {
+          await (k8s.batch as unknown as {
+            deleteNamespacedJob: (a: { namespace: string; name: string; propagationPolicy?: string }) => Promise<unknown>;
+          }).deleteNamespacedJob({ namespace: 'platform', name, propagationPolicy: 'Background' }).catch(() => undefined);
         }
       }
     } catch { /* best effort */ }
@@ -806,18 +874,26 @@ export async function promotePostgresFromSnapshot(
   deps: PitrDeps,
   inputs: PitrInputs,
 ): Promise<PitrResult> {
-  // Lock was acquired by the route handler via acquirePitrLockOrThrow
-  // (race-safe: synchronous in-memory set + persisted DB lock before
-  // returning 202 to the operator). If `activeRestore` is null here,
-  // we're being called by something that didn't acquire the lock
-  // (legacy callers, tests). For backward compat: acquire it here.
-  // The lock release in the `finally` block always runs.
-  if (!activeRestore) {
+  // Lock acquisition. Three call paths:
+  //   (a) Route handler sets activeRestore via acquirePitrLockOrThrow
+  //       (in-memory + DB), then calls this directly (legacy in-process
+  //       path; still used by tests).
+  //   (b) Job pod gets PITR_LOCK_HELD=true env var — the route already
+  //       acquired the DB lock, but this is a fresh process so
+  //       activeRestore is null. Read the persisted lock to populate
+  //       activeRestore in this process (so finally can release it
+  //       cleanly).
+  //   (c) Direct call (e.g. tests, future cron) — no env, no lock.
+  //       acquirePitrLockOrThrow handles it.
+  if (!activeRestore && process.env.PITR_LOCK_HELD === 'true') {
+    const persisted = await readPersistedLock(deps.db);
+    if (!persisted) {
+      throw new Error('PITR_LOCK_HELD=true but no persisted lock — orchestration cannot proceed');
+    }
+    activeRestore = { startedAt: new Date(persisted.startedAt), snapshot: persisted.snapshot };
+  } else if (!activeRestore) {
     await acquirePitrLockOrThrow(deps.db, inputs);
   }
-  // Capture the lock's startedAt for use in the cutover-phase DB
-  // write below; activeRestore is non-null here (we just acquired or
-  // verified above) but TS narrowing doesn't carry across awaits.
   const lockStartedAt = activeRestore!.startedAt;
   const startMs = nowMs();
   let downtimeStart: number | null = null;
@@ -1094,4 +1170,152 @@ export async function promotePostgresFromSnapshot(
     activeRestore = null;
     await clearPersistedLock(deps.db).catch(() => undefined);
   }
+}
+
+// ─── Job-based orchestration ────────────────────────────────────────────────
+
+export interface CreatePitrJobInputs {
+  readonly clusterNamespace: string;
+  readonly clusterName: string;
+  readonly snapshotName: string;
+  readonly recoveryTargetTime: string | null;
+  readonly actorUserId: string | null;
+  /** Container image of the platform-api build that holds the pitr-job
+   * CLI. Read from the platform-version ConfigMap so the Job uses the
+   * same code as the API that triggered it. */
+  readonly image: string;
+}
+
+export interface CreatePitrJobResult {
+  readonly jobName: string;
+  readonly namespace: string;
+}
+
+/**
+ * Create a one-shot Kubernetes Job that runs the PITR orchestration in
+ * a dedicated pod (instead of inside platform-api's process).
+ *
+ * IMPORTANT: the route handler MUST have called acquirePitrLockOrThrow
+ * BEFORE this. The Job pod is a fresh process — its `activeRestore` is
+ * null and it would race-acquire the lock against the route's own lock,
+ * fail 409, and exit 1 on every invocation. Instead the route owns the
+ * lock and the Job pod skips re-acquire by setting PITR_LOCK_HELD=true.
+ *
+ * The Job:
+ *   - Uses the platform-api ServiceAccount (already has all RBAC for
+ *     CNPG / Longhorn / VolumeSnapshot / deployments / statefulsets)
+ *   - Inherits DATABASE_URL + JWT_SECRET from the same Secret chain
+ *   - Runs `node dist/cli/pitr-job.js` (bypasses docker-entrypoint.sh's
+ *     migrate + server startup)
+ *   - backoffLimit: 0 — no retries; failed Jobs surface as admin
+ *     notifications via the orchestrator's catch path
+ *   - ttlSecondsAfterFinished: 86400 — auto-clean the Job pod after
+ *     24 hours so operators have time to inspect logs
+ *   - imagePullPolicy: Always — the image tag is mutable (`:latest` /
+ *     `:0.0.0-<sha>` may be re-tagged), so force a pull every time to
+ *     match the registry's current state for that tag
+ *   - Labels: pitr-restore=true + pitr-namespace=<source ns> so
+ *     recoverInterruptedRestore can match orphan Jobs the same way it
+ *     matches temp clusters / VolumeSnapshots
+ */
+export async function createPitrJob(
+  k8s: K8sClients,
+  inputs: CreatePitrJobInputs,
+): Promise<CreatePitrJobResult> {
+  const ts = Date.now();
+  // Truncate clusterName to keep the Job name under the K8s 63-char
+  // DNS label limit. `pitr-` (5) + truncated (≤28) + `-` (1) + ts (13)
+  // = ≤47 chars. clusterName validation in routes.ts allows up to 253
+  // chars but real clusters are <30; truncating preserves uniqueness
+  // for any practical case.
+  const safeName = inputs.clusterName.slice(0, 28);
+  const jobName = `pitr-${safeName}-${ts}`;
+  // Job runs in the platform namespace (same as platform-api) so it
+  // shares the ServiceAccount, secrets, and config. Source cluster
+  // namespace is passed as a Job env var; not necessarily 'platform'.
+  const jobNamespace = 'platform';
+  const labels = {
+    'platform.phoenix-host.net/pitr-restore': 'true',
+    'platform.phoenix-host.net/pitr-namespace': inputs.clusterNamespace,
+    'app.kubernetes.io/part-of': 'hosting-platform',
+    'app.kubernetes.io/component': 'pitr-job',
+  };
+
+  const env: Array<Record<string, unknown>> = [
+    { name: 'NODE_ENV', value: 'production' },
+    { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'platform-db-credentials', key: 'url' } } },
+    { name: 'JWT_SECRET', valueFrom: { secretKeyRef: { name: 'platform-jwt-secret', key: 'secret' } } },
+    { name: 'PITR_CLUSTER_NAMESPACE', value: inputs.clusterNamespace },
+    { name: 'PITR_CLUSTER_NAME', value: inputs.clusterName },
+    { name: 'PITR_SNAPSHOT_NAME', value: inputs.snapshotName },
+    // Tells pitr-job.ts to skip the lock acquire — the route handler
+    // already acquired it (race-safe; the Job's process can't acquire
+    // because it's a fresh process with activeRestore=null and the
+    // DB lock is held by the route's call).
+    { name: 'PITR_LOCK_HELD', value: 'true' },
+  ];
+  if (inputs.recoveryTargetTime) env.push({ name: 'PITR_RECOVERY_TARGET_TIME', value: inputs.recoveryTargetTime });
+  if (inputs.actorUserId) env.push({ name: 'PITR_ACTOR_USER_ID', value: inputs.actorUserId });
+
+  const body = {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: { name: jobName, namespace: jobNamespace, labels },
+    spec: {
+      backoffLimit: 0,
+      ttlSecondsAfterFinished: 86400,
+      // ActiveDeadlineSeconds: 30 min — kills the Job pod if the
+      // orchestration hangs past the worst-case wall-clock (8 min temp
+      // cluster wait + 8 min recreate-source wait + slack). Without
+      // this, a hung Job would hold the lock forever.
+      activeDeadlineSeconds: 1800,
+      template: {
+        metadata: { labels },
+        spec: {
+          serviceAccountName: 'platform-api',
+          restartPolicy: 'Never',
+          // Tolerate the same scheduling rules as platform-api so the
+          // Job lands on a server node (CNPG, Longhorn, etc are there).
+          nodeSelector: { 'platform.phoenix-host.net/node-role': 'server' },
+          tolerations: [
+            { key: 'platform.phoenix-host.net/server-only', operator: 'Exists', effect: 'NoSchedule' },
+          ],
+          containers: [{
+            name: 'pitr',
+            image: inputs.image,
+            // Always pull — the image tag is mutable so a stale
+            // node-cached image can drift from what platform-api is
+            // actually running. Forcing a pull guarantees we get the
+            // current registry state for the resolved tag.
+            imagePullPolicy: 'Always',
+            command: ['node', 'dist/cli/pitr-job.js'],
+            env,
+            resources: {
+              requests: { cpu: '50m', memory: '128Mi' },
+              limits:   { cpu: '500m', memory: '512Mi' },
+            },
+          }],
+        },
+      },
+    },
+  };
+
+  await (k8s.batch as unknown as {
+    createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
+  }).createNamespacedJob({ namespace: jobNamespace, body });
+
+  return { jobName, namespace: jobNamespace };
+}
+
+/** Resolve the platform-api container image (same image holds the
+ * pitr-job CLI). Reads it from the live platform-api Deployment so
+ * the Job always uses the same build the API just ran. */
+export async function getPlatformApiImage(k8s: K8sClients): Promise<string> {
+  const deploy = await (k8s.apps as unknown as {
+    readNamespacedDeployment: (a: { namespace: string; name: string }) => Promise<{ spec?: { template?: { spec?: { containers?: ReadonlyArray<{ name?: string; image?: string }> } } } }>;
+  }).readNamespacedDeployment({ namespace: 'platform', name: 'platform-api' });
+  const containers = deploy.spec?.template?.spec?.containers ?? [];
+  const apiContainer = containers.find((c) => c.name === 'api') ?? containers[0];
+  if (!apiContainer?.image) throw new Error('platform-api Deployment has no api container image');
+  return apiContainer.image;
 }
