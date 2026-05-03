@@ -981,9 +981,9 @@ export const emailDomains = pgTable('email_domains', {
   webmailStatus: varchar('webmail_status', { length: 16 }).notNull().default('pending'),
   webmailStatusMessage: text('webmail_status_message'),
   webmailStatusUpdatedAt: timestamp('webmail_status_updated_at'),
-  dkimSelector: varchar('dkim_selector', { length: 63 }).notNull().default('default'),
-  dkimPrivateKeyEncrypted: text('dkim_private_key_encrypted'),
-  dkimPublicKey: text('dkim_public_key'),
+  // M13: dkimSelector, dkimPrivateKeyEncrypted, dkimPublicKey removed.
+  // Platform-side DKIM is retired (M12). Stalwart 0.16 manages DKIM natively.
+  // Columns dropped by migration 0075.
   // NOTE: max_mailboxes + max_quota_mb were removed in migration
   // 0019. Mailbox count is now capped at the plan level via
   // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
@@ -1168,25 +1168,10 @@ export const mailSubmitCredentials = pgTable('mail_submit_credentials', {
   index('mail_submit_credentials_client_idx').on(table.clientId),
 ]);
 
-export const emailDkimKeys = pgTable('email_dkim_keys', {
-  id: varchar('id', { length: 36 }).primaryKey(),
-  emailDomainId: varchar('email_domain_id', { length: 36 })
-    .notNull()
-    .references(() => emailDomains.id, { onDelete: 'cascade' }),
-  selector: varchar('selector', { length: 63 }).notNull(),
-  privateKeyEncrypted: text('private_key_encrypted').notNull(),
-  publicKey: text('public_key').notNull(),
-  status: varchar('status', { length: 16 }).notNull().default('pending'),
-  dnsVerifiedAt: timestamp('dns_verified_at'),
-  activatedAt: timestamp('activated_at'),
-  retiredAt: timestamp('retired_at'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-}, (table) => [
-  index('email_dkim_keys_domain_idx').on(table.emailDomainId),
-  index('email_dkim_keys_status_idx').on(table.status),
-  uniqueIndex('email_dkim_keys_domain_selector_unique').on(table.emailDomainId, table.selector),
-]);
+// emailDkimKeys table removed in M13 (migration 0075).
+// Platform-side DKIM was retired in M12; Stalwart 0.16 manages DKIM natively.
+// The physical table was renamed to email_dkim_keys_legacy (migration 0074)
+// and dropped (migration 0075).
 
 export const smtpRelayConfigs = pgTable('smtp_relay_configs', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -1572,8 +1557,7 @@ export type MailboxAccessRow = typeof mailboxAccess.$inferSelect;
 export type EmailAlias = typeof emailAliases.$inferSelect;
 export type NewEmailAlias = typeof emailAliases.$inferInsert;
 export type SmtpRelayConfig = typeof smtpRelayConfigs.$inferSelect;
-export type EmailDkimKey = typeof emailDkimKeys.$inferSelect;
-export type NewEmailDkimKey = typeof emailDkimKeys.$inferInsert;
+// EmailDkimKey types removed in M13 — emailDkimKeys table dropped.
 export type MailSubmitCredential = typeof mailSubmitCredentials.$inferSelect;
 export type NewMailSubmitCredential = typeof mailSubmitCredentials.$inferInsert;
 export type ImapSyncJob = typeof imapSyncJobs.$inferSelect;

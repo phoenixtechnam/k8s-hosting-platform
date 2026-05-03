@@ -6,9 +6,7 @@ const DOMAIN = {
   clientId: 'c1',
   domainId: 'd1',
   enabled: 1,
-  dkimSelector: 'default',
-  dkimPrivateKeyEncrypted: null,
-  dkimPublicKey: null,
+  // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey dropped (migration 0075).
   catchAllAddress: null,
   mxProvisioned: 0,
   spfProvisioned: 0,

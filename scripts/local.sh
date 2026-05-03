@@ -697,42 +697,49 @@ cmd_k3s_status() {
 # ─── Mail commands (Stalwart) ────────────────────────────────────────────────
 
 cmd_mail_up() {
-  echo "Deploying Stalwart mail server..."
+  # M13: mail-up now deploys Stalwart 0.16 (stalwart-v016 overlay).
+  # The 0.15 overlay (overlays/dev/stalwart/) was removed in M13.
+  # To remove any remaining 0.15 resources, run:
+  #   ./scripts/cutover-stalwart-v015-to-v016.sh
+  echo "Deploying Stalwart 0.16 mail server..."
   _ensure_k3s_running
-  # Generate Stalwart admin/master Secrets before applying manifests. Helper is
-  # idempotent — it only generates on first run (or when --force).
-  _generate_stalwart_secret
   _sync_manifests
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart
-  _bootstrap_stalwart_reader
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart-v016
   echo ""
-  echo "Waiting for Stalwart pod (up to 2 minutes)..."
-  k3s_exec kubectl wait --for=condition=Ready pod -l app=stalwart-mail -n mail --timeout=120s || {
-    echo "Pod not ready. Events:"
+  echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
+  k3s_exec kubectl wait --for=condition=Ready pod \
+    -l app.kubernetes.io/name=stalwart-mail-v016 \
+    -n mail --timeout=180s || {
+    echo "Pod not ready within 3 minutes. Recent events:"
     k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20
+    echo ""
+    echo "Check CNPG mail-pg cluster is also ready:"
+    k3s_exec kubectl get cluster mail-pg -n mail 2>/dev/null || true
     return 1
   }
   echo ""
   cmd_mail_status
   echo ""
   echo "════════════════════════════════════════════════"
-  echo "  Stalwart web-admin (iframe-embedded in admin panel)"
+  echo "  Stalwart 0.16 web-admin"
   echo "════════════════════════════════════════════════"
-  echo "  URL: https://mail-admin.k8s-platform.test:${PORT_INGRESS_HTTPS}/"
+  echo "  URL: https://mail16-admin.k8s-platform.test:${PORT_INGRESS_HTTPS}/"
   echo ""
   echo "  Add this line to /etc/hosts (once) so your browser resolves it:"
   echo ""
-  echo "    127.0.0.1  mail-admin.k8s-platform.test"
+  echo "    127.0.0.1  mail16-admin.k8s-platform.test"
   echo ""
-  echo "  The subdomain is gated by the platform_session cookie (same"
-  echo "  session as the admin panel). Access: admin panel → Email"
-  echo "  Management → Open Stalwart."
+  echo "  The subdomain is gated by the platform_session cookie."
   echo "════════════════════════════════════════════════"
 }
 
+# mail16-up: alias for mail-up (for backward compat with any scripts that
+# used the pre-M13 separate command name).
+cmd_mail16_up() { cmd_mail_up "$@"; }
+
 cmd_mail_down() {
   _sync_manifests
-  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart --ignore-not-found=true
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart-v016 --ignore-not-found=true
 }
 
 cmd_mail_status() {

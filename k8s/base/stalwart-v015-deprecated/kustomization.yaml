@@ -1,3 +1,13 @@
+# DEPRECATED — Stalwart 0.15 manifests.
+#
+# M13 (2026-05-01): moved from k8s/base/stalwart/ to here so the
+# staging overlay (k8s/overlays/staging/stalwart/) can still build while
+# the staging operator-cutover to 0.16 is pending.
+#
+# DO NOT add new resources here. The staging operator should run:
+#   scripts/cutover-stalwart-v015-to-v016.sh
+# and then update k8s/overlays/staging/ to reference base/stalwart-v016/
+# instead. This directory will be deleted in the staging-cutover PR.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

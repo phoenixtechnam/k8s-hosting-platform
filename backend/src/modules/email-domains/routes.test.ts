@@ -10,8 +10,7 @@ const mockEmailDomain = {
   clientId: 'c1',
   domainName: 'example.com',
   enabled: 1,
-  dkimSelector: 'default',
-  dkimPublicKey: 'pk-data',
+  // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
   catchAllAddress: null,
   mxProvisioned: 1,
   spfProvisioned: 1,

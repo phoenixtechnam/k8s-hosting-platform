@@ -31,7 +31,7 @@ async function seedEmailDomain(db: Database, clientId: string, domainId: string,
     clientId,
     enabled: 1,
     webmailEnabled: 1,
-    dkimSelector: 'default',
+    // M13: dkimSelector column dropped (migration 0075).
   });
 }
 

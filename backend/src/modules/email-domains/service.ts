@@ -1,8 +1,6 @@
 import { eq, and, sql } from 'drizzle-orm';
 import { emailDomains, domains, mailboxes, clients, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { generateDkimKeyPair } from './dkim.js';
-import { encrypt } from '../oidc/crypto.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
@@ -70,20 +68,20 @@ export async function enableEmailForDomain(
     return { ...existing, domainName: domain.domainName };
   }
 
-  // Generate DKIM key pair
-  const { privateKey, publicKey } = generateDkimKeyPair();
-  const dkimPrivateKeyEncrypted = encrypt(privateKey, encryptionKey);
-  const dkimSelector = 'default';
+  // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey columns
+  // are dropped (migration 0075). Stalwart 0.16 manages DKIM natively.
+  // The DKIM TXT record is published to DNS by the dns-sync reconciler
+  // reading Stalwart's dnsZoneFile via JMAP — no local key generation needed.
+  //
+  // canManageDnsZone / getActiveServersForDomain retained for the
+  // provisionEmailDns path (MX, SPF, DMARC, SRV, etc. still come from here).
 
   const id = crypto.randomUUID();
 
-  // HIGH-1 fix: wrap the two inserts in a transaction so a failure
-  // between them can't leave an email_domains row without a matching
-  // email_dkim_keys row (the original Bug A). The active-server query
-  // and canManageDnsZone() are pure reads and live outside the tx.
   const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
   const activeServers = await getActiveServersForDomain(db, domainId);
-  const managedPrimary = canManageDnsZone({
+  // canManageDnsZone is still used by provisionEmailDns internally
+  void canManageDnsZone({
     dnsMode: resolvedDnsMode,
     activeServers: activeServers.map((s) => ({
       id: s.id,
@@ -92,36 +90,26 @@ export async function enableEmailForDomain(
       role: s.role,
     })),
   });
-  // M12: email_dkim_keys table is retired. DKIM is managed natively by
-  // Stalwart 0.16. We still write dkim_* columns on email_domains for
-  // provisionEmailDns (the legacy DKIM TXT record in the platform's
-  // dns_records table) — those columns and the DNS provisioning will be
-  // cleaned up in M13.
 
   await db.insert(emailDomains).values({
     id,
     domainId,
     clientId,
     enabled: 1,
-    dkimSelector,
-    dkimPrivateKeyEncrypted,
-    dkimPublicKey: publicKey,
     // max_mailboxes + max_quota_mb removed in migration 0019.
     catchAllAddress: input.catch_all_address ?? null,
   });
 
-  // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
-  // MTA-STS records; the mail server hostname comes from the platform
-  // setting mail_server_hostname). Round-3: webmail_enabled defaults
-  // to 1 on new email domains, so we also publish the
-  // webmail.<domain> A record in the same batch.
+  // Provision MX, SPF, DMARC, SRV, autoconfig, MTA-STS, webmail DNS records.
+  // DKIM TXT record is NO LONGER provisioned here — Stalwart 0.16 generates
+  // the DKIM key natively; the dns-sync reconciler publishes its dnsZoneFile.
   const mailServerHostname = await getMailServerHostname(db);
   await provisionEmailDns(
     db,
     domainId,
     domain.domainName,
-    dkimSelector,
-    publicKey,
+    '', // dkimSelector: empty — DKIM not provisioned here in M13
+    '', // dkimPublicKey: empty — DKIM not provisioned here in M13
     encryptionKey,
     mailServerHostname,
     { webmailEnabled: true },
@@ -345,8 +333,9 @@ export async function getEmailDomain(
       webmailStatus: emailDomains.webmailStatus,
       webmailStatusMessage: emailDomains.webmailStatusMessage,
       webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
+      // DKIM status is now read-only from Stalwart's dnsZoneFile via
+      // the jmap-status endpoint. These columns are gone from schema.
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -406,10 +395,14 @@ export async function getEmailDomainDnsRecords(
   const { buildEmailDnsRecordsForDisplay } = await import('./dns-provisioning.js');
   const mailServerHostname = await getMailServerHostname(db);
 
+  // M13: dkimSelector / dkimPublicKey dropped from email_domains (migration 0075).
+  // DKIM TXT records are now published by the dns-sync reconciler from
+  // Stalwart's dnsZoneFile. Pass empty strings so buildEmailDnsRecordsForDisplay
+  // omits the DKIM entry from the display set.
   const specs = buildEmailDnsRecordsForDisplay(
     ed.domainName,
-    ed.dkimSelector,
-    ed.dkimPublicKey ?? '',
+    '', // dkimSelector — now managed by Stalwart; shown via /dkim-status
+    '', // dkimPublicKey — now managed by Stalwart; shown via /dkim-status
     mailServerHostname,
     { webmailEnabled: ed.webmailEnabled === 1 },
   );
@@ -448,8 +441,7 @@ export async function listEmailDomains(
       webmailStatus: emailDomains.webmailStatus,
       webmailStatusMessage: emailDomains.webmailStatusMessage,
       webmailStatusUpdatedAt: emailDomains.webmailStatusUpdatedAt,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,
@@ -477,8 +469,7 @@ export async function listAllEmailDomains(db: Database) {
       domainName: domains.domainName,
       enabled: emailDomains.enabled,
       webmailEnabled: emailDomains.webmailEnabled,
-      dkimSelector: emailDomains.dkimSelector,
-      dkimPublicKey: emailDomains.dkimPublicKey,
+      // M13: dkimSelector / dkimPublicKey dropped (migration 0075).
       catchAllAddress: emailDomains.catchAllAddress,
       mxProvisioned: emailDomains.mxProvisioned,
       spfProvisioned: emailDomains.spfProvisioned,

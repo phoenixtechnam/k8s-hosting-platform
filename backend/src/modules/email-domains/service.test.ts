@@ -45,9 +45,7 @@ const EMAIL_DOMAIN = {
   domainId: 'd1',
   clientId: 'c1',
   enabled: 1,
-  dkimSelector: 'default',
-  dkimPrivateKeyEncrypted: 'encrypted:test',
-  dkimPublicKey: '-----BEGIN PUBLIC KEY-----\nMOCK_PUBLIC\n-----END PUBLIC KEY-----',
+  // M13: dkimSelector / dkimPrivateKeyEncrypted / dkimPublicKey dropped (migration 0075).
   catchAllAddress: null,
   mxProvisioned: 1,
   spfProvisioned: 1,

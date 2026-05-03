@@ -44,7 +44,10 @@ kind: Kustomization
 namespace: mail
 
 resources:
-  - ../../../base/stalwart
+  # M13: base/stalwart was renamed to stalwart-v015-deprecated.
+  # Staging still runs 0.15 until the operator runs cutover-stalwart-v015-to-v016.sh.
+  # See k8s/base/stalwart-v015-deprecated/kustomization.yaml for the cutover path.
+  - ../../../base/stalwart-v015-deprecated
   # platform-postgres ExternalName → postgres.platform.svc.cluster.local.
   # Same indirection as dev. Prod uses a different pattern (separate
   # postgres deployment in mail ns, cert-managed TLS).
