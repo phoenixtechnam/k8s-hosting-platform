@@ -655,6 +655,14 @@ scenario_mail() {
     [[ -n "$mail_cid" ]]  && api DELETE "/clients/$mail_cid" >/dev/null 2>&1 || true
   }
 
+  # HIGH fix from review: persist mail_cid to the same /tmp file the outer
+  # EXIT trap reads, so a SIGKILL/CI-timeout between create and cleanup
+  # still drops the test client. The outer cleanup() at line ~905 deletes
+  # the client by id; cascade removes the domain + mailboxes.
+  _persist_mail_cid() {
+    [[ -n "$mail_cid" ]] && echo "$mail_cid" >> /tmp/integration.cids 2>/dev/null || true
+  }
+
   # ── Step 1: auth ────────────────────────────────────────────────
   [[ -n "$TOKEN" ]] || { fail "mail: no auth token"; return 1; }
   ok "mail/auth: bearer token present"
@@ -669,6 +677,7 @@ scenario_mail() {
     "{\"company_name\":\"Mail E2E $stamp\",\"company_email\":\"mail-e2e-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
   mail_cid=$(echo "$c_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; cleanup_mail; return 1; }
+  _persist_mail_cid  # HIGH fix: SIGKILL-resilient cleanup
   ok "mail/client: created cid=$mail_cid"
 
   wait_for 120 "mail/client: provisioned" '"provisioningStatus":"provisioned"' \
@@ -900,6 +909,18 @@ cleanup() {
     log "cleanup: deleting test client $cid"
     curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
     rm -f /tmp/integration.cid
+  fi
+  # HIGH fix: drain mail-scenario clients persisted to /tmp/integration.cids
+  # so a SIGKILL/CI-timeout between create and explicit cleanup_mail still
+  # tears down the test artifacts. Cascade delete on the client also
+  # removes its domain + mailboxes.
+  if [[ -f /tmp/integration.cids ]]; then
+    while IFS= read -r mcid; do
+      [[ -n "$mcid" ]] || continue
+      log "cleanup: deleting mail-scenario client $mcid"
+      curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+    done < /tmp/integration.cids
+    rm -f /tmp/integration.cids
   fi
 }
 trap cleanup EXIT
