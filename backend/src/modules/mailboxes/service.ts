@@ -144,10 +144,14 @@ export async function createMailbox(
   // 5. Hash password
   const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
-  // 5b. Provision mailbox in Stalwart 0.16 via JMAP Principal/set.
-  //     This must happen BEFORE the DB insert so a failure here leaves
-  //     the platform DB clean (no zombie row). If Stalwart is unreachable
-  //     (mail stack not installed) we skip gracefully.
+  // 5b. Provision mailbox in Stalwart via JMAP Principal/set.
+  //     Code-review HIGH-1 fix (2026-05-03): use compensating cleanup on
+  //     DB-write failure. The order is JMAP-first to avoid zombie DB
+  //     rows; if the DB insert then fails (uniq race, conn loss), we
+  //     destroy the just-created Stalwart principal so it doesn't
+  //     accept mail with no platform-side owner. principals-sync would
+  //     log it as orphan but never auto-cleans, so the compensating
+  //     destroy is the actual recovery path.
   let stalwartPrincipalId: string | null = null;
   const accountId = await getJmapAccountId();
   if (accountId) {
@@ -174,21 +178,38 @@ export async function createMailbox(
     }
   }
 
-  // 6. Insert mailbox row
+  // 6. Insert mailbox row — wrap in try/catch so we can roll back
+  // the Stalwart principal on failure.
   const id = crypto.randomUUID();
-  await db.insert(mailboxes).values({
-    id,
-    emailDomainId,
-    clientId,
-    localPart: input.local_part,
-    fullAddress,
-    passwordHash,
-    displayName: input.display_name ?? null,
-    quotaMb: input.quota_mb,
-    mailboxType: input.mailbox_type,
-    status: 'active',
-    stalwartPrincipalId,
-  });
+  try {
+    await db.insert(mailboxes).values({
+      id,
+      emailDomainId,
+      clientId,
+      localPart: input.local_part,
+      fullAddress,
+      passwordHash,
+      displayName: input.display_name ?? null,
+      quotaMb: input.quota_mb,
+      mailboxType: input.mailbox_type,
+      status: 'active',
+      stalwartPrincipalId,
+    });
+  } catch (dbErr) {
+    if (stalwartPrincipalId && accountId) {
+      const { destroyPrincipal } = await import('../stalwart-jmap/client.js');
+      await destroyPrincipal({
+        accountId,
+        id: stalwartPrincipalId,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      }).catch((cleanupErr) => {
+        console.warn(
+          `[mailboxes] compensating Stalwart destroy failed for orphan ${stalwartPrincipalId}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        );
+      });
+    }
+    throw dbErr;
+  }
 
   // 7. Return created mailbox without passwordHash
   const [created] = await db

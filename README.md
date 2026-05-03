@@ -193,7 +193,7 @@ For code development, unit tests, and quick E2E testing. Runs entirely in Docker
 | Client panel| `http://client.k8s-platform.test:2010`        | `https://client.k8s-platform.test:2011`        | `https://client.<domain>`           |
 | Dex OIDC    | —                                             | `https://dex.k8s-platform.test:2011/dex`       | `https://dex.<domain>/dex`          |
 | Webmail     | —                                             | `https://webmail.k8s-platform.test:2011`       | `https://webmail.<domain>`          |
-| Mail-admin  | —                                             | `https://mail-admin.k8s-platform.test:2011`    | `https://mail-admin.<domain>`       |
+| Mail-admin  | —                                             | `https://stalwart.k8s-platform.test:2011`      | `https://stalwart.<domain>`         |
 | SMTP/IMAP   | `mail.k8s-platform.test:2020–2026` (various)  | `mail.k8s-platform.test:2023` (IMAPS)          | `mail.<domain>:25/465/587/143/993`  |
 | Backend API | not exposed — served through admin panel at `/api/*` |                                          | not exposed                         |
 

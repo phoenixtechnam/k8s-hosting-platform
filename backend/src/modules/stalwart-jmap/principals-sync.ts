@@ -23,7 +23,7 @@
  * Disable with STALWART_PRINCIPALS_SYNC_DISABLE=true (e.g. during bootstrap).
  */
 
-import { eq, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { mailboxes, emailDomains, domains } from '../../db/schema.js';
 import {
   getJmapSession,
@@ -90,20 +90,33 @@ export function createPrincipalsSyncScheduler(
   return {
     start() {
       if (timer !== null) return;
-      void runCycle().catch((err) => {
-        console.error(
-          '[stalwart-principals-sync] Initial cycle failed:',
-          err instanceof Error ? err.message : String(err),
-        );
-      });
-      timer = setInterval(() => {
+      // Random initial-jitter (0..intervalMs) so N platform-api replicas
+      // don't all run their sync cycle in lockstep. Code-review
+      // MEDIUM-2 fix (2026-05-03): without this, 3 replicas all hit
+      // Stalwart at the same minute every 5 minutes — 3× JMAP load
+      // peaks. Jittering smooths it across the 5-minute window.
+      const initialDelay = Math.floor(Math.random() * intervalMs);
+      // Track the jitter-window setTimeout in `timer` so stop() can
+      // cancel it before the first cycle fires; once the first cycle
+      // runs we re-assign `timer` to the periodic setInterval handle.
+      // clearInterval/clearTimeout are interchangeable in Node for
+      // both handle kinds, so a single `timer` slot is sufficient.
+      timer = setTimeout(() => {
         void runCycle().catch((err) => {
           console.error(
-            '[stalwart-principals-sync] Cycle failed:',
+            '[stalwart-principals-sync] Initial cycle failed:',
             err instanceof Error ? err.message : String(err),
           );
         });
-      }, intervalMs);
+        timer = setInterval(() => {
+          void runCycle().catch((err) => {
+            console.error(
+              '[stalwart-principals-sync] Cycle failed:',
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }, intervalMs);
+      }, initialDelay) as unknown as ReturnType<typeof setInterval>;
     },
     stop() {
       if (timer !== null) {
@@ -190,13 +203,17 @@ async function syncPrincipals(params: {
       if (!stalwartId) {
         // Platform row exists, Stalwart doesn't know about it
         if (row.stalwartPrincipalId !== null) {
-          // Previously synced — now gone from Stalwart. Log for operator review.
-          // We do NOT auto-delete the platform row.
+          // Previously synced — now gone from Stalwart. Log for operator
+          // review. We do NOT auto-delete the platform row.
+          // Code-review MEDIUM-1 fix (2026-05-03): the previous code
+          // claimed it would mark `lifecycle_status='orphan'` but the
+          // column was never added (the comment lied). The counter is
+          // now `mailboxOrphansLogged` to match the actual behaviour;
+          // operators must scrape these warnings from logs until a
+          // real orphan column ships.
           console.warn(
-            `[stalwart-principals-sync] Mailbox '${row.fullAddress}' (id=${row.id}) exists in platform DB but not in Stalwart. stalwartPrincipalId=${row.stalwartPrincipalId}. Marking orphan.`,
+            `[stalwart-principals-sync] Mailbox '${row.fullAddress}' (id=${row.id}) exists in platform DB but not in Stalwart. stalwartPrincipalId=${row.stalwartPrincipalId}. Operator action required.`,
           );
-          // Ideally set lifecycle_status='orphan' but mailboxes table has no such
-          // column yet. For M11 we just log. M13 adds a proper orphan flag.
           mailboxOrphansMarked++;
         }
         // If stalwartPrincipalId is null AND not in Stalwart → genuinely missing;

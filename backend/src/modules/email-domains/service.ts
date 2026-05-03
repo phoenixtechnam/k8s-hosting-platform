@@ -56,15 +56,18 @@ export async function enableEmailForDomain(
 ) {
   const domain = await verifyDomainOwnership(db, clientId, domainId);
 
-  // Idempotency: if the email_domains row already exists, return it.
-  // M12: no longer checks email_dkim_keys — Stalwart 0.16 manages
-  // DKIM natively; the email_dkim_keys table is retired.
+  // Idempotency: if the email_domains row already exists, return it —
+  // BUT if its stalwartDomainId is still null, fall through to retry the
+  // JMAP provisioning. Code-review HIGH-2 fix (2026-05-03): without the
+  // null-check, a previous enable that died after the DB insert but
+  // before JMAP succeeded would be stuck forever (early return blocks
+  // the JMAP retry).
   const [existing] = await db
     .select()
     .from(emailDomains)
     .where(eq(emailDomains.domainId, domainId));
 
-  if (existing) {
+  if (existing && existing.stalwartDomainId) {
     return { ...existing, domainName: domain.domainName };
   }
 
@@ -76,7 +79,10 @@ export async function enableEmailForDomain(
   // canManageDnsZone / getActiveServersForDomain retained for the
   // provisionEmailDns path (MX, SPF, DMARC, SRV, etc. still come from here).
 
-  const id = crypto.randomUUID();
+  // Reuse the orphaned row if we're retrying the JMAP step; otherwise
+  // create a new row. Either way `id` points at the row we'll attach
+  // stalwartDomainId to below.
+  const id = existing?.id ?? crypto.randomUUID();
 
   const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
   const activeServers = await getActiveServersForDomain(db, domainId);
@@ -91,14 +97,16 @@ export async function enableEmailForDomain(
     })),
   });
 
-  await db.insert(emailDomains).values({
-    id,
-    domainId,
-    clientId,
-    enabled: 1,
-    // max_mailboxes + max_quota_mb removed in migration 0019.
-    catchAllAddress: input.catch_all_address ?? null,
-  });
+  if (!existing) {
+    await db.insert(emailDomains).values({
+      id,
+      domainId,
+      clientId,
+      enabled: 1,
+      // max_mailboxes + max_quota_mb removed in migration 0019.
+      catchAllAddress: input.catch_all_address ?? null,
+    });
+  }
 
   // Provision MX, SPF, DMARC, SRV, autoconfig, MTA-STS, webmail DNS records.
   // DKIM TXT record is NO LONGER provisioned here — Stalwart 0.16 generates

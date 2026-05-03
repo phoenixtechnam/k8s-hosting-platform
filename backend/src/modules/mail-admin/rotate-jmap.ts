@@ -93,13 +93,24 @@ export async function rotateAdminPasswordViaJmapImpl(
       },
     });
   } catch (err) {
-    // Stalwart already has the new password. Alert the operator that the
-    // k8s Secret mirror is stale but don't fail the rotation response —
-    // the new password IS active and should be shown to the operator.
-    throw new Error(
-      `JMAP rotation succeeded but k8s Secret patch failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Stalwart now uses the new password. Manually patch secret '${opts.stalwartNamespace}/${opts.secretName}' ` +
-        `with the new password, or platform-api will fail to authenticate after its volume refresh.`,
+    // Stalwart already has the new password. Code-review MEDIUM-3 fix
+    // (2026-05-03): use ApiError so the response envelope carries the
+    // new plain password in `details.password` — the docstring promised
+    // the operator sees it on partial failure, but a plain Error throw
+    // produced a generic 500 with no payload.
+    const { ApiError } = await import('../../shared/errors.js');
+    throw new ApiError(
+      'MAIL_PASSWORD_SECRET_PATCH_FAILED',
+      `JMAP rotation succeeded but k8s Secret patch failed: ${err instanceof Error ? err.message : String(err)}`,
+      500,
+      {
+        // The new password is ACTIVE in Stalwart. The operator must
+        // capture this value before retrying or platform-api will
+        // become unable to auth.
+        password: plain,
+        secretRef: `${opts.stalwartNamespace}/${opts.secretName}`,
+      },
+      `Stalwart is now using this password. Manually patch the Secret with the value in details.password OR re-run rotation; do NOT discard this response.`,
     );
   }
 
@@ -180,12 +191,17 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       else kc.loadFromCluster();
       const core = kc.makeApiClient(k8s.CoreV1Api);
 
-      const ops = Object.entries(stringData).map(([k, v]) => ({
-        op: 'replace' as const,
-        path: `/data/${k}`,
-        value: Buffer.from(v, 'utf8').toString('base64'),
-      }));
-      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object });
+      // HIGH-3 fix from code review (2026-05-03): the previous code sent a
+      // JSON Patch op array but `patchNamespacedSecret` defaults to
+      // strategic-merge content-type. The server then treated the array
+      // as the new Secret body, so the Secret data was effectively
+      // replaced with garbage (and the call returned 200, hiding the bug).
+      // Use a plain merge-patch shape — drop the JSON Patch array.
+      const data: Record<string, string> = {};
+      for (const [k, v] of Object.entries(stringData)) {
+        data[k] = Buffer.from(v, 'utf8').toString('base64');
+      }
+      await core.patchNamespacedSecret({ namespace, name, body: { data } });
     },
 
     async verifyNewPassword(password: string): Promise<boolean> {
