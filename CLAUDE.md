@@ -130,6 +130,36 @@ packages/api-contracts/src/
 - **Immutability:** Prefer new objects over mutation
 - **Test coverage target:** 80%+ (Phase 1: 70%+)
 
+## Client lifecycle hook registry (ADR-033)
+
+Every state transition (`active`, `suspended`, `archived`, `restored`,
+`deleted`) goes through `backend/src/modules/client-lifecycle/registry/`
+— a runtime that dispatches a topo-sorted set of `LifecycleHook`s per
+transition, persists each run to `client_lifecycle_hook_runs`, and a
+2-min scheduler retries failed `retry`-status hooks with exponential
+backoff.
+
+**Adding a hook:** create `backend/src/modules/client-lifecycle/hooks/<name>.ts`
+exporting a `LifecycleHook` and a `register*Hook()` function with a
+module-local `_registered` guard. Add the register call to
+`hooks/index.ts:registerAllLifecycleHooks()`. Unit-test with the
+`vi.hoisted` mock pattern; integration-test via
+`scripts/integration-lifecycle-e2e.sh`.
+
+**Adding a transition kind:** edit `Transition` type in `registry/types.ts`,
+extend the migration enum (`client_lifecycle_transition_kind`), and add
+an `applyXxx()` entry in `cascades.ts` that calls `dispatchTransition`.
+
+**Operator surfaces:**
+- `Settings → Lifecycle Hooks` (admin panel) — per-hook last-7d success
+  rate, recent transitions tree, Retry Now / Reset Breaker buttons.
+- `TransitionProgressModal` — opens on every client-detail action.
+- `BulkProgressModal` — opens on every Clients-page bulk action.
+
+**Operator kill-switches:** for hooks with no legacy fallback,
+`LIFECYCLE_HOOK_<NAME>=disable` short-circuits the hook to `noop`.
+Use only during external-provider outages.
+
 ## Admin-only UIs (Longhorn, Stalwart, future)
 
 Every Ingress that exposes an admin-only web UI (Longhorn dashboard, Stalwart web-admin, etc.) MUST:
@@ -163,3 +193,4 @@ These services are managed by **separate projects** — this platform consumes t
 - Pagination: `docs/04-deployment/API_PAGINATION_STRATEGY.md`
 - Phase 1 roadmap: `docs/04-deployment/PHASE_1_ROADMAP.md`
 - ADRs: `docs/07-reference/ARCHITECTURE_DECISION_RECORDS.md`
+- Client lifecycle hook registry: `docs/07-reference/ADR-033-client-lifecycle-hook-registry.md`
