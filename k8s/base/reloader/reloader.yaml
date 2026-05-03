@@ -1,0 +1,172 @@
+# Stakater Reloader v1.4.0
+#
+# Watches Secrets and ConfigMaps for changes and triggers rolling restarts
+# of annotated Deployments, StatefulSets, and DaemonSets.
+#
+# Sourced from:
+#   https://raw.githubusercontent.com/stakater/Reloader/v1.4.0/deployments/kubernetes/reloader.yaml
+#
+# Patched for this platform:
+#   - `--reload-strategy=annotations` so only resources carrying the
+#     `secret.reloader.stakater.com/reload` annotation are affected;
+#     Reloader does not touch every Secret in the cluster.
+#   - Namespace changed to kube-system (minimal-footprint placement).
+#   - Resource limits tightened to match platform Burstable QoS baseline.
+#
+# Why Reloader instead of the old cert-reload CronJob:
+#   The CronJob exec'd into stalwart-mail-0 using `stalwart-cli
+#   --credentials "admin:<password>"`. Every time the admin password was
+#   rotated (via the platform "Rotate Stalwart Password" UI), the CronJob
+#   silently broke. Reloader watches the stalwart-secrets Secret directly
+#   and rolls the pod — no credentials required, no exec privilege needed.
+#
+# Usage:
+#   Annotate any StatefulSet/Deployment with:
+#     secret.reloader.stakater.com/reload: "<secret-name>[,<other-secret>]"
+#   Reloader rolls the workload whenever the listed Secret(s) change.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: reloader
+  name: reloader-reloader
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: reloader
+  name: reloader-reloader-role
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+      - configmaps
+    verbs:
+      - list
+      - get
+      - watch
+  - apiGroups:
+      - "apps"
+    resources:
+      - deployments
+      - daemonsets
+      - statefulsets
+    verbs:
+      - list
+      - get
+      - update
+      - patch
+  # extensions/v1beta1 was removed in Kubernetes 1.22; all clusters
+  # run k3s 1.28+ which uses apps/v1 exclusively. Rule omitted.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: reloader
+  name: reloader-reloader-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reloader-reloader-role
+subjects:
+  - kind: ServiceAccount
+    name: reloader-reloader
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: reloader-reloader
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: reloader
+  name: reloader-reloader
+  namespace: kube-system
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: reloader-reloader
+  template:
+    metadata:
+      labels:
+        app: reloader-reloader
+        app.kubernetes.io/part-of: hosting-platform
+        app.kubernetes.io/component: reloader
+    spec:
+      # Run on server-role nodes alongside the other platform system workloads.
+      tolerations:
+        - key: platform.phoenix-host.net/server-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - image: ghcr.io/stakater/reloader:v1.4.0
+          imagePullPolicy: IfNotPresent
+          name: reloader-reloader
+          args:
+            # Only watch workloads that explicitly opt in via annotation.
+            # Without this flag, Reloader would watch every Secret and
+            # trigger on any change, which is too broad for a shared cluster.
+            - "--reload-strategy=annotations"
+          ports:
+            - name: http
+              containerPort: 9090
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: reloader-reloader

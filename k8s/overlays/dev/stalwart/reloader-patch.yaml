@@ -1,0 +1,11 @@
+# Overlay-specific Reloader annotation for the Stalwart StatefulSet.
+#
+# Extends the base annotation (stalwart-secrets) with the dev TLS secret
+# so Reloader also rolls the pod when the local-ca cert is renewed.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stalwart-mail
+  namespace: mail
+  annotations:
+    secret.reloader.stakater.com/reload: "stalwart-webadmin-dev-tls,stalwart-secrets"

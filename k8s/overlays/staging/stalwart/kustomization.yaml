@@ -63,3 +63,10 @@ patches:
     target:
       kind: Service
       name: stalwart-mail
+  # Overlay-specific Reloader annotation: watch stalwart-webadmin-staging-tls
+  # in addition to the base stalwart-secrets. Rolls the StatefulSet when
+  # the LE-staging cert for mail-admin.${DOMAIN} is renewed.
+  - path: reloader-patch.yaml
+    target:
+      kind: StatefulSet
+      name: stalwart-mail

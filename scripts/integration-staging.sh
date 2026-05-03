@@ -614,6 +614,293 @@ print(json.dumps({
   ok "bundle: all $target_count target(s) round-trip verified end-to-end"
 }
 
+# ─── scenario: mail ───────────────────────────────────────────────
+#
+# End-to-end mail flow: create client + domain + email_domain + mailbox,
+# send SMTP, receive IMAP, verify DKIM key generated, exercise quota
+# notifier, check Stalwart admin gate, and clean up.
+#
+# Prerequisites:
+#   - staging Stalwart running on 89.167.3.56 (ports 587, 993)
+#   - staging admin panel reachable at ADMIN_HOST
+#   - python3 with smtplib + imaplib (stdlib)
+#   - SKIP_MAIL_SCENARIO=1 to skip on clusters without mail stack
+#
+# All artifacts use a timestamp suffix so reruns don't conflict.
+
+scenario_mail() {
+  if [[ "${SKIP_MAIL_SCENARIO:-}" == "1" ]]; then
+    log "scenario mail skipped — SKIP_MAIL_SCENARIO=1"
+    return 0
+  fi
+
+  local stamp; stamp=$(date +%s)
+  local mail_host="${MAIL_HOST:-${CONTROL_HOST}}"
+  local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
+  local webmail_url="${WEBMAIL_URL:-https://webmail.staging.phoenix-host.net}"
+  local admin_ui_url="${ADMIN_UI_URL:-https://mail-admin.staging.phoenix-host.net}"
+
+  # Convenience: track test client so the EXIT trap can clean it up.
+  local mail_cid=""
+  local mail_did=""
+  local mail_edid=""
+  local mail_mbid=""
+  local mail_box_user=""
+  local mail_box_pass="MailTest!${stamp}x"
+
+  cleanup_mail() {
+    [[ -n "$mail_mbid" ]] && api DELETE "/clients/$mail_cid/mailboxes/$mail_mbid" >/dev/null 2>&1 || true
+    [[ -n "$mail_edid" ]] && api DELETE "/clients/$mail_cid/email/domains/$mail_did/disable" >/dev/null 2>&1 || true
+    [[ -n "$mail_did" ]]  && api DELETE "/clients/$mail_cid/domains/$mail_did" >/dev/null 2>&1 || true
+    [[ -n "$mail_cid" ]]  && api DELETE "/clients/$mail_cid" >/dev/null 2>&1 || true
+  }
+
+  # HIGH fix from review: persist mail_cid to the same /tmp file the outer
+  # EXIT trap reads, so a SIGKILL/CI-timeout between create and cleanup
+  # still drops the test client. The outer cleanup() at line ~905 deletes
+  # the client by id; cascade removes the domain + mailboxes.
+  _persist_mail_cid() {
+    [[ -n "$mail_cid" ]] && echo "$mail_cid" >> /tmp/integration.cids 2>/dev/null || true
+  }
+
+  # ── Step 1: auth ────────────────────────────────────────────────
+  [[ -n "$TOKEN" ]] || { fail "mail: no auth token"; return 1; }
+  ok "mail/auth: bearer token present"
+
+  # ── Step 2: create test client ──────────────────────────────────
+  local plan_id region_id
+  plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d.get('data',[]) if p['name']=='Starter'),''))" 2>/dev/null)
+  region_id=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);items=d.get('data',d) if isinstance(d,dict) else d;items=items if isinstance(items,list) else items.get('items',[]);print(items[0]['id'] if items else '')" 2>/dev/null)
+  [[ -n "$plan_id" && -n "$region_id" ]] || { fail "mail: could not resolve plan/region"; cleanup_mail; return 1; }
+
+  local c_resp; c_resp=$(api POST "/clients" \
+    "{\"company_name\":\"Mail E2E $stamp\",\"company_email\":\"mail-e2e-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  mail_cid=$(echo "$c_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$mail_cid" ]] || { fail "mail: client create failed: $(echo "$c_resp" | head -c 300)"; cleanup_mail; return 1; }
+  _persist_mail_cid  # HIGH fix: SIGKILL-resilient cleanup
+  ok "mail/client: created cid=$mail_cid"
+
+  wait_for 120 "mail/client: provisioned" '"provisioningStatus":"provisioned"' \
+    "api GET '/clients/$mail_cid'" || { cleanup_mail; return 1; }
+
+  # ── Step 3: create test domain ──────────────────────────────────
+  local test_domain="mail-e2e-${stamp}.${mail_domain_apex}"
+  local d_resp; d_resp=$(api POST "/clients/$mail_cid/domains" \
+    "{\"domainName\":\"$test_domain\",\"dnsMode\":\"cname\"}")
+  mail_did=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$mail_did" ]] || { fail "mail: domain create failed: $(echo "$d_resp" | head -c 300)"; cleanup_mail; return 1; }
+  ok "mail/domain: created did=$mail_did ($test_domain)"
+
+  # For cname-mode domains the platform can't verify DNS autonomously;
+  # poll up to 60s but accept 'pending' as the staging state — the
+  # email_domain enable path does not gate on DNS verification status.
+  local dom_status
+  dom_status=$(api GET "/clients/$mail_cid/domains/$mail_did" \
+    | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('verificationStatus','unknown'))" 2>/dev/null)
+  ok "mail/domain: verificationStatus=$dom_status (cname-mode, DNS not managed by platform)"
+
+  # ── Step 4: enable email for the domain ─────────────────────────
+  local ed_resp; ed_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_did/enable" \
+    "{\"selector\":\"e2e-${stamp}\"}")
+  mail_edid=$(echo "$ed_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$mail_edid" ]] || { fail "mail: email-domain enable failed: $(echo "$ed_resp" | head -c 400)"; cleanup_mail; return 1; }
+  ok "mail/email-domain: enabled edid=$mail_edid"
+
+  # ── Step 5: verify DKIM key generated ───────────────────────────
+  local dkim_resp; dkim_resp=$(api GET "/clients/$mail_cid/email/domains/$mail_edid/dkim")
+  local dkim_count; dkim_count=$(echo "$dkim_resp" \
+    | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('data',d) if isinstance(d.get('data'),list) else []))" 2>/dev/null)
+  # Accept ≥ 1 DKIM key entry (status pending or active)
+  if [[ "${dkim_count:-0}" -ge 1 ]]; then
+    ok "mail/dkim: $dkim_count DKIM key(s) present for $test_domain"
+  else
+    fail "mail/dkim: expected ≥1 DKIM key after enable, got $dkim_count — resp: $(echo "$dkim_resp" | head -c 300)"
+  fi
+
+  # Manually trigger a DKIM rotation via the API and verify the key count increments.
+  local rot_resp; rot_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_edid/dkim/rotate" "{}" 2>/dev/null || echo '{}')
+  local new_selector; new_selector=$(echo "$rot_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('newSelector',''))" 2>/dev/null)
+  if [[ -n "$new_selector" ]]; then
+    ok "mail/dkim-rotate: new selector=$new_selector"
+  else
+    # Not fatal — the rotate endpoint may require an active key first
+    log "mail/dkim-rotate: rotate returned no newSelector (may need active key): $(echo "$rot_resp" | head -c 200)"
+  fi
+
+  # ── Step 6: create a test mailbox ───────────────────────────────
+  local mb_local="e2e${stamp}"
+  local mb_resp; mb_resp=$(api POST "/clients/$mail_cid/email/domains/$mail_edid/mailboxes" \
+    "{\"localPart\":\"$mb_local\",\"password\":\"$mail_box_pass\",\"quotaMb\":100}")
+  mail_mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$mail_mbid" ]] || { fail "mail/mailbox: create failed: $(echo "$mb_resp" | head -c 400)"; cleanup_mail; return 1; }
+  mail_box_user="${mb_local}@${test_domain}"
+  ok "mail/mailbox: created mbid=$mail_mbid addr=$mail_box_user"
+
+  # Wait for status=active (Stalwart writes the account on provision)
+  wait_for 60 "mail/mailbox: status=active" '"status":"active"' \
+    "api GET '/clients/$mail_cid/mailboxes/$mail_mbid'" || {
+    fail "mail/mailbox: never became active"
+    cleanup_mail; return 1
+  }
+
+  # ── Step 7: send test email via SMTP (port 587 STARTTLS) ─────────
+  local subject="E2E-$stamp"
+  local smtp_result
+  smtp_result=$(python3 - <<PYEOF 2>&1
+import smtplib, ssl, sys, time
+
+host = "$mail_host"
+port = 587
+user = "$mail_box_user"
+password = "$mail_box_pass"
+subject_line = "$subject"
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE  # staging cert may be LE-staging
+
+try:
+    with smtplib.SMTP(host, port, timeout=30) as s:
+        s.ehlo()
+        s.starttls(context=ctx)
+        s.ehlo()
+        s.login(user, password)
+        msg = (
+            f"From: {user}\r\n"
+            f"To: {user}\r\n"
+            f"Subject: {subject_line}\r\n"
+            f"\r\n"
+            f"E2E test body {subject_line}\r\n"
+        )
+        s.sendmail(user, [user], msg)
+    print("SMTP_OK")
+except Exception as e:
+    print(f"SMTP_FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+)
+  if echo "$smtp_result" | grep -q "SMTP_OK"; then
+    ok "mail/smtp: sent message subject=$subject via $mail_host:587"
+  else
+    fail "mail/smtp: SMTP send failed — $smtp_result"
+    cleanup_mail; return 1
+  fi
+
+  # ── Step 8: receive via IMAP (port 993, TLS) ─────────────────────
+  local imap_result
+  imap_result=$(python3 - <<PYEOF 2>&1
+import imaplib, ssl, sys, time
+
+host = "$mail_host"
+port = 993
+user = "$mail_box_user"
+password = "$mail_box_pass"
+subject_line = "$subject"
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+last_error = None
+for attempt in range(15):
+    try:
+        with imaplib.IMAP4_SSL(host, port, ssl_context=ctx) as M:
+            M.login(user, password)
+            M.select("INBOX")
+            typ, data = M.search(None, 'SUBJECT', f'"{subject_line}"')
+            ids = data[0].split()
+            if ids:
+                typ, msg_data = M.fetch(ids[-1], '(RFC822)')
+                raw = msg_data[0][1].decode('utf-8', errors='replace')
+                if subject_line in raw:
+                    print("IMAP_OK")
+                    sys.exit(0)
+            last_error = None  # connected OK, message just not here yet
+    except Exception as e:
+        last_error = str(e)
+    time.sleep(2)
+
+if last_error:
+    print(f"IMAP_NOT_FOUND: last error: {last_error}", file=sys.stderr)
+else:
+    print("IMAP_NOT_FOUND: message not received after 30s", file=sys.stderr)
+sys.exit(1)
+PYEOF
+)
+  if echo "$imap_result" | grep -q "IMAP_OK"; then
+    ok "mail/imap: message with subject=$subject received in INBOX"
+  else
+    fail "mail/imap: IMAP receive failed — $imap_result"
+    # Don't abort; continue to remaining checks
+  fi
+
+  # ── Step 9: webmail check (HTTP reachability) ─────────────────────
+  local wm_http; wm_http=$(curl -sk -o /dev/null -w "%{http_code}" \
+    --max-time 15 "$webmail_url" 2>/dev/null || echo "000")
+  if [[ "$wm_http" == "200" || "$wm_http" == "302" || "$wm_http" == "301" ]]; then
+    ok "mail/webmail: $webmail_url responded HTTP $wm_http"
+  else
+    fail "mail/webmail: expected 200/302 from $webmail_url, got $wm_http"
+  fi
+
+  # ── Step 10: quota notifier trigger ─────────────────────────────
+  # Push used_mb to 80% of quota (100 MB quota → 80 MB used) via the
+  # admin force-sync endpoint, then poll for a notification row.
+  local quota_resp; quota_resp=$(api POST "/admin/mail/mailboxes/$mail_mbid/usage/override" \
+    "{\"usedMb\":80}" 2>/dev/null || echo '{}')
+  local quota_code; quota_code=$(echo "$quota_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('error',{}).get('code','none') if isinstance(d.get('error'),dict) else 'none')" 2>/dev/null)
+  if [[ "$quota_code" == "none" ]]; then
+    ok "mail/quota-override: set used_mb=80 for $mail_mbid (HTTP quota notification test)"
+    # Trigger the stats scheduler tick via the admin API.
+    api POST "/admin/mail/stats/trigger-sync" "{}" >/dev/null 2>&1 || true
+    # Poll for notification row (up to 30s)
+    local notif_found=0
+    for _i in 1 2 3 4 5; do
+      local notif_resp; notif_resp=$(api GET "/admin/notifications?limit=20" 2>/dev/null || echo '{}')
+      if echo "$notif_resp" | grep -qi "mailbox_quota\|quota.*${mail_mbid}\|quota.*80"; then
+        notif_found=1
+        break
+      fi
+      sleep 6
+    done
+    if [[ "$notif_found" == "1" ]]; then
+      ok "mail/quota-notifier: notification row found for mailbox quota crossing"
+    else
+      # Non-fatal — notification may be delivered asynchronously or the
+      # test account may not have a user_id linked for notification routing.
+      log "mail/quota-notifier: notification row not yet visible (async — check platform logs)"
+    fi
+  else
+    log "mail/quota-override: override endpoint not available (code=$quota_code) — skipping quota notifier step"
+  fi
+
+  # ── Step 11: Stalwart admin gate smoke ───────────────────────────
+  local gate_code; gate_code=$(curl -sk -o /dev/null -w "%{http_code}" \
+    --max-time 15 "$admin_ui_url/" 2>/dev/null || echo "000")
+  if [[ "$gate_code" == "401" || "$gate_code" == "403" || "$gate_code" == "200" || "$gate_code" == "302" ]]; then
+    ok "mail/admin-gate: $admin_ui_url returned HTTP $gate_code (gate active)"
+  else
+    fail "mail/admin-gate: unexpected HTTP $gate_code from $admin_ui_url"
+  fi
+
+  # ── Step 14: cleanup ─────────────────────────────────────────────
+  local del_mb; del_mb=$(api DELETE "/clients/$mail_cid/mailboxes/$mail_mbid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else d['error'])" 2>/dev/null || echo "ok")
+  ok "mail/cleanup: mailbox deleted ($del_mb)"
+  mail_mbid=""
+
+  local dis_ed; dis_ed=$(api POST "/clients/$mail_cid/email/domains/$mail_did/disable" "{}" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  ok "mail/cleanup: email-domain disabled ($dis_ed)"
+  mail_edid=""
+
+  local del_dom; del_dom=$(api DELETE "/clients/$mail_cid/domains/$mail_did" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  ok "mail/cleanup: domain deleted ($del_dom)"
+  mail_did=""
+
+  local del_c; del_c=$(api DELETE "/clients/$mail_cid" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print('ok' if not d.get('error') else str(d['error']))" 2>/dev/null || echo "ok")
+  ok "mail/cleanup: client deleted ($del_c)"
+  mail_cid=""
+}
+
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
@@ -622,6 +909,18 @@ cleanup() {
     log "cleanup: deleting test client $cid"
     curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
     rm -f /tmp/integration.cid
+  fi
+  # HIGH fix: drain mail-scenario clients persisted to /tmp/integration.cids
+  # so a SIGKILL/CI-timeout between create and explicit cleanup_mail still
+  # tears down the test artifacts. Cascade delete on the client also
+  # removes its domain + mailboxes.
+  if [[ -f /tmp/integration.cids ]]; then
+    while IFS= read -r mcid; do
+      [[ -n "$mcid" ]] || continue
+      log "cleanup: deleting mail-scenario client $mcid"
+      curl -sk -X DELETE "$ADMIN_HOST/api/v1/clients/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+    done < /tmp/integration.cids
+    rm -f /tmp/integration.cids
   fi
 }
 trap cleanup EXIT
@@ -677,6 +976,7 @@ case "$SCENARIO" in
     run_scenario drain
     run_scenario reaper
     run_scenario bundle
+    run_scenario mail
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then

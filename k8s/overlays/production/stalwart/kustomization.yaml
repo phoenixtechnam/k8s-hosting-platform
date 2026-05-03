@@ -28,14 +28,10 @@
 #        server reload-certificates
 #
 # When cert-manager rotates the cert (default: 15 days before expiry),
-# the mounted file changes but Stalwart doesn't automatically re-read
-# it. Operators should either:
-#
-#   a. Restart the pod (kubectl rollout restart statefulset/stalwart-mail -n mail)
-#   b. Run the stalwart-cli reload command above
-#
-# A future ServiceMonitor-like periodic reload job could automate this,
-# tracked in docs/04-deployment/MAIL_SERVER_OPERATIONS.md.
+# Stakater Reloader automatically rolls the StatefulSet because
+# `stalwart-tls` is listed in the
+# `secret.reloader.stakater.com/reload` annotation (see reloader-patch.yaml).
+# No manual restart or stalwart-cli call is required.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -51,6 +47,14 @@ resources:
 
 patches:
   - path: statefulset-cert-mount.yaml
+    target:
+      kind: StatefulSet
+      name: stalwart-mail
+  # Overlay-specific Reloader annotation: watch stalwart-tls (the LE-prod
+  # cert mounted into the pod at /etc/stalwart/tls/) in addition to the
+  # base stalwart-secrets. Rolls the pod on cert-manager renewal so
+  # Stalwart picks up the new TLS cert without manual intervention.
+  - path: reloader-patch.yaml
     target:
       kind: StatefulSet
       name: stalwart-mail

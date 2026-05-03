@@ -37,6 +37,10 @@ resources:
   # writer at runtime. See docs/04-deployment/RUNTIME_FIREWALL.md.
   - worker-firewall-reconciler/
   - oauth2-proxy/
+  # Stakater Reloader — watches annotated Secrets/ConfigMaps and rolls
+  # StatefulSets/Deployments on change. Replaces the brittle cert-reload
+  # CronJob that exec'd into stalwart-mail-0 with admin credentials.
+  - reloader/
   - update-checker-rbac.yaml
   - update-checker-cronjob.yaml
   # CronJob that mirrors live Node ExternalIPs into ingress-nginx

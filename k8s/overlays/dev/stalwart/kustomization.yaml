@@ -36,6 +36,12 @@ patches:
     target:
       kind: Service
       name: stalwart-mail
+  # Overlay-specific Reloader annotation: watch stalwart-webadmin-dev-tls
+  # in addition to the base stalwart-secrets.
+  - path: reloader-patch.yaml
+    target:
+      kind: StatefulSet
+      name: stalwart-mail
   # Remove the NetworkPolicy in dev — local k3s has no enforcer and it only adds noise
   - patch: |-
       $patch: delete

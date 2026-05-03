@@ -14,10 +14,11 @@ resources:
   # second PVC mount is required.
   - backup-rbac.yaml
   - backup-cronjob.yaml
-  # Cert reload CronJob — calls `stalwart-cli reload-certificates`
-  # daily so cert-manager renewals take effect without manual
-  # intervention. Reuses the stalwart-backup ServiceAccount.
-  - cert-reload-cronjob.yaml
+  # cert-reload-cronjob.yaml REMOVED — replaced by Stakater Reloader.
+  # The StatefulSet now carries:
+  #   secret.reloader.stakater.com/reload: "stalwart-webadmin-staging-tls,stalwart-secrets"
+  # Reloader rolls the pod on Secret change, so cert-manager renewals
+  # automatically trigger a restart without any exec/credentials coupling.
   # secret.example.yaml is NOT included — operators provide the real Secret
   # per environment via kubectl / sealed-secrets / SOPS.
 

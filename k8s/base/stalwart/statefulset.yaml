@@ -6,6 +6,26 @@ metadata:
   labels:
     app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    # Stakater Reloader: roll the StatefulSet when stalwart-secrets changes.
+    # This replaces the old cert-reload CronJob which exec'd into the pod
+    # with admin credentials and broke every time the admin password was
+    # rotated.
+    #
+    # stalwart-secrets — admin password, master key, DB creds.
+    #                    Roll on rotation so the new creds take effect.
+    #
+    # TLS Secret: each overlay's reloader-patch.yaml REPLACES this
+    # annotation with the env-specific list — Kustomize strategic-merge
+    # patches replace the entire annotation map for a given key, NOT
+    # merge values. Every overlay patch MUST re-declare both
+    # `stalwart-secrets` (universal) AND its env-specific TLS secret:
+    #   dev:        stalwart-webadmin-dev-tls,stalwart-secrets
+    #   staging:    stalwart-webadmin-staging-tls,stalwart-secrets
+    #   production: stalwart-tls,stalwart-secrets
+    # If a future overlay omits `stalwart-secrets`, Reloader will silently
+    # stop rolling on admin-password rotation.
+    secret.reloader.stakater.com/reload: "stalwart-secrets"
 spec:
   serviceName: stalwart-mail-headless
   replicas: 1
