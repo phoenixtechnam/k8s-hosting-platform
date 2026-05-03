@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Stalwart 0.16 deployment layer — Cut 2.
+#
+# Resources are split into sub-kustomizations so each component can be
+# applied independently during development and testing:
+#   mail-pg/   — dedicated CNPG Cluster + ScheduledBackup
+#   stalwart/  — Deployment, Services, ConfigMap, NetworkPolicy, Ingress
+#
+# This top-level kustomization is intentionally NOT included in
+# k8s/base/kustomization.yaml yet — it will be uncommented in M10
+# once all manifests are validated end-to-end on local DinD k3s.
+# Dev overlay wires it directly: k8s/overlays/dev/stalwart-v016/.
+
+resources:
+  - mail-pg/
+  - stalwart/
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hosting-platform

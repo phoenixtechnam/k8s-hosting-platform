@@ -54,3 +54,8 @@ resources:
   # depends on a TLS cert-manager issuer that varies by overlay. Each
   # overlay that wants the dashboard adds `k8s/base/longhorn` or its own
   # equivalent to its resources + supplies an Ingress patch.
+  #
+  # stalwart-v016/ is NOT included here yet — uncomment in M10 after
+  # end-to-end validation on local DinD k3s. Until then the dev overlay
+  # wires it directly via k8s/overlays/dev/stalwart-v016/.
+  # - stalwart-v016/

@@ -16,6 +16,15 @@ const BACKUP_TARGET_NAME = 'default';
 const PLATFORM_SECRET_NAME = 'backup-credentials';
 const PLATFORM_NAMESPACE = 'platform';
 
+// Mail namespace copy: mirrors the backup-credentials Secret to `mail`
+// so the mail-pg CNPG Cluster's barman-cloud plugin can use the same
+// S3 target with a `mail/` prefix. SSH targets write an empty Secret
+// (barman-cloud won't start, but mail-pg still runs normally — SSH is
+// not a CNPG-native backup transport). Created by reconcileBackupTarget,
+// cleared by clearBackupTarget.
+const MAIL_SECRET_NAME = 'backup-credentials';
+const MAIL_NAMESPACE = 'mail';
+
 // All Secret-data keys the CronJobs read. Enumerated here so that
 // switching target kinds (S3 ↔ SSH) leaves no stale fields behind —
 // absent fields on a `replaceNamespacedSecret` call would otherwise
@@ -109,6 +118,15 @@ export async function reconcileBackupTarget(
     // Longhorn BackupTarget CR is intentionally left alone — SSH is
     // platform-level only. `clearBackupTarget({kind:'ssh'})` is the
     // reverse path and also a no-op on the CR.
+    // Mirror to mail namespace: write empty AWS keys so barman-cloud
+    // fails loudly (rather than silently using stale S3 creds) when
+    // an operator switches from S3 to SSH backup target.
+    try {
+      await upsertMailSecret(clients.core, buildSshSecretData(input));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[longhorn-reconciler] Failed to sync mail backup-credentials (SSH target):', err);
+    }
     await setBackupCronJobsSuspended(clients.batch, false);
     return;
   }
@@ -122,6 +140,17 @@ export async function reconcileBackupTarget(
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[longhorn-reconciler] Failed to sync platform backup-credentials:', err);
+  }
+  // Mirror to mail namespace so mail-pg CNPG barman-cloud plugin uses
+  // the same S3 target. Mail backups land under `mail/mail-pg/` prefix
+  // (configured in the Cluster CR's backup.barmanObjectStore.destinationPath
+  // once an operator enables it). Best-effort: failure here does not
+  // block Longhorn or platform DR CronJob activation.
+  try {
+    await upsertMailSecret(clients.core, s3Secret);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[longhorn-reconciler] Failed to sync mail backup-credentials:', err);
   }
   await upsertBackupTarget(clients.custom, input);
   await setBackupCronJobsSuspended(clients.batch, false);
@@ -149,6 +178,15 @@ export async function clearBackupTarget(
   await patchBackupTarget(clients.custom, {
     spec: { backupTargetURL: '', credentialSecret: '' },
   });
+  // Clear the mail namespace mirror — barman-cloud would otherwise retry
+  // with stale creds indefinitely. Best-effort: mail namespace may not
+  // exist on clusters where mail-pg hasn't been deployed.
+  try {
+    await upsertMailSecret(clients.core, buildEmptySecretData());
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[longhorn-reconciler] Failed to clear mail backup-credentials:', err);
+  }
 }
 
 /**
@@ -255,6 +293,16 @@ export function buildS3SecretData(input: S3BackupTargetInput): Record<string, st
   return data;
 }
 
+// Build an all-empty Secret data block for clearing a target. Used when
+// deactivating a backup config to null out the mail-namespace mirror so
+// barman-cloud stops retrying with stale credentials.
+function buildEmptySecretData(): Record<string, string> {
+  const data: Record<string, string> = { TARGET_KIND: '' };
+  for (const k of S3_KEYS) data[k] = '';
+  for (const k of SSH_KEYS) data[k] = '';
+  return data;
+}
+
 // Build the Secret data block for an SSH target. Explicit empty strings
 // for AWS_*/S3_* so switching S3→SSH drops stale AWS keys on `replace`.
 // SSH_PORT is written as a string because Kubernetes Secret values are
@@ -277,6 +325,13 @@ async function upsertPlatformSecret(
   stringData: Record<string, string>,
 ): Promise<void> {
   await upsertNamespacedSecret(core, PLATFORM_SECRET_NAME, PLATFORM_NAMESPACE, stringData);
+}
+
+async function upsertMailSecret(
+  core: k8s.CoreV1Api,
+  stringData: Record<string, string>,
+): Promise<void> {
+  await upsertNamespacedSecret(core, MAIL_SECRET_NAME, MAIL_NAMESPACE, stringData);
 }
 
 async function upsertNamespacedSecret(

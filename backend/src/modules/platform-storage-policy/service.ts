@@ -60,10 +60,16 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
 // (2 replicas + maxUnavailable=1 + node failure can hit 0).
 const DEPLOYMENT_REPLICAS_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
 
-// CNPG cluster (Postgres). Apply HA flips spec.instances 1↔3 — CNPG
-// streams replication from primary, no manual data migration needed.
+// CNPG clusters. Apply HA flips spec.instances 1↔3 — CNPG streams
+// replication from primary, no manual data migration needed.
+//
+// mail-pg: dedicated CNPG cluster for Stalwart 0.16. Independent
+// snapshot/recovery cycle from platform-PG; same Apply-HA scaling
+// path so a single admin action scales both clusters together.
+// (Cut 2 / M6.2 — stalwart-v016 deploy layer.)
 const CNPG_CLUSTERS: ReadonlyArray<{ namespace: string; name: string }> = [
   { namespace: 'platform', name: 'postgres' },
+  { namespace: 'mail', name: 'mail-pg' },
 ];
 const CNPG_INSTANCES_FOR: Record<'local' | 'ha', number> = { local: 1, ha: 3 };
 
