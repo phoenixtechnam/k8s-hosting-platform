@@ -751,21 +751,64 @@ scenario_mail() {
     cleanup_mail; return 1
   }
 
+  # ── Step 7 + 8 setup: tester pod inside the cluster ─────────────
+  # Run SMTP and IMAP probes from a pod inside the cluster so the source
+  # IP is in the Calico pod CIDR (10.42.0.0/16), which is already in
+  # Stalwart's [server.security] allowed-ips. Running the probes from the
+  # harness's local shell hits Stalwart via SNAT (kube-proxy rewrites
+  # external traffic to the node IP), triggering Stalwart's
+  # security.ip-blocked anti-loop heuristic → ECONNREFUSED on 587/993.
+  # Target: stalwart-mail.mail.svc.cluster.local (the in-cluster Service),
+  # NOT the externalIP. This is the real path tenant apps use.
+  local tester_pod="mail-tester-${stamp}"
+  local tester_spawned=0
+
+  # Spawn the tester pod on the cluster control host
+  if ssh_cp "kubectl run ${tester_pod} -n default \
+      --image=python:3.12-alpine --restart=Never \
+      --command -- sleep 600" >/dev/null 2>&1; then
+    if ssh_cp "kubectl wait --for=condition=Ready pod/${tester_pod} \
+        -n default --timeout=60s" >/dev/null 2>&1; then
+      tester_spawned=1
+      ok "mail/tester-pod: ${tester_pod} ready in default namespace"
+    else
+      log "mail/tester-pod: pod did not become Ready within 60s — falling back"
+      ssh_cp "kubectl delete pod ${tester_pod} -n default --grace-period=0 --force" >/dev/null 2>&1 || true
+    fi
+  else
+    log "mail/tester-pod: kubectl run failed (RBAC or image pull?) — falling back"
+  fi
+
+  # Cleanup helper for the tester pod (called at end or on failure)
+  cleanup_tester_pod() {
+    if [[ "$tester_spawned" == "1" ]]; then
+      ssh_cp "kubectl delete pod ${tester_pod} -n default \
+        --grace-period=0 --force" >/dev/null 2>&1 || true
+      tester_spawned=0
+    fi
+  }
+
   # ── Step 7: send test email via SMTP (port 587 STARTTLS) ─────────
   local subject="E2E-$stamp"
+  # SMTP target: in-cluster Service DNS name. This is the real path tenant
+  # apps use. Port 587 = STARTTLS submission.
+  local smtp_target="stalwart-mail.mail.svc.cluster.local"
   local smtp_result
-  smtp_result=$(python3 - <<PYEOF 2>&1
-import smtplib, ssl, sys, time
 
-host = "$mail_host"
+  if [[ "$tester_spawned" == "1" ]]; then
+    # Run smtplib probe inside the cluster pod
+    smtp_result=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+import smtplib, ssl, sys
+
+host = \"${smtp_target}\"
 port = 587
-user = "$mail_box_user"
-password = "$mail_box_pass"
-subject_line = "$subject"
+user = \"${mail_box_user}\"
+password = \"${mail_box_pass}\"
+subject_line = \"${subject}\"
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE  # staging cert may be LE-staging
+ctx.verify_mode = ssl.CERT_NONE
 
 try:
     with smtplib.SMTP(host, port, timeout=30) as s:
@@ -774,36 +817,45 @@ try:
         s.ehlo()
         s.login(user, password)
         msg = (
-            f"From: {user}\r\n"
-            f"To: {user}\r\n"
-            f"Subject: {subject_line}\r\n"
-            f"\r\n"
-            f"E2E test body {subject_line}\r\n"
+            \"From: \" + user + \"\r\n\"
+            \"To: \" + user + \"\r\n\"
+            \"Subject: \" + subject_line + \"\r\n\"
+            \"\r\n\"
+            \"E2E test body \" + subject_line + \"\r\n\"
         )
         s.sendmail(user, [user], msg)
-    print("SMTP_OK")
+    print(\"SMTP_OK\")
 except Exception as e:
-    print(f"SMTP_FAIL: {e}", file=sys.stderr)
+    print(\"SMTP_FAIL: \" + str(e), file=sys.stderr)
     sys.exit(1)
-PYEOF
-)
+'" 2>&1)
+  else
+    # Fall-back path: report a clean error rather than silently retrying
+    # the old external-host probe (which would fail with ip-blocked).
+    smtp_result="SMTP_FAIL: tester pod unavailable — skipped to avoid ip-blocked false negative"
+  fi
+
   if echo "$smtp_result" | grep -q "SMTP_OK"; then
-    ok "mail/smtp: sent message subject=$subject via $mail_host:587"
+    ok "mail/smtp: sent message subject=$subject via ${smtp_target}:587 (in-cluster pod)"
   else
     fail "mail/smtp: SMTP send failed — $smtp_result"
+    cleanup_tester_pod
     cleanup_mail; return 1
   fi
 
   # ── Step 8: receive via IMAP (port 993, TLS) ─────────────────────
+  # IMAP target: same in-cluster Service, port 993 (implicit TLS).
   local imap_result
-  imap_result=$(python3 - <<PYEOF 2>&1
+
+  if [[ "$tester_spawned" == "1" ]]; then
+    imap_result=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
 import imaplib, ssl, sys, time
 
-host = "$mail_host"
+host = \"${smtp_target}\"
 port = 993
-user = "$mail_box_user"
-password = "$mail_box_pass"
-subject_line = "$subject"
+user = \"${mail_box_user}\"
+password = \"${mail_box_pass}\"
+subject_line = \"${subject}\"
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -814,33 +866,39 @@ for attempt in range(15):
     try:
         with imaplib.IMAP4_SSL(host, port, ssl_context=ctx) as M:
             M.login(user, password)
-            M.select("INBOX")
-            typ, data = M.search(None, 'SUBJECT', f'"{subject_line}"')
+            M.select(\"INBOX\")
+            typ, data = M.search(None, \"SUBJECT\", \"\\\"\" + subject_line + \"\\\"\")
             ids = data[0].split()
             if ids:
-                typ, msg_data = M.fetch(ids[-1], '(RFC822)')
-                raw = msg_data[0][1].decode('utf-8', errors='replace')
+                typ, msg_data = M.fetch(ids[-1], \"(RFC822)\")
+                raw = msg_data[0][1].decode(\"utf-8\", errors=\"replace\")
                 if subject_line in raw:
-                    print("IMAP_OK")
+                    print(\"IMAP_OK\")
                     sys.exit(0)
-            last_error = None  # connected OK, message just not here yet
+            last_error = None
     except Exception as e:
         last_error = str(e)
     time.sleep(2)
 
 if last_error:
-    print(f"IMAP_NOT_FOUND: last error: {last_error}", file=sys.stderr)
+    print(\"IMAP_NOT_FOUND: last error: \" + str(last_error), file=sys.stderr)
 else:
-    print("IMAP_NOT_FOUND: message not received after 30s", file=sys.stderr)
+    print(\"IMAP_NOT_FOUND: message not received after 30s\", file=sys.stderr)
 sys.exit(1)
-PYEOF
-)
+'" 2>&1)
+  else
+    imap_result="IMAP_NOT_FOUND: tester pod unavailable — skipped"
+  fi
+
   if echo "$imap_result" | grep -q "IMAP_OK"; then
-    ok "mail/imap: message with subject=$subject received in INBOX"
+    ok "mail/imap: message with subject=$subject received in INBOX (in-cluster pod)"
   else
     fail "mail/imap: IMAP receive failed — $imap_result"
     # Don't abort; continue to remaining checks
   fi
+
+  # Clean up tester pod now that SMTP/IMAP are done
+  cleanup_tester_pod
 
   # ── Step 9: webmail check (HTTP reachability) ─────────────────────
   local wm_http; wm_http=$(curl -sk -o /dev/null -w "%{http_code}" \

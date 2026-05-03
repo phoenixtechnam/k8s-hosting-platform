@@ -149,6 +149,8 @@ secret = "%{env:MASTER_SECRET}%"
 # replacement of config.toml (configMapGenerator merge), so changes to
 # the base must be manually kept in sync here.
 # CI guard (scripts/ci-stalwart-config-drift.sh) catches drift at PR time.
+# See base file for rationale: kube-proxy SNATs external traffic to node
+# IP on ClusterIP+externalIPs; externalTrafficPolicy is irrelevant here.
 [server.security]
 allowed-ips = ["127.0.0.0/8", "::1/128", "10.42.0.0/16", "10.43.0.0/16"]
 

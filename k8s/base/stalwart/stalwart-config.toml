@@ -179,30 +179,32 @@ secret = "%{env:MASTER_SECRET}%"
 # ─── Security: IP allowlist ────────────────────────────────────────────
 # Allowlist for cluster-internal traffic.
 #
-# Service type is ClusterIP with externalIPs. kube-proxy SNATs external
-# traffic to the node's IP regardless of externalTrafficPolicy (which only
-# honours LoadBalancer/NodePort). Stalwart therefore sees external SMTP
-# submission as coming from a cluster-node IP and triggers
-# security.ip-blocked. Each environment overlay's reloader-patch.yaml
-# MUST extend this list with its own cluster node IPs (server + worker
-# public IPs). The base lists only the universal CIDRs below; staging /
-# production overlays patch in their actual node IPs.
+# The stalwart-mail Service is type: ClusterIP with externalIPs.
+# K8s kube-proxy SNATs all traffic to the node IP regardless of
+# externalTrafficPolicy (that field is only honoured on LoadBalancer/
+# NodePort types). Stalwart therefore sees external SMTP submission as
+# coming from a cluster-node IP and triggers its security.ip-blocked
+# anti-loop heuristic. This CIDR allowlist is the defence:
+# cluster-node IPs and pod/service CIDRs are explicitly trusted.
+#
+# Each environment overlay's reloader-patch.yaml MUST extend this list
+# with its own cluster node IPs (server + worker public IPs). The base
+# lists only the universal CIDRs below; staging / production overlays
+# patch in their actual node IPs.
 #
 # CIDRs:
 #   127.0.0.0/8, ::1/128  — loopback (health probes, local CLI)
 #   10.42.0.0/16           — Calico pod CIDR (k3s default)
 #   10.43.0.0/16           — k3s service CIDR
 #
-# After a node IP was already auto-blocked (e.g., during a previous
-# deploy without Local policy), clear Stalwart's RocksDB block store
-# via:
+# If a node IP was auto-blocked (e.g. during a deploy before the IP
+# was allowlisted), clear Stalwart's block store via:
 #   kubectl exec -n mail stalwart-mail-0 -- \
 #     stalwart-cli --url http://127.0.0.1:8080 \
 #     --credentials "admin:<ADMIN_SECRET>" \
 #     security ip-unblock <blocked-ip>
-# Or restart the StatefulSet — Stalwart's in-memory block state
-# persists across config reloads but is reset on pod restart when
-# auto-ban.enable is false (see below).
+# Or restart the StatefulSet — Stalwart's in-memory block state is
+# reset on pod restart when auto-ban.enable is false.
 [server.security]
 allowed-ips = ["127.0.0.0/8", "::1/128", "10.42.0.0/16", "10.43.0.0/16"]
 

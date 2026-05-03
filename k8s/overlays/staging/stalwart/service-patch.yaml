@@ -39,9 +39,20 @@ metadata:
   namespace: mail
 spec:
   type: ClusterIP
-  # Reset to Cluster (the default) — base sets Local which is LB/
-  # NodePort-only. k8s allows Cluster on ClusterIP + externalIPs
-  # without warning; Local on ClusterIP fails validation on k3s 1.28+.
+  # externalTrafficPolicy: K8s only honours this field on LoadBalancer and
+  # NodePort Service types. On type: ClusterIP (even with externalIPs),
+  # the field has NO effect — kube-proxy SNATs all traffic to the node IP
+  # regardless. We explicitly set Cluster here to OVERRIDE the base's Local
+  # value (set there for the production LoadBalancer path) so that this
+  # manifest does not mislead operators into thinking client-IP preservation
+  # is configured for this ClusterIP+externalIPs setup.
+  #
+  # Proper client-IP preservation on ClusterIP+externalIPs would require:
+  #   - type: LoadBalancer (needs a cloud LB controller — not installed here)
+  #   - hostNetwork: true on the Stalwart pod (binds ports directly to the
+  #     node NIC, bypassing kube-proxy entirely)
+  # Neither is in scope for staging. Stalwart's [server.security] allowed-ips
+  # CIDR list in config.toml handles ip-blocked for in-cluster traffic.
   externalTrafficPolicy: Cluster
   externalIPs:
     - 89.167.3.56
