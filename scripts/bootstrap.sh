@@ -2560,6 +2560,23 @@ EOF
     log "Admin seed credentials written to /etc/platform/admin-credentials."
     log "  Login: $admin_email / $admin_password"
   fi
+
+  # Stalwart 0.16 dedicated CNPG credentials (mail-pg-app-credentials).
+  # CNPG reads this Secret once at initdb — must exist before the
+  # stalwart-v016 overlay is applied. The username is fixed (stalwart_app);
+  # the password is random. See k8s/base/stalwart-v016/mail-pg/cluster.yaml.
+  kctl create namespace mail 2>/dev/null || true
+  if kctl get secret -n mail mail-pg-app-credentials &>/dev/null 2>&1; then
+    log "mail-pg-app-credentials already exists, skipping."
+  else
+    local mail_pg_password
+    mail_pg_password="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+    kctl create secret generic mail-pg-app-credentials \
+      --namespace=mail \
+      --from-literal=username="stalwart_app" \
+      --from-literal=password="$mail_pg_password"
+    log "mail-pg-app-credentials created."
+  fi
 }
 
 create_platform_configmap() {
@@ -2774,6 +2791,8 @@ bundle_bootstrap_secrets() {
     "platform oauth2-proxy-config"
     "platform sftp-host-keys"
     "platform stalwart-secrets"
+    "mail mail-pg-app-credentials"
+    "mail stalwart-admin-creds"
   )
 
   local manifest="${stage}/MANIFEST.txt"
@@ -2874,6 +2893,202 @@ wait_for_admission_webhooks() {
       sleep 5
     done
   done
+}
+
+# ─── Stalwart 0.16 first-install bootstrap ───────────────────────────────────
+#
+# Called from main() AFTER apply_platform_manifests so the stalwart-v016
+# manifests (Deployment, CNPG Cluster, Job) have been applied by Flux/kubectl
+# before we wait for them.
+#
+# Idempotency:
+#   - If stalwart-admin-creds Secret already exists AND Stalwart is in full
+#     mode (/jmap/session returns 200), the step is skipped.
+#   - If the Secret exists but Stalwart is in bootstrap mode (DB empty or
+#     Job failed), the rendered plan is re-applied and the Deployment rolled.
+#
+# The stalwart-v016 overlay MUST be applied (either via the env overlay that
+# includes it, or via a separate `kubectl apply -k`) before calling this
+# function. For env=production this happens in apply_platform_manifests;
+# for local dev use `./scripts/local.sh mail16-up` instead.
+bootstrap_stalwart_v016() {
+  log ""
+  log "── Stalwart 0.16 bootstrap ──"
+
+  # Guard: only run when the stalwart-v016 overlay was actually applied
+  # (Deployment exists). If the operator is not deploying mail, skip.
+  if ! kctl get deployment -n mail stalwart-mail-v016 &>/dev/null 2>&1; then
+    log "  stalwart-mail-v016 Deployment not found — skipping (mail not deployed)."
+    return 0
+  fi
+
+  # ── Step 1: Wait for mail-pg CNPG Cluster to be Ready ────────────────
+  log "  Waiting for mail-pg CNPG Cluster (up to 300s)..."
+  if ! kctl wait --for=condition=Ready cluster/mail-pg -n mail --timeout=300s 2>/dev/null; then
+    warn "  mail-pg not Ready after 300s — skipping Stalwart v016 bootstrap."
+    warn "  Re-run bootstrap.sh after mail-pg becomes Ready, or run:"
+    warn "    kubectl wait --for=condition=Ready cluster/mail-pg -n mail"
+    return 0
+  fi
+  log "  mail-pg is Ready."
+
+  # ── Step 2: Wait for Stalwart pod to start ────────────────────────────
+  log "  Waiting for stalwart-mail-v016 rollout (up to 300s)..."
+  if ! kctl rollout status -n mail deploy/stalwart-mail-v016 --timeout=300s 2>/dev/null; then
+    warn "  stalwart-mail-v016 rollout did not complete — bootstrap may fail."
+  fi
+
+  # ── Step 3: Detect mode (bootstrap vs full) ───────────────────────────
+  # Port-forward mgmt port to localhost for the health probe.
+  local stalwart_pod
+  stalwart_pod=$(kctl get pod -n mail -l app=stalwart-mail-v016 \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$stalwart_pod" ]]; then
+    warn "  No stalwart-mail-v016 pod found — cannot probe for bootstrap mode."
+    return 0
+  fi
+
+  local jmap_code
+  jmap_code=$(kctl exec -n mail "$stalwart_pod" -- \
+    wget -q -O /dev/null --server-response \
+    "http://localhost:8080/jmap/session" 2>&1 | grep "HTTP/" | awk '{print $2}' || echo "000")
+
+  if [[ "$jmap_code" == "200" ]]; then
+    # Check if stalwart-admin-creds exists (idempotency marker)
+    if kctl get secret -n mail stalwart-admin-creds &>/dev/null 2>&1; then
+      log "  Stalwart 0.16 already in full mode and stalwart-admin-creds exists. Skipping."
+      return 0
+    fi
+    # Full mode but no admin-creds secret — unusual, might be a manual install.
+    log "  Stalwart 0.16 is in full mode (JMAP 200) but stalwart-admin-creds missing."
+    log "  Generating admin-creds Secret for platform-api integration..."
+    local stalwart_admin_pw
+    stalwart_admin_pw="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+    kctl create secret generic stalwart-admin-creds \
+      --namespace=mail \
+      --from-literal=adminPassword="$stalwart_admin_pw" \
+      --from-literal=recoveryPassword="$stalwart_admin_pw" 2>/dev/null || true
+    log "  stalwart-admin-creds created (manually set password — rotate via admin panel)."
+    return 0
+  fi
+
+  log "  Stalwart 0.16 is in bootstrap mode (JMAP returned ${jmap_code})."
+
+  # ── Step 4: Generate stalwart-admin-creds if not present ─────────────
+  local stalwart_admin_pw
+  if kctl get secret -n mail stalwart-admin-creds &>/dev/null 2>&1; then
+    log "  stalwart-admin-creds already exists — using existing password."
+    stalwart_admin_pw=$(kctl get secret -n mail stalwart-admin-creds \
+      -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d || echo "")
+    if [[ -z "$stalwart_admin_pw" ]]; then
+      warn "  Could not read adminPassword from stalwart-admin-creds; regenerating."
+      stalwart_admin_pw="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+      kctl create secret generic stalwart-admin-creds \
+        --namespace=mail \
+        --from-literal=adminPassword="$stalwart_admin_pw" \
+        --from-literal=recoveryPassword="$stalwart_admin_pw" \
+        --dry-run=client -o yaml | kctl apply -f -
+    fi
+  else
+    stalwart_admin_pw="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
+    kctl create secret generic stalwart-admin-creds \
+      --namespace=mail \
+      --from-literal=adminPassword="$stalwart_admin_pw" \
+      --from-literal=recoveryPassword="$stalwart_admin_pw"
+    log "  stalwart-admin-creds created."
+    # Persist to disk alongside other platform credentials.
+    mkdir -p /etc/platform
+    cat > /etc/platform/stalwart-v016-credentials <<STALWART016_EOF
+# Generated by bootstrap.sh — do not commit. Chmod 600.
+# Rotate via admin panel after first login.
+STALWART_V016_ADMIN_PASSWORD=${stalwart_admin_pw}
+STALWART016_EOF
+    chmod 600 /etc/platform/stalwart-v016-credentials
+    log "  Stalwart v016 credentials persisted to /etc/platform/stalwart-v016-credentials."
+  fi
+
+  # ── Step 5: Render bootstrap plan and write to stalwart-bootstrap-plan Secret ──
+  log "  Rendering bootstrap plan..."
+  local stalwart_hostname="mail.${PLATFORM_DOMAIN}"
+  local stalwart_domain="${PLATFORM_DOMAIN}"
+  local stalwart_domain_id
+  # Convert domain to a DB-safe identifier (dots → hyphens, lowercase).
+  stalwart_domain_id=$(echo "$stalwart_domain" | tr '.' '-' | tr '[:upper:]' '[:lower:]')
+  # Generate Ed25519 DKIM key pair.
+  local dkim_key_file="/tmp/stalwart-dkim-ed25519.pem"
+  openssl genpkey -algorithm ed25519 -out "$dkim_key_file" 2>/dev/null
+  local dkim_private_pem
+  dkim_private_pem=$(cat "$dkim_key_file")
+  rm -f "$dkim_key_file"
+
+  # Render the bootstrap plan by substituting all variables.
+  local plan_rendered
+  plan_rendered=$(STALWART_HOSTNAME="$stalwart_hostname" \
+    STALWART_DOMAIN="$stalwart_domain" \
+    STALWART_DOMAIN_ID="$stalwart_domain_id" \
+    STALWART_ADMIN_ID="admin" \
+    STALWART_ADMIN_PASSWORD="$stalwart_admin_pw" \
+    STALWART_DKIM_PRIVATE_KEY_PEM="$dkim_private_pem" \
+    envsubst < <(kctl get configmap -n mail stalwart-v016-bootstrap-plan \
+      -o jsonpath='{.data.bootstrap-plan\.json}' 2>/dev/null))
+
+  if [[ -z "$plan_rendered" ]]; then
+    warn "  Failed to read stalwart-v016-bootstrap-plan ConfigMap — bootstrap plan not applied."
+    warn "  Ensure the stalwart-v016 overlay has been applied first."
+    return 0
+  fi
+
+  # Write the rendered plan to a Secret (bootstrap-job reads from here).
+  kctl create secret generic stalwart-bootstrap-plan \
+    --namespace=mail \
+    --from-literal=plan.json="$plan_rendered" \
+    --dry-run=client -o yaml | kctl apply -f -
+  log "  stalwart-bootstrap-plan Secret written (rendered, env-substituted)."
+
+  # ── Step 6: Unsuspend bootstrap Job and wait ─────────────────────────
+  log "  Unsuspending stalwart-v016-bootstrap Job..."
+  kctl patch job stalwart-v016-bootstrap -n mail \
+    -p '{"spec":{"suspend":false}}' 2>/dev/null || {
+    warn "  Failed to unsuspend bootstrap Job — it may not exist yet (Flux still reconciling)."
+    warn "  Re-run bootstrap.sh or manually patch: kubectl patch job stalwart-v016-bootstrap -n mail -p '{\"spec\":{\"suspend\":false}}'"
+    return 0
+  }
+
+  log "  Waiting for bootstrap Job to complete (up to 300s)..."
+  if ! kctl wait --for=condition=complete job/stalwart-v016-bootstrap \
+      -n mail --timeout=300s 2>/dev/null; then
+    warn "  Bootstrap Job did not complete in 300s."
+    warn "  Check logs: kubectl logs -n mail -l app.kubernetes.io/component=mail-bootstrap"
+    return 0
+  fi
+  log "  Bootstrap Job completed."
+
+  # ── Step 7: Restart Deployment to exit bootstrap mode ────────────────
+  log "  Rolling Stalwart Deployment to exit bootstrap mode..."
+  kctl rollout restart -n mail deploy/stalwart-mail-v016
+  kctl rollout status -n mail deploy/stalwart-mail-v016 --timeout=180s || true
+
+  # ── Step 8: Verify full mode ──────────────────────────────────────────
+  log "  Verifying Stalwart 0.16 full mode..."
+  local new_pod
+  new_pod=$(kctl get pod -n mail -l app=stalwart-mail-v016 \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$new_pod" ]]; then
+    warn "  No pod found after rollout — verification skipped."
+    return 0
+  fi
+
+  local verify_code
+  verify_code=$(kctl exec -n mail "$new_pod" -- \
+    wget -q -O /dev/null --server-response \
+    "http://localhost:8080/jmap/session" 2>&1 | grep "HTTP/" | awk '{print $2}' || echo "000")
+
+  if [[ "$verify_code" == "200" ]]; then
+    log "  Stalwart 0.16 is in full mode (/jmap/session → 200). Bootstrap complete."
+  else
+    warn "  /jmap/session returned ${verify_code} after rollout — Stalwart may need more time."
+    warn "  Wait ~30s then retry: kubectl exec -n mail ${new_pod} -- wget -qO- http://localhost:8080/jmap/session"
+  fi
 }
 
 apply_platform_manifests() {
@@ -3339,9 +3554,16 @@ main() {
     create_platform_configmap
     generate_operator_recipient
     apply_platform_manifests
+    # Stalwart 0.16 first-install bootstrap. Runs after apply_platform_manifests
+    # so the stalwart-v016 manifests (Deployment, CNPG Cluster, bootstrap Job)
+    # exist in the cluster before we wait for them. Skips gracefully when the
+    # stalwart-v016 overlay was not applied (mail not deployed). Idempotent:
+    # re-run is safe when stalwart-admin-creds already exists + full mode.
+    bootstrap_stalwart_v016
     # Tier-1 secrets bundle for offline retrieval. Runs after
-    # generate_platform_secrets + generate_operator_recipient so all
-    # bundled material exists. See docs/04-deployment/SECRETS_LIFECYCLE.md.
+    # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
+    # so all bundled material (including stalwart-admin-creds) exists.
+    # See docs/04-deployment/SECRETS_LIFECYCLE.md.
     bundle_bootstrap_secrets
 
     # Phase 4: Verify
