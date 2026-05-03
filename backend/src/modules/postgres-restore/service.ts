@@ -112,24 +112,60 @@ export async function isPostgresRestoreInProgressClusterWide(
 /**
  * Called once at platform-api startup. If we find a persisted lock from
  * a previous process that crashed mid-PITR, surface it loudly: the
- * source cluster may be in an indeterminate state. We do NOT auto-resume
- * — recovery requires human judgement (PVCs may need re-creating or
- * the temp cluster may need cleanup). We DO clear the lock so writes
- * are not blocked forever; the operator gets a sticky admin notification.
+ * source cluster may be in an indeterminate state.
+ *
+ * We do NOT auto-resume the orchestration — recovery requires human
+ * judgement (the source cluster CR may already be re-created by CNPG
+ * from the snapshot, the temp cluster may need cleanup, etc.). We DO:
+ *   - Emit a sticky admin notification with full lock context
+ *   - Clear the persisted lock so writes are not blocked forever
+ *   - Best-effort delete any leftover temp PITR cluster (identified by
+ *     the platform.phoenix-host.net/pitr-restore=true label) so they
+ *     don't pin Longhorn volumes indefinitely. Requires a K8sClients
+ *     argument; called with null at startup, the cleanup is skipped.
  */
-export async function recoverInterruptedRestore(db: Database): Promise<{ readonly recovered: boolean; readonly lock?: PersistedLock }> {
+export async function recoverInterruptedRestore(
+  db: Database,
+  k8s?: K8sClients,
+): Promise<{ readonly recovered: boolean; readonly lock?: PersistedLock; readonly cleanedTempClusters?: number }> {
   const lock = await readPersistedLock(db);
   if (!lock) return { recovered: false };
+
+  let cleanedTempClusters = 0;
+  if (k8s) {
+    try {
+      // List all CNPG clusters in the source namespace and delete any
+      // carrying the pitr-restore label. Safe even across multiple
+      // failed runs — each leftover gets cleaned.
+      const list = await (k8s.custom as unknown as {
+        listNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; labelSelector?: string }) => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string } }> }>;
+      }).listNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters',
+        labelSelector: 'platform.phoenix-host.net/pitr-restore=true',
+      });
+      for (const c of list.items ?? []) {
+        const name = c.metadata?.name;
+        if (name) {
+          await deleteCustom(k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name }).catch(() => undefined);
+          cleanedTempClusters++;
+        }
+      }
+    } catch {
+      // best-effort; the admin notification still goes out
+    }
+  }
+
   await emitAdminNotification(
     db,
     `Platform-api restarted while a Postgres PITR was in progress (started ${lock.startedAt}, snapshot ${lock.snapshot}, phase=${lock.phase}). ` +
     `The cluster ${lock.clusterNamespace}/${lock.clusterName} may be in an indeterminate state. ` +
     `Inspect: kubectl -n ${lock.clusterNamespace} get cluster ${lock.clusterName} ${lock.tempClusterName}. ` +
-    `If the source cluster is missing, the original PVCs are reclaimPolicy=Retain — manually re-create the Cluster CR pointing at them.`,
+    `If the source cluster is missing, the original PVCs are reclaimPolicy=Retain — manually re-create the Cluster CR pointing at them.` +
+    (cleanedTempClusters > 0 ? ` Auto-cleaned ${cleanedTempClusters} leftover temp PITR cluster(s).` : ''),
     'Postgres PITR INTERRUPTED — manual recovery required',
   );
   await clearPersistedLock(db);
-  return { recovered: true, lock };
+  return { recovered: true, lock, cleanedTempClusters };
 }
 
 const LH_GROUP = 'longhorn.io';

@@ -413,10 +413,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // process died mid-restore, the persisted lock row in
       // platform_settings tells us so — emit a sticky admin
       // notification with enough context to recover by hand, then
-      // clear the lock so writes are not blocked forever.
+      // clear the lock so writes are not blocked forever. Also
+      // best-effort cleans up leftover temp PITR clusters (identified
+      // by the platform.phoenix-host.net/pitr-restore=true label) so
+      // they don't pin Longhorn volumes.
       try {
         const { recoverInterruptedRestore } = await import('./modules/postgres-restore/service.js');
-        await recoverInterruptedRestore(app.db);
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const cfg = app.config as Record<string, unknown>;
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const k8s = createK8sClients(kubeconfigPath);
+        await recoverInterruptedRestore(app.db, k8s);
       } catch (err) {
         app.log.error({ err }, 'PITR interrupted-restore recovery failed at startup');
       }

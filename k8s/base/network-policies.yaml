@@ -204,9 +204,19 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
 spec:
+  # matchExpressions Exists so the policy applies to pods of ANY
+  # cnpg-managed cluster in this namespace — not just the source
+  # `postgres` cluster. Required by snapshot-only PITR: the
+  # auto-promote orchestrator briefly runs a temp cluster
+  # `postgres-pitr-<ts>` whose pods carry a different
+  # cnpg.io/cluster label. Without Exists, the CNPG operator can't
+  # reach the temp cluster's instance-manager status endpoint
+  # (port 8000) and the cluster sits at "Instance Status Extraction
+  # Error: HTTP communication issue" forever.
   podSelector:
-    matchLabels:
-      cnpg.io/cluster: postgres
+    matchExpressions:
+      - key: cnpg.io/cluster
+        operator: Exists
   policyTypes:
     - Ingress
   ingress:
@@ -220,13 +230,14 @@ spec:
         - protocol: TCP
           port: 9187   # postgres-exporter metrics
     # Streaming replication: standby instances connect to the
-    # primary on 5432. Both are in the platform namespace, both
-    # carry cnpg.io/cluster=postgres, so this peer rule allows
-    # postgres-{2,3} → postgres-1 once the operator creates them.
+    # primary on 5432. Both peer rule sides use Exists so any
+    # cnpg-managed pod can replicate from any other cnpg-managed
+    # pod in this namespace (covers temp PITR clusters too).
     - from:
         - podSelector:
-            matchLabels:
-              cnpg.io/cluster: postgres
+            matchExpressions:
+              - key: cnpg.io/cluster
+                operator: Exists
       ports:
         - protocol: TCP
           port: 5432
