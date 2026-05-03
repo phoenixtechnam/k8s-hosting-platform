@@ -319,12 +319,14 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // DELETE /api/v1/clients/:id
+  // Returns 200 with { transitionId } so the UI can open the
+  // progress modal immediately by id (no polling-by-since race).
   app.delete('/clients/:id', {
     onRequest: [requireRole('super_admin', 'admin')],
-  }, async (request, reply) => {
+  }, async (request) => {
     const { id } = request.params as { id: string };
-    await service.deleteClient(app.db, id, getK8s());
-    return reply.status(204).send();
+    const result = await service.deleteClient(app.db, id, getK8s());
+    return success({ transitionId: result.transitionId });
   });
 
   // ─── Impersonation ──────────────────────────────────────────────────────────

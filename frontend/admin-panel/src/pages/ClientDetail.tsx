@@ -82,7 +82,11 @@ export default function ClientDetail() {
   // operation is triggered. The modal latches onto the most recent
   // transition row matching `kind` started after `since` so concurrent
   // transitions don't bleed across.
-  const [txModal, setTxModal] = useState<{ kind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted'; since: number } | null>(null);
+  const [txModal, setTxModal] = useState<{
+    kind: 'active' | 'suspended' | 'archived' | 'restored' | 'deleted';
+    since: number;
+    transitionId?: string | null;
+  } | null>(null);
 
   const deleteClient = useDeleteClient();
   const updateClient = useUpdateClient(id ?? '');
@@ -95,14 +99,17 @@ export default function ClientDetail() {
   const handleDelete = async () => {
     if (!id) return;
     try {
-      // Open the modal BEFORE the delete completes so the operator can
-      // watch the deleted-transition hooks drain. Modal continues to
-      // poll lifecycle/transitions even after the client row is gone
-      // (transitions table is intentionally not cascade-on-delete).
+      // Open the modal optimistically so the operator sees a
+      // "Dispatching deleted transition…" placeholder immediately.
       setTxModal({ kind: 'deleted', since: Date.now() });
-      await deleteClient.mutateAsync(id);
+      const res = await deleteClient.mutateAsync(id);
+      // Latch onto the exact transition id the backend dispatched so
+      // the modal can stop guessing and show hook_runs sub-second.
+      const transitionId = res?.data?.transitionId ?? null;
+      if (transitionId) {
+        setTxModal((prev) => prev ? { ...prev, transitionId } : prev);
+      }
       // Don't navigate immediately — let the operator close the modal.
-      // The modal's "polling stopped" indicator signals when it's safe.
     } catch {
       // error stays visible in dialog
     }
@@ -119,6 +126,30 @@ export default function ClientDetail() {
       if (opId) setStatusOpId(opId);
     } catch {
       // silently handled — status badge will reflect current state
+    }
+  };
+
+  const handleArchive = async () => {
+    if (!id) return;
+    const retentionDays = 90;
+    const ok = confirm(
+      `Archive this client?\n\n`
+      + `A final pre-archive snapshot will be taken and retained for ${retentionDays} day(s). `
+      + 'All mailboxes, aliases, deployments, and the live PVC will be deleted. '
+      + 'The client can be restored from the snapshot any time before retention expires.\n\n'
+      + 'Continue?',
+    );
+    if (!ok) return;
+    try {
+      setTxModal({ kind: 'archived', since: Date.now() });
+      const res = await updateClient.mutateAsync({
+        status: 'archived',
+        archive_retention_days: retentionDays,
+      });
+      const opId = res?.data?.storageArchiveOperationId ?? null;
+      if (opId) setStatusOpId(opId);
+    } catch {
+      // surfaced via mutation state
     }
   };
 
@@ -301,41 +332,69 @@ export default function ClientDetail() {
             <Edit size={14} />
             <span className="hidden sm:inline">Edit</span>
           </button>
-          {client.status === 'suspended' ? (
-            <button
-              onClick={handleReactivate}
-              disabled={updateClient.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
-              data-testid="reactivate-button"
-            >
-              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              <span className="hidden sm:inline">Reactivate</span>
-            </button>
-          ) : (
+          {/* Lifecycle action buttons — explicit per-status mapping
+              aligned with the registry transitions (ADR-033). The
+              status dropdown (LifecycleStatusControl in the Account
+              card) duplicates these for keyboard-driven operators;
+              the buttons here are the discoverable surface. The
+              previously-shown "Decommission" button (delete namespace
+              keep DB row) is intentionally removed — Archive (with
+              snapshot, restorable) or Delete (hard remove) cover
+              every operator intent. The Decommission API endpoint is
+              retained for backward compatibility with curl callers. */}
+          {client.status === 'active' && (
             <button
               onClick={handleSuspend}
               disabled={updateClient.isPending}
               className="inline-flex items-center gap-2 rounded-lg border border-orange-200 dark:border-orange-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-orange-600 dark:text-orange-400 shadow-sm hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50"
               data-testid="suspend-button"
+              title="Scale workloads to 0, swap ingress to suspended page, disable mail/cron — fully reversible via Reactivate."
             >
               {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
               <span className="hidden sm:inline">Suspend</span>
             </button>
           )}
-          {client.status === 'suspended' && ((client as Record<string, unknown>).provisioningStatus === 'provisioned' || (client as Record<string, unknown>).provisioningStatus === 'failed') && (
+          {client.status === 'suspended' && (
             <button
-              onClick={() => setDecommissionOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
-              data-testid="decommission-button"
+              onClick={handleReactivate}
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+              data-testid="reactivate-button"
+              title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron."
             >
-              <ServerCrash size={14} />
-              <span className="hidden sm:inline">Decommission</span>
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              <span className="hidden sm:inline">Reactivate</span>
+            </button>
+          )}
+          {(client.status === 'active' || client.status === 'suspended') && (client as Record<string, unknown>).provisioningStatus === 'provisioned' && (
+            <button
+              onClick={handleArchive}
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 shadow-sm hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
+              data-testid="archive-button"
+              title="Take a final snapshot, then delete PVC/workloads/mailboxes. Client row + snapshot retained for the configured retention window. Restorable."
+            >
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <ServerCrash size={14} />}
+              <span className="hidden sm:inline">Archive</span>
+            </button>
+          )}
+          {client.status === 'archived' && (
+            <button
+              onClick={handleReactivate}
+              disabled={updateClient.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
+              data-testid="restore-button"
+              title="Recreate PVC + restore data from the pre-archive snapshot. Workloads need to be redeployed after restore completes."
+            >
+              {updateClient.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              <span className="hidden sm:inline">Restore</span>
             </button>
           )}
           <button
             onClick={() => setDeleteOpen(true)}
             className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
             data-testid="delete-button"
+            title="Hard delete — removes the client row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
           >
             <Trash2 size={14} />
             <span className="hidden sm:inline">Delete</span>
@@ -477,6 +536,7 @@ export default function ClientDetail() {
           clientId={id}
           transition={txModal.kind}
           since={txModal.since}
+          transitionId={txModal.transitionId}
           onClose={() => {
             setTxModal(null);
             // After a delete, navigate away once the operator dismisses

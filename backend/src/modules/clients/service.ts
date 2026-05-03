@@ -1039,7 +1039,11 @@ export async function updateClient(
     : updated;
 }
 
-export async function deleteClient(db: Database, id: string, k8sClients?: K8sClients) {
+export async function deleteClient(
+  db: Database,
+  id: string,
+  k8sClients?: K8sClients,
+): Promise<{ transitionId: string | null }> {
   const client = await getClientById(db, id);
 
   // Unified hard-delete cascade via client-lifecycle/cascades.ts —
@@ -1047,7 +1051,7 @@ export async function deleteClient(db: Database, id: string, k8sClients?: K8sCli
   // to a DB-only delete when k8s isn't available (unit tests).
   if (k8sClients) {
     const { applyDeleted } = await import('../client-lifecycle/cascades.js');
-    await applyDeleted({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
+    const transitionId = await applyDeleted({ db, k8s: k8sClients }, id, client.kubernetesNamespace);
 
     // Also purge snapshot-store archives for this client so we don't
     // leak data after a hard delete. Best-effort; snapshots for
@@ -1069,9 +1073,10 @@ export async function deleteClient(db: Database, id: string, k8sClients?: K8sCli
     } catch (err) {
       console.warn(`[client-delete] snapshot purge failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return;
+    return { transitionId };
   }
 
   // k8s not available (unit test path): delete DB row directly.
   await db.delete(clients).where(eq(clients.id, id));
+  return { transitionId: null };
 }

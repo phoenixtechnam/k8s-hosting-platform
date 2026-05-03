@@ -38,6 +38,12 @@ export interface CascadeCtx {
  * are swallowed so a registry write failure cannot corrupt the
  * outer cascade — the orphan scanner + retry scheduler are the
  * safety nets if the in-band call fails.
+ *
+ * Returns the transitionId so callers (PATCH /clients/:id route, bulk
+ * ops, storage-lifecycle orchestrators) can include it in their
+ * response. The UI uses it to open the progress modal immediately
+ * with a stable id instead of latching by (kind + since-timestamp)
+ * after a 1-2 s race.
  */
 async function dispatchTransition(
   ctx: CascadeCtx,
@@ -46,15 +52,17 @@ async function dispatchTransition(
   transition: Transition,
   fromStatus: string | null,
   toStatus: string,
-): Promise<void> {
+): Promise<string | null> {
   try {
-    await runTransition(ctx.db, ctx.k8s, {
+    const result = await runTransition(ctx.db, ctx.k8s, {
       clientId, namespace, transition, fromStatus, toStatus,
     });
+    return result.transitionId;
   } catch (err) {
     console.warn(
       `[cascades.dispatchTransition] registry write failed for client ${clientId} ${transition}: ${(err as Error).message}`,
     );
+    return null;
   }
 }
 
@@ -75,71 +83,35 @@ export async function applyActive(
   ctx: CascadeCtx,
   clientId: string,
   namespace: string,
-): Promise<void> {
-  await dispatchTransition(ctx, clientId, namespace, 'active', null, 'active');
+): Promise<string | null> {
+  return dispatchTransition(ctx, clientId, namespace, 'active', null, 'active');
 }
 
-// ─── active → suspended ──────────────────────────────────────────────────
-
-/**
- * Suspend cascades: scale workloads to 0 (storage-lifecycle quiesce
- * does the scaling — this function is called AFTER quiesce returns),
- * patch ingresses to platform-suspended, disable mail, disable
- * webcron, mark domains suspended.
- *
- * This function DOES NOT scale workloads down by itself. Callers from
- * the storage-lifecycle path already ran `quiesce()` which knows the
- * pre-suspend replica counts.
- */
-export async function applySuspended(
-  ctx: CascadeCtx,
-  clientId: string,
-  namespace: string,
-): Promise<void> {
-  await dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
-}
-
-// ─── archived → active (snapshot restore completed) ────────────────────
-
-/**
- * Restore cascades — explicit reverse of archived. Distinguished from
- * plain `applyActive` so the audit trail records which path the
- * client took: a freshly-archived client coming back via snapshot
- * restore is a fundamentally different operation than a suspended
- * client being unsuspended.
- *
- * Hook coverage is identical to `active` for the DB writes (the same
- * domains-status/cronjobs-enable/etc. hooks subscribe to both
- * transitions). Future hooks may diverge — e.g. a hook that
- * notifies the client on restore-from-archive should subscribe only
- * to `restored`.
- */
 export async function applyRestored(
   ctx: CascadeCtx,
   clientId: string,
   namespace: string,
-): Promise<void> {
-  await dispatchTransition(ctx, clientId, namespace, 'restored', null, 'active');
+): Promise<string | null> {
+  return dispatchTransition(ctx, clientId, namespace, 'restored', null, 'active');
 }
 
-// ─── * → archived ────────────────────────────────────────────────────────
+export async function applySuspended(
+  ctx: CascadeCtx,
+  clientId: string,
+  namespace: string,
+): Promise<string | null> {
+  return dispatchTransition(ctx, clientId, namespace, 'suspended', null, 'suspended');
+}
 
-/**
- * Archive cascades: delete mailboxes + aliases, delete domains (they
- * no longer resolve), keep client row + PVC-snapshot for restore.
- *
- * Called by storage-lifecycle archiveClient() AFTER the archive
- * snapshot + PVC delete. Kubernetes resources (deployments, cronjobs,
- * services) are already deleted by storage-lifecycle before we get
- * here — we just clean up the DB side.
- */
 export async function applyArchived(
   ctx: CascadeCtx,
   clientId: string,
   namespace: string,
-): Promise<void> {
-  await dispatchTransition(ctx, clientId, namespace, 'archived', null, 'archived');
+): Promise<string | null> {
+  return dispatchTransition(ctx, clientId, namespace, 'archived', null, 'archived');
 }
+
+// ─── active → suspended ──────────────────────────────────────────────────
 
 // ─── * → deleted (hard remove) ──────────────────────────────────────────
 
@@ -165,9 +137,9 @@ export async function applyDeleted(
   ctx: CascadeCtx,
   clientId: string,
   namespace: string,
-): Promise<void> {
+): Promise<string | null> {
   // Step 1: dispatch hooks while domains/backup_jobs rows still exist.
-  await dispatchTransition(ctx, clientId, namespace, 'deleted', null, 'deleted');
+  const transitionId = await dispatchTransition(ctx, clientId, namespace, 'deleted', null, 'deleted');
 
   // Step 2: drop the k8s namespace. `clients.kubernetes_namespace` is
   // notNull in schema, so no truthy guard — an empty string would
@@ -185,4 +157,5 @@ export async function applyDeleted(
 
   // Step 3: drop the client row. FK cascades take care of children.
   await ctx.db.delete(clients).where(eq(clients.id, clientId));
+  return transitionId;
 }

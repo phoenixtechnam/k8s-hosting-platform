@@ -15,6 +15,12 @@ interface Props {
   readonly transition: LifecycleTransitionRow['transitionKind'];
   /** Time the operator triggered the operation (ms epoch). */
   readonly since: number;
+  /** When provided, the modal latches onto this transition row directly
+   *  without waiting for kind+since matching — eliminates the 1-2 s
+   *  "No matching transition" gap. The DELETE / bulk endpoints return
+   *  this; PATCH does not yet (storage-lifecycle thread doesn't
+   *  surface it). */
+  readonly transitionId?: string | null;
   readonly onClose: () => void;
 }
 
@@ -33,22 +39,25 @@ const TRANSITION_BADGE: Record<LifecycleTransitionRow['state'], { label: string;
   failed_blocking: { label: 'Failed', cls: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300', icon: AlertTriangle },
 };
 
-export default function TransitionProgressModal({ clientId, transition, since, onClose }: Props) {
-  // Polling stops once we've seen the transition + all hook_runs reach
-  // a terminal+drained state. Pass through to TanStack via the `paused`
-  // arg so the actual HTTP requests stop, not just the visual badge.
+export default function TransitionProgressModal({ clientId, transition, since, transitionId, onClose }: Props) {
   const [paused, setPaused] = useState(false);
-  const data = useClientLifecycleTransitions(clientId, 1500, paused);
+  // Faster initial polling so the gap between "open modal" and "first
+  // hook_runs visible" is sub-second in the common case.
+  const data = useClientLifecycleTransitions(clientId, 800, paused);
   const retry = useRetryHookRun();
 
-  // Pick the matching transition: same kind, started AFTER `since`.
+  // Pick the matching transition: prefer explicit transitionId when
+  // the caller knows it (DELETE/bulk endpoints return it). Otherwise
+  // fall back to (kind + since) latching for PATCH paths that don't
+  // yet thread the id through storage-lifecycle.
   const tx = useMemo<LifecycleTransitionRow | null>(() => {
     const rows = data.data?.data.transitions ?? [];
+    if (transitionId) return rows.find((r) => r.id === transitionId) ?? null;
     const candidates = rows.filter((r) => r.transitionKind === transition
       && new Date(r.startedAt).getTime() >= since - 5000);
     if (candidates.length === 0) return null;
     return candidates.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())[0];
-  }, [data.data, transition, since]);
+  }, [data.data, transition, since, transitionId]);
 
   // Memoise so the effect's dep array doesn't churn on every render.
   const runs = useMemo<LifecycleHookRunRow[]>(() => {
@@ -108,16 +117,17 @@ export default function TransitionProgressModal({ clientId, transition, since, o
         </div>
 
         <div className="space-y-3 px-5 py-4 text-sm">
-          {!tx && data.isLoading && (
-            <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-              <Loader2 size={14} className="animate-spin" /> Waiting for transition row…
-            </div>
-          )}
-
-          {!tx && !data.isLoading && (
-            <div className="text-gray-500 dark:text-gray-400">
-              No matching transition started since {new Date(since).toLocaleTimeString()}.
-              The dispatcher may have failed to write the row — check platform-api logs.
+          {!tx && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300">
+                <Loader2 size={14} className="animate-spin" />
+                Dispatching <span className="font-mono">{transition}</span> transition…
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                Hook execution begins in &lt;1 s. If this stays here for more
+                than ~10 s, the dispatcher may have failed to open a
+                transition row — check platform-api logs.
+              </div>
             </div>
           )}
 
