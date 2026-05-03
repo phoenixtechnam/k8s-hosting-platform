@@ -3,19 +3,29 @@
 # WHY Deployment (not StatefulSet):
 #   Stalwart 0.16 is fully stateless when backed by PostgreSQL —
 #   all configuration, account data, and mail blobs are in the DB.
-#   A Deployment enables proper rolling updates + scale-out. The only
-#   PVC was the 0.15 data dir; 0.16 needs none (DB-backed storage).
+#   A Deployment enables proper rolling updates + scale-out.
 #
-# BOOTSTRAP MODE vs FULL MODE:
-#   On first deploy the DB is empty. Stalwart starts in "bootstrap mode"
-#   (listens only on 8080, no mail ports). The bootstrap-job.yaml runs
-#   `stalwart-cli apply` to seed the DB, then a rollout restart flips
-#   Stalwart to full mode (all listeners up).
+# CONFIG RENDERING (initContainer render-config):
+#   Stalwart 0.16 does NOT support ${VAR} env-var substitution in
+#   config.json.  The render-config initContainer (busybox sed) resolves
+#   the ${STALWART_PG_*} placeholders from the ConfigMap template into a
+#   concrete config.json written to an emptyDir.  The main container
+#   mounts that emptyDir at /etc/stalwart (the path the upstream image
+#   ENTRYPOINT passes to --config).
+#
+# BOOTSTRAP FLOW:
+#   On first deploy the mail-pg DB is empty.  Stalwart connects to PG
+#   and starts in "full mode with empty DB" — no admin account exists yet.
+#   STALWART_RECOVERY_ADMIN env var (sourced from stalwart-admin-creds
+#   Secret, key recoveryAdmin) provides a temporary HTTP-Basic credential
+#   that stalwart-cli can use to POST the bootstrap plan before any
+#   permanent admin exists.  bootstrap.sh generates stalwart-admin-creds
+#   with recoveryAdmin = "admin:<random>" before applying the overlay, so
+#   the Secret is present when the Deployment rolls out.
 #
 # RELOADER:
 #   Stakater Reloader rolls the Deployment when stalwart-config-v016
-#   ConfigMap or mail-pg-app-credentials Secret changes. The annotation
-#   format matches Reloader's expected key names.
+#   ConfigMap or mail-pg-app-credentials Secret changes.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,9 +38,8 @@ metadata:
     app.kubernetes.io/component: mail-server
   annotations:
     # Stakater Reloader: roll on config or credentials change.
-    # Both the ConfigMap and the credentials Secret are watched.
     configmap.reloader.stakater.com/reload: "stalwart-config-v016"
-    secret.reloader.stakater.com/reload: "mail-pg-app-credentials"
+    secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds"
 spec:
   replicas: 1
   selector:
@@ -45,10 +54,52 @@ spec:
       terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
+      initContainers:
+        # Render config.json template: substitute ${STALWART_PG_*} placeholders
+        # using busybox sed (busybox has no envsubst).  The resolved file is
+        # written to the config-rendered emptyDir so Stalwart can read it.
+        - name: render-config
+          image: docker.io/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              sed \
+                -e "s|\${STALWART_PG_HOST}|${STALWART_PG_HOST}|g" \
+                -e "s|\${STALWART_PG_DATABASE}|${STALWART_PG_DATABASE}|g" \
+                -e "s|\${STALWART_PG_USER}|${STALWART_PG_USER}|g" \
+                -e "s|\${STALWART_PG_PASSWORD}|${STALWART_PG_PASSWORD}|g" \
+                /tmpl/config.json > /etc/stalwart/config.json
+              echo "Rendered /etc/stalwart/config.json"
+          env:
+            - name: STALWART_PG_HOST
+              value: "mail-pg-rw.mail.svc.cluster.local"
+            - name: STALWART_PG_DATABASE
+              value: "stalwart_app"
+            - name: STALWART_PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mail-pg-app-credentials
+                  key: username
+            - name: STALWART_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mail-pg-app-credentials
+                  key: password
+          volumeMounts:
+            - name: config-tmpl
+              mountPath: /tmpl
+              readOnly: true
+            - name: config-rendered
+              mountPath: /etc/stalwart
       containers:
         - name: stalwart
           image: docker.io/stalwartlabs/stalwart:v0.16.3
           imagePullPolicy: IfNotPresent
+          # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
+          # config-rendered emptyDir (written by render-config initContainer) is
+          # mounted at that path so Stalwart picks up the fully-resolved config.
           ports:
             - name: smtp
               containerPort: 25
@@ -72,25 +123,22 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            # PG connection details — host and DB name from the CNPG
-            # cluster convention: mail-pg-rw.mail.svc.cluster.local
-            - name: STALWART_PG_HOST
-              value: "mail-pg-rw.mail.svc.cluster.local"
-            - name: STALWART_PG_DATABASE
-              value: "stalwart_app"
-            - name: STALWART_PG_USER
+            # STALWART_RECOVERY_ADMIN provides a temporary HTTP-Basic credential
+            # ("admin:<password>") so stalwart-cli can authenticate before the
+            # permanent admin account is created via the bootstrap plan.
+            # bootstrap.sh writes this value (format "admin:<recoveryPassword>")
+            # into stalwart-admin-creds Secret key "recoveryAdmin" before applying
+            # the overlay.  Optional so the Deployment can be applied before that
+            # Secret exists (bootstrap.sh creates it during the bootstrap flow).
+            - name: STALWART_RECOVERY_ADMIN
               valueFrom:
                 secretKeyRef:
-                  name: mail-pg-app-credentials
-                  key: username
-            - name: STALWART_PG_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mail-pg-app-credentials
-                  key: password
+                  name: stalwart-admin-creds
+                  key: recoveryAdmin
+                  optional: true
           volumeMounts:
-            - name: config
-              mountPath: /opt/stalwart/etc
+            - name: config-rendered
+              mountPath: /etc/stalwart
               readOnly: true
           resources:
             requests:
@@ -103,8 +151,7 @@ spec:
             httpGet:
               path: /healthz/live
               port: mgmt-http
-            # Bootstrap mode: DB init + schema migration can take ~60s
-            # on a cold cluster. Allow 90s (18 * 5s) startup grace.
+            # Allow 90s (18 * 5s) for DB schema migration on cold cluster.
             failureThreshold: 18
             periodSeconds: 5
             timeoutSeconds: 5
@@ -117,9 +164,6 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            # In bootstrap mode port 25 is NOT open; use the HTTP probe
-            # so the pod is reachable for `stalwart-cli apply` via the
-            # mgmt Service before mail listeners come up.
             httpGet:
               path: /healthz/live
               port: mgmt-http
@@ -128,9 +172,11 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
       volumes:
-        - name: config
+        - name: config-tmpl
           configMap:
             name: stalwart-config-v016
             items:
               - key: config.json
                 path: config.json
+        - name: config-rendered
+          emptyDir: {}
