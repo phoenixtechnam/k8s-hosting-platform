@@ -374,14 +374,25 @@ HA_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $HA_PV 
   || fail "HA Volume.status.currentNodeID=$HA_VOL_CURR (expected ≠ $WORKER_NODE)"
 
 # ─── Drain impact reflects the drained state ─────────────────────────
+# Longhorn replica cleanup is eventually-consistent: the active
+# replica moves immediately when the volume re-attaches on the new
+# node, but the stopped-replica record on W can linger 30-90 s
+# before the controller garbage-collects it. The impact endpoint
+# counts tenant PVCs with ANY non-deleted replica on the node, so
+# we poll for up to 90 s before asserting.
 log "── drain-impact reflects post-drain state ──"
-IMPACT2=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
-ALREADY_CORDONED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
-PINNED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedWorkloads']))" 2>/dev/null)
-TPVCS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['tenantPvcs']))" 2>/dev/null)
+ALREADY_CORDONED2=""; PINNED2=""; TPVCS2=""
+for _ in $(seq 1 30); do
+  IMPACT2=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
+  ALREADY_CORDONED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
+  PINNED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedWorkloads']))" 2>/dev/null)
+  TPVCS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['tenantPvcs']))" 2>/dev/null)
+  [[ "$PINNED2" -eq 0 && "$TPVCS2" -eq 0 ]] && break
+  sleep 3
+done
 [[ "$ALREADY_CORDONED2" == "True" ]] && ok "alreadyCordoned=true after drain" || fail "alreadyCordoned=$ALREADY_CORDONED2"
 [[ "$PINNED2" -eq 0 ]] && ok "pinnedWorkloads=0 after drain" || fail "pinnedWorkloads=$PINNED2 (expected 0 — workloads should have left W)"
-[[ "$TPVCS2"  -eq 0 ]] && ok "tenantPvcs=0 after drain"      || fail "tenantPvcs=$TPVCS2 (expected 0 — PVCs should have left W)"
+[[ "$TPVCS2"  -eq 0 ]] && ok "tenantPvcs=0 after drain"      || fail "tenantPvcs=$TPVCS2 (expected 0 after Longhorn replica GC — replica cleanup may need >90 s on a saturated cluster)"
 
 # ─── HTTP probe — Service still answers after drain ──────────────────
 log "── HTTP smoke through tenant Service (post-drain) ──"
