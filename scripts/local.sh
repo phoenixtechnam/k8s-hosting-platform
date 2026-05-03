@@ -64,7 +64,7 @@ fi
 # Defaults — all host ports in 2010-2030 range
 #
 # PLATFORM_BASE_DOMAIN is the apex for all user-facing URLs (admin, client,
-# dex, webmail, mail, mail-admin subdomains derive from it). The operator's
+# dex, webmail, mail, stalwart subdomains derive from it). The operator's
 # internal DNS must resolve *.<base> to the cluster LB — no /etc/hosts
 # entries required. Dev default: k8s-platform.test.
 PLATFORM_BASE_DOMAIN="${PLATFORM_BASE_DOMAIN:-k8s-platform.test}"

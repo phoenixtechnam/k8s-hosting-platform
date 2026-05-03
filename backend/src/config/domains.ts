@@ -7,7 +7,7 @@
  *   admin.<base>      — admin panel (login, settings, client mgmt)
  *   client.<base>     — client panel (customer's own dashboard)
  *   mail.<base>       — Stalwart SMTP/IMAP/POP3 banner + TLS SAN
- *   mail-admin.<base> — Stalwart web-admin (behind platform auth_request)
+ *   stalwart.<base>   — Stalwart web-admin (behind platform auth_request)
  *   dex.<base>        — Dex OIDC issuer
  *   webmail.<base>    — platform-wide Roundcube (per-client-domain
  *                       `webmail.<clientdomain>` ingresses are separate)
@@ -50,6 +50,6 @@ function subdomain(prefix: string, cfg: BaseDomainConfig): string {
 export const adminHost = (cfg: BaseDomainConfig): string => subdomain('admin', cfg);
 export const clientHost = (cfg: BaseDomainConfig): string => subdomain('client', cfg);
 export const mailHost = (cfg: BaseDomainConfig): string => subdomain('mail', cfg);
-export const mailAdminHost = (cfg: BaseDomainConfig): string => subdomain('mail-admin', cfg);
+export const stalwartHost = (cfg: BaseDomainConfig): string => subdomain('stalwart', cfg);
 export const dexHost = (cfg: BaseDomainConfig): string => subdomain('dex', cfg);
 export const webmailHost = (cfg: BaseDomainConfig): string => subdomain('webmail', cfg);

@@ -4,7 +4,7 @@ import {
   adminHost,
   clientHost,
   mailHost,
-  mailAdminHost,
+  stalwartHost,
   dexHost,
   webmailHost,
   DEV_DEFAULT_BASE_DOMAIN,
@@ -52,8 +52,8 @@ describe('subdomain helpers', () => {
     expect(mailHost(cfg)).toBe('mail.acme.example');
   });
 
-  it('mailAdminHost → mail-admin.<base>', () => {
-    expect(mailAdminHost(cfg)).toBe('mail-admin.acme.example');
+  it('stalwartHost → stalwart.<base>', () => {
+    expect(stalwartHost(cfg)).toBe('stalwart.acme.example');
   });
 
   it('dexHost → dex.<base>', () => {

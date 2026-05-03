@@ -49,7 +49,7 @@ describe('computeDefaults', () => {
   it('derives standard subdomains from an apex', () => {
     expect(computeDefaults('staging.phoenix-host.net')).toEqual({
       longhornUrl: 'https://longhorn.staging.phoenix-host.net/',
-      stalwartAdminUrl: 'https://mail-admin.staging.phoenix-host.net/',
+      stalwartAdminUrl: 'https://stalwart.staging.phoenix-host.net/',
       webmailUrl: 'https://webmail.staging.phoenix-host.net/',
       mailServerHostname: 'mail.staging.phoenix-host.net',
     });
@@ -69,7 +69,7 @@ describe('computeDefaults', () => {
     // on the source — normalise here so consumers don't see a double-dot.
     expect(computeDefaults('example.com.')).toEqual({
       longhornUrl: 'https://longhorn.example.com/',
-      stalwartAdminUrl: 'https://mail-admin.example.com/',
+      stalwartAdminUrl: 'https://stalwart.example.com/',
       webmailUrl: 'https://webmail.example.com/',
       mailServerHostname: 'mail.example.com',
     });
@@ -98,7 +98,7 @@ describe('getPlatformUrls', () => {
     const result = await getPlatformUrls(db);
     expect(result.longhornUrl.value).toBe('https://longhorn.staging.phoenix-host.net/');
     expect(result.longhornUrl.source).toBe('default');
-    expect(result.stalwartAdminUrl.value).toBe('https://mail-admin.staging.phoenix-host.net/');
+    expect(result.stalwartAdminUrl.value).toBe('https://stalwart.staging.phoenix-host.net/');
     expect(result.webmailUrl.value).toBe('https://webmail.staging.phoenix-host.net/');
     expect(result.mailServerHostname.value).toBe('mail.staging.phoenix-host.net');
   });

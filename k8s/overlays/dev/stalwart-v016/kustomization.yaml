@@ -126,10 +126,10 @@ patches:
       spec:
         tls:
           - hosts:
-              - mail16-admin.k8s-platform.test
+              - stalwart16.k8s-platform.test
             secretName: stalwart-v016-webadmin-dev-tls
         rules:
-          - host: mail16-admin.k8s-platform.test
+          - host: stalwart16.k8s-platform.test
             http:
               paths:
                 - path: /

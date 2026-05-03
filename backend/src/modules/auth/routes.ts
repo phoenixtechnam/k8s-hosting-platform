@@ -463,7 +463,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // GET /auth/verify-admin-session — nginx auth_request gate for admin-only
-  // subdomains (mail-admin.k8s-platform.test etc).
+  // subdomains (stalwart.k8s-platform.test etc).
   //
   // COOKIE-ONLY on purpose. auth_request forwards every header from the
   // browser's request, including any Authorization header the gated app

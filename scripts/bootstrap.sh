@@ -2344,7 +2344,7 @@ spec:
   # All overlays templatize the cluster apex as \${DOMAIN}; Flux
   # substitutes from the platform-cluster-config ConfigMap (created
   # earlier by generate_platform_secrets/runtime-config). Without
-  # this, longhorn-ui / admin / mail-admin Ingress renders with the
+  # this, longhorn-ui / admin / stalwart Ingress renders with the
   # literal "longhorn.\${DOMAIN}" host and the whole Kustomization
   # blocks on dry-run. See feedback_no_code_reverts: this is the
   # piece bootstrap.sh was missing on testing.

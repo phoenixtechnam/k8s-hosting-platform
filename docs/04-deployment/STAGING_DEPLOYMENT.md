@@ -66,7 +66,7 @@ admin.staging.example.com. A     <server-public-ip>
 client.staging.example.com. A    <server-public-ip>
 ```
 
-The platform uses `admin.<base>`, `client.<base>`, `dex.<base>`, `webmail.<base>`, `mail.<base>`, `mail-admin.<base>` — a wildcard plus explicit A records is the cleanest setup.
+The platform uses `admin.<base>`, `client.<base>`, `dex.<base>`, `webmail.<base>`, `mail.<base>`, `stalwart.<base>` — a wildcard plus explicit A records is the cleanest setup.
 
 **Verify DNS propagation before running bootstrap** — cert-manager's HTTP-01 solver will hang for up to 5 minutes if any hostname doesn't resolve:
 
@@ -75,7 +75,7 @@ The platform uses `admin.<base>`, `client.<base>`, `dex.<base>`, `webmail.<base>
 for host in staging.example.com admin.staging.example.com \
             client.staging.example.com dex.staging.example.com \
             mail.staging.example.com webmail.staging.example.com \
-            mail-admin.staging.example.com some-wildcard-test.staging.example.com; do
+            stalwart.staging.example.com some-wildcard-test.staging.example.com; do
   echo -n "$host → "
   dig +short "$host" @1.1.1.1 | head -1
 done

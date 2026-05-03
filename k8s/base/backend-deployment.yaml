@@ -93,7 +93,7 @@ spec:
                   optional: true
             # Canonical apex domain. Prefer this over INGRESS_BASE_DOMAIN on
             # new deploys. Subdomains (admin, client, dex, webmail, mail,
-            # mail-admin) derive from this via config/domains.ts.
+            # stalwart) derive from this via config/domains.ts.
             - name: PLATFORM_BASE_DOMAIN
               valueFrom:
                 configMapKeyRef:
@@ -240,7 +240,7 @@ spec:
             # means "no Domain=" (host-only cookie, only admin.* gets it).
             # Set to ".<apex>" to share the session across all platform
             # subdomains — required for the Stalwart web-admin auth_request
-            # gate since that request lands on mail-admin.<apex>, not admin.
+            # gate since that request lands on stalwart.<apex>, not admin.
             - name: SESSION_COOKIE_DOMAIN
               valueFrom:
                 configMapKeyRef:

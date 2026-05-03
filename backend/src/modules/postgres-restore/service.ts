@@ -16,7 +16,8 @@ import { inArray, eq } from 'drizzle-orm';
  *   2. Wrap the Longhorn snapshot as a Pre-provisioned VolumeSnapshot
  *   3. Bootstrap a TEMP CNPG Cluster from the VolumeSnapshot
  *   4. Wait for temp cluster healthy + run psql sanity probes
- *   5. Quiesce platform-api (scale to 0) and Stalwart consumers
+ *   5. Quiesce Stalwart (scale to 0); platform-api stays running
+ *      (orchestration is hosted there — scaling to 0 would self-kill)
  *   6. Snapshot the temp cluster's primary PVC
  *   7. Delete source Cluster (PVCs survive: reclaimPolicy=Retain)
  *   8. Re-create source Cluster CR with the same name, bootstrap from
@@ -834,19 +835,31 @@ export async function promotePostgresFromSnapshot(
     steps.push({ step: 'temp-probe', ok: probe.ok, detail: probe.stdout || probe.stderr });
     if (!probe.ok) throw new Error(`Temp cluster psql probe failed: ${probe.stderr}`);
 
-    // 5. Quiesce consumers (downtime starts here)
+    // 5. Quiesce consumers (downtime starts here).
+    //
+    // We DO NOT scale platform-api to 0 — this orchestration runs
+    // INSIDE a platform-api pod, so scaling to 0 sends SIGTERM to the
+    // orchestrator's own pod. The k8s graceful-shutdown window kills
+    // the orchestration mid-flight (typically right before step 8
+    // recreate-source completes), leaking the temp CNPG cluster +
+    // wrapped VolumeSnapshots + the persisted DB lock. platform-api's
+    // /healthz is unauthenticated and doesn't query postgres, so pods
+    // stay Ready throughout the cutover; the auth middleware (which
+    // does query postgres) returns 503 for the ~30s window where
+    // postgres is being recreated, but that's transparent to the
+    // orchestrator and recovers automatically.
+    //
+    // Stalwart IS scaled to 0 — it's a long-lived postgres client
+    // for DKIM + mailbox metadata, and partial writes during cutover
+    // can corrupt mailbox state. Scaling Stalwart down is safe
+    // because Stalwart doesn't host the orchestration.
     downtimeStart = nowMs();
     const t5 = nowMs();
-    await deps.k8s.apps.patchNamespacedDeploymentScale({
-      namespace: 'platform', name: 'platform-api',
-      body: { spec: { replicas: 0 } },
-    } as unknown as Parameters<typeof deps.k8s.apps.patchNamespacedDeploymentScale>[0]).catch(() => undefined);
-    // Stalwart depends on postgres for DKIM and mailbox metadata
     await patchCustomMerge(deps.k8s, {
       group: 'apps', version: 'v1', namespace: 'mail', plural: 'statefulsets', name: 'stalwart-mail',
       body: { spec: { replicas: 0 } },
     }).catch(() => undefined);
-    steps.push({ step: 'quiesce-consumers', ok: true, elapsedMs: nowMs() - t5 });
+    steps.push({ step: 'quiesce-consumers', ok: true, elapsedMs: nowMs() - t5, detail: 'stalwart-mail scaled to 0; platform-api left running (self-host)' });
 
     // 6. Snapshot the temp cluster's primary PVC so we can re-bootstrap
     //    the source Cluster name from the same point-in-time data.
@@ -953,18 +966,15 @@ export async function promotePostgresFromSnapshot(
       });
     }
 
-    // 9. Restore consumers
+    // 9. Restore consumers (only Stalwart — platform-api was never
+    // scaled down; see step 5).
     const t9 = nowMs();
-    await deps.k8s.apps.patchNamespacedDeploymentScale({
-      namespace: 'platform', name: 'platform-api',
-      body: { spec: { replicas: 3 } },
-    } as unknown as Parameters<typeof deps.k8s.apps.patchNamespacedDeploymentScale>[0]).catch(() => undefined);
     await patchCustomMerge(deps.k8s, {
       group: 'apps', version: 'v1', namespace: 'mail', plural: 'statefulsets', name: 'stalwart-mail',
       body: { spec: { replicas: 1 } },
     }).catch(() => undefined);
     downtimeEnd = nowMs();
-    steps.push({ step: 'restore-consumers', ok: true, elapsedMs: nowMs() - t9 });
+    steps.push({ step: 'restore-consumers', ok: true, elapsedMs: nowMs() - t9, detail: 'stalwart-mail scaled to 1' });
 
     // 10. Cleanup
     const t10 = nowMs();

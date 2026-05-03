@@ -52,7 +52,7 @@ resources:
   # Same indirection as dev. Prod uses a different pattern (separate
   # postgres deployment in mail ns, cert-managed TLS).
   - platform-postgres.yaml
-  # Admin web-admin SPA reachable at https://mail-admin.staging.phoenix-
+  # Admin web-admin SPA reachable at https://stalwart.staging.phoenix-
   # host.net. Labelled admin-ui=true so the main staging overlay's
   # admin-auth-gate-cookie component patches in the auth-url annotation.
   - webadmin-ingress.yaml
@@ -68,7 +68,7 @@ patches:
       name: stalwart-mail
   # Overlay-specific Reloader annotation: watch stalwart-webadmin-staging-tls
   # in addition to the base stalwart-secrets. Rolls the StatefulSet when
-  # the LE-staging cert for mail-admin.${DOMAIN} is renewed.
+  # the LE-staging cert for stalwart.${DOMAIN} is renewed.
   - path: reloader-patch.yaml
     target:
       kind: StatefulSet

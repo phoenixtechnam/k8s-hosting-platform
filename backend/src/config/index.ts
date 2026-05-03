@@ -16,7 +16,7 @@ const configSchema = z.object({
   DEFAULT_STORAGE_CLASS: z.string().default('local-path'),
   INGRESS_BASE_DOMAIN: z.string().optional(),
   // Canonical apex domain. All service subdomains (admin, client, dex,
-  // webmail, mail, mail-admin) derive from this in
+  // webmail, mail, stalwart) derive from this in
   // backend/src/config/domains.ts. INGRESS_BASE_DOMAIN above is kept as a
   // legacy fallback alias so existing ConfigMaps don't break; prefer
   // PLATFORM_BASE_DOMAIN on new deploys.

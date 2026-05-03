@@ -1,11 +1,11 @@
 # Dedicated subdomain for Stalwart's embedded web-admin SPA on staging.
 #
-# URL: https://mail-admin.${DOMAIN}/
+# URL: https://stalwart.${DOMAIN}/
 # Backend: stalwart-mail-mgmt.mail.svc.cluster.local:8080
 #
-# Why a separate subdomain (see dev overlay comments for full detail):
+# Why a separate subdomain (see docs/06-features/STALWART_SUBPATH_SPIKE.md):
 # Stalwart's SPA hard-codes "/" as its base path and can't be served
-# at a sub-path of admin.* without injected shims. A dedicated host
+# at a sub-path of admin.* without a custom WebUI build. A dedicated host
 # eliminates that whole class of problem.
 #
 # Access control: gated by the `platform_session` cookie via
@@ -43,10 +43,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - mail-admin.${DOMAIN}
+        - stalwart.${DOMAIN}
       secretName: stalwart-webadmin-staging-tls
   rules:
-    - host: mail-admin.${DOMAIN}
+    - host: stalwart.${DOMAIN}
       http:
         paths:
           - path: /

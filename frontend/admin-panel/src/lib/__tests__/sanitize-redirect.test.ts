@@ -3,7 +3,7 @@ import { sanitizeRedirect } from '../sanitize-redirect.js';
 
 // The sanitizer backs the `rd=` query parameter on the Login page. nginx
 // sends operators here when they hit a gated subdomain (longhorn.*,
-// mail-admin.*, etc) without a valid platform_session. After login the
+// stalwart.*, etc) without a valid platform_session. After login the
 // page uses the sanitized result to send the browser back. An attacker
 // could poison rd= to trick a freshly-logged-in admin into landing on an
 // evil host — hence the strict allow-list.
