@@ -60,7 +60,7 @@ export function computeDefaults(apex: string): {
   }
   return {
     longhornUrl: `https://longhorn.${normalised}/`,
-    stalwartAdminUrl: `https://mail-admin.${normalised}/`,
+    stalwartAdminUrl: `https://stalwart.${normalised}/`,
     webmailUrl: `https://webmail.${normalised}/`,
     mailServerHostname: `mail.${normalised}`,
   };

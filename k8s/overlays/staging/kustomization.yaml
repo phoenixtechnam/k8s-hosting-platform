@@ -13,7 +13,7 @@ resources:
   - ../../base/longhorn
   - ../../base/backup
   - dex/
-  # Stalwart mail server + its staging webadmin ingress (mail-admin.staging.
+  # Stalwart mail server + its staging webadmin ingress (stalwart.staging.
   # phoenix-host.net). Requires a one-time operator step to generate the
   # stalwart-secrets — see stalwart/kustomization.yaml comment.
   - stalwart/

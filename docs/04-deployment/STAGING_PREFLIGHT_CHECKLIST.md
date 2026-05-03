@@ -29,7 +29,7 @@ for host in staging.example.com \
             dex.staging.example.com \
             mail.staging.example.com \
             webmail.staging.example.com \
-            mail-admin.staging.example.com \
+            stalwart.staging.example.com \
             some-wildcard-test.staging.example.com; do
   printf "%-45s → " "$host"
   dig +short "$host" @1.1.1.1 | head -1
@@ -38,7 +38,7 @@ done
 
 - [ ] Apex `staging.<domain>` → server IP
 - [ ] Wildcard `*.staging.<domain>` → server IP (tested with random subdomain)
-- [ ] `admin.`, `client.`, `dex.`, `mail.`, `webmail.`, `mail-admin.` all resolve
+- [ ] `admin.`, `client.`, `dex.`, `mail.`, `webmail.`, `stalwart.` all resolve
 - [ ] TTL is short enough to fix mistakes fast (≤ 5 min recommended during bootstrap)
 
 ## Code / CI

@@ -2,7 +2,7 @@
 #
 # Extends the base annotation (stalwart-secrets) with the staging TLS
 # secret so Reloader also rolls the pod when cert-manager renews the
-# LE-staging certificate for mail-admin.${DOMAIN}.
+# LE-staging certificate for stalwart.${DOMAIN}.
 #
 # The base only lists `stalwart-secrets` (universal). This patch appends
 # the staging-specific TLS secret name so cert-renewal triggers a restart

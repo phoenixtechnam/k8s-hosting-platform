@@ -1,6 +1,6 @@
 # Management Ingress for Stalwart 0.16 web-admin.
 #
-# URL: https://mail-admin.${DOMAIN}/
+# URL: https://stalwart.${DOMAIN}/
 # Backend: stalwart-mgmt-v016.mail.svc.cluster.local:8080
 #
 # Access control:
@@ -59,10 +59,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - mail-admin.${DOMAIN}
+        - stalwart.${DOMAIN}
       secretName: stalwart-v016-webadmin-tls
   rules:
-    - host: mail-admin.${DOMAIN}
+    - host: stalwart.${DOMAIN}
       http:
         paths:
           - path: /

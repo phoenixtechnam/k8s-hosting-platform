@@ -72,7 +72,7 @@ Same module:
 
 ### 3.4 Admin UI proxy
 
-`k8s/overlays/staging/stalwart/webadmin-ingress.yaml`: `mail-admin.staging.phoenix-host.net` → `stalwart-mail-mgmt:8080`, gated by `admin-auth-gate-cookie` component.
+`k8s/overlays/staging/stalwart/webadmin-ingress.yaml`: `stalwart.staging.phoenix-host.net` → `stalwart-mail-mgmt:8080`, gated by `admin-auth-gate-cookie` component.
 
 ### 3.5 Kubernetes resources
 

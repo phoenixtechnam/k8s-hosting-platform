@@ -642,7 +642,7 @@ scenario_mail() {
   local mail_host="${MAIL_HOST:-89.167.3.56}"
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.phoenix-host.net}"
-  local admin_ui_url="${ADMIN_UI_URL:-https://mail-admin.staging.phoenix-host.net}"
+  local admin_ui_url="${ADMIN_UI_URL:-https://stalwart.staging.phoenix-host.net}"
 
   # Convenience: track test client so the EXIT trap can clean it up.
   local mail_cid=""
