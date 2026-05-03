@@ -68,7 +68,7 @@ import { registerAllLifecycleHooks } from './modules/client-lifecycle/hooks/inde
 import { clientLifecycleRoutes } from './modules/client-lifecycle/routes.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
-import { isPostgresRestoreInProgress } from './modules/postgres-restore/service.js';
+import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide } from './modules/postgres-restore/service.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -194,12 +194,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       || path.startsWith('/api/v1/auth/')
       || path.startsWith('/api/v1/healthz')
     ) return;
-    const lock = isPostgresRestoreInProgress();
+    // Cluster-wide check: any replica's in-memory lock OR the
+    // DB-backed lock written at the start of orchestration. With 3
+    // platform-api replicas, only the replica running the
+    // orchestration has the in-memory lock — the other two need the
+    // DB lock to know to reject writes. One DB read per non-GET
+    // request; cached briefly under load via the existing pg
+    // connection pool.
+    const lock = await isPostgresRestoreInProgressClusterWide(app.db);
     if (lock.inProgress) {
       reply.code(503).header('Retry-After', '60').send({
         error: {
           code: 'RESTORE_IN_PROGRESS',
-          message: `Postgres PITR restore in progress (started ${lock.startedAt?.toISOString()}, snapshot ${lock.snapshot}). Writes are blocked until the restore completes.`,
+          message: `Postgres PITR restore in progress (started ${lock.startedAt?.toISOString()}, snapshot ${lock.snapshot}, source=${lock.source}). Writes are blocked until the restore completes.`,
           status: 503,
           remediation: 'Wait for the restore to complete; poll GET /api/v1/admin/postgres-restore/status',
         },

@@ -55,7 +55,14 @@ interface PersistedLock {
   readonly clusterNamespace: string;
   readonly clusterName: string;
   readonly tempClusterName: string;
-  readonly phase: 'cutover' | 'rebuilding' | 'cleanup';
+  // 'preflight' = orchestration started but source not yet deleted.
+  //   Crash here is benign — recoverInterruptedRestore just clears
+  //   the lock; no source data was touched.
+  // 'cutover'   = source has been deleted (PVCs are reclaimPolicy=
+  //   Retain so data survives) but recreate is in flight. Crash here
+  //   needs operator attention.
+  // 'cleanup'   = recreate succeeded, only temp resources remain.
+  readonly phase: 'preflight' | 'cutover' | 'rebuilding' | 'cleanup';
 }
 
 async function writePersistedLock(db: Database, payload: PersistedLock): Promise<void> {
@@ -78,6 +85,28 @@ async function readPersistedLock(db: Database): Promise<PersistedLock | null> {
 export function isPostgresRestoreInProgress(): { readonly inProgress: boolean; readonly startedAt?: Date; readonly snapshot?: string } {
   if (!activeRestore) return { inProgress: false };
   return { inProgress: true, startedAt: activeRestore.startedAt, snapshot: activeRestore.snapshot };
+}
+
+/**
+ * Cluster-wide lock check used by the write-lock middleware. Combines
+ * the in-memory lock (this replica's) AND the DB-backed lock (any
+ * replica's, set during the destructive cutover). With multiple
+ * platform-api replicas, only the replica running the orchestration
+ * has the in-memory lock — but every replica must reject writes once
+ * any replica has reached the cutover. The DB lock is the single
+ * source of truth across replicas during the dangerous phase.
+ */
+export async function isPostgresRestoreInProgressClusterWide(
+  db: Database,
+): Promise<{ readonly inProgress: boolean; readonly startedAt?: Date; readonly snapshot?: string; readonly source: 'in-memory' | 'db' | 'none' }> {
+  if (activeRestore) {
+    return { inProgress: true, startedAt: activeRestore.startedAt, snapshot: activeRestore.snapshot, source: 'in-memory' };
+  }
+  const persisted = await readPersistedLock(db).catch(() => null);
+  if (persisted) {
+    return { inProgress: true, startedAt: new Date(persisted.startedAt), snapshot: persisted.snapshot, source: 'db' };
+  }
+  return { inProgress: false, source: 'none' };
 }
 
 /**
@@ -126,6 +155,10 @@ interface CnpgCluster {
     };
     readonly affinity?: unknown;
     readonly inheritedMetadata?: unknown;
+    readonly resources?: unknown;
+    readonly postgresql?: unknown;
+    readonly enableSuperuserAccess?: boolean;
+    readonly monitoring?: unknown;
   };
   readonly status?: { readonly currentPrimary?: string; readonly phase?: string };
 }
@@ -506,6 +539,17 @@ function buildRecoveryCluster(
       inheritedMetadata: src.spec?.inheritedMetadata,
       storage: src.spec?.storage,
       affinity: src.spec?.affinity,
+      // Propagate resources so CNPG injects them into all spawned pods
+      // (postgres instance + bootstrap-controller + snapshot-recovery
+      // Job). The platform namespace has a ResourceQuota that requires
+      // limits.cpu/memory + requests.cpu/memory on every pod; without
+      // these the snapshot-recovery Job is rejected with "must specify
+      // limits.cpu for: bootstrap-controller,snapshot-recovery" and
+      // the temp cluster sits at "Setting up primary" forever.
+      resources: src.spec?.resources,
+      postgresql: src.spec?.postgresql,
+      enableSuperuserAccess: src.spec?.enableSuperuserAccess,
+      monitoring: src.spec?.monitoring,
       bootstrap: {
         recovery: {
           volumeSnapshots: {
@@ -531,11 +575,29 @@ export async function promotePostgresFromSnapshot(
   deps: PitrDeps,
   inputs: PitrInputs,
 ): Promise<PitrResult> {
+  // Cluster-wide pre-check: if another replica has the DB lock set
+  // (from a prior cutover-phase orchestration), refuse early.
+  const existing = await readPersistedLock(deps.db).catch(() => null);
+  if (existing) {
+    const e = new Error(`Postgres restore already in progress on another replica (started ${existing.startedAt}, snapshot ${existing.snapshot}, phase=${existing.phase})`);
+    (e as Error & { code?: number }).code = 409; throw e;
+  }
   if (activeRestore) {
     const e = new Error(`Postgres restore already in progress (started ${activeRestore.startedAt.toISOString()}, snapshot ${activeRestore.snapshot})`);
     (e as Error & { code?: number }).code = 409; throw e;
   }
   activeRestore = { startedAt: new Date(), snapshot: inputs.snapshotName };
+  // Write a "preflight" DB-lock IMMEDIATELY so other replicas reject
+  // writes from the very first moment of the orchestration. The phase
+  // gets bumped to 'cutover' just before delete-source.
+  await writePersistedLock(deps.db, {
+    startedAt: activeRestore.startedAt.toISOString(),
+    snapshot: inputs.snapshotName,
+    clusterNamespace: inputs.clusterNamespace,
+    clusterName: inputs.clusterName,
+    tempClusterName: '(not yet created)',
+    phase: 'preflight',
+  }).catch(() => undefined);
   const startMs = nowMs();
   let downtimeStart: number | null = null;
   let downtimeEnd: number | null = null;

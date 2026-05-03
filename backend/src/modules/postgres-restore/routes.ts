@@ -5,7 +5,7 @@ import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   promotePostgresFromSnapshot,
-  isPostgresRestoreInProgress,
+  isPostgresRestoreInProgressClusterWide,
   type PitrStep,
 } from './service.js';
 
@@ -26,7 +26,7 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
   // lockout middleware reads this to gate other postgres-mutating
   // routes during restore.
   app.get('/admin/postgres-restore/status', async () => {
-    return success(isPostgresRestoreInProgress());
+    return success(await isPostgresRestoreInProgressClusterWide(app.db));
   });
 
   // POST /api/v1/admin/postgres-restore

@@ -40,7 +40,12 @@ spec:
         cpu: 50m
         memory: 64Mi
 ---
-# Resource quota for platform namespace
+# Resource quota for platform namespace.
+# Bumped 2026-05-03 to support snapshot-only Postgres PITR: the
+# auto-promote orchestrator runs a temp CNPG cluster IN ADDITION
+# to the source while it bootstrap-recovers + snapshot-handoffs,
+# so the quota must hold ~2× the source cluster's worst-case
+# bootstrap resources for the duration of the cutover (~5-10 min).
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -50,8 +55,40 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
 spec:
   hard:
-    requests.cpu: "4"
-    requests.memory: 8Gi
-    limits.cpu: "8"
-    limits.memory: 16Gi
-    pods: "50"
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    pods: "60"
+---
+# LimitRange for platform namespace — supplies default container
+# resource limits/requests so pods that don't specify them (e.g.
+# CNPG-managed bootstrap-controller / snapshot-recovery Job pods
+# during postgres PITR, Longhorn-injected sidecars) still satisfy
+# the platform-quota's requests.cpu/limits.cpu/requests.memory/
+# limits.memory hard limits. Without this, the temp PITR cluster
+# sits at "Setting up primary" forever because every recovery-Job
+# pod is rejected with "must specify limits.cpu for: bootstrap-
+# controller,snapshot-recovery".
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: platform-limit-range
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      max:
+        cpu: "4"
+        memory: 4Gi
+      min:
+        cpu: 10m
+        memory: 32Mi
