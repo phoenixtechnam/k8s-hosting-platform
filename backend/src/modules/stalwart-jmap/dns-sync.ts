@@ -40,6 +40,7 @@ import { syncRecordToProviders } from '../dns-records/service.js';
 import {
   getJmapSession,
   principalGet,
+  principalGetOne,
   principalChanges,
   type JmapAccountId,
   type StalwartPrincipal,
@@ -237,7 +238,6 @@ export async function syncDomainDnsRecords(params: {
   const { db, domainId, domainName, jmapAccountId, stalwartDomainPrincipalId, baseUrl, env } = params;
 
   // 1. Fetch dnsZoneFile from Stalwart
-  const { principalGetOne } = await import('./client.js');
   const principal = await principalGetOne({
     accountId: jmapAccountId,
     id: stalwartDomainPrincipalId,
@@ -302,6 +302,7 @@ export async function syncDomainDnsRecords(params: {
   // leaving DB rows with no matching DNS record (the next sync sees them in
   // existingByKey and skips, so the record is permanently lost). The fixed
   // order makes DB the cache of confirmed-published state.
+  const normalisedDomain = domainName.replace(/\.$/, '').toLowerCase();
   for (const zr of desired) {
     const key = recordKey(zr.type, zr.name, zr.rdata);
     if (existingByKey.has(key)) continue;
@@ -309,6 +310,23 @@ export async function syncDomainDnsRecords(params: {
     const id = crypto.randomUUID();
     const normalName = zr.name.replace(/\.$/, '');
     const normalRdata = zr.rdata.replace(/\.$/, '');
+
+    // Security review HIGH-3 fix (2026-05-03): refuse to push records
+    // whose name escapes the expected domain scope. A compromised or
+    // misconfigured Stalwart could otherwise return a zone file that
+    // includes records for unrelated tenants (e.g. an MX for someone
+    // else's domain), and this loop would dutifully publish them to
+    // PowerDNS. The check rejects anything that isn't `domainName`
+    // itself or a subdomain of it.
+    const lowerName = normalName.toLowerCase();
+    if (lowerName !== normalisedDomain && !lowerName.endsWith(`.${normalisedDomain}`)) {
+      console.warn(
+        `[stalwart-dns-sync] REFUSING out-of-scope record from Stalwart zone file: ` +
+          `type=${zr.type} name='${normalName}' expected scope='${normalisedDomain}'. ` +
+          `Possible Stalwart misconfiguration or compromise.`,
+      );
+      continue;
+    }
 
     const recType = zr.type as 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS';
 
@@ -496,8 +514,15 @@ export function createDnsSyncScheduler(
   return {
     start() {
       if (timer !== null) return;
-      void runCycle();
-      timer = setInterval(() => { void runCycle(); }, intervalMs);
+      // Code-review M-2 fix (2026-05-03, second pass): mirror the
+      // principals-sync jitter so multiple platform-api replicas don't
+      // run their first DNS sync at exactly the same moment.
+      const initialDelay = Math.floor(Math.random() * intervalMs);
+      timer = setTimeout(() => {
+        timer = null;
+        void runCycle();
+        timer = setInterval(() => { void runCycle(); }, intervalMs);
+      }, initialDelay) as unknown as ReturnType<typeof setInterval>;
     },
     stop() {
       if (timer !== null) {

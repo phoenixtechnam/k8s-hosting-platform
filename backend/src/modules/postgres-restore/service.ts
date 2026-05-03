@@ -64,6 +64,14 @@ interface PersistedLock {
   //   needs operator attention.
   // 'cleanup'   = recreate succeeded, only temp resources remain.
   readonly phase: 'preflight' | 'cutover' | 'rebuilding' | 'cleanup';
+  // Captured at preflight from pre.cluster.spec.bootstrap.initdb.
+  // recoverInterruptedRestore uses this to normalize the rebuilt
+  // source cluster's spec.bootstrap (set bootstrap=initdb, recovery=
+  // null) when the orchestration dies before its own step 8b runs.
+  // Without this, the rebuilt cluster CR keeps spec.bootstrap.recovery
+  // and Flux's apply of the original git manifest (initdb) is rejected
+  // by CNPG's webhook ("Too many bootstrap types specified") forever.
+  readonly originalInitdb?: unknown;
 }
 
 async function writePersistedLock(db: Database, payload: PersistedLock): Promise<void> {
@@ -271,6 +279,26 @@ export async function recoverInterruptedRestore(
         }
       }
     } catch { /* best effort */ }
+
+    // Normalize source cluster's spec.bootstrap if it's still in
+    // recovery mode (orchestration died before its own step 8b ran).
+    // Without this, Flux's apply of git's bootstrap.initdb is rejected
+    // by CNPG's webhook ("Too many bootstrap types specified") and
+    // platform Kustomization stalls indefinitely. We need the original
+    // initdb spec — captured at cutover write into the persisted lock.
+    if (lock.originalInitdb) {
+      try {
+        const srcCluster = await getCustom<CnpgCluster>(k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name: lock.clusterName,
+        }).catch(() => null);
+        if (srcCluster && (srcCluster.spec?.bootstrap as { recovery?: unknown } | undefined)?.recovery) {
+          await patchCustomMerge(k8s, {
+            group: CNPG_GROUP, version: CNPG_VERSION, namespace: lock.clusterNamespace, plural: 'clusters', name: lock.clusterName,
+            body: { spec: { bootstrap: { recovery: null, initdb: lock.originalInitdb } } },
+          });
+        }
+      } catch { /* best effort — operator may need to patch by hand */ }
+    }
   }
 
   const totalCleaned = cleanedTempClusters + cleanedVolumeSnapshots + cleanedVolumeSnapshotContents + cleanedLonghornSnapshots;
@@ -909,6 +937,10 @@ export async function promotePostgresFromSnapshot(
       clusterName: inputs.clusterName,
       tempClusterName: tempName,
       phase: 'cutover',
+      // Persist for recoverInterruptedRestore: if the orchestration
+      // dies before step 8b, the next platform-api startup uses this
+      // to normalize the rebuilt source cluster's bootstrap.
+      originalInitdb: pre.cluster.spec?.bootstrap?.initdb,
     });
 
     // 7. Delete source (PVCs survive: Retain reclaim)

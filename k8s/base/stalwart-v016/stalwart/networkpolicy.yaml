@@ -44,7 +44,11 @@ spec:
         - protocol: TCP
           port: 4190
     # Management HTTP — cluster-internal: same namespace + platform namespace
-    # (platform-api JMAP proxy + bootstrap job) + ingress-nginx namespace
+    # (platform-api JMAP proxy + bootstrap job) + ingress-controller pods
+    # only (NOT the whole ingress-nginx ns — security review M-5 fix
+    # 2026-05-03: a generic namespaceSelector grants every pod in the ns
+    # a path to the JMAP management port, including any sidecars or
+    # debug pods that get co-tenanted there).
     - from:
         - namespaceSelector:
             matchLabels:
@@ -55,6 +59,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
       ports:
         - protocol: TCP
           port: 8080

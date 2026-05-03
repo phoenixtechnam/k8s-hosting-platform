@@ -114,14 +114,20 @@ export async function rotateAdminPasswordViaJmapImpl(
     );
   }
 
-  // 5. Verify new credentials work
+  // 5. Verify new credentials work.
+  // Code-review M-3 fix (2026-05-03, second pass): use do/while so we
+  // ALWAYS attempt at least one verification, even if `verifyTimeoutMs`
+  // is zero or the clock advanced past the deadline before we got here.
+  // The previous while-pre-check could throw before ever calling
+  // verifyNewPassword for very-tight timeouts (especially in tests).
   const deadline = deps.now().getTime() + verifyTimeoutMs;
   let ok = false;
-  while (deps.now().getTime() < deadline) {
+  do {
     ok = await deps.verifyNewPassword(plain);
     if (ok) break;
+    if (deps.now().getTime() >= deadline) break;
     await deps.sleep(2_000);
-  }
+  } while (deps.now().getTime() < deadline);
   if (!ok) {
     throw new Error(
       'JMAP rotation and k8s Secret patch succeeded but credential verification timed out. ' +
@@ -191,17 +197,24 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       else kc.loadFromCluster();
       const core = kc.makeApiClient(k8s.CoreV1Api);
 
-      // HIGH-3 fix from code review (2026-05-03): the previous code sent a
-      // JSON Patch op array but `patchNamespacedSecret` defaults to
-      // strategic-merge content-type. The server then treated the array
-      // as the new Secret body, so the Secret data was effectively
-      // replaced with garbage (and the call returned 200, hiding the bug).
-      // Use a plain merge-patch shape — drop the JSON Patch array.
-      const data: Record<string, string> = {};
-      for (const [k, v] of Object.entries(stringData)) {
-        data[k] = Buffer.from(v, 'utf8').toString('base64');
-      }
-      await core.patchNamespacedSecret({ namespace, name, body: { data } });
+      // Code-review CRITICAL fix (2026-05-03, second pass): the prior fix
+      // (855b443) switched from JSON-Patch ops to `{ data: {...} }`
+      // merge-patch shape, but @kubernetes/client-node 1.4 forces
+      // Content-Type to `application/json-patch+json` because
+      // `getPreferredMediaType` walks the supported-list in declaration
+      // order and JsonPatch is first. Sending a merge-patch object body
+      // with a JSON-Patch content-type is rejected (or silently no-ops)
+      // by the apiserver. The correct combination is `op:'replace'` ops
+      // (RFC 6902) on `/data/<key>` paths — matches the wire content-type
+      // the library actually emits. Bootstrap creates the data keys
+      // upfront so `replace` is safe; if a future Secret keeps `add`
+      // semantics, switch to `op:'add'` (RFC 6902 add-or-replace).
+      const ops = Object.entries(stringData).map(([k, v]) => ({
+        op: 'replace' as const,
+        path: `/data/${k}`,
+        value: Buffer.from(v, 'utf8').toString('base64'),
+      }));
+      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object });
     },
 
     async verifyNewPassword(password: string): Promise<boolean> {

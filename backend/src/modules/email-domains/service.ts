@@ -4,8 +4,8 @@ import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
-import { canManageDnsZone } from '../dns-servers/authority.js';
-import { getActiveServersForDomain } from '../dns-servers/service.js';
+// canManageDnsZone / getActiveServersForDomain are not imported here:
+// provisionEmailDns enforces the dns-zone authority gate internally.
 import {
   getJmapSession,
   createDomain as jmapCreateDomain,
@@ -20,15 +20,25 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // ── Stalwart JMAP helper ──────────────────────────────────────────────────────
 
+// Security review M3 fix (2026-05-03): 5-minute TTL on the JMAP
+// account-ID cache so a Stalwart rebuild (different account ID) is
+// picked up without a platform-api restart. Mirrors mailboxes/service.ts.
+const JMAP_ACCOUNT_ID_CACHE_TTL_MS = 5 * 60 * 1000;
 let _jmapAccountIdCache: JmapAccountId | null = null;
+let _jmapAccountIdCachedAt = 0;
 
 async function getDomainJmapAccountId(): Promise<JmapAccountId | null> {
-  if (_jmapAccountIdCache) return _jmapAccountIdCache;
+  if (_jmapAccountIdCache && Date.now() - _jmapAccountIdCachedAt < JMAP_ACCOUNT_ID_CACHE_TTL_MS) {
+    return _jmapAccountIdCache;
+  }
   try {
     const baseUrl = process.env.STALWART_MGMT_URL;
     const session = await getJmapSession(baseUrl, process.env);
     const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
-    if (id) _jmapAccountIdCache = id;
+    if (id) {
+      _jmapAccountIdCache = id;
+      _jmapAccountIdCachedAt = Date.now();
+    }
     return id ?? null;
   } catch {
     return null;
@@ -76,26 +86,18 @@ export async function enableEmailForDomain(
   // The DKIM TXT record is published to DNS by the dns-sync reconciler
   // reading Stalwart's dnsZoneFile via JMAP — no local key generation needed.
   //
-  // canManageDnsZone / getActiveServersForDomain retained for the
-  // provisionEmailDns path (MX, SPF, DMARC, SRV, etc. still come from here).
+  // The dns-zone authority gate (canManageDnsZone) is enforced inside
+  // provisionEmailDns; we no longer call it explicitly here.
 
   // Reuse the orphaned row if we're retrying the JMAP step; otherwise
   // create a new row. Either way `id` points at the row we'll attach
   // stalwartDomainId to below.
   const id = existing?.id ?? crypto.randomUUID();
 
-  const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
-  const activeServers = await getActiveServersForDomain(db, domainId);
-  // canManageDnsZone is still used by provisionEmailDns internally
-  void canManageDnsZone({
-    dnsMode: resolvedDnsMode,
-    activeServers: activeServers.map((s) => ({
-      id: s.id,
-      providerType: s.providerType,
-      enabled: s.enabled,
-      role: s.role,
-    })),
-  });
+  // Code-review H-4 fix (2026-05-03, second pass): the `void canManage…`
+  // call here was dead code — the result was discarded and the gate is
+  // already enforced inside provisionEmailDns. Removed to avoid
+  // signalling a guard that doesn't exist at this call-site.
 
   if (!existing) {
     await db.insert(emailDomains).values({

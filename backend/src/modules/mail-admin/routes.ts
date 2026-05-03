@@ -34,6 +34,9 @@ import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support'));
+  // Note: routes that expose the cleartext Stalwart admin password
+  // (`/admin/mail/stalwart-credentials` and `/admin/mail/rotate-*`) carry
+  // their own narrower preHandler — see below.
 
   app.get('/admin/mail/metrics', async () => {
     try {
@@ -53,7 +56,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.get('/admin/mail/stalwart-credentials', async (req) => {
+  // Security review HIGH-2 fix (2026-05-03): scope to super_admin only.
+  // `support` and `admin` previously inherited the route-wide gate but
+  // these are lower-privilege roles that should not see Stalwart's
+  // cleartext admin password (which would let them bypass platform
+  // audit trails by talking to Stalwart's JMAP/web-admin directly).
+  app.get('/admin/mail/stalwart-credentials', { preHandler: requireRole('super_admin') }, async (req) => {
     try {
       return success(readStalwartCredentials(process.env));
     } catch (err) {
