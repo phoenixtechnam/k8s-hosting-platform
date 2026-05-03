@@ -27,7 +27,7 @@ import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
-import { useTriggerProvisioning, useTriggerDecommission } from '@/hooks/use-provisioning';
+import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { useClientMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 import {
@@ -71,7 +71,6 @@ export default function ClientDetail() {
   const subUsersQuery = useAdminSubUsers(id ?? null);
 
   const [provisioningOpen, setProvisioningOpen] = useState(false);
-  const [decommissionOpen, setDecommissionOpen] = useState(false);
   // Op id surfaced when a status PATCH triggered a storage-lifecycle
   // orchestrator (archive, restore-from-archive). Quiesce/unquiesce
   // for plain suspend/active is synchronous today and won't return
@@ -93,7 +92,6 @@ export default function ClientDetail() {
   const impersonate = useImpersonate();
   const systemInfo = useSystemInfo();
   const triggerProvision = useTriggerProvisioning();
-  const triggerDecommission = useTriggerDecommission();
   const bulkRestart = useBulkRestartDeployments();
 
   const handleDelete = async () => {
@@ -554,22 +552,13 @@ export default function ClientDetail() {
         />
       )}
 
-      {decommissionOpen && id && (
-        <DecommissionConfirmDialog
-          open={decommissionOpen}
-          onClose={() => setDecommissionOpen(false)}
-          onConfirm={async () => {
-            try {
-              await triggerDecommission.mutateAsync(id);
-              setDecommissionOpen(false);
-              setProvisioningOpen(true);
-            } catch { /* error shown in dialog */ }
-          }}
-          clientName={name}
-          namespace={client.kubernetesNamespace}
-          isPending={triggerDecommission.isPending}
-        />
-      )}
+      {/* Decommission UI removed (button realignment + ADR-033).
+          The /admin/clients/:id/decommission endpoint stays for
+          backwards-compat curl callers and now dispatches a
+          'deleted' transition through the lifecycle registry so the
+          orphan-prevention hooks fire (DNS, backups-v2, PVs, cluster-
+          scoped refs). detail.preservedClient=true in the transition
+          row distinguishes decommission from a hard delete. */}
 
       {/* Shared progress modal for status-driven lifecycle ops
           (archive, restore-from-archive). Suspend/resume run a

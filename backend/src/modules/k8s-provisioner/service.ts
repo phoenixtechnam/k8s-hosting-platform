@@ -729,6 +729,27 @@ export async function runDeprovision(
   }).where(eq(provisioningTasks.id, taskId));
 
   try {
+    // Phase A2 follow-up: dispatch a 'deleted' transition through the
+    // lifecycle registry BEFORE we touch the namespace. This fires
+    // the orphan-prevention hooks (dns-zone-cleanup, backups-v2-bundle-
+    // cleanup, cluster-scoped-refs-cleanup) while domains + backup_jobs
+    // rows are still readable. Decommission keeps the client row, so
+    // the dispatch records the action in client_lifecycle_transitions
+    // for the audit trail; detail.preservedClient=true distinguishes
+    // it from a hard delete.
+    try {
+      const { runTransition } = await import('../client-lifecycle/registry/index.js');
+      await runTransition(db, k8s, {
+        clientId,
+        namespace,
+        transition: 'deleted',
+        toStatus: 'suspended', // status doesn't change on decommission
+        detail: { preservedClient: true, source: 'decommission-orchestrator' },
+      });
+    } catch (err) {
+      console.warn(`[deprovision] lifecycle dispatch failed for ${clientId}: ${(err as Error).message}`);
+    }
+
     // Step 1: Delete Namespace (cascades everything inside)
     await updateProgress('Delete Namespace', 'running');
     try {

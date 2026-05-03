@@ -49,8 +49,44 @@ spec:
     #   stalwart-mail, platform-suspended, sftp-gateway,
     #   dex (where it lives), various sidecars            ≈ 2.5 CPU
     # Old 8-CPU ceiling blocked postgres-3 join during Apply HA.
+    # Bumped 2026-05-03 (memory + pods) for snapshot-only Postgres
+    # PITR: the auto-promote orchestrator runs a temp CNPG cluster
+    # IN ADDITION to the source while it bootstrap-recovers + snapshot-
+    # handoffs (~5-10 min). Worst case: source 3 instances + temp 1
+    # instance + per-instance bootstrap-controller + snapshot-recovery
+    # Job pods, all needing memory headroom.
     requests.cpu: "8"
-    requests.memory: 8Gi
+    requests.memory: 16Gi
     limits.cpu: "16"
-    limits.memory: 16Gi
-    pods: "30"
+    limits.memory: 32Gi
+    pods: "60"
+---
+# LimitRange for platform namespace — supplies default container
+# resource limits/requests so pods that don't specify them (e.g.
+# CNPG-managed bootstrap-controller / snapshot-recovery Job pods
+# during PITR) still satisfy the platform-quota's
+# limits.cpu/limits.memory/requests.cpu/requests.memory hard limits.
+# Mirrors k8s/base/resource-quotas.yaml; staging overlay needs its
+# own copy because the base ResourceQuota gets fully replaced by the
+# staging-overlay one (ResourceQuota strategic merge replaces, not
+# merges).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: platform-limit-range
+  namespace: platform
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      max:
+        cpu: "4"
+        memory: 4Gi
+      min:
+        cpu: 10m
+        memory: 32Mi
