@@ -70,8 +70,9 @@ export async function enableEmailForDomain(
   // requiring a separate /dkim/rotate call.
   // Use the same mode logic as rotateDkimKey: primary+managed → active;
   // cname/secondary → pending (operator must publish the TXT manually).
-  const domainRow = await db.select({ dnsMode: domains.dnsMode }).from(domains).where(eq(domains.id, domainId));
-  const resolvedDnsMode = (domainRow[0]?.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
+  // domain.dnsMode is already available from verifyDomainOwnership above —
+  // no extra DB round-trip needed.
+  const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
   const activeServers = await getActiveServersForDomain(db, domainId);
   const managedPrimary = canManageDnsZone({
     dnsMode: resolvedDnsMode,

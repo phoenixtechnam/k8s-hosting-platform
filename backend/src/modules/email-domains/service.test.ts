@@ -77,13 +77,11 @@ function createMockDb(options: {
   let selectCallCount = 0;
   const whereFn = vi.fn().mockImplementation(() => {
     selectCallCount++;
-    // 1. domain ownership check (verifyDomainOwnership)
-    if (selectCallCount === 1) return Promise.resolve(domainResult);
+    // 1. domain ownership check (verifyDomainOwnership) — returns full domain row incl. dnsMode
+    if (selectCallCount === 1) return Promise.resolve(domainResult.map((d) => ({ ...(d as object), dnsMode })));
     // 2. email domain existence check
     if (selectCallCount === 2) return Promise.resolve(emailDomainResult);
-    // 3. domains.dnsMode fetch (new — for email_dkim_keys insert)
-    if (selectCallCount === 3) return Promise.resolve([{ dnsMode }]);
-    // 4. re-fetch email domain after insert
+    // 3. re-fetch email domain after insert
     return Promise.resolve(emailDomainResult.length > 0 ? emailDomainResult : [EMAIL_DOMAIN]);
   });
 

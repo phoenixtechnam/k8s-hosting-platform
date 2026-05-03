@@ -160,12 +160,23 @@ data:
     user = "master"
     secret = "%{env:MASTER_SECRET}%"
     
+    # ─── Security: IP allowlist ────────────────────────────────────────────
+    # Mirrors k8s/base/stalwart/configmap.yaml — this file is a FULL
+    # replacement of config.toml (strategic-merge), so changes to the base
+    # must be manually kept in sync here.
+    #
+    # Prevents Stalwart's auto-block heuristic from blocking cluster-internal
+    # traffic. Primary fix is externalTrafficPolicy=Local on the Service;
+    # this is the secondary defence for intra-cluster pod/service CIDRs.
+    [server.security]
+    allowed-ips = ["127.0.0.0/8", "::1/128", "10.42.0.0/16", "10.43.0.0/16"]
+
     # ─── Telemetry ─────────────────────────────────────────────────────────
     [tracer.stdout]
     type = "stdout"
     level = "info"
     ansi = false
     enable = true
-    
+
     [metrics.prometheus]
     enable = true
