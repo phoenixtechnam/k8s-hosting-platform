@@ -110,14 +110,39 @@ function createMockDb(options: {
   const deleteWhere = vi.fn().mockResolvedValue(undefined);
   const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 
-  return {
+  // db.transaction(callback) — yields a tx handle that exposes the same
+  // insert/select/update/delete methods. We pass `db` itself as the tx so
+  // calls inside the callback are recorded by the same mocks. Mirrors
+  // Drizzle's transaction signature `<T>(cb: (tx: this) => Promise<T>) => Promise<T>`.
+  const transactionFn = vi.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+    return cb(dbObj);
+  });
+
+  // limit() chained off where() — returns the same Promise so existing
+  // tests that don't .limit() keep working.
+  const originalWhere = whereFn.getMockImplementation();
+  whereFn.mockImplementation((...args: unknown[]) => {
+    const result = originalWhere ? originalWhere(...args) : Promise.resolve([]);
+    // Wrap so .limit(n) returns the same data
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      const promise = result as Promise<unknown[]>;
+      // Attach .limit so callers like recovery branch work
+      (promise as Promise<unknown[]> & { limit?: (n: number) => Promise<unknown[]> }).limit = (_n: number) => promise;
+      return promise;
+    }
+    return result;
+  });
+
+  const dbObj = {
     select: selectFn,
     insert: insertFn,
     update: updateFn,
     delete: deleteFn,
-    _mocks: { selectFn, insertFn, updateFn, deleteFn, whereFn, insertValues },
+    transaction: transactionFn,
+    _mocks: { selectFn, insertFn, updateFn, deleteFn, whereFn, insertValues, transactionFn },
     _insertedTables: insertedTables,
-  } as unknown as Parameters<typeof enableEmailForDomain>[0] & {
+  };
+  return dbObj as unknown as Parameters<typeof enableEmailForDomain>[0] & {
     _mocks: Record<string, ReturnType<typeof vi.fn>>;
     _insertedTables: unknown[];
   };
@@ -151,7 +176,10 @@ describe('enableEmailForDomain', () => {
     expect(dkimInsertPayload.status).toBe('active');
     expect(dkimInsertPayload.selector).toBe('default');
     expect(dkimInsertPayload.activatedAt).toBeInstanceOf(Date);
-    expect(dkimInsertPayload.dnsVerifiedAt).toBeInstanceOf(Date);
+    // MEDIUM-3 fix: dnsVerifiedAt stays null at bootstrap — the TXT was
+    // just submitted to the provider, propagation isn't yet confirmed.
+    // Background DNS verification sets it later.
+    expect(dkimInsertPayload.dnsVerifiedAt).toBeNull();
   });
 
   it('inserts an email_dkim_keys row with status=pending for cname dns mode (Bug A)', async () => {

@@ -34,13 +34,38 @@ export async function enableEmailForDomain(
 ) {
   const domain = await verifyDomainOwnership(db, clientId, domainId);
 
-  // Check if already enabled (idempotent)
+  // Idempotency: if email_domains row exists, also confirm a matching
+  // email_dkim_keys row exists. HIGH-2 fix: a previous enable that died
+  // between the two inserts (or before the transaction wrapping was
+  // added) leaves the email_domains row but no DKIM key — without this
+  // recovery branch the caller gets a "success" response and an empty
+  // /dkim/keys forever.
   const [existing] = await db
     .select()
     .from(emailDomains)
     .where(eq(emailDomains.domainId, domainId));
 
   if (existing) {
+    const [existingKey] = await db
+      .select({ id: emailDkimKeys.id })
+      .from(emailDkimKeys)
+      .where(eq(emailDkimKeys.emailDomainId, existing.id))
+      .limit(1);
+    if (!existingKey) {
+      // Recover: backfill the DKIM key row from the legacy columns.
+      // Status='pending' is the safe default — `dkim/rotate` or DNS
+      // verification will activate it later.
+      await db.insert(emailDkimKeys).values({
+        id: crypto.randomUUID(),
+        emailDomainId: existing.id,
+        selector: existing.dkimSelector ?? 'default',
+        privateKeyEncrypted: existing.dkimPrivateKeyEncrypted!,
+        publicKey: existing.dkimPublicKey!,
+        status: 'pending',
+        activatedAt: null,
+        dnsVerifiedAt: null,
+      });
+    }
     return { ...existing, domainName: domain.domainName };
   }
 
@@ -51,27 +76,10 @@ export async function enableEmailForDomain(
 
   const id = crypto.randomUUID();
 
-  await db.insert(emailDomains).values({
-    id,
-    domainId,
-    clientId,
-    enabled: 1,
-    dkimSelector,
-    dkimPrivateKeyEncrypted,
-    dkimPublicKey: publicKey,
-    // max_mailboxes + max_quota_mb removed in migration 0019.
-    // Mailbox count is now capped at the plan level via
-    // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
-    catchAllAddress: input.catch_all_address ?? null,
-  });
-
-  // Sync the initial DKIM keypair into email_dkim_keys so that
-  // GET /dkim/keys returns a row immediately after enable without
-  // requiring a separate /dkim/rotate call.
-  // Use the same mode logic as rotateDkimKey: primary+managed → active;
-  // cname/secondary → pending (operator must publish the TXT manually).
-  // domain.dnsMode is already available from verifyDomainOwnership above —
-  // no extra DB round-trip needed.
+  // HIGH-1 fix: wrap the two inserts in a transaction so a failure
+  // between them can't leave an email_domains row without a matching
+  // email_dkim_keys row (the original Bug A). The active-server query
+  // and canManageDnsZone() are pure reads and live outside the tx.
   const resolvedDnsMode = (domain.dnsMode ?? 'cname') as 'primary' | 'cname' | 'secondary';
   const activeServers = await getActiveServersForDomain(db, domainId);
   const managedPrimary = canManageDnsZone({
@@ -85,15 +93,39 @@ export async function enableEmailForDomain(
   });
   const dkimKeyStatus: 'active' | 'pending' = managedPrimary ? 'active' : 'pending';
   const now = new Date();
-  await db.insert(emailDkimKeys).values({
-    id: crypto.randomUUID(),
-    emailDomainId: id,
-    selector: dkimSelector,
-    privateKeyEncrypted: dkimPrivateKeyEncrypted,
-    publicKey,
-    status: dkimKeyStatus,
-    activatedAt: dkimKeyStatus === 'active' ? now : null,
-    dnsVerifiedAt: dkimKeyStatus === 'active' ? now : null,
+
+  await db.transaction(async (tx) => {
+    await tx.insert(emailDomains).values({
+      id,
+      domainId,
+      clientId,
+      enabled: 1,
+      dkimSelector,
+      dkimPrivateKeyEncrypted,
+      dkimPublicKey: publicKey,
+      // max_mailboxes + max_quota_mb removed in migration 0019.
+      // Mailbox count is now capped at the plan level via
+      // hosting_plans.max_mailboxes + clients.max_mailboxes_override.
+      catchAllAddress: input.catch_all_address ?? null,
+    });
+
+    // Sync the initial DKIM keypair into email_dkim_keys so that
+    // GET /dkim/keys returns a row immediately after enable without
+    // requiring a separate /dkim/rotate call.
+    // MEDIUM-3 fix: leave dnsVerifiedAt=null even when status='active'.
+    // The DKIM TXT was just submitted — propagation isn't yet confirmed.
+    // The background DNS-verification path sets dnsVerifiedAt when
+    // resolvers actually return the record.
+    await tx.insert(emailDkimKeys).values({
+      id: crypto.randomUUID(),
+      emailDomainId: id,
+      selector: dkimSelector,
+      privateKeyEncrypted: dkimPrivateKeyEncrypted,
+      publicKey,
+      status: dkimKeyStatus,
+      activatedAt: dkimKeyStatus === 'active' ? now : null,
+      dnsVerifiedAt: null,
+    });
   });
 
   // Provision DNS records (Phase 3.C.2: includes SRV + autoconfig +
