@@ -14,3 +14,7 @@ resources:
   # `longhorn` class installed by the Helm chart — existing PVCs
   # continue to work.
   - storageclasses.yaml
+  # CSI VolumeSnapshotClass — bridges Longhorn snapshots into the
+  # Kubernetes snapshot.storage.k8s.io API so CNPG bootstrap.recovery.
+  # volumeSnapshots can consume them (postgres PITR without S3).
+  - csi-snapshots.yaml

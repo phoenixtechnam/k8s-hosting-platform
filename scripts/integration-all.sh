@@ -72,6 +72,10 @@ suites=(
   "firewall:integration-firewall-e2e.sh"
   "system-snapshots:integration-system-snapshots.sh"
   "drain:integration-drain-e2e.sh"
+  # Last — destructive to platform/postgres CR (deletes + recreates).
+  # Source PVCs are reclaimPolicy=Retain so data survives, but other
+  # suites should run against the unmolested cluster first.
+  "postgres-pitr:integration-postgres-pitr.sh"
 )
 
 passed_suites=()

@@ -1,0 +1,30 @@
+# Kubernetes VolumeSnapshot CRDs + Longhorn VolumeSnapshotClass.
+#
+# Required for the snapshot-only postgres PITR path: the operator picks
+# a Longhorn snapshot in the System Snapshots UI; the orchestrator
+# wraps it as a VolumeSnapshot CR and bootstraps a fresh CNPG Cluster
+# via `bootstrap.recovery.volumeSnapshots`. CNPG only consumes the
+# Kubernetes snapshot.storage.k8s.io API — it doesn't speak Longhorn-
+# native CRDs — so this bridge is mandatory.
+#
+# The CRDs are the upstream external-snapshotter v8.x set (the version
+# that ships with Kubernetes 1.31+). Idempotent: applying when already
+# present is a no-op.
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: longhorn
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    velero.io/csi-volumesnapshot-class: "true"
+driver: driver.longhorn.io
+deletionPolicy: Delete
+parameters:
+  # `bak` would route through the BackupTarget (S3); `snap` keeps the
+  # snapshot local in Longhorn. The PITR path uses local snapshots that
+  # already exist (taken by hourly-snap RecurringJob), so this is
+  # informational only — wrapVolumeSnapshot creates `Pre-provisioned`
+  # VolumeSnapshotContent referencing existing Longhorn snapshots,
+  # which bypasses the dynamic-provisioner type entirely.
+  type: snap

@@ -67,6 +67,8 @@ import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
 import { registerAllLifecycleHooks } from './modules/client-lifecycle/hooks/index.js';
 import { clientLifecycleRoutes } from './modules/client-lifecycle/routes.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
+import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
+import { isPostgresRestoreInProgress } from './modules/postgres-restore/service.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -169,6 +171,41 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
   // Audit logging (fire-and-forget on mutations)
   registerAuditHook(app, deps.db);
+
+  // Postgres-PITR write lock: while a PITR restore is in flight,
+  // reject any non-GET request that would write to the platform DB
+  // (the source cluster is being torn down + replaced; writes during
+  // that window get lost). The restore endpoint itself is allowlisted
+  // so the operator can monitor status. Health checks (GET) are
+  // unaffected. Returns 503 RESTORE_IN_PROGRESS with a Retry-After
+  // hint so frontends can backoff cleanly.
+  app.addHook('onRequest', async (request, reply) => {
+    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return;
+    const url = request.url;
+    // Allowlist: status check + the PITR endpoint itself + auth/login
+    // (operator may need to re-login during the long restore).
+    // Use exact path matches (with optional querystring) so future
+    // routes added under /api/v1/admin/postgres-restore/ don't
+    // automatically bypass the lock.
+    const path = url.split('?')[0];
+    if (
+      path === '/api/v1/admin/postgres-restore'
+      || path === '/api/v1/admin/postgres-restore/status'
+      || path.startsWith('/api/v1/auth/')
+      || path.startsWith('/api/v1/healthz')
+    ) return;
+    const lock = isPostgresRestoreInProgress();
+    if (lock.inProgress) {
+      reply.code(503).header('Retry-After', '60').send({
+        error: {
+          code: 'RESTORE_IN_PROGRESS',
+          message: `Postgres PITR restore in progress (started ${lock.startedAt?.toISOString()}, snapshot ${lock.snapshot}). Writes are blocked until the restore completes.`,
+          status: 503,
+          remediation: 'Wait for the restore to complete; poll GET /api/v1/admin/postgres-restore/status',
+        },
+      });
+    }
+  });
 
   // Response caching (global onSend hook captures responses for cached routes)
   app.addHook('onSend', cacheOnSendHook);
@@ -308,6 +345,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
   await app.register(clientLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
+  await app.register(postgresRestoreRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
@@ -363,6 +401,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // a per-process LRU; no connect() call needed. Initialize it
       // here for parity with the previous startup-warm pattern.
       getRedis();
+
+      // Crash-safe PITR lock recovery. If the previous platform-api
+      // process died mid-restore, the persisted lock row in
+      // platform_settings tells us so — emit a sticky admin
+      // notification with enough context to recover by hand, then
+      // clear the lock so writes are not blocked forever.
+      try {
+        const { recoverInterruptedRestore } = await import('./modules/postgres-restore/service.js');
+        await recoverInterruptedRestore(app.db);
+      } catch (err) {
+        app.log.error({ err }, 'PITR interrupted-restore recovery failed at startup');
+      }
 
       // Reconcile platform-ingress hosts from the DB-configured panel URLs.
       // Kustomize overlays no longer hardcode spec.rules/tls — platform-api
