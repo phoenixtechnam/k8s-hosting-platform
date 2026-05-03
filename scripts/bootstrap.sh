@@ -3018,12 +3018,25 @@ bootstrap_stalwart_v016() {
     --header="Authorization: Basic $(echo -n "admin:${stalwart_admin_pw}" | base64 | tr -d '\n')" \
     "http://localhost:8080/jmap/session" 2>&1 | grep "HTTP/" | awk '{print $2}' || echo "000")
 
-  if [[ "$auth_code" == "200" ]]; then
-    log "  Stalwart 0.16 fully bootstrapped (admin auth 200). Skipping."
-    return 0
-  fi
-
-  log "  Stalwart 0.16 needs bootstrap (admin auth returned ${auth_code})."
+  # HIGH fix (code review 2026-05-03): be strict about probe codes.
+  # Treat ONLY 200 as bootstrapped and 401 as needs-bootstrap. Any other
+  # code (5xx, 000, 502, 503) means the pod is in an indeterminate state —
+  # if we proceed in that case we may re-bootstrap a live, already-
+  # bootstrapped Stalwart and overwrite the admin account / DKIM keys.
+  case "$auth_code" in
+    200)
+      log "  Stalwart 0.16 fully bootstrapped (admin auth 200). Skipping."
+      return 0
+      ;;
+    401)
+      log "  Stalwart 0.16 needs bootstrap (admin auth returned 401)."
+      ;;
+    *)
+      warn "  Stalwart 0.16 probe returned unexpected ${auth_code:-empty} — refusing to bootstrap."
+      warn "  Inspect the pod state manually before retrying."
+      return 1
+      ;;
+  esac
 
   # ── Step 4: stalwart-admin-creds already created by generate_platform_secrets ──
   # No-op — just confirm the password is readable.

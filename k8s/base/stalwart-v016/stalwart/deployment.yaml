@@ -58,6 +58,12 @@ spec:
         # Render config.json template: substitute ${STALWART_PG_*} placeholders
         # using busybox sed (busybox has no envsubst).  The resolved file is
         # written to the config-rendered emptyDir so Stalwart can read it.
+        #
+        # HIGH fix (code review 2026-05-03): sed replacement strings interpret
+        # `&` (matched text), `\` (escape), and `|` (our delimiter) specially.
+        # A password containing any of these would silently corrupt config.json
+        # and Stalwart would fail to connect to PG with no obvious cause.
+        # Each value is escaped via `sed 's/[&\\|]/\\&/g'` before being injected.
         - name: render-config
           image: docker.io/busybox:1.36
           imagePullPolicy: IfNotPresent
@@ -65,11 +71,16 @@ spec:
             - sh
             - -c
             - |
+              esc() { printf '%s' "$1" | sed 's/[&\\|]/\\&/g'; }
+              H=$(esc "$STALWART_PG_HOST")
+              D=$(esc "$STALWART_PG_DATABASE")
+              U=$(esc "$STALWART_PG_USER")
+              P=$(esc "$STALWART_PG_PASSWORD")
               sed \
-                -e "s|\${STALWART_PG_HOST}|${STALWART_PG_HOST}|g" \
-                -e "s|\${STALWART_PG_DATABASE}|${STALWART_PG_DATABASE}|g" \
-                -e "s|\${STALWART_PG_USER}|${STALWART_PG_USER}|g" \
-                -e "s|\${STALWART_PG_PASSWORD}|${STALWART_PG_PASSWORD}|g" \
+                -e "s|\${STALWART_PG_HOST}|$H|g" \
+                -e "s|\${STALWART_PG_DATABASE}|$D|g" \
+                -e "s|\${STALWART_PG_USER}|$U|g" \
+                -e "s|\${STALWART_PG_PASSWORD}|$P|g" \
                 /tmpl/config.json > /etc/stalwart/config.json
               echo "Rendered /etc/stalwart/config.json"
           env:
