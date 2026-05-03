@@ -554,6 +554,17 @@ async function deleteVolumeSnapshot(
  * carrying over the source cluster's identity (database, owner, secret,
  * imageName, storage size + class, affinity).
  */
+// Tight resource overrides for the TEMP PITR cluster — its only job is
+// bootstrap-from-snapshot → snapshot itself → get deleted (~5-10 min).
+// Sized for 4 GB-RAM cluster servers where the source cluster's
+// production resources (1 Gi limit per instance) would unnecessarily
+// pin memory during the cutover. 512 Mi covers postgres init + WAL
+// replay during snapshot recovery.
+const TEMP_CLUSTER_RESOURCES = {
+  requests: { cpu: '50m', memory: '256Mi' },
+  limits:   { cpu: '500m', memory: '512Mi' },
+} as const;
+
 function buildRecoveryCluster(
   src: CnpgCluster,
   newName: string,
@@ -561,10 +572,16 @@ function buildRecoveryCluster(
   volumeSnapshotName: string,
   recoveryTargetTime: string | null,
   instances: number,
+  isTemp: boolean,
 ): unknown {
   const recoveryTarget = recoveryTargetTime
     ? { targetTime: recoveryTargetTime, targetInclusive: true }
     : undefined;
+  // Temp cluster: small fixed resources (transient, runs ~5-10 min).
+  // Source rebuild: inherit production-sized resources from the
+  // source's spec.resources (1 Gi limit, etc.) so the recreated
+  // cluster matches the original sizing.
+  const resources = isTemp ? TEMP_CLUSTER_RESOURCES : src.spec?.resources;
   return {
     apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
     kind: 'Cluster',
@@ -582,7 +599,7 @@ function buildRecoveryCluster(
       // these the snapshot-recovery Job is rejected with "must specify
       // limits.cpu for: bootstrap-controller,snapshot-recovery" and
       // the temp cluster sits at "Setting up primary" forever.
-      resources: src.spec?.resources,
+      resources,
       postgresql: src.spec?.postgresql,
       enableSuperuserAccess: src.spec?.enableSuperuserAccess,
       monitoring: src.spec?.monitoring,
@@ -664,7 +681,7 @@ export async function promotePostgresFromSnapshot(
 
     // 3. Bootstrap temp cluster
     const t2 = nowMs();
-    const tempBody = buildRecoveryCluster(pre.cluster, tempName, inputs.clusterNamespace, wrapped.volumeSnapshotName, inputs.recoveryTargetTime, 1);
+    const tempBody = buildRecoveryCluster(pre.cluster, tempName, inputs.clusterNamespace, wrapped.volumeSnapshotName, inputs.recoveryTargetTime, 1, true /* isTemp */);
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: tempBody });
     steps.push({ step: 'create-temp-cluster', ok: true, elapsedMs: nowMs() - t2, detail: tempName });
 
@@ -757,6 +774,7 @@ export async function promotePostgresFromSnapshot(
       pre.cluster, inputs.clusterName, inputs.clusterNamespace,
       tempSnap.volumeSnapshotName, null /* no PITR — temp already replayed */,
       pre.cluster.spec?.instances ?? 1,
+      false /* isTemp: rebuilding the production source */,
     );
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: newSrcBody });
     const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000);
@@ -822,6 +840,7 @@ export async function promotePostgresFromSnapshot(
           inputs.clusterName, inputs.clusterNamespace,
           wrapped.volumeSnapshotName,
           null, pre.cluster.spec?.instances ?? 1,
+          false /* isTemp: rebuilding production source */,
         );
         await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: recoveryBody });
         steps.push({ step: 'auto-recovery', ok: true, detail: 'recreated source cluster from original snapshot' });

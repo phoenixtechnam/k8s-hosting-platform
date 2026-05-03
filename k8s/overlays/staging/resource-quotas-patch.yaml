@@ -43,23 +43,22 @@ metadata:
   namespace: platform
 spec:
   hard:
-    # HA tier headroom on a 3-server cluster:
+    # HA tier headroom on a 3-server cluster of 4 GB-RAM nodes
+    # (~12 GB total cluster RAM, ~4-6 GB free for the platform
+    # namespace after OS + k3s + Calico + Longhorn + cert-manager).
     #   5 stateless deploys × 3 replicas × ~500m limit ≈ 7.5 CPU
     #   3 CNPG postgres instances × 1 CPU limit          = 3.0 CPU
     #   stalwart-mail, platform-suspended, sftp-gateway,
     #   dex (where it lives), various sidecars            ≈ 2.5 CPU
     # Old 8-CPU ceiling blocked postgres-3 join during Apply HA.
-    # Bumped 2026-05-03 (memory + pods) for snapshot-only Postgres
-    # PITR: the auto-promote orchestrator runs a temp CNPG cluster
-    # IN ADDITION to the source while it bootstrap-recovers + snapshot-
-    # handoffs (~5-10 min). Worst case: source 3 instances + temp 1
-    # instance + per-instance bootstrap-controller + snapshot-recovery
-    # Job pods, all needing memory headroom.
+    # PITR adds ~1.3 GB transient (temp postgres 512 Mi + bootstrap-
+    # controller 384 Mi + snapshot-recovery Job 384 Mi via LimitRange
+    # defaults) — fits inside 16 Gi limits.memory headroom. No pods
+    # cap: CPU/memory quotas already bound resource consumption.
     requests.cpu: "8"
-    requests.memory: 16Gi
+    requests.memory: 8Gi
     limits.cpu: "16"
-    limits.memory: 32Gi
-    pods: "60"
+    limits.memory: 16Gi
 ---
 # LimitRange for platform namespace — supplies default container
 # resource limits/requests so pods that don't specify them (e.g.
@@ -69,7 +68,7 @@ spec:
 # Mirrors k8s/base/resource-quotas.yaml; staging overlay needs its
 # own copy because the base ResourceQuota gets fully replaced by the
 # staging-overlay one (ResourceQuota strategic merge replaces, not
-# merges).
+# merges). Defaults sized for 4 GB-RAM cluster servers.
 apiVersion: v1
 kind: LimitRange
 metadata:
@@ -79,11 +78,11 @@ spec:
   limits:
     - type: Container
       default:
-        cpu: 500m
-        memory: 512Mi
+        cpu: 300m
+        memory: 384Mi
       defaultRequest:
-        cpu: 50m
-        memory: 64Mi
+        cpu: 20m
+        memory: 32Mi
       max:
         cpu: "4"
         memory: 4Gi

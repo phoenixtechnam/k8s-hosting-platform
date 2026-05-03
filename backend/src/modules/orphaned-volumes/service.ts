@@ -30,12 +30,21 @@ import { clients } from '../../db/schema.js';
  *  - longhorn_volume_unbound  A Longhorn volume CR exists but no PV
  *                          references it (PV deleted / never created /
  *                          orphaned by a failed provisioning).
+ *
+ *  - namespace_orphaned    A `client-*` namespace still exists with no
+ *                          matching client row in the platform DB and no
+ *                          PV that already triggered a more specific
+ *                          reason. Typically a deprovision left the
+ *                          namespace stranded after volumes were already
+ *                          cleaned up, or admin DELETE finished without
+ *                          the cascade running.
  */
 export type OrphanReason =
   | 'namespace_deleted'
   | 'client_record_deleted'
   | 'pv_released_stale'
-  | 'longhorn_volume_unbound';
+  | 'longhorn_volume_unbound'
+  | 'namespace_orphaned';
 
 export interface OrphanedVolumeEntry {
   readonly pvName: string | null;
@@ -91,7 +100,11 @@ interface RawLhReplica {
 }
 
 interface RawNamespace {
-  readonly metadata?: { readonly name?: string };
+  readonly metadata?: {
+    readonly name?: string;
+    readonly creationTimestamp?: string;
+  };
+  readonly status?: { readonly phase?: string };
 }
 
 /** Parse the K8s `<n>Gi` quantity strings Longhorn returns. */
@@ -153,8 +166,16 @@ export async function detectOrphans(
 
   // 2) Index lookup tables.
   const namespacesAlive = new Set<string>();
+  // Track namespace metadata for the namespace-orphan pass below. A
+  // namespace is "alive" once it has a name; we still log it even if its
+  // status.phase is Terminating because Terminating namespaces still
+  // count against quotas + still hold finalised resources.
+  const namespaceMeta = new Map<string, RawNamespace>();
   for (const ns of nsList.items ?? []) {
-    if (ns.metadata?.name) namespacesAlive.add(ns.metadata.name);
+    const name = ns.metadata?.name;
+    if (!name) continue;
+    namespacesAlive.add(name);
+    namespaceMeta.set(name, ns);
   }
   const clientByNs = new Map<string, { name: string }>();
   for (const c of clientRows) {
@@ -265,8 +286,41 @@ export async function detectOrphans(
     });
   }
 
+  // 5) Namespace orphans: tenant-shaped namespaces (`client-*`) with no
+  // matching client row AND no PV that already triggered a row in pass 3.
+  // Catches the case where deprovision deleted volumes/PVs but left the
+  // namespace standing, or where an admin hand-deletes a client row but
+  // not its namespace.
+  //
+  // De-dup against namespaces already represented above: if any orphan
+  // entry already references this namespace, skip it — the operator can
+  // delete the PV (or namespace via cluster tooling) from that row.
+  const namespacesAlreadyReported = new Set<string>();
+  for (const o of orphans) {
+    if (o.namespace) namespacesAlreadyReported.add(o.namespace);
+  }
+  for (const [nsName, ns] of namespaceMeta) {
+    if (!nsName.startsWith('client-')) continue;
+    if (clientByNs.has(nsName)) continue;
+    if (namespacesAlreadyReported.has(nsName)) continue;
+    const created = ns.metadata?.creationTimestamp;
+    const ageDays = ageDaysFromIso(created);
+    orphans.push({
+      pvName: null,
+      longhornVolumeName: null,
+      namespace: nsName,
+      pvcName: null,
+      sizeBytes: 0,
+      nodes: [],
+      reason: 'namespace_orphaned',
+      ageDays,
+      ownerLabel: `Platform System (${nsName})`,
+    });
+  }
+
   // Stable sort: largest first so the UI surfaces high-impact orphans
-  // at the top of the list.
+  // at the top of the list. Namespace-only orphans (sizeBytes=0) sink to
+  // the bottom which matches operator priority — volumes first.
   orphans.sort((a, b) => b.sizeBytes - a.sizeBytes);
 
   return {
@@ -279,21 +333,28 @@ export async function detectOrphans(
 
 /**
  * Resolve an orphan entry by its action key (`longhornVolumeName` for the
- * Longhorn-backed case, `pvName` for the unbound case). Returns null when
- * the named volume isn't currently classified as orphaned — the caller
+ * Longhorn-backed case, `pvName` for the unbound case, `namespace` for the
+ * `namespace_orphaned` case). Returns null when nothing matches — callers
  * MUST refuse to act on a missing entry. This is the server-side guard
- * that prevents an authenticated admin from snapshotting / deleting an
- * arbitrary live volume by guessing its name.
+ * that prevents an authenticated admin from snapshotting / deleting /
+ * cascading an arbitrary live resource by guessing its name.
  */
 export async function findOrphan(
   db: Database,
   k8s: K8sClients,
-  key: { readonly volumeName?: string; readonly pvName?: string },
+  key: {
+    readonly volumeName?: string;
+    readonly pvName?: string;
+    readonly namespace?: string;
+  },
 ): Promise<OrphanedVolumeEntry | null> {
   const report = await detectOrphans(db, k8s);
   for (const o of report.orphans) {
     if (key.volumeName && o.longhornVolumeName === key.volumeName) return o;
     if (key.pvName && o.pvName === key.pvName) return o;
+    if (key.namespace
+      && o.reason === 'namespace_orphaned'
+      && o.namespace === key.namespace) return o;
   }
   return null;
 }
@@ -322,22 +383,31 @@ export async function snapshotOrphan(
 }
 
 /**
- * Cascade delete: PV → Longhorn Volume CR. The PV alone won't reclaim the
- * Longhorn volume because reclaimPolicy=Retain on every platform/system
- * StorageClass. Pattern matches deprovisionRunCleanup in
- * k8s-provisioner/service.ts:803-820.
+ * Cascade delete an orphan entry: PV → Longhorn Volume CR → Namespace.
+ * The PV alone won't reclaim the Longhorn volume because reclaimPolicy=
+ * Retain on every platform/system StorageClass. Pattern matches
+ * deprovisionRunCleanup in k8s-provisioner/service.ts:803-820.
+ *
+ * For `namespace_orphaned` rows there is no PV / Longhorn volume — only
+ * a namespace name to delete. The kube-apiserver's namespace cascade
+ * reaps any remaining resources inside it.
  */
 export async function deleteOrphan(
   k8s: K8sClients,
-  pvName: string | null,
-  longhornVolumeName: string | null,
-): Promise<{ deletedPv: boolean; deletedLonghornVolume: boolean }> {
+  target: {
+    readonly pvName: string | null;
+    readonly longhornVolumeName: string | null;
+    readonly namespace?: string | null;
+    readonly cascadeNamespace?: boolean;
+  },
+): Promise<{ deletedPv: boolean; deletedLonghornVolume: boolean; deletedNamespace: boolean }> {
   let deletedPv = false;
   let deletedLonghornVolume = false;
+  let deletedNamespace = false;
 
-  if (pvName) {
+  if (target.pvName) {
     try {
-      await k8s.core.deletePersistentVolume({ name: pvName });
+      await k8s.core.deletePersistentVolume({ name: target.pvName });
       deletedPv = true;
     } catch (err) {
       const status = (err as { code?: number; statusCode?: number }).code
@@ -346,12 +416,12 @@ export async function deleteOrphan(
     }
   }
 
-  if (longhornVolumeName) {
+  if (target.longhornVolumeName) {
     try {
       await k8s.custom.deleteNamespacedCustomObject({
         group: 'longhorn.io', version: 'v1beta2',
         namespace: 'longhorn-system', plural: 'volumes',
-        name: longhornVolumeName,
+        name: target.longhornVolumeName,
       } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]);
       deletedLonghornVolume = true;
     } catch (err) {
@@ -361,7 +431,79 @@ export async function deleteOrphan(
     }
   }
 
-  return { deletedPv, deletedLonghornVolume };
+  if (target.cascadeNamespace && target.namespace) {
+    // Defense-in-depth: refuse to cascade anything that doesn't look
+    // like a tenant namespace, even if a caller bypassed findOrphan.
+    // detectOrphans already enforces this for the namespace_orphaned
+    // pass, but a future code path that calls deleteOrphan directly
+    // would otherwise be a footgun.
+    if (!target.namespace.startsWith('client-')) {
+      throw new Error(
+        `BUG: refusing to cascade non-tenant namespace '${target.namespace}'`,
+      );
+    }
+    try {
+      await k8s.core.deleteNamespace({ name: target.namespace });
+      deletedNamespace = true;
+    } catch (err) {
+      const status = (err as { code?: number; statusCode?: number }).code
+        ?? (err as { statusCode?: number }).statusCode;
+      if (status !== 404) throw err;
+    }
+  }
+
+  return { deletedPv, deletedLonghornVolume, deletedNamespace };
+}
+
+/**
+ * Purge every currently-orphaned entry in one pass. Iterates the latest
+ * scan, attempts the same cascade `deleteOrphan` would run for each row,
+ * and aggregates per-row failures so the operator sees exactly which
+ * entries didn't drain. Re-scanning after the call is the caller's job
+ * (the modal already invalidates `['orphaned-volumes']` on success).
+ */
+export async function purgeAllOrphans(
+  db: Database,
+  k8s: K8sClients,
+  options: { readonly stalePvThresholdDays?: number } = {},
+): Promise<{
+  attempted: number;
+  deleted: number;
+  bytesReclaimed: number;
+  failures: Array<{ key: string; reason: OrphanReason; error: string }>;
+}> {
+  const report = await detectOrphans(db, k8s, options);
+  let deleted = 0;
+  let bytesReclaimed = 0;
+  const failures: Array<{ key: string; reason: OrphanReason; error: string }> = [];
+
+  for (const entry of report.orphans) {
+    const key = entry.longhornVolumeName ?? entry.pvName ?? entry.namespace ?? '';
+    if (!key) {
+      failures.push({ key: '(unknown)', reason: entry.reason, error: 'orphan has no actionable key' });
+      continue;
+    }
+    try {
+      await deleteOrphan(k8s, {
+        pvName: entry.pvName,
+        longhornVolumeName: entry.longhornVolumeName,
+        namespace: entry.namespace,
+        cascadeNamespace: entry.reason === 'namespace_orphaned',
+      });
+      deleted++;
+      bytesReclaimed += entry.sizeBytes;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push({ key, reason: entry.reason, error: message });
+    }
+  }
+
+  return {
+    attempted: report.orphans.length,
+    deleted,
+    bytesReclaimed,
+    failures,
+  };
 }
 
 // Re-export for tests

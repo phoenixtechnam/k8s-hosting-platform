@@ -9,12 +9,18 @@ import { z } from 'zod';
  *  - client_record_deleted Tenant namespace exists but no client row in DB.
  *  - pv_released_stale     Phase=Released for > stalePvThresholdDays.
  *  - longhorn_volume_unbound  Longhorn volume CR exists but no PV references it.
+ *  - namespace_orphaned    A `client-*` namespace exists with no matching
+ *                          client row and no PV already covered by a more
+ *                          specific reason — typically a deprovision that
+ *                          left the namespace stranded after volumes were
+ *                          already cleaned up.
  */
 export const orphanReasonSchema = z.enum([
   'namespace_deleted',
   'client_record_deleted',
   'pv_released_stale',
   'longhorn_volume_unbound',
+  'namespace_orphaned',
 ]);
 export type OrphanReason = z.infer<typeof orphanReasonSchema>;
 
@@ -54,5 +60,27 @@ export type OrphanSnapshotResponse = z.infer<typeof orphanSnapshotResponseSchema
 export const orphanDeleteResponseSchema = z.object({
   deletedPv: z.boolean(),
   deletedLonghornVolume: z.boolean(),
+  deletedNamespace: z.boolean().default(false),
 });
 export type OrphanDeleteResponse = z.infer<typeof orphanDeleteResponseSchema>;
+
+/**
+ * Per-orphan failure detail for the purge-all endpoint. Identified by the
+ * action key the operator would have used in the row's Delete button.
+ */
+export const orphanPurgeFailureSchema = z.object({
+  /** longhornVolumeName ?? pvName ?? namespace — same precedence the modal uses. */
+  key: z.string(),
+  reason: orphanReasonSchema,
+  /** OperatorError envelope or plain string fallback. */
+  error: z.string(),
+});
+export type OrphanPurgeFailure = z.infer<typeof orphanPurgeFailureSchema>;
+
+export const orphanPurgeAllResponseSchema = z.object({
+  attempted: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  bytesReclaimed: z.number().int().nonnegative(),
+  failures: z.array(orphanPurgeFailureSchema),
+});
+export type OrphanPurgeAllResponse = z.infer<typeof orphanPurgeAllResponseSchema>;

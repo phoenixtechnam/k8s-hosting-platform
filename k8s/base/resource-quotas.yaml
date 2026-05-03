@@ -40,12 +40,13 @@ spec:
         cpu: 50m
         memory: 64Mi
 ---
-# Resource quota for platform namespace.
-# Bumped 2026-05-03 to support snapshot-only Postgres PITR: the
-# auto-promote orchestrator runs a temp CNPG cluster IN ADDITION
-# to the source while it bootstrap-recovers + snapshot-handoffs,
-# so the quota must hold ~2× the source cluster's worst-case
-# bootstrap resources for the duration of the cutover (~5-10 min).
+# Resource quota for platform namespace. Sized for 4 GB-RAM cluster
+# servers (3-server HA = 12 GB total cluster RAM, ~4-6 GB available
+# for the platform namespace after OS + k3s + Calico + Longhorn +
+# cert-manager system overhead). limits.memory: 16Gi allows 2× over-
+# commit since not all pods consume their limit simultaneously. No
+# pods cap — CPU/memory quotas already bound resource consumption,
+# and a numeric pod cap doesn't add protection that those don't cover.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -55,11 +56,10 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
 spec:
   hard:
-    requests.cpu: "8"
-    requests.memory: 16Gi
-    limits.cpu: "16"
-    limits.memory: 32Gi
-    pods: "60"
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
 ---
 # LimitRange for platform namespace — supplies default container
 # resource limits/requests so pods that don't specify them (e.g.
@@ -69,7 +69,9 @@ spec:
 # limits.memory hard limits. Without this, the temp PITR cluster
 # sits at "Setting up primary" forever because every recovery-Job
 # pod is rejected with "must specify limits.cpu for: bootstrap-
-# controller,snapshot-recovery".
+# controller,snapshot-recovery". Defaults sized for 4 GB-RAM
+# cluster servers — small enough that 5-10 PITR-bootstrap-style
+# pods don't exhaust the namespace quota.
 apiVersion: v1
 kind: LimitRange
 metadata:
@@ -81,11 +83,11 @@ spec:
   limits:
     - type: Container
       default:
-        cpu: 500m
-        memory: 512Mi
+        cpu: 300m
+        memory: 384Mi
       defaultRequest:
-        cpu: 50m
-        memory: 64Mi
+        cpu: 20m
+        memory: 32Mi
       max:
         cpu: "4"
         memory: 4Gi
