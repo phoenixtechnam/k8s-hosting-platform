@@ -57,7 +57,15 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const drained = impact !== undefined
     && impact.alreadyCordoned
     && impact.nonSystemPods.length === 0;
-  const lastReplicaVolumes = impact?.longhornReplicas.filter((r) => r.isLastReplica) ?? [];
+  // Tenant volumes that hit isLastReplica are already rendered in the
+  // Tenant PVCs table above, with their own per-row "Re-pin to"
+  // dropdown — surface them again here without a dropdown would just
+  // confuse the operator into thinking re-pin isn't an option.
+  // Reserve this danger banner for PLATFORM last-replicas (postgres,
+  // longhorn-system, mail, etc.) where tenant-PVC re-pin doesn't apply.
+  const lastReplicaVolumes = impact?.longhornReplicas.filter(
+    (r) => r.isLastReplica && r.clientId === null,
+  ) ?? [];
 
   const targetNodeOptions = useMemo(() => {
     const list = nodesQuery.data?.data ?? [];

@@ -770,9 +770,24 @@ export async function buildDrainImpact(
       namespace: 'longhorn-system', plural: 'volumes',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhVolume[] };
 
-    // Aggregate healthy-replica counts again (slightly redundant but
-    // saves an extra LIST when the CRD is hot).
-    const replicaNodes = new Map<string, string[]>(); // volume → node IDs
+    // Two indexes by volume:
+    //   replicaNodes        → every replica record (any state) — used to
+    //                         decide whether the volume has ANY presence
+    //                         on the draining node (a stopped replica
+    //                         still needs the operator's attention; it's
+    //                         the case where re-pinning is most urgent).
+    //   healthyReplicaNodes → only running replicas — used for the
+    //                         operator-facing "replicas" count and the
+    //                         isLastReplica risk classification.
+    // Symmetric with the platform-replica loop above (which enumerates
+    // all replica records on this node, healthy or not). Without this,
+    // a tenant volume whose single replica is currently `stopped` on
+    // the draining node was filtered out of tenantPvcs entirely — so
+    // the modal hid the per-row "Re-pin to" dropdown and the operator
+    // could only see the volume in the platform "Last-replica risk"
+    // banner where re-pinning isn't offered. Reported on staging.
+    const replicaNodes = new Map<string, string[]>();
+    const healthyReplicaNodes = new Map<string, string[]>();
     const replicaListResp = await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'replicas',
@@ -780,13 +795,17 @@ export async function buildDrainImpact(
       items?: Array<{ spec?: { volumeName?: string; nodeID?: string }; status?: { currentState?: string } }>;
     };
     for (const r of replicaListResp.items ?? []) {
-      if (r.status?.currentState !== 'running') continue;
       const v = r.spec?.volumeName;
       const n = r.spec?.nodeID;
       if (!v || !n) continue;
       const arr = replicaNodes.get(v) ?? [];
       arr.push(n);
       replicaNodes.set(v, arr);
+      if (r.status?.currentState === 'running') {
+        const ha = healthyReplicaNodes.get(v) ?? [];
+        ha.push(n);
+        healthyReplicaNodes.set(v, ha);
+      }
     }
 
     for (const v of vols.items ?? []) {
@@ -795,8 +814,9 @@ export async function buildDrainImpact(
       const ns = k8sStatus?.namespace ?? '';
       const pvcName = k8sStatus?.pvcName ?? '';
       if (!ns || !clientByNs.has(ns)) continue; // tenant only
-      const nodes = replicaNodes.get(volName) ?? [];
-      if (!nodes.includes(name)) continue;
+      const allNodes = replicaNodes.get(volName) ?? [];
+      if (!allNodes.includes(name)) continue;
+      const healthy = healthyReplicaNodes.get(volName) ?? [];
       const c = clientByNs.get(ns)!;
       const sizeBytes = Number(v.spec?.size ?? '0');
       tenantPvcs.push({
@@ -806,8 +826,8 @@ export async function buildDrainImpact(
         clientId: c.id,
         clientName: c.name,
         sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
-        replicaCount: nodes.length,
-        isLastReplica: nodes.length <= 1,
+        replicaCount: healthy.length,
+        isLastReplica: healthy.length <= 1,
         currentNodeSelector: Array.isArray(v.spec?.nodeSelector) ? [...v.spec.nodeSelector] : [],
       });
     }
