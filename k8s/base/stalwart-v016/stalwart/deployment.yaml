@@ -1,0 +1,136 @@
+# Stalwart 0.16 Deployment.
+#
+# WHY Deployment (not StatefulSet):
+#   Stalwart 0.16 is fully stateless when backed by PostgreSQL —
+#   all configuration, account data, and mail blobs are in the DB.
+#   A Deployment enables proper rolling updates + scale-out. The only
+#   PVC was the 0.15 data dir; 0.16 needs none (DB-backed storage).
+#
+# BOOTSTRAP MODE vs FULL MODE:
+#   On first deploy the DB is empty. Stalwart starts in "bootstrap mode"
+#   (listens only on 8080, no mail ports). The bootstrap-job.yaml runs
+#   `stalwart-cli apply` to seed the DB, then a rollout restart flips
+#   Stalwart to full mode (all listeners up).
+#
+# RELOADER:
+#   Stakater Reloader rolls the Deployment when stalwart-config-v016
+#   ConfigMap or mail-pg-app-credentials Secret changes. The annotation
+#   format matches Reloader's expected key names.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stalwart-mail-v016
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+  annotations:
+    # Stakater Reloader: roll on config or credentials change.
+    # Both the ConfigMap and the credentials Secret are watched.
+    configmap.reloader.stakater.com/reload: "stalwart-config-v016"
+    secret.reloader.stakater.com/reload: "mail-pg-app-credentials"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stalwart-mail-v016
+  template:
+    metadata:
+      labels:
+        app: stalwart-mail-v016
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: false  # Stalwart 0.16 binds port 25 — needs root or CAP_NET_BIND_SERVICE
+      containers:
+        - name: stalwart
+          image: docker.io/stalwartlabs/stalwart:v0.16.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: smtp
+              containerPort: 25
+              protocol: TCP
+            - name: submissions
+              containerPort: 465
+              protocol: TCP
+            - name: submission
+              containerPort: 587
+              protocol: TCP
+            - name: imap
+              containerPort: 143
+              protocol: TCP
+            - name: imaps
+              containerPort: 993
+              protocol: TCP
+            - name: sieve
+              containerPort: 4190
+              protocol: TCP
+            - name: mgmt-http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # PG connection details — host and DB name from the CNPG
+            # cluster convention: mail-pg-rw.mail.svc.cluster.local
+            - name: STALWART_PG_HOST
+              value: "mail-pg-rw.mail.svc.cluster.local"
+            - name: STALWART_PG_DATABASE
+              value: "stalwart_app"
+            - name: STALWART_PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mail-pg-app-credentials
+                  key: username
+            - name: STALWART_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mail-pg-app-credentials
+                  key: password
+          volumeMounts:
+            - name: config
+              mountPath: /opt/stalwart/etc
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /healthz/live
+              port: mgmt-http
+            # Bootstrap mode: DB init + schema migration can take ~60s
+            # on a cold cluster. Allow 90s (18 * 5s) startup grace.
+            failureThreshold: 18
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: mgmt-http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            # In bootstrap mode port 25 is NOT open; use the HTTP probe
+            # so the pod is reachable for `stalwart-cli apply` via the
+            # mgmt Service before mail listeners come up.
+            httpGet:
+              path: /healthz/live
+              port: mgmt-http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: stalwart-config-v016
+            items:
+              - key: config.json
+                path: config.json

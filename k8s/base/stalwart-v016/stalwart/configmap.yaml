@@ -1,0 +1,64 @@
+# Stalwart 0.16 config.json — ConfigMap.
+#
+# Stalwart 0.16 moved from the monolithic TOML format (used by 0.15)
+# to a "Declarative Deployments" architecture: a minimal config.json
+# that points at a single DataStore; all server settings (listeners,
+# domains, accounts, etc.) live in the database and are managed via
+# `stalwart-cli apply` (the bootstrap-plan Job) or the JMAP API.
+#
+# The config.json encodes:
+#   1. A DataStore (PostgreSQL) — connection details injected from env
+#   2. A minimal HTTP listener on 8080 (required before bootstrap so
+#      stalwart-cli can reach the management API)
+#
+# PG password comes from the mail-pg-app-credentials Secret via the
+# STALWART_PG_PASSWORD env var injected into the Deployment — NOT from
+# the ConfigMap (avoids plaintext creds in a ConfigMap that may be
+# git-committed or logged by kubectl describe).
+#
+# The `${VAR}` placeholders in the config are resolved by Stalwart 0.16
+# itself via its built-in environment substitution — they are NOT
+# resolved by Kustomize postBuild.substituteFrom at this layer. The
+# Deployment sets the matching env vars.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stalwart-config-v016
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+data:
+  config.json: |
+    {
+      "version": "0.16",
+      "store": {
+        "db": {
+          "@type": "PostgreSql",
+          "host": "${STALWART_PG_HOST}",
+          "port": 5432,
+          "database": "${STALWART_PG_DATABASE}",
+          "authUsername": "${STALWART_PG_USER}",
+          "authSecret": {
+            "@type": "Value",
+            "secret": "${STALWART_PG_PASSWORD}"
+          },
+          "useTls": false,
+          "allowInvalidCerts": false,
+          "poolMaxConnections": 10,
+          "poolRecyclingMethod": "fast",
+          "timeout": 15000,
+          "options": null,
+          "readReplicas": {}
+        }
+      },
+      "http": {
+        "port": 8080,
+        "bindAddress": "0.0.0.0",
+        "allowedIps": null,
+        "hsts": false,
+        "useTls": false
+      }
+    }

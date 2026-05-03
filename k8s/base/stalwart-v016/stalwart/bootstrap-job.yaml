@@ -1,0 +1,144 @@
+# Stalwart 0.16 bootstrap Job.
+#
+# PURPOSE: Seeds the empty mail-pg database with the initial Stalwart
+# configuration (server hostname, default domain, admin account, DKIM
+# signature) via `stalwart-cli apply`.
+#
+# GATING: This Job is created with `suspend: true`. bootstrap.sh's
+# bootstrap_stalwart_v016() step:
+#   1. Detects an empty DB by probing /healthz/live (bootstrap mode → 200)
+#   2. Patches this Job's spec.suspend = false to start it
+#   3. Waits for Job completion
+#   4. Rolls the Deployment to exit bootstrap mode
+#
+# Alternatively for re-runs (e.g. after a wiped DB), delete the Job
+# and patch the new one's suspend=false, OR run bootstrap.sh again
+# (idempotency: it skips if stalwart-admin-creds already exists and
+# Stalwart is in full mode).
+#
+# stalwart-cli is downloaded from GitHub releases inside an initContainer.
+# The SHA256 is pinned to v1.0.4 (verified in scripts/stalwart-016-spike.sh).
+# The download runs in an initContainer that writes the binary to a shared
+# emptyDir; the main container runs it. This avoids needing a custom image.
+#
+# CREDENTIALS: bootstrap.sh writes the rendered bootstrap-plan (with env-
+# substituted passwords/DKIM keys) into a Secret `stalwart-bootstrap-plan`
+# in namespace `mail` before unsuspending this Job. The Job reads the
+# plan from that Secret's `plan.json` key rather than from the ConfigMap
+# (which contains the template with ${...} placeholders).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stalwart-v016-bootstrap
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-bootstrap
+  annotations:
+    # Prevent Flux from reconciling this Job's spec.suspend field back
+    # to true after bootstrap.sh patches it to false. Once the Job runs
+    # and completes, Flux will see the completed state and leave it alone.
+    kustomize.toolkit.fluxcd.io/ssa: merge
+spec:
+  # Suspended by default — bootstrap.sh patches suspend=false when ready.
+  suspend: true
+  # No retry — if the apply fails, the operator needs to investigate.
+  # Incremented retries with the same plan can duplicate objects in the DB.
+  backoffLimit: 0
+  # Clean up the completed Job after 1 hour so it doesn't clutter
+  # `kubectl get jobs -n mail`. The pod logs remain available via
+  # `kubectl logs -n mail <pod>` until the TTL fires.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: stalwart-mail-v016
+        app.kubernetes.io/component: mail-bootstrap
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # Download stalwart-cli v1.0.4 (SHA256-pinned) into shared volume.
+        # Uses a minimal busybox+wget image — no custom build required.
+        - name: download-cli
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              CLI_VERSION="v1.0.4"
+              CLI_URL="https://github.com/stalwartlabs/cli/releases/download/${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+              CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
+
+              echo "Downloading stalwart-cli ${CLI_VERSION}..."
+              wget -q -O /tmp/stalwart-cli.tar.xz "${CLI_URL}"
+
+              actual=$(sha256sum /tmp/stalwart-cli.tar.xz | awk '{print $1}')
+              if [ "${actual}" != "${CLI_SHA256}" ]; then
+                echo "ERROR: stalwart-cli SHA256 mismatch" >&2
+                echo "  expected: ${CLI_SHA256}" >&2
+                echo "  actual:   ${actual}" >&2
+                exit 1
+              fi
+
+              echo "SHA256 verified. Extracting..."
+              # tar.xz — busybox's tar supports -J (xz) since 1.27
+              tar -xJf /tmp/stalwart-cli.tar.xz -C /tmp/
+              mv /tmp/stalwart-cli /shared/stalwart-cli
+              chmod +x /shared/stalwart-cli
+              echo "stalwart-cli ready at /shared/stalwart-cli"
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /shared
+      containers:
+        - name: apply-bootstrap-plan
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "Applying Stalwart 0.16 bootstrap plan..."
+
+              # The rendered plan (with passwords/DKIM substituted) is
+              # mounted from stalwart-bootstrap-plan Secret at /plan/plan.json.
+              # Fail fast if it's the unrendered template (contains '${').
+              if grep -q '\${' /plan/plan.json 2>/dev/null; then
+                echo "ERROR: bootstrap plan contains unsubstituted variables." >&2
+                echo "       bootstrap.sh must render the plan before unsuspending this Job." >&2
+                exit 1
+              fi
+
+              HOME=/tmp /shared/stalwart-cli \
+                --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
+                --username "admin" \
+                --password "${STALWART_RECOVERY_PASSWORD}" \
+                apply /plan/plan.json
+
+              echo "Bootstrap plan applied successfully."
+          env:
+            # Recovery admin password — Stalwart's built-in bootstrap-mode
+            # HTTP-Basic credential. Set by bootstrap.sh in the
+            # stalwart-admin-creds Secret before unsuspending this Job.
+            - name: STALWART_RECOVERY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stalwart-admin-creds
+                  key: recoveryPassword
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /shared
+            - name: bootstrap-plan
+              mountPath: /plan
+              readOnly: true
+      volumes:
+        - name: shared-bin
+          emptyDir: {}
+        - name: bootstrap-plan
+          secret:
+            secretName: stalwart-bootstrap-plan
+            items:
+              - key: plan.json
+                path: plan.json

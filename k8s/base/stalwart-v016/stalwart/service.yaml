@@ -1,0 +1,76 @@
+# Services for Stalwart 0.16.
+#
+# Two Services, mirroring the 0.15 layout:
+#   stalwart-mail-v016       — mail ports, LoadBalancer, externalTrafficPolicy: Local
+#   stalwart-mgmt-v016       — management HTTP (8080), ClusterIP
+#
+# Port 443 (HTTPS API) is handled by the Ingress (ingress-mgmt.yaml) which
+# terminates TLS at the nginx controller. Stalwart itself listens on 8080
+# for plain HTTP; the controller adds TLS termination in front. This avoids
+# needing a wildcard cert inside the Stalwart pod for the management UI.
+#
+# Dev overlay: patches stalwart-mail-v016 → NodePort (no LB controller in
+# DinD k3s). See k8s/overlays/dev/stalwart-v016/service-nodeport-patch.yaml.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mail-v016
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: stalwart-mail-v016
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp
+      protocol: TCP
+    - name: submissions
+      port: 465
+      targetPort: submissions
+      protocol: TCP
+    - name: submission
+      port: 587
+      targetPort: submission
+      protocol: TCP
+    - name: imap
+      port: 143
+      targetPort: imap
+      protocol: TCP
+    - name: imaps
+      port: 993
+      targetPort: imaps
+      protocol: TCP
+    - name: sieve
+      port: 4190
+      targetPort: sieve
+      protocol: TCP
+---
+# Management HTTP (WebAdmin UI + REST API + JMAP session endpoint).
+# Cluster-internal only; exposed externally via ingress-mgmt.yaml.
+# Named `stalwart-mgmt-v016` to avoid collision with 0.15's
+# `stalwart-mail-mgmt` Service during the parallel-running transition.
+apiVersion: v1
+kind: Service
+metadata:
+  name: stalwart-mgmt-v016
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  type: ClusterIP
+  selector:
+    app: stalwart-mail-v016
+  ports:
+    - name: mgmt-http
+      port: 8080
+      targetPort: mgmt-http
+      protocol: TCP

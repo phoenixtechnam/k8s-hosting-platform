@@ -1,0 +1,142 @@
+#
+# Dev overlay for Stalwart 0.16 (mail-pg CNPG + Stalwart Deployment).
+#
+# Standalone kustomization — deployed separately from the main dev overlay
+# to avoid Flux SSA conflicts while 0.15 is still active in the staging
+# overlay. Deploy with:
+#
+#   kubectl apply -k k8s/overlays/dev/stalwart-v016/
+#
+# Or via local.sh (once wired):
+#   ./scripts/local.sh mail16-up
+#
+# Differences from the base:
+#   1. stalwart-mail-v016 Service: LoadBalancer → NodePort (DinD has no LB)
+#   2. NetworkPolicy deleted (DinD k3s has no NetworkPolicy enforcer)
+#   3. mail-pg CNPG Cluster storage class: longhorn → local-path
+#   4. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#
+# 0.15 overlay (k8s/overlays/dev/stalwart/) remains active in dev;
+# this overlay deploys alongside it. Port node ports are offset by
+# +1 from 0.15 to avoid collision during parallel-running transition.
+#
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart-v016
+
+patches:
+  # mail namespace: the 0.15 overlay already created it — skip re-creation.
+  # (namespace.yaml in stalwart-v016/stalwart/ is comment-only, no action needed.)
+
+  # Patch stalwart-mail-v016 Service: LoadBalancer → NodePort
+  # Node ports are offset from the 0.15 ports (+1) to avoid collision:
+  #   30026 → smtp (0.15 uses 30025)
+  #   30027 → submission (0.15 uses 30587)
+  #   etc.
+  - patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+      spec:
+        type: NodePort
+        externalTrafficPolicy: Cluster
+        ports:
+          - name: smtp
+            port: 25
+            targetPort: smtp
+            nodePort: 30026
+            protocol: TCP
+          - name: submissions
+            port: 465
+            targetPort: submissions
+            nodePort: 30466
+            protocol: TCP
+          - name: submission
+            port: 587
+            targetPort: submission
+            nodePort: 30588
+            protocol: TCP
+          - name: imap
+            port: 143
+            targetPort: imap
+            nodePort: 30144
+            protocol: TCP
+          - name: imaps
+            port: 993
+            targetPort: imaps
+            nodePort: 30994
+            protocol: TCP
+          - name: sieve
+            port: 4190
+            targetPort: sieve
+            nodePort: 30191
+            protocol: TCP
+    target:
+      kind: Service
+      name: stalwart-mail-v016
+
+  # Remove NetworkPolicy — DinD k3s has no NP enforcer
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+    target:
+      kind: NetworkPolicy
+      name: stalwart-mail-v016
+
+  # mail-pg CNPG Cluster: pin storage class to local-path (DinD has no Longhorn)
+  - patch: |
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: mail-pg
+        namespace: mail
+      spec:
+        storage:
+          storageClass: local-path
+        # Relax affinity — dev DinD cluster has no server/worker node split
+        affinity:
+          nodeSelector: {}
+          tolerations: []
+    target:
+      kind: Cluster
+      name: mail-pg
+
+  # Ingress: dev TLS cert + relaxed SSL settings
+  - patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: stalwart-v016-webadmin
+        namespace: mail
+        annotations:
+          cert-manager.io/cluster-issuer: local-ca-issuer
+          nginx.ingress.kubernetes.io/ssl-redirect: "false"
+      spec:
+        tls:
+          - hosts:
+              - mail-admin.k8s-platform.test
+            secretName: stalwart-v016-webadmin-dev-tls
+        rules:
+          - host: mail-admin.k8s-platform.test
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: stalwart-mgmt-v016
+                      port:
+                        number: 8080
+    target:
+      kind: Ingress
+      name: stalwart-v016-webadmin

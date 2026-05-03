@@ -1,0 +1,72 @@
+# Management Ingress for Stalwart 0.16 web-admin.
+#
+# URL: https://mail-admin.${DOMAIN}/
+# Backend: stalwart-mgmt-v016.mail.svc.cluster.local:8080
+#
+# Access control:
+#   auth_request gate verifies the platform_session cookie against
+#   /api/v1/auth/verify-admin-session. Same pattern as 0.15 webadmin-ingress.
+#
+# Admin-UI gate convention (per CLAUDE.md):
+#   The `platform.phoenix-host.net/admin-ui: "true"` label causes the CI
+#   guard (scripts/ci-admin-auth-check.sh) to require one of:
+#     - admin-auth-gate-cookie component annotation, OR
+#     - admin-auth-gate-oauth2 component annotation
+#   The cookie-gate annotation is set here; overlays that use oauth2-proxy
+#   should replace it with the oauth2 variant.
+#
+# ${DOMAIN} is substituted by Kustomize postBuild.substituteFrom in each
+# overlay (same pattern as all other Ingresses in this repo).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stalwart-v016-webadmin
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+    # REQUIRED: marks this as an admin-only UI so ci-admin-auth-check.sh
+    # verifies that an auth gate is present. Without this label the script
+    # ignores the Ingress; with it, the gate annotation below is mandatory.
+    platform.phoenix-host.net/admin-ui: "true"
+  annotations:
+    # Cookie-based auth gate — platform_session validated by platform-api
+    platform.phoenix-host.net/admin-auth-gate: cookie
+    cert-manager.io/cluster-issuer: "${CLUSTER_ISSUER_NAME}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # auth_request gate — same design as 0.15 webadmin-ingress.yaml
+    nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
+    nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
+    nginx.ingress.kubernetes.io/auth-snippet: |
+      proxy_set_header Cookie $http_cookie;
+      proxy_set_header Authorization "";
+    # Stalwart's Leptos login POST /auth/token uses Content-Type: text/plain
+    # which trips OWASP CRS 920420 ("content type not allowed").
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRule REQUEST_URI "@beginsWith /auth/token" \
+          "id:1100003,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
+    # WebSocket support for live metrics / log streaming.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Frame-ancestors scoped to admin subdomain only.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Content-Security-Policy: frame-ancestors https://admin.${DOMAIN}";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - mail-admin.${DOMAIN}
+      secretName: stalwart-v016-webadmin-tls
+  rules:
+    - host: mail-admin.${DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stalwart-mgmt-v016
+                port:
+                  number: 8080

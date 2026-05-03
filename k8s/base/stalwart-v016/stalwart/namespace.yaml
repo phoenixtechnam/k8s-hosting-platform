@@ -1,0 +1,15 @@
+# mail namespace — shared with Stalwart 0.15. Already defined in
+# k8s/base/stalwart/namespace.yaml; this file exists as a no-op
+# reference so the v016 kustomization is self-documenting about its
+# namespace dependency. It is NOT duplicated here to avoid a conflict
+# when both the 0.15 and 0.16 bases are loaded simultaneously.
+#
+# If you are deploying stalwart-v016 WITHOUT the 0.15 base, uncomment:
+#
+# apiVersion: v1
+# kind: Namespace
+# metadata:
+#   name: mail
+#   labels:
+#     kubernetes.io/metadata.name: mail
+#     app.kubernetes.io/part-of: hosting-platform

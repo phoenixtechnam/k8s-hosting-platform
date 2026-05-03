@@ -1,0 +1,96 @@
+# NetworkPolicy for Stalwart 0.16.
+#
+# Ingress:
+#   - Public mail ports (25/465/587/143/993/4190) — from anywhere
+#   - Management HTTP (8080) — from same namespace + platform namespace
+#     (platform-api JMAP proxying + ingress controller)
+#
+# Egress:
+#   - DNS (kube-system port 53)
+#   - mail-pg PostgreSQL (port 5432, mail namespace only)
+#   - Outbound SMTP (port 25) for direct MX delivery
+#   - Outbound SMTP submission (465/587) for commercial relays
+#   - HTTPS (443) for DNSBL, ACME, relay APIs
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stalwart-mail-v016
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: stalwart-mail-v016
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Public mail ports — accept from anywhere
+    - from: []
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
+        - protocol: TCP
+          port: 4190
+    # Management HTTP — cluster-internal: same namespace + platform namespace
+    # (platform-api JMAP proxy + bootstrap job) + ingress-nginx namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # mail-pg PostgreSQL — only within mail namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Outbound SMTP (direct MX delivery)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 25
+    # Outbound SMTP submission (commercial relays)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587
+    # HTTPS for DNSBL, ACME, relay APIs
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
