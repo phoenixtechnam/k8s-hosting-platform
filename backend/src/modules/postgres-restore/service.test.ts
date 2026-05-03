@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow } from './service.js';
+import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow, createPitrJob, getPlatformApiImage } from './service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -58,9 +58,18 @@ function makeK8s(opts: MockK8sOpts = {}): K8sClients {
   return {
     core: {
       listNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({ items: opts.pvcs ?? [] }),
+      readNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({ spec: { volumeName: 'pvc-test' } }),
     },
     apps: {
       patchNamespacedDeploymentScale: vi.fn().mockResolvedValue({}),
+      readNamespacedDeployment: vi.fn().mockResolvedValue({
+        spec: { template: { spec: { containers: [{ name: 'api', image: 'ghcr.io/test/backend:test' }] } } },
+      }),
+    },
+    batch: {
+      createNamespacedJob: vi.fn().mockResolvedValue({}),
+      listNamespacedJob: vi.fn().mockResolvedValue({ items: [] }),
+      deleteNamespacedJob: vi.fn().mockResolvedValue({}),
     },
     custom: {
       getNamespacedCustomObject: vi.fn().mockImplementation((args: { plural: string }) => {
@@ -185,5 +194,36 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     // assert the contract and let the next test's makeDb scope
     // contain the fallout.
     expect(isPostgresRestoreInProgress().inProgress).toBe(true);
+  });
+
+  it('createPitrJob builds a valid Job CR with expected env + labels', async () => {
+    const k8s = makeK8s();
+    const result = await createPitrJob(k8s, {
+      clusterNamespace: 'platform', clusterName: 'postgres',
+      snapshotName: 'snap-1', recoveryTargetTime: '2026-05-03T20:00:00Z',
+      actorUserId: 'user-1', image: 'ghcr.io/test/backend:abc123',
+    });
+    expect(result.namespace).toBe('platform');
+    expect(result.jobName).toMatch(/^pitr-postgres-\d+$/);
+    const createCall = (k8s.batch as unknown as { createNamespacedJob: { mock: { calls: Array<[{ namespace: string; body: { metadata: { name: string; labels: Record<string, string> }; spec: { template: { spec: { containers: Array<{ image: string; env: Array<{ name: string; value?: string }> }> } } } } }]> } } }).createNamespacedJob.mock.calls[0];
+    expect(createCall[0].namespace).toBe('platform');
+    expect(createCall[0].body.metadata.labels['platform.phoenix-host.net/pitr-restore']).toBe('true');
+    expect(createCall[0].body.metadata.labels['platform.phoenix-host.net/pitr-namespace']).toBe('platform');
+    const envByName: Record<string, string | undefined> = {};
+    for (const e of createCall[0].body.spec.template.spec.containers[0].env) {
+      if (e.value !== undefined) envByName[e.name] = e.value;
+    }
+    expect(envByName.PITR_CLUSTER_NAMESPACE).toBe('platform');
+    expect(envByName.PITR_CLUSTER_NAME).toBe('postgres');
+    expect(envByName.PITR_SNAPSHOT_NAME).toBe('snap-1');
+    expect(envByName.PITR_RECOVERY_TARGET_TIME).toBe('2026-05-03T20:00:00Z');
+    expect(envByName.PITR_ACTOR_USER_ID).toBe('user-1');
+    expect(createCall[0].body.spec.template.spec.containers[0].image).toBe('ghcr.io/test/backend:abc123');
+  });
+
+  it('getPlatformApiImage reads image from live Deployment', async () => {
+    const k8s = makeK8s();
+    const image = await getPlatformApiImage(k8s);
+    expect(image).toBe('ghcr.io/test/backend:test');
   });
 });
