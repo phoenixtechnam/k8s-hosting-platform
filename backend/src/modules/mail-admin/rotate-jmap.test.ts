@@ -63,9 +63,11 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
 
     expect(result.username).toBe('admin');
     expect(result.password).toBe('new-secret-password');
-    // rotatedAt is the timestamp of the final `now()` call (after verification).
-    // With the advancing mock clock, this is BASE+1s = 12:00:01.
-    expect(result.rotatedAt).toBe('2026-05-01T12:00:01.000Z');
+    // rotatedAt is the timestamp of the final `now()` call (after the
+    // verify loop). With the do/while ordering, verify() succeeds on
+    // the first attempt so only two now() calls happen — one for the
+    // deadline at BASE+0, and the final toISOString also at BASE+0.
+    expect(result.rotatedAt).toBe('2026-05-01T12:00:00.000Z');
   });
 
   it('calls JMAP Principal/set with new password', async () => {

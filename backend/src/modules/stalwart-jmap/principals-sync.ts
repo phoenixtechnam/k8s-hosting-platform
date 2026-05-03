@@ -102,6 +102,12 @@ export function createPrincipalsSyncScheduler(
       // clearInterval/clearTimeout are interchangeable in Node for
       // both handle kinds, so a single `timer` slot is sufficient.
       timer = setTimeout(() => {
+        // Release the just-fired setTimeout handle before kicking off the
+        // first cycle. If stop() runs while runCycle()'s promise chain is
+        // suspended (await tick), it sees `timer === null` and the early
+        // return on the next start() prevents a double-start. The next
+        // line then re-installs the periodic interval — also stop()able.
+        timer = null;
         void runCycle().catch((err) => {
           console.error(
             '[stalwart-principals-sync] Initial cycle failed:',

@@ -23,16 +23,30 @@ const BCRYPT_ROUNDS = 12;
 /**
  * Resolve the Stalwart JMAP principals account ID.
  * Returns null if Stalwart is unreachable (unit tests, no mail stack).
+ *
+ * Security review M3 fix (2026-05-03): the cache used to be a permanent
+ * non-null slot. If Stalwart was unreachable at first call we'd cache
+ * the null path indirectly (every call re-tried, but a transient
+ * recovery would never invalidate a cached account ID after Stalwart
+ * was rebuilt with a different ID). Add a 5-minute TTL so a recovered
+ * Stalwart is picked up without a platform-api restart.
  */
+const JMAP_ACCOUNT_ID_CACHE_TTL_MS = 5 * 60 * 1000;
 let _jmapAccountIdCache: JmapAccountId | null = null;
+let _jmapAccountIdCachedAt = 0;
 
 async function getJmapAccountId(): Promise<JmapAccountId | null> {
-  if (_jmapAccountIdCache) return _jmapAccountIdCache;
+  if (_jmapAccountIdCache && Date.now() - _jmapAccountIdCachedAt < JMAP_ACCOUNT_ID_CACHE_TTL_MS) {
+    return _jmapAccountIdCache;
+  }
   try {
     const baseUrl = process.env.STALWART_MGMT_URL;
     const session = await getJmapSession(baseUrl, process.env);
     const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
-    if (id) _jmapAccountIdCache = id;
+    if (id) {
+      _jmapAccountIdCache = id;
+      _jmapAccountIdCachedAt = Date.now();
+    }
     return id ?? null;
   } catch {
     return null;
@@ -156,6 +170,14 @@ export async function createMailbox(
   const accountId = await getJmapAccountId();
   if (accountId) {
     try {
+      // Security review M1 (2026-05-03): cleartext password sent to
+      // Stalwart over internal HTTP. Stalwart claims `$2b$` bcrypt
+      // support but the staging E2E for hashed-secret login is still
+      // pending; until that is verified, the fastest safe path is to
+      // keep cleartext (Stalwart stores it as a hash internally; the
+      // wire-time exposure is within the cluster, port 8080 not
+      // externally reachable). Follow-up: pass `passwordHash` once
+      // hashed-secret IMAP login is proven on staging.
       const principal = await jmapCreateMailbox({
         accountId,
         input: {
@@ -258,8 +280,9 @@ export async function updateMailbox(
   mailboxId: string,
   input: UpdateMailboxInput,
 ) {
-  // Verify mailbox exists and belongs to client
-  await getMailbox(db, clientId, mailboxId);
+  // Verify mailbox exists and belongs to client. Capture for later JMAP
+  // sync so we don't burn a second SELECT on stalwartPrincipalId.
+  const existingMailbox = await getMailbox(db, clientId, mailboxId);
 
   const updateData: Record<string, unknown> = {};
 
@@ -287,6 +310,42 @@ export async function updateMailbox(
 
   if (Object.keys(updateData).length > 0) {
     await db.update(mailboxes).set(updateData).where(eq(mailboxes.id, mailboxId));
+  }
+
+  // Code-review H-3 fix (2026-05-03, second pass): propagate quota +
+  // password to Stalwart so JMAP-side enforcement matches the platform
+  // DB. Best-effort: if Stalwart is unreachable the platform DB is the
+  // authoritative new state and principals-sync will eventually reconcile.
+  // `status` is intentionally NOT synced because Stalwart has no
+  // dedicated "suspended" flag on Principal — suspension is enforced at
+  // the platform layer (auth/quota), and the legacy 0.15 sieve
+  // suspension shim was retired in M11.
+  if (input.quota_mb !== undefined || input.password !== undefined) {
+    if (existingMailbox.stalwartPrincipalId) {
+      const accountId = await getJmapAccountId();
+      if (accountId) {
+        const patch: Record<string, unknown> = {};
+        if (input.quota_mb !== undefined) {
+          // Stalwart `quota.storage` is bytes; the platform stores MB.
+          patch['quota/storage'] = input.quota_mb * 1024 * 1024;
+        }
+        if (input.password !== undefined) {
+          patch['secrets/0'] = input.password;
+        }
+        try {
+          await jmapUpdatePrincipal({
+            accountId,
+            id: existingMailbox.stalwartPrincipalId,
+            patch,
+            baseUrl: process.env.STALWART_MGMT_URL,
+          });
+        } catch (err) {
+          console.warn(
+            `[mailboxes] updateMailbox: JMAP patch failed for '${mailboxId}': ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
   }
 
   const [updated] = await db
