@@ -1641,13 +1641,14 @@ async function ensureVolumeReattached(k8s: K8sClients, namespace: string): Promi
     const { recordFileManagerAccess } = await import('../file-manager/idle-cleanup.js');
     recordFileManagerAccess(namespace, k8s);
     if (current >= 1) return; // someone else already kept it up
+    const { STRATEGIC_MERGE_PATCH } = await import('../../shared/k8s-patch.js');
     await (k8s.apps as unknown as {
-      patchNamespacedDeploymentScale: (a: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
+      patchNamespacedDeploymentScale: (a: { name: string; namespace: string; body: unknown }, mw: typeof STRATEGIC_MERGE_PATCH) => Promise<unknown>;
     }).patchNamespacedDeploymentScale({
       name: 'file-manager',
       namespace,
       body: { spec: { replicas: 1 } },
-    });
+    }, STRATEGIC_MERGE_PATCH);
   } catch {
     // file-manager Deployment may not exist (suspended/archived
     // client). The next lifecycle op or Files-page interaction will

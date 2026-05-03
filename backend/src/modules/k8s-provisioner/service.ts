@@ -5,6 +5,7 @@ import { clients, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
 import type { Database } from '../../db/index.js';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -488,7 +489,7 @@ export async function patchTenantVolumeReplicas(
     namespace: 'longhorn-system', plural: 'volumes', name: pvName,
     body: [{ op: 'replace', path: '/spec/numberOfReplicas', value: targetReplicas }],
   } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-    { headers: { 'Content-Type': 'application/json-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+    JSON_PATCH);
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────

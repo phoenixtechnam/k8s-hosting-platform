@@ -9,6 +9,7 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
+import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -142,7 +143,7 @@ export async function syncProxyIngressAnnotations(
       name: PLATFORM_INGRESS_NAME,
       namespace: PLATFORM_NAMESPACE,
       body: patchBody,
-    });
+    }, STRATEGIC_MERGE_PATCH);
   } catch {
     // Fall back to full replace if strategic merge patch fails
     const fullBody = { ...currentIngress, metadata: { ...metadata, annotations } };
@@ -254,11 +255,14 @@ export async function syncOAuth2ProxySecret(k8s: K8sClients, cookieSecret: strin
   };
 
   try {
+    // MERGE_PATCH (RFC 7396) — Secret has no patchMergeKey directives, so
+    // strategic-merge offers no benefit over plain merge-patch. Match the
+    // pattern used elsewhere for flat resources / CRDs.
     await k8s.core.patchNamespacedSecret({
       name: 'oauth2-proxy-config',
       namespace: PLATFORM_NAMESPACE,
       body: secretBody,
-    });
+    }, MERGE_PATCH);
   } catch (err: unknown) {
     if (isK8s404(err)) {
       await k8s.core.createNamespacedSecret({

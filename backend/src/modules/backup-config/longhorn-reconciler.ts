@@ -1,4 +1,5 @@
 import * as k8s from '@kubernetes/client-node';
+import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // The Kubernetes Secret Longhorn reads to build its S3 credentials. The
 // name is hard-coded in the BackupTarget/default CR (see write path
@@ -257,16 +258,17 @@ async function patchCronJobSuspend(
   name: string,
   suspended: boolean,
 ): Promise<void> {
-  // Strategic-merge-patch is what kubectl uses by default for built-in
-  // resources. CronJob/BatchV1 supports it directly; no Content-Type
-  // override needed (unlike the Longhorn BackupTarget CR which only
-  // accepts merge-patch+json — see patchBackupTarget below).
+  // Strategic-merge-patch for the built-in CronJob resource. Without the
+  // STRATEGIC_MERGE_PATCH override the v1.4 client defaults to
+  // application/json-patch+json and the apiserver rejects this object body.
+  // (Longhorn's BackupTarget CR uses MERGE_PATCH instead — see patchBackupTarget.)
   await batch.patchNamespacedCronJob(
     {
       name,
       namespace: PLATFORM_NAMESPACE,
       body: { spec: { suspend: suspended } },
     } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
+    STRATEGIC_MERGE_PATCH,
   );
 }
 
@@ -398,36 +400,11 @@ async function patchBackupTarget(
   custom: k8s.CustomObjectsApi,
   patch: Record<string, unknown>,
 ): Promise<void> {
-  // Longhorn BackupTarget accepts RFC 7396 merge-patch but NOT the
-  // default JSON-patch the @kubernetes/client-node v1 library sends
-  // (which expects [{op, path, value}] arrays). Without the explicit
-  // Content-Type the apiserver rejects our object-shaped body with
-  // "cannot unmarshal object into Go value of type []handlers.jsonPatchOp".
-  //
-  // v1.x library exposes a middleware hook on the second arg of every
-  // API call. pre()/post() return an Observable (rxjsStub) — we wrap
-  // our synchronous header override using the stub's `of(...)` helper.
-  //
-  // Using `as unknown as` cast because the library's exported
-  // Middleware interface is internal to rxjsStub and types resist a
-  // cleaner path without pulling rxjs in as a direct dep.
-  const mergePatchOverride = {
-    middleware: [
-      {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        pre: (ctx: any) => {
-          ctx.setHeaderParam('Content-Type', 'application/merge-patch+json');
-          // Observable<T> created from a resolved Promise — the library
-          // internally awaits it, so the value lands immediately.
-          return { toPromise: () => Promise.resolve(ctx), pipe: () => undefined };
-        },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        post: (ctx: any) => ({ toPromise: () => Promise.resolve(ctx), pipe: () => undefined }),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+  // Longhorn BackupTarget accepts RFC 7396 merge-patch but NOT the v1.4
+  // client default of application/json-patch+json (which expects [{op, path,
+  // value}] arrays). MERGE_PATCH overrides the Content-Type so our
+  // object-shaped body lands as merge-patch+json. See shared/k8s-patch.ts
+  // for the middleware shim implementation.
   try {
     await custom.patchClusterCustomObject(
       {
@@ -437,7 +414,7 @@ async function patchBackupTarget(
         name: BACKUP_TARGET_NAME,
         body: patch,
       } as unknown as Parameters<typeof custom.patchClusterCustomObject>[0],
-      mergePatchOverride,
+      MERGE_PATCH,
     );
   } catch (err) {
     // Older Longhorn installs scope BackupTargets to longhorn-system
@@ -453,7 +430,7 @@ async function patchBackupTarget(
           name: BACKUP_TARGET_NAME,
           body: patch,
         } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
-        mergePatchOverride,
+        MERGE_PATCH,
       );
       return;
     }

@@ -6,6 +6,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // In-memory PKCE state store (Phase 1). Replace with Redis in production.
 const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; providerId: string; expiresAt: number }>();
@@ -317,7 +318,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
             },
           },
         },
-      });
+      }, STRATEGIC_MERGE_PATCH);
     } catch (err) {
       app.log.warn({ err }, 'Failed to sync cookie secret to K8s — K8s may be unavailable');
     }

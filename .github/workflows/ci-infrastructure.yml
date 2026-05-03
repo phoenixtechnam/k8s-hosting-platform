@@ -82,6 +82,14 @@ jobs:
       - name: Scan k8s/ for pinned apex literals
         run: ./scripts/ci-no-pinned-domains.sh
 
+  k8s-patch-check:
+    name: K8s client patchNamespaced* Content-Type guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify every patch call has an explicit middleware shim
+        run: ./scripts/ci-k8s-patch-check.sh
+
   system-affinity-check:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest

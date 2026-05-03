@@ -5,6 +5,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { listNodes, listNodesEnriched, getNode, updateNode, buildDrainImpact, drainNode, deleteNode } from './service.js';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 // RFC-1123 DNS subdomain label with dots — matches k8s' own node-name
 // validation. We reject anything else at the route boundary so a path
@@ -295,8 +296,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'nodes', name, body: ops,
     } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-    // JSON Patch content-type
-    { headers: { 'Content-Type': 'application/json-patch+json' } } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[1]);
+    JSON_PATCH);
     try {
       const { auditLogs } = await import('../../db/schema.js');
       await app.db.insert(auditLogs).values({

@@ -192,29 +192,34 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       // Lazy-load @kubernetes/client-node so this file doesn't pull in the
       // heavy k8s bundle at import time (avoids OOM in test workers).
       const k8s = await import('@kubernetes/client-node');
+      const { JSON_PATCH } = await import('../../shared/k8s-patch.js');
       const kc = new k8s.KubeConfig();
       if (kubeconfigPath) kc.loadFromFile(kubeconfigPath);
       else kc.loadFromCluster();
       const core = kc.makeApiClient(k8s.CoreV1Api);
 
-      // Code-review CRITICAL fix (2026-05-03, second pass): the prior fix
-      // (855b443) switched from JSON-Patch ops to `{ data: {...} }`
-      // merge-patch shape, but @kubernetes/client-node 1.4 forces
-      // Content-Type to `application/json-patch+json` because
-      // `getPreferredMediaType` walks the supported-list in declaration
-      // order and JsonPatch is first. Sending a merge-patch object body
-      // with a JSON-Patch content-type is rejected (or silently no-ops)
-      // by the apiserver. The correct combination is `op:'replace'` ops
-      // (RFC 6902) on `/data/<key>` paths — matches the wire content-type
-      // the library actually emits. Bootstrap creates the data keys
-      // upfront so `replace` is safe; if a future Secret keeps `add`
-      // semantics, switch to `op:'add'` (RFC 6902 add-or-replace).
+      // Bug history (2026-05-03):
+      //   - First HIGH-3 fix (855b443) misdiagnosed the SDK default and
+      //     switched the body to `{ data: {...} }` merge-object — that
+      //     would have failed in production because client-node 1.4 forces
+      //     application/json-patch+json on the wire.
+      //   - Second pass (this version) restores RFC 6902 op arrays — the
+      //     body shape that matches the SDK's wire content-type — and
+      //     passes JSON_PATCH explicitly so the choice is documented and
+      //     the CI guard (scripts/ci-k8s-patch-check.sh) is satisfied.
+      //
+      // `op:'replace'` is safe because bootstrap creates the Secret data
+      // keys upfront. If a future Secret keeps add semantics, switch to
+      // `op:'add'` (RFC 6902 add-or-replace).
       const ops = Object.entries(stringData).map(([k, v]) => ({
         op: 'replace' as const,
         path: `/data/${k}`,
         value: Buffer.from(v, 'utf8').toString('base64'),
       }));
-      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object });
+      await core.patchNamespacedSecret(
+        { namespace, name, body: ops as unknown as object },
+        JSON_PATCH,
+      );
     },
 
     async verifyNewPassword(password: string): Promise<boolean> {

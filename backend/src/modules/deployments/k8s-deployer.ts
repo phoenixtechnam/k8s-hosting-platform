@@ -18,6 +18,7 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { buildPasswordResetInitContainer } from './password-reset.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -851,11 +852,11 @@ export async function startDeployment(
           body: { ...scale, spec: { ...scale.spec, replicas } },
         } as Parameters<typeof k8s.apps.replaceNamespacedDeploymentScale>[0]);
       } else if (component.type === 'cronjob') {
-        await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>) => Promise<void> } }).batch.patchNamespacedCronJob({
+        await (k8s as unknown as { batch: { patchNamespacedCronJob: (args: Record<string, unknown>, mw: typeof STRATEGIC_MERGE_PATCH) => Promise<void> } }).batch.patchNamespacedCronJob({
           name,
           namespace,
           body: { spec: { suspend: false } },
-        });
+        }, STRATEGIC_MERGE_PATCH);
       }
     } catch (err: unknown) {
       if (!isK8s404(err)) throw err;

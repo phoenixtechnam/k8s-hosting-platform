@@ -13,6 +13,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 export interface StalwartHostnameReconcileOptions {
   readonly kubeconfigPath?: string;
@@ -88,7 +89,7 @@ function defaultDeps(kubeconfigPath: string | undefined): StalwartHostnameReconc
         path: `/data/${k}`,
         value: Buffer.from(v, 'utf8').toString('base64'),
       }));
-      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object });
+      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object }, JSON_PATCH);
     },
     restartStatefulSet: async ({ namespace, name }) => {
       const now = new Date().toISOString();
@@ -96,7 +97,7 @@ function defaultDeps(kubeconfigPath: string | undefined): StalwartHostnameReconc
         { op: 'add', path: '/spec/template/metadata/annotations', value: {} },
         { op: 'add', path: '/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt', value: now },
       ];
-      await apps.patchNamespacedStatefulSet({ namespace, name, body: body as unknown as object });
+      await apps.patchNamespacedStatefulSet({ namespace, name, body: body as unknown as object }, JSON_PATCH);
     },
   };
 }

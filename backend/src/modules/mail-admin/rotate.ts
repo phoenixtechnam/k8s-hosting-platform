@@ -5,6 +5,7 @@ import {
   rotateStalwartPasswordResponseSchema,
   type RotateStalwartPasswordResponse,
 } from '@k8s-hosting/api-contracts';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -146,19 +147,14 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateDeps {
     generatePassword: () => generateUrlSafePassword(32),
     hashPassword: async (pw) => bcrypt.hash(pw, 12),
     patchSecret: async ({ namespace, name, stringData }) => {
-      // @kubernetes/client-node v1.x defaults to application/json-patch+json
-      // for patch calls (see CoreV1Api.patchNamespacedSecret in the
-      // generated code). So we send a JSON-Patch operation list of
-      // `replace`s, one per key, with base64-encoded values (the Secret
-      // resource stores `data` not `stringData` on the wire).
+      // RFC 6902 op array: one replace per key, base64-encoded values
+      // (Secret stores `data` on the wire, not `stringData`).
       const ops = Object.entries(stringData).map(([k, v]) => ({
         op: 'replace' as const,
         path: `/data/${k}`,
         value: Buffer.from(v, 'utf8').toString('base64'),
       }));
-      // `body` is typed `any` on the generated API; a JSON Patch array
-      // matches the default content-type correctly.
-      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object });
+      await core.patchNamespacedSecret({ namespace, name, body: ops as unknown as object }, JSON_PATCH);
     },
     restartStatefulSet: async ({ namespace, name }) => {
       // `replace` only works if the annotation already exists; on fresh
@@ -169,7 +165,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateDeps {
         { op: 'add', path: '/spec/template/metadata/annotations', value: {} },
         { op: 'add', path: '/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt', value: now },
       ];
-      await apps.patchNamespacedStatefulSet({ namespace, name, body: body as unknown as object });
+      await apps.patchNamespacedStatefulSet({ namespace, name, body: body as unknown as object }, JSON_PATCH);
     },
     restartDeployment: async ({ namespace, name }) => {
       const now = new Date().toISOString();
@@ -177,7 +173,7 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateDeps {
         { op: 'add', path: '/spec/template/metadata/annotations', value: {} },
         { op: 'add', path: '/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt', value: now },
       ];
-      await apps.patchNamespacedDeployment({ namespace, name, body: body as unknown as object });
+      await apps.patchNamespacedDeployment({ namespace, name, body: body as unknown as object }, JSON_PATCH);
     },
     waitForStatefulSetReady: async ({ namespace, name, timeoutMs }) => {
       const deadline = Date.now() + timeoutMs;

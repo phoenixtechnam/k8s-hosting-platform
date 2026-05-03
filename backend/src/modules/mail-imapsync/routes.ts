@@ -23,6 +23,7 @@ import { createImapSyncJobSchema, updateImapSyncJobSchema } from '@k8s-hosting/a
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import * as service from './service.js';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 import { decrypt } from '../oidc/crypto.js';
 
 const encryptionKey = (): string => {
@@ -233,12 +234,12 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
               name: string;
               namespace: string;
               body: unknown;
-            }) => Promise<unknown>;
+            }, mw: typeof JSON_PATCH) => Promise<unknown>;
           }).patchNamespacedSecret({
             name: `imapsync-${row.id}`,
             namespace: mailNamespace(),
             body: patchOps,
-          });
+          }, JSON_PATCH);
         } catch (patchErr) {
           // Non-fatal — the reconciler will still clean up the
           // Secret on terminal state OR on its own 404 path.
@@ -486,7 +487,7 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       if (ownerJobUid) {
         try {
           await (k8s.core as unknown as {
-            patchNamespacedSecret: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
+            patchNamespacedSecret: (args: { name: string; namespace: string; body: unknown }, mw: typeof JSON_PATCH) => Promise<unknown>;
           }).patchNamespacedSecret({
             name: k8sJobName,
             namespace: mailNamespace(),
@@ -506,7 +507,7 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
                 ],
               },
             ],
-          });
+          }, JSON_PATCH);
         } catch (patchErr) {
           app.log.warn(
             { err: patchErr, jobId: resetRow.id },
