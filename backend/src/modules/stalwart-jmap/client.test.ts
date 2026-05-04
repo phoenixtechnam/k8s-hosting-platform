@@ -504,14 +504,21 @@ describe.skip("getDomainDnsZoneFile", () => {
 
 // ── findDomainByName ──────────────────────────────────────────────────────────
 
-describe.skip("findDomainByName", () => {
-  it('returns matching domain principal', async () => {
-    const principals: StalwartPrincipal[] = [
-      { id: 'd1', type: 'domain', name: 'alpha.com' },
-      { id: 'd2', type: 'domain', name: 'beta.com' },
-      { id: 'u1', type: 'individual', name: 'user@beta.com' },
-    ];
-    mockFetch(200, makeJmapResponse('Principal/get', makeGetResponse(principals)));
+describe('findDomainByName (Stalwart 0.16 list-and-filter)', () => {
+  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query
+  // server-side filter silently returns []. We list-and-filter via
+  // x:Domain/get with ids:null + client-side match. The test mocks
+  // a single x:Domain/get fetch.
+  it('returns matching domain when the list contains it', async () => {
+    mockFetch(200, makeJmapResponse('x:Domain/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [
+        { id: 'd1', name: 'alpha.com' },
+        { id: 'd2', name: 'beta.com' },
+      ],
+      notFound: [],
+    }));
 
     const result = await findDomainByName({
       accountId: ACCOUNT_ID,
@@ -520,10 +527,16 @@ describe.skip("findDomainByName", () => {
       env: TEST_ENV,
     });
     expect(result?.id).toBe('d2');
+    expect(result?.type).toBe('domain');
   });
 
-  it('returns null when domain not in list', async () => {
-    mockFetch(200, makeJmapResponse('Principal/get', makeGetResponse([])));
+  it('returns null when the list does not contain the name', async () => {
+    mockFetch(200, makeJmapResponse('x:Domain/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [{ id: 'd1', name: 'alpha.com' }],
+      notFound: [],
+    }));
 
     const result = await findDomainByName({
       accountId: ACCOUNT_ID,
@@ -533,17 +546,59 @@ describe.skip("findDomainByName", () => {
     });
     expect(result).toBeNull();
   });
+
+  it('matches case-insensitively', async () => {
+    mockFetch(200, makeJmapResponse('x:Domain/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [{ id: 'd1', name: 'Alpha.COM' }],
+      notFound: [],
+    }));
+
+    const result = await findDomainByName({
+      accountId: ACCOUNT_ID,
+      domainName: 'alpha.com',
+      baseUrl: BASE_URL,
+      env: TEST_ENV,
+    });
+    expect(result?.id).toBe('d1');
+  });
+
+  it('uses x:Domain/get on the wire (not Principal/get)', async () => {
+    mockFetch(200, makeJmapResponse('x:Domain/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [],
+      notFound: [],
+    }));
+
+    await findDomainByName({
+      accountId: ACCOUNT_ID,
+      domainName: 'x.com',
+      baseUrl: BASE_URL,
+      env: TEST_ENV,
+    });
+
+    const call = fetchMock.mock.calls[0] as [string, { body: string }];
+    const body = JSON.parse(call[1].body) as { using: string[]; methodCalls: [[string, unknown, string]] };
+    expect(body.methodCalls[0][0]).toBe('x:Domain/get');
+    expect(body.using).toContain('urn:stalwart:jmap');
+  });
 });
 
 // ── findMailboxByEmail ────────────────────────────────────────────────────────
 
-describe.skip("findMailboxByEmail", () => {
-  it('returns principal with matching email', async () => {
-    const principals: StalwartPrincipal[] = [
-      { id: 'u1', type: 'individual', name: 'alice@example.com', emails: ['alice@example.com'] },
-      { id: 'u2', type: 'individual', name: 'bob@example.com', emails: ['bob@example.com'] },
-    ];
-    mockFetch(200, makeJmapResponse('Principal/get', makeGetResponse(principals)));
+describe('findMailboxByEmail (Stalwart 0.16 list-and-filter)', () => {
+  it('returns matching account when emails array contains the address', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [
+        { id: 'u1', name: 'alice', emails: ['alice@example.com'] },
+        { id: 'u2', name: 'bob', emails: ['bob@example.com', 'bob+alias@example.com'] },
+      ],
+      notFound: [],
+    }));
 
     const result = await findMailboxByEmail({
       accountId: ACCOUNT_ID,
@@ -552,10 +607,16 @@ describe.skip("findMailboxByEmail", () => {
       env: TEST_ENV,
     });
     expect(result?.id).toBe('u2');
+    expect(result?.type).toBe('individual');
   });
 
-  it('returns null when email not found', async () => {
-    mockFetch(200, makeJmapResponse('Principal/get', makeGetResponse([])));
+  it('returns null when no account contains the email', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [{ id: 'u1', name: 'alice', emails: ['alice@example.com'] }],
+      notFound: [],
+    }));
 
     const result = await findMailboxByEmail({
       accountId: ACCOUNT_ID,
@@ -564,6 +625,27 @@ describe.skip("findMailboxByEmail", () => {
       env: TEST_ENV,
     });
     expect(result).toBeNull();
+  });
+
+  it('uses x:Account/get on the wire (not Principal/get)', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 's1',
+      list: [],
+      notFound: [],
+    }));
+
+    await findMailboxByEmail({
+      accountId: ACCOUNT_ID,
+      email: 'x@example.com',
+      baseUrl: BASE_URL,
+      env: TEST_ENV,
+    });
+
+    const call = fetchMock.mock.calls[0] as [string, { body: string }];
+    const body = JSON.parse(call[1].body) as { using: string[]; methodCalls: [[string, unknown, string]] };
+    expect(body.methodCalls[0][0]).toBe('x:Account/get');
+    expect(body.using).toContain('urn:stalwart:jmap');
   });
 });
 
