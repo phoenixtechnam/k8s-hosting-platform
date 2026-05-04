@@ -69,7 +69,7 @@ if [[ -z "${STAGING_SSH_HOST:-}" ]]; then
 fi
 CONTROL_HOST="${STAGING_SSH_HOST##*@}"
 
-AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/phoenixtechnam/private-worker-agent:latest}"
+AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest}"
 ECHO_IMAGE="${ECHO_IMAGE:-hashicorp/http-echo:latest}"
 PLAN_NAME="${PLAN_NAME:-Starter}"
 
