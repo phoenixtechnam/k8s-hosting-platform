@@ -5,7 +5,7 @@ import { usePlatformStoragePolicy } from '@/hooks/use-platform-storage-policy';
 
 // sessionStorage key — bumped if banner copy/scope changes so old
 // dismissals don't suppress a meaningfully-different recommendation.
-const DISMISS_KEY = 'platform-storage-ha-banner-dismissed-v1';
+const DISMISS_KEY = 'platform-storage-ha-banner-dismissed-v2';
 
 // Recommendation banner shown across every admin page when the cluster
 // has reached HA size (>=3 Ready servers) but platform storage is still
@@ -47,21 +47,22 @@ export default function PlatformStorageHaBanner() {
         <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
           <Database size={16} className="shrink-0 text-amber-500 dark:text-amber-400" />
           <span>
-            <strong>Cluster reached HA size</strong>
-            {' — '}
-            {clusterState.readyServerCount} of {clusterState.totalNodeCount} nodes Ready. Promote
-            platform storage to 3 replicas so postgres + stalwart-mail survive a single-node outage.
-            Reversible anytime.
+            <strong>Cluster reached HA size.</strong>{' '}
+            {clusterState.readyServerCount} of {clusterState.totalNodeCount} server nodes are in{' '}
+            <strong>Ready state</strong>. Switch to <strong>High Availability Mode</strong> to
+            replicate platform volumes (System DB + Mail DB) and scale platform services to
+            survive server node loss and enable <strong>Load Balancing</strong>. Reversible —
+            switch back to <strong>Local Mode</strong> anytime.
           </span>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           <Link
-            to="/settings/storage"
+            to="/nodes-and-storage?tab=ha"
             data-testid="platform-storage-ha-banner-link"
             className="text-sm font-medium underline text-amber-800 dark:text-amber-200"
           >
-            Storage Settings
+            Cluster Settings
           </Link>
           <button
             type="button"

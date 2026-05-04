@@ -86,9 +86,11 @@ export default function PlatformStoragePolicyCard() {
         <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 flex gap-3">
           <AlertTriangle size={20} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="text-sm text-amber-900 dark:text-amber-200">
-            <strong>Cluster reached HA size.</strong> {cluster.readyServerCount} of {cluster.totalNodeCount} nodes
-            are Ready servers. Switch to <strong>High Availability</strong> to replicate platform volumes 3× and
-            survive a single node outage. Reversible — switch back to <strong>Local</strong> anytime.
+            <strong>Cluster reached HA size.</strong> {cluster.readyServerCount} of {cluster.totalNodeCount} server
+            nodes are in <strong>Ready state</strong>. Switch to <strong>High Availability Mode</strong> to
+            replicate platform volumes (System DB + Mail DB) and scale platform services to survive
+            server node loss and enable <strong>Load Balancing</strong>. Reversible — switch back to{' '}
+            <strong>Local Mode</strong> anytime.
           </div>
         </div>
       )}
