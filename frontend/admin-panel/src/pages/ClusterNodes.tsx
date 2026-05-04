@@ -1,5 +1,8 @@
 import { useState } from 'react';
-import { Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle, Trash2 } from 'lucide-react';
+import {
+  Server, Loader2, AlertCircle, Edit, ShieldAlert, HardDrive, Cpu, AlertTriangle,
+  Trash2, ChevronRight, ChevronDown, CheckCircle2, Activity,
+} from 'lucide-react';
 import clsx from 'clsx';
 import { useClusterNodes, useDeleteNode } from '@/hooks/use-cluster-nodes';
 import { useNodeSubsystemHealth, type NodeSubsystemReport, type NodeSubsystemStatus } from '@/hooks/use-cluster-health';
@@ -7,6 +10,30 @@ import type { ClusterNodeResponse, NodeIngressMode } from '@k8s-hosting/api-cont
 import NodeEditModal from '@/components/NodeEditModal';
 import NodeDrainDeleteModal from '@/components/NodeDrainDeleteModal';
 import NodeStorageCard from '@/components/NodeStorageCard';
+
+// Saturation thresholds shared by the per-node compact summary, the cluster
+// health bar, and the in-card UsageBar. Mirrors UsageBar's scale so the
+// header dot, the aggregate-bar pressure pill, and the in-detail bar all
+// agree on what counts as amber vs. red.
+const PRESSURE_AMBER = 75;
+const PRESSURE_RED = 90;
+
+function nodePct(used: number | null | undefined, capacity: number | null | undefined): number | null {
+  if (used == null || capacity == null || capacity <= 0) return null;
+  return Math.min(100, Math.round((used / capacity) * 100));
+}
+
+function pctTone(pct: number | null): 'green' | 'amber' | 'red' | 'gray' {
+  if (pct == null) return 'gray';
+  if (pct >= PRESSURE_RED) return 'red';
+  if (pct >= PRESSURE_AMBER) return 'amber';
+  return 'green';
+}
+
+function isSubsystemUnhealthy(s: NodeSubsystemReport | undefined): boolean {
+  if (!s) return false;
+  return s.calico !== 'healthy' || s.longhornCsi !== 'healthy' || !s.csiDriverRegistered;
+}
 
 function formatBytes(bytes: number | null): string {
   if (bytes == null) return '—';
@@ -88,17 +115,150 @@ export default function ClusterNodes({ embedded = false }: ClusterNodesProps = {
           No nodes observed yet. The backend reconciler ticks every 60 seconds; check back shortly.
         </div>
       ) : (
-        <div className="space-y-4">
-          {nodes.map((node) => (
-            <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} />
-          ))}
-        </div>
+        <>
+          <ClusterHealthBar nodes={nodes} subsystemByName={subsystemByName} />
+          <div className="space-y-3">
+            {nodes.map((node) => (
+              <NodeCard key={node.name} node={node} subsystem={subsystemByName.get(node.name)} />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
+// ─── Cluster-wide compact health bar ─────────────────────────────────────────
+//
+// Aggregates per-node pressure + subsystem state into a single scannable row
+// shown above the node list. When everything is healthy: a single green
+// "All systems healthy" chip. Otherwise: only the issue chips render — zero
+// counts hide so the bar stays compact on healthy clusters.
+function ClusterHealthBar({
+  nodes,
+  subsystemByName,
+}: {
+  readonly nodes: readonly ClusterNodeResponse[];
+  readonly subsystemByName: Map<string, NodeSubsystemReport>;
+}) {
+  let readyCount = 0;
+  let notReadyCount = 0;
+  let cordonedCount = 0;
+  let drainedCount = 0;
+  let cpuAmberCount = 0;
+  let cpuRedCount = 0;
+  let memAmberCount = 0;
+  let memRedCount = 0;
+  let subsystemBadCount = 0;
+
+  for (const node of nodes) {
+    const ready = readyCondition(node);
+    if (ready === 'Ready') readyCount++;
+    else notReadyCount++;
+    if (node.cordoned && !node.drained) cordonedCount++;
+    if (node.drained) drainedCount++;
+
+    const cpuTone = pctTone(nodePct(node.cpuRequestsMillicores ?? null, node.cpuMillicores));
+    if (cpuTone === 'red') cpuRedCount++;
+    else if (cpuTone === 'amber') cpuAmberCount++;
+
+    const memTone = pctTone(nodePct(node.memoryRequestsBytes ?? null, node.memoryBytes));
+    if (memTone === 'red') memRedCount++;
+    else if (memTone === 'amber') memAmberCount++;
+
+    if (isSubsystemUnhealthy(subsystemByName.get(node.name))) subsystemBadCount++;
+  }
+
+  const cpuTotal = cpuAmberCount + cpuRedCount;
+  const memTotal = memAmberCount + memRedCount;
+  const allHealthy =
+    notReadyCount === 0 &&
+    cordonedCount === 0 &&
+    drainedCount === 0 &&
+    cpuTotal === 0 &&
+    memTotal === 0 &&
+    subsystemBadCount === 0;
+
+  return (
+    <div
+      data-testid="cluster-health-bar"
+      role="status"
+      aria-live="polite"
+      className={clsx(
+        'flex flex-wrap items-center gap-2 rounded-xl border px-4 py-2.5 text-xs',
+        allHealthy
+          ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20'
+          : 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800',
+      )}
+    >
+      <Activity size={14} className="text-gray-500 dark:text-gray-400 shrink-0" />
+      <span className="font-medium text-gray-700 dark:text-gray-200">
+        {nodes.length} node{nodes.length !== 1 ? 's' : ''}
+      </span>
+
+      {allHealthy ? (
+        <HealthChip tone="green" testId="health-all-ok">
+          <CheckCircle2 size={12} /> All systems healthy
+        </HealthChip>
+      ) : (
+        <>
+          <HealthChip tone={notReadyCount > 0 ? 'red' : 'green'} testId="health-ready">
+            {readyCount}/{nodes.length} Ready
+          </HealthChip>
+          {cpuTotal > 0 && (
+            <HealthChip tone={cpuRedCount > 0 ? 'red' : 'amber'} testId="health-cpu">
+              <Cpu size={12} /> CPU pressure: {cpuTotal} node{cpuTotal !== 1 ? 's' : ''}
+              {cpuRedCount > 0 && ` (${cpuRedCount} ≥${PRESSURE_RED}%)`}
+            </HealthChip>
+          )}
+          {memTotal > 0 && (
+            <HealthChip tone={memRedCount > 0 ? 'red' : 'amber'} testId="health-memory">
+              <HardDrive size={12} /> Memory pressure: {memTotal} node{memTotal !== 1 ? 's' : ''}
+              {memRedCount > 0 && ` (${memRedCount} ≥${PRESSURE_RED}%)`}
+            </HealthChip>
+          )}
+          {subsystemBadCount > 0 && (
+            <HealthChip tone="red" testId="health-subsystem">
+              <ShieldAlert size={12} /> Worker subsystem issues: {subsystemBadCount}
+            </HealthChip>
+          )}
+          {cordonedCount > 0 && (
+            <HealthChip tone="amber" testId="health-cordoned">
+              Cordoned: {cordonedCount}
+            </HealthChip>
+          )}
+          {drainedCount > 0 && (
+            <HealthChip tone="gray" testId="health-drained">
+              Drained: {drainedCount}
+            </HealthChip>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function HealthChip({
+  tone,
+  children,
+  testId,
+}: {
+  readonly tone: 'green' | 'amber' | 'red' | 'gray';
+  readonly children: React.ReactNode;
+  readonly testId?: string;
+}) {
+  const cls = clsx(
+    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium',
+    tone === 'green' && 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    tone === 'amber' && 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+    tone === 'red' && 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+    tone === 'gray' && 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  );
+  return <span className={cls} data-testid={testId}>{children}</span>;
+}
+
 function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; readonly subsystem?: NodeSubsystemReport }) {
+  const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [drainOpen, setDrainOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -108,6 +268,10 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
   // Surface alias when present, but always keep the k8s identity visible.
   const headerName = node.displayName?.trim() ? node.displayName : node.name;
 
+  const cpuPct = nodePct(node.cpuRequestsMillicores ?? null, node.cpuMillicores);
+  const memPct = nodePct(node.memoryRequestsBytes ?? null, node.memoryBytes);
+  const subsystemBad = isSubsystemUnhealthy(subsystem);
+
   const handleDelete = () => {
     if (!confirm(`Delete node "${node.name}" from the cluster? The host itself stays running — kubectl delete + DB row removal only.`)) return;
     setDeleteError(null);
@@ -116,12 +280,54 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
     });
   };
 
+  // The header row toggles expansion on click. The action buttons in the
+  // header stop click propagation so the row click doesn't both open the
+  // edit/drain/delete dialog AND toggle the card expansion. Keyboard
+  // activation of those inner buttons fires a synthetic `click` event on
+  // the button itself, which never bubbles up to the row's onClick — so no
+  // onKeyDown guard is needed on the action wrapper.
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+
+  const toggle = () => setExpanded((v) => !v);
+  // The chevron is a real <button> for keyboard / screen-reader users —
+  // it carries aria-expanded + aria-controls and stops click propagation
+  // (the row already has its own click handler). Mouse users can click
+  // anywhere on the row to expand; the row itself is NOT given role=button
+  // because it contains real <button> children (Edit / Drain / Delete /
+  // chevron) — nested interactive elements under role=button is an ARIA
+  // authoring violation.
+
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-700">
-        <div className="flex items-center gap-3">
-          <Server size={20} className="text-gray-500 dark:text-gray-400" />
-          <div>
+    <div
+      className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800"
+      data-testid={`node-card-${node.name}`}
+    >
+      <div
+        onClick={toggle}
+        className={clsx(
+          'flex items-center justify-between gap-3 px-5 py-4 cursor-pointer select-none',
+          'hover:bg-gray-50 dark:hover:bg-gray-700/40',
+          expanded && 'border-b border-gray-100 dark:border-gray-700',
+          'rounded-xl',
+        )}
+        data-testid={`node-card-header-${node.name}`}
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={(e) => { stop(e); toggle(); }}
+            aria-expanded={expanded}
+            aria-controls={`node-body-${node.name}`}
+            aria-label={expanded ? `Collapse ${headerName}` : `Expand ${headerName}`}
+            className="rounded p-0.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+            data-testid={`node-card-toggle-${node.name}`}
+          >
+            {expanded
+              ? <ChevronDown size={16} aria-hidden="true" />
+              : <ChevronRight size={16} aria-hidden="true" />}
+          </button>
+          <Server size={20} className="text-gray-500 dark:text-gray-400 shrink-0" />
+          <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{headerName}</h2>
               {node.displayName && node.displayName !== node.name && (
@@ -159,16 +365,37 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
               )}
               <IngressModePill mode={node.ingressMode} />
               <ReadyPill ready={ready} />
+              {subsystemBad && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300"
+                  title="One or more worker subsystems are degraded — expand for details."
+                  data-testid={`node-subsystem-tag-${node.name}`}
+                >
+                  <ShieldAlert size={10} /> subsystem
+                </span>
+              )}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {node.publicIp ?? 'no public IP'} · k3s {node.k3sVersion ?? '—'} · kubelet {node.kubeletVersion ?? '—'}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+
+        {/* Compact resource summary — visible without expanding. Three dots
+            with values; same colour scale as UsageBar so the operator can
+            scan a list of cards without opening each. */}
+        <div className="hidden md:flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300 shrink-0">
+          <SummaryDot label="CPU" pct={cpuPct} />
+          <SummaryDot label="Mem" pct={memPct} />
+          <span className="tabular-nums" title="scheduled pods">
+            {node.scheduledPods ?? '—'} pods
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0" onClick={stop}>
           <span
             className={clsx(
-              'text-xs',
+              'text-xs whitespace-nowrap',
               stale.tone === 'fresh' && 'text-green-600 dark:text-green-400',
               stale.tone === 'stale' && 'text-amber-600 dark:text-amber-400',
               stale.tone === 'dead' && 'text-red-600 dark:text-red-400',
@@ -215,17 +442,34 @@ function NodeCard({ node, subsystem }: { readonly node: ClusterNodeResponse; rea
         </div>
       )}
 
-      {subsystem && (
-        <SubsystemHealthRow subsystem={subsystem} />
+      {expanded && (
+        <div id={`node-body-${node.name}`} data-testid={`node-card-body-${node.name}`}>
+          {subsystem && <SubsystemHealthRow subsystem={subsystem} />}
+          <NodeDetails node={node} />
+          <NodeStorageCard nodeName={node.name} />
+        </div>
       )}
-
-      <NodeDetails node={node} />
-
-      <NodeStorageCard nodeName={node.name} />
 
       {editOpen && <NodeEditModal node={node} onClose={() => setEditOpen(false)} />}
       {drainOpen && <NodeDrainDeleteModal node={node} onClose={() => setDrainOpen(false)} />}
     </div>
+  );
+}
+
+function SummaryDot({ label, pct }: { readonly label: string; readonly pct: number | null }) {
+  const tone = pctTone(pct);
+  const dotClass = clsx(
+    'inline-block h-2 w-2 rounded-full',
+    tone === 'green' && 'bg-green-500',
+    tone === 'amber' && 'bg-amber-500',
+    tone === 'red' && 'bg-red-500',
+    tone === 'gray' && 'bg-gray-300 dark:bg-gray-600',
+  );
+  return (
+    <span className="inline-flex items-center gap-1 tabular-nums" title={`${label} requests / allocatable`}>
+      <span className={dotClass} />
+      {label} {pct == null ? '—' : `${pct}%`}
+    </span>
   );
 }
 
