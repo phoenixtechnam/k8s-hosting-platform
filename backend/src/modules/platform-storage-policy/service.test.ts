@@ -201,6 +201,27 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     expect(state.volumes[0].desiredReplicas).toBe(1); // local tier
   });
 
+  it('totalNodeCount counts only server-tagged nodes — workers are excluded', async () => {
+    // 3 servers (2 ready, 1 not ready) + 2 workers (both ready). The "X of Y
+    // server nodes" denominator should be 3, NOT 5; workers don't host the
+    // platform-storage replicas so they shouldn't dilute the ratio.
+    const db = makeDbReturningPolicy('local');
+    const k8s = makeK8sMock({
+      nodes: [
+        { name: 's1', role: 'server', ready: true },
+        { name: 's2', role: 'server', ready: true },
+        { name: 's3', role: 'server', ready: false },
+        { name: 'w1', role: 'worker', ready: true },
+        { name: 'w2', role: 'worker', ready: true },
+      ],
+      pvcsByNs: { mail: [] },
+    });
+
+    const state = await readClusterState(k8s, db);
+    expect(state.readyServerCount).toBe(2);
+    expect(state.totalNodeCount).toBe(3);
+  });
+
   it('handles CNPG PVC list failure without throwing (degrades gracefully)', async () => {
     const db = makeDbReturningPolicy('local');
     const k8s = makeK8sMock({

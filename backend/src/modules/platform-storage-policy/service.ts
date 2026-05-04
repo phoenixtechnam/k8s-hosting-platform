@@ -158,17 +158,26 @@ export async function readClusterState(
   // Count Ready server nodes by label
   // (platform.phoenix-host.net/node-role=server) so workers don't
   // bump the recommendation. A 3-server quorum is the threshold.
+  //
+  // `totalNodeCount` is named for the API field but means "total
+  // server-tagged nodes" — workers are excluded so the UI banner's
+  // "X of Y server nodes" denominator only counts what's eligible to
+  // host the platform-storage replicas. Including workers here would
+  // make the ratio meaningless on mixed clusters (e.g. 3-of-7 with
+  // 4 workers reads as under-resourced when the 3 servers are exactly
+  // what the recommendation needs).
   const nodes = await k8s.core.listNode();
   let readyServerCount = 0;
+  let totalNodeCount = 0;
   for (const node of nodes.items ?? []) {
     const labels = node.metadata?.labels ?? {};
     const isServer = labels['platform.phoenix-host.net/node-role'] === 'server'
       || (node.spec?.taints ?? []).some((t) => t.key === 'node-role.kubernetes.io/control-plane');
     if (!isServer) continue;
+    totalNodeCount++;
     const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
     if (ready?.status === 'True') readyServerCount++;
   }
-  const totalNodeCount = nodes.items?.length ?? 0;
   const recommendedTier: 'local' | 'ha' = readyServerCount >= HA_SERVER_THRESHOLD ? 'ha' : 'local';
 
   // M-NS-2: build the set of system-tagged nodes once so each volume's
