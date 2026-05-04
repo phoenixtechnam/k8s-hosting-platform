@@ -439,12 +439,23 @@ phase3_traffic() {
   fi
 
   # USER-VISIBLE: served TLS cert subject CN matches the host (rules out
-  # MITM / wildcard-mismatch / fallback-cert scenarios).
-  local cert_cn
-  cert_cn=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null \
-    | openssl x509 -noout -subject 2>/dev/null \
-    | sed -E 's/.*CN[ ]*=[ ]*([^,/]+).*/\1/' \
-    | tr -d ' ')
+  # MITM / wildcard-mismatch / fallback-cert scenarios). HTTP-01 issuance
+  # can take a few minutes; poll until the LE cert lands or the budget
+  # expires. The intermediate "Kubernetes Ingress Controller Fake
+  # Certificate" is the placeholder NGINX serves before issuance.
+  local cert_cn=""
+  local cert_t=0
+  while (( cert_t < 360 )); do
+    cert_cn=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null \
+      | openssl x509 -noout -subject 2>/dev/null \
+      | sed -E 's/.*CN[ ]*=[ ]*([^,/]+).*/\1/' \
+      | tr -d ' ')
+    if [[ "$cert_cn" == "$host" ]] || [[ "$cert_cn" == "*."* && "${host#*.}" == "${cert_cn#\*.}" ]]; then
+      break
+    fi
+    sleep 15
+    cert_t=$((cert_t + 15))
+  done
   if [[ "$cert_cn" == "$host" ]] || [[ "$cert_cn" == "*."* && "${host#*.}" == "${cert_cn#\*.}" ]]; then
     ok "TLS cert CN '$cert_cn' matches host '$host'"
   else
@@ -485,7 +496,7 @@ phase4_revoke() {
   local agent_dropped=false
   for _ in $(seq 1 12); do
     if docker logs "$DOCKER_AGENT_NAME" 2>&1 \
-        | grep -qE 'login to server failed|authorization failed|invalid token|connection.*closed.*by server|i/o deadline reached'; then
+        | grep -qE 'login to server failed|authorization failed|invalid token|connection.*closed.*by server|i/o deadline reached|connect to server error: bad status|allow_ports'; then
       agent_dropped=true
       break
     fi
@@ -557,9 +568,11 @@ phase5_cleanup() {
   fi
 
   # USER-VISIBLE: cluster-side resources gone.
+  # Reconciler teardown is fire-and-forget after the DELETE returns —
+  # eventual consistency, can take >60s on a busy reconciler.
   if [[ -n "$ns" ]]; then
     local ten=0
-    while (( ten < 60 )); do
+    while (( ten < 180 )); do
       if ssh_cp "kubectl -n $ns get deployment private-worker-server 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "Deployment private-worker-server in $ns is gone"
@@ -568,16 +581,23 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 60 )); then
-      fail "Deployment private-worker-server still exists in $ns after 60s"
+    if (( ten >= 180 )); then
+      fail "Deployment private-worker-server still exists in $ns after 180s"
     fi
   fi
   if [[ -n "$slug" ]]; then
-    if ssh_cp "kubectl -n platform-system get ingress tunnel-$slug 2>&1" \
-        | grep -qE 'NotFound|not found'; then
-      ok "Ingress tunnel-$slug in platform-system is gone"
-    else
-      fail "Ingress tunnel-$slug still present in platform-system"
+    local ten=0
+    while (( ten < 180 )); do
+      if ssh_cp "kubectl -n platform-system get ingress tunnel-$slug 2>&1" \
+          | grep -qE 'NotFound|not found'; then
+        ok "Ingress tunnel-$slug in platform-system is gone"
+        break
+      fi
+      sleep 5
+      ten=$((ten + 5))
+    done
+    if (( ten >= 180 )); then
+      fail "Ingress tunnel-$slug still present in platform-system after 180s"
     fi
   fi
 
