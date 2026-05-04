@@ -2,12 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import crypto from 'node:crypto';
 import { authenticate, requireRole, requirePanel, type JwtPayload } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
-import { auditLogs, notifications, users } from '../../db/schema.js';
+import { auditLogs, notifications, users, platformStorageApplyRuns } from '../../db/schema.js';
 import { inArray, eq, and, desc } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
 import { readClusterCapacity } from './capacity-reconciler.js';
+import { startRun, recordPatchOutcome, watchConvergence, type RunStatus } from './runs.js';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -172,7 +174,33 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
     const actorId = user?.sub ?? null;
     const before = await getPolicy(app.db);
     const updated = await setPolicy(app.db, input.systemTier, input.pinnedByAdmin ?? true, actorId);
+    // Insert the run row BEFORE applyPolicy so a route-handler crash
+    // mid-patch still leaves an auditable record of the attempt.
+    const runId = await startRun(app.db, input.systemTier, actorId);
+    const startedAtMs = Date.now();
     const outcome = await applyPolicy(k8s, app.db);
+    await recordPatchOutcome(app.db, runId, outcome).catch((err) => app.log.warn({ err }, 'recordPatchOutcome failed'));
+
+    // Status precedence: any non-capacity error is a hard failure
+    // and must be visible to the operator EVEN when CNPG also hit
+    // INSUFFICIENT_STORAGE in the same apply. Only when capacity is
+    // the SOLE failure mode do we report capacity_blocked.
+    const capacityBlocked = outcome.cnpgClusters.some((c) => c.error?.startsWith('INSUFFICIENT_STORAGE'));
+    const anyNonCapacityFailure = [
+      ...outcome.volumes.filter((v) => v.error),
+      ...outcome.deployments.filter((d) => d.error),
+      ...outcome.cnpgClusters.filter((c) => c.error && !c.error.startsWith('INSUFFICIENT_STORAGE')),
+    ].length > 0;
+    const initialStatus: RunStatus = anyNonCapacityFailure
+      ? 'failed'
+      : capacityBlocked ? 'capacity_blocked' : 'running';
+
+    // Detach the convergence watcher — runs in background up to 10 min,
+    // updating convergence_json on the run row every 5 s. The route
+    // returns immediately; the operator's modal polls /runs/:id.
+    void watchConvergence(k8s, app.db, runId, startedAtMs, initialStatus, app.log).catch((err) => {
+      app.log.error({ err, runId }, 'convergence watcher crashed');
+    });
 
     // Audit trail: lastAppliedBy on the row is reset on every change,
     // so push a permanent record into audit_logs that includes the
@@ -256,6 +284,176 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
       patches: outcome.volumes,
       deployments: outcome.deployments,
       cnpgClusters: outcome.cnpgClusters,
+      // runId so the operator's modal can poll /runs/:id for the
+      // post-patch convergence progress (Longhorn rebuild + CNPG join).
+      runId,
+      runStatus: initialStatus,
     });
+  });
+
+  // GET /api/v1/admin/platform-storage-policy/runs/:id
+  app.get('/admin/platform-storage-policy/runs/:id', {
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'Get one Apply HA run by id (live convergence progress)',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const [row] = await app.db.select().from(platformStorageApplyRuns)
+      .where(eq(platformStorageApplyRuns.id, id))
+      .limit(1);
+    if (!row) throw new ApiError('NOT_FOUND', 'run not found', 404);
+    return success({
+      id: row.id,
+      tier: row.tier,
+      status: row.status,
+      startedAt: row.startedAt?.toISOString() ?? null,
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      actorUserId: row.actorUserId,
+      patchOutcome: row.patchOutcomeJson ?? null,
+      convergence: row.convergenceJson ?? null,
+    });
+  });
+
+  // POST /api/v1/admin/stuck-deprovisions/:namespace/force-clear
+  // Phase 5 destructive surface. super_admin only. Confirmation
+  // required by retyping the namespace name. Tenant-only.
+  app.post('/admin/stuck-deprovisions/:namespace/force-clear', {
+    onRequest: requireRole('super_admin'),
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'Force-clear a stuck Terminating tenant namespace (destructive; super_admin only)',
+      security: [{ bearerAuth: [] }],
+      params: { type: 'object', required: ['namespace'], properties: { namespace: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['confirmName'],
+        properties: { confirmName: { type: 'string' } },
+        additionalProperties: false,
+      },
+    },
+  }, async (request) => {
+    const { namespace } = request.params as { namespace: string };
+    const body = request.body as { confirmName: string };
+    if (body.confirmName !== namespace) {
+      throw new ApiError('CONFIRMATION_MISMATCH', `confirmName must match the namespace exactly (expected '${namespace}')`, 400);
+    }
+    // Tightened regex: must start with `client-`, end with an
+    // alphanumeric, no double hyphens, no trailing hyphen. Matches
+    // auto-generated tenant slugs like `client-abc123`,
+    // `client-foo-bar-1234`. Rejects `client-`, `client--a`,
+    // `client-a-`. Last code-level guard on a destructive endpoint —
+    // any leak past this is super_admin + Terminating + 60min gate.
+    if (!/^client-[a-z0-9]+([a-z0-9-]*[a-z0-9])?$/.test(namespace) || namespace.includes('--')) {
+      throw new ApiError('INVALID_FIELD_VALUE', `force-clear is only valid on client-* tenant namespaces`, 400);
+    }
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    interface NsObj {
+      metadata?: { name?: string; deletionTimestamp?: string; finalizers?: string[] };
+      status?: { phase?: string };
+    }
+    const ns = await k8s.core.readNamespace({ name: namespace } as Parameters<typeof k8s.core.readNamespace>[0])
+      .catch(() => null) as NsObj | null;
+    if (!ns) throw new ApiError('NOT_FOUND', `namespace '${namespace}' not found`, 404);
+    if (ns.status?.phase !== 'Terminating') {
+      throw new ApiError('PRECONDITION_FAILED', `namespace '${namespace}' is in phase '${ns.status?.phase}', not Terminating — refusing to force-clear`, 409);
+    }
+    const ageMs = ns.metadata?.deletionTimestamp ? Date.now() - new Date(ns.metadata.deletionTimestamp).getTime() : 0;
+    if (ageMs < 60 * 60 * 1000) {
+      throw new ApiError('PRECONDITION_FAILED', `namespace '${namespace}' has been Terminating for ${Math.round(ageMs / 60_000)} min — refusing to force-clear before 60 min (let the cascade finish)`, 409);
+    }
+
+    const actor = (request as unknown as { user?: JwtPayload }).user;
+    const actorId = actor?.sub ?? null;
+    const opLog: string[] = [];
+
+    // 1. Patch ns finalizers=[] via the /finalize subresource — the
+    // ONLY path k8s honors once deletionTimestamp is set.
+    try {
+      await (k8s.core as unknown as {
+        replaceNamespaceFinalize: (a: { name: string; body: unknown }) => Promise<unknown>;
+      }).replaceNamespaceFinalize({
+        name: namespace,
+        body: {
+          apiVersion: 'v1', kind: 'Namespace',
+          metadata: { name: namespace, finalizers: [] },
+          spec: { finalizers: [] },
+        },
+      });
+      opLog.push('cleared namespace finalizers');
+    } catch (err) {
+      opLog.push(`finalize patch failed: ${(err as Error).message}`);
+    }
+
+    // 2. Force-delete PVs whose claimRef.namespace == ns. For each
+    // PV that is Longhorn-provisioned, also delete the matching
+    // Longhorn volume CR (PV name == volume CR name in Longhorn's
+    // CSI). Non-Longhorn PVs (local-path, hostPath, manually-
+    // created) are deleted at the K8s layer only — without the
+    // storageClassName/csi.driver guard, a PV name accidentally
+    // colliding with an unrelated Longhorn volume in another
+    // namespace would silently delete that volume.
+    try {
+      const pvs = await (k8s.core as unknown as {
+        listPersistentVolume: () => Promise<{ items?: ReadonlyArray<{ metadata?: { name?: string }; spec?: { claimRef?: { namespace?: string }; storageClassName?: string; csi?: { driver?: string } } }> }>;
+      }).listPersistentVolume();
+      let pvCount = 0;
+      let lhCount = 0;
+      for (const pv of pvs.items ?? []) {
+        if (pv.spec?.claimRef?.namespace !== namespace) continue;
+        const pvName = pv.metadata?.name;
+        if (!pvName) continue;
+        await (k8s.core as unknown as {
+          deletePersistentVolume: (a: { name: string }) => Promise<unknown>;
+        }).deletePersistentVolume({ name: pvName }).catch(() => undefined);
+        pvCount++;
+        const isLonghorn = (pv.spec?.csi?.driver === 'driver.longhorn.io')
+          || (pv.spec?.storageClassName ?? '').startsWith('longhorn');
+        if (isLonghorn) {
+          await k8s.custom.deleteNamespacedCustomObject({
+            group: 'longhorn.io', version: 'v1beta2',
+            namespace: 'longhorn-system', plural: 'volumes', name: pvName,
+          } as unknown as Parameters<typeof k8s.custom.deleteNamespacedCustomObject>[0]).catch(() => undefined);
+          lhCount++;
+        }
+      }
+      opLog.push(`deleted ${pvCount} orphan PV(s) + ${lhCount} Longhorn volume(s)`);
+    } catch (err) {
+      opLog.push(`PV cleanup failed: ${(err as Error).message}`);
+    }
+
+    // 3. Sticky admin notification + audit
+    try {
+      const adminRows = await app.db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
+      for (const a of adminRows) {
+        await app.db.insert(notifications).values({
+          id: crypto.randomUUID(),
+          userId: a.id,
+          type: 'warning',
+          title: `Stuck namespace force-cleared: ${namespace}`,
+          message: `super_admin force-cleared a Terminating namespace stuck for ${Math.round(ageMs / 60_000)} min. Steps: ${opLog.join(' / ')}.`,
+          resourceType: 'stuck_deprovision',
+          resourceId: namespace,
+        }).catch(() => undefined);
+      }
+    } catch { /* best effort */ }
+
+    await app.db.insert(auditLogs).values({
+      id: crypto.randomUUID(),
+      actorId,
+      actorType: 'user',
+      actionType: 'force_clear_namespace',
+      resourceType: 'stuck_deprovision',
+      resourceId: namespace,
+      changes: { namespace, ageMs, ops: opLog },
+      httpMethod: 'POST',
+      httpPath: `/api/v1/admin/stuck-deprovisions/${namespace}/force-clear`,
+      httpStatus: 200,
+    } as typeof auditLogs.$inferInsert).catch((err) => app.log.warn({ err }, 'force-clear audit insert failed'));
+
+    return success({ namespace, ageMs, ops: opLog });
   });
 }

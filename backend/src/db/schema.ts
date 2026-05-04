@@ -1309,6 +1309,21 @@ export const platformStoragePolicy = pgTable('platform_storage_policy', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// Persistent run tracking for Apply HA / Apply Local. Each row tracks
+// one PATCH /admin/platform-storage-policy invocation. See migration
+// 0078 + ApplyHaProgressModal in the admin panel for the full design.
+export const platformStorageApplyRuns = pgTable('platform_storage_apply_runs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  tier: varchar('tier', { length: 8 }).notNull(),
+  actorUserId: varchar('actor_user_id', { length: 36 }),
+  status: varchar('status', { length: 32 }).notNull().default('running'),
+  patchOutcomeJson: jsonb('patch_outcome_json'),
+  convergenceJson: jsonb('convergence_json'),
+});
+export type PlatformStorageApplyRun = typeof platformStorageApplyRuns.$inferSelect;
+
 // ─── Ingress access control (OIDC + claim rules) ────────────────────────────
 
 export interface IngressClaimRule {
