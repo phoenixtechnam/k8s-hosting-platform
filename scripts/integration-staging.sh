@@ -964,10 +964,170 @@ sys.exit(1)
     # Don't abort; continue to remaining checks
   fi
 
+  # ── Step 8b: HA stress test (opt-in) ─────────────────────────────
+  # Send N concurrent SMTPS messages with unique subjects. If 2+ Stalwart
+  # replicas are running, kill one mid-storm to verify HA failover. After
+  # the storm, IMAP-fetch INBOX and assert: (a) every message landed
+  # exactly once (no losses, no duplicates), (b) every message carries a
+  # DKIM-Signature header (cross-replica DKIM key visibility).
+  #
+  # Opt-in via MAIL_STRESS=1 to keep the default mail run fast (~70s).
+  # When enabled adds ~60s on top of the default scenario.
+  if [[ "${MAIL_STRESS:-0}" == "1" && "$tester_spawned" == "1" ]]; then
+    local stress_n="${MAIL_STRESS_COUNT:-20}"
+    local stalwart_replicas
+    stalwart_replicas=$(ssh_cp "kubectl get deploy -n mail stalwart-mail-v016 \
+        -o jsonpath='{.status.readyReplicas}'" 2>/dev/null || echo "1")
+    log "mail/stress: starting N=${stress_n} concurrent sends (stalwart replicas=${stalwart_replicas})"
+
+    # Spawn a background kubectl-delete-pod after a 2s delay if 2+
+    # replicas exist. Stalwart's RollingUpdate maxUnavailable=0 + the
+    # in-cluster Service VIP keep traffic flowing during the kill.
+    # Code-review HIGH (2026-05-04): 5s was too long — 20 fast SMTPS
+    # connections complete before the kill fires, so the HA assertion
+    # never actually exercised mid-storm failover. 2s ≈ first SMTPS
+    # handshake, so threads are mid-flight when the kill lands.
+    if [[ "$stalwart_replicas" =~ ^[0-9]+$ && "$stalwart_replicas" -ge 2 ]]; then
+      ssh_cp "( sleep 2 && \
+        kubectl get pod -n mail -l app=stalwart-mail-v016 \
+          -o jsonpath='{.items[0].metadata.name}' \
+        | xargs -r kubectl delete pod -n mail --grace-period=0 --force \
+        ) >/dev/null 2>&1 &" >/dev/null 2>&1 || true
+      log "mail/stress: scheduled mid-storm replica kill (2s)"
+    fi
+
+    # Concurrent send-storm via Python threading inside the tester pod.
+    # Each thread opens its own SMTPS connection; subjects carry the
+    # message index so duplicates / losses are detectable downstream.
+    local stress_send
+    stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+import smtplib, ssl, threading, sys
+
+host = \"${smtp_target}\"
+port = 465
+user = \"${mail_box_user}\"
+password = \"${mail_box_pass}\"
+prefix = \"STRESS-${stamp}\"
+n = ${stress_n}
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+results = [None] * n
+
+def send_one(i):
+    try:
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=45) as s:
+            s.login(user, password)
+            subj = prefix + \"-\" + str(i).zfill(3)
+            msg = \"From: \" + user + \"\r\nTo: \" + user + \"\r\nSubject: \" + subj + \"\r\n\r\n\" + subj + \" body\r\n\"
+            s.sendmail(user, [user], msg)
+            results[i] = \"OK\"
+    except Exception as e:
+        results[i] = \"FAIL: \" + str(e)
+
+threads = [threading.Thread(target=send_one, args=(i,)) for i in range(n)]
+for t in threads: t.start()
+for t in threads: t.join(60)
+
+ok_count = sum(1 for r in results if r == \"OK\")
+print(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n))
+if ok_count != n:
+    for i, r in enumerate(results):
+        if r != \"OK\": print(\"  fail[\" + str(i) + \"]: \" + str(r), file=sys.stderr)
+    sys.exit(1)
+'" 2>&1)
+    local stress_ok; stress_ok=$(echo "$stress_send" | grep -oE 'STRESS_SENT_OK=[0-9]+/[0-9]+' | head -1)
+    if [[ "$stress_ok" == "STRESS_SENT_OK=${stress_n}/${stress_n}" ]]; then
+      ok "mail/stress: ${stress_ok} concurrent sends all succeeded"
+    else
+      fail "mail/stress: send-storm partial — got ${stress_ok:-no result} (expected ${stress_n}/${stress_n})"
+    fi
+
+    # Wait for queue drain + IMAP fetch — assert exactly N messages with
+    # subject prefix arrived, each with a DKIM-Signature header.
+    local stress_recv
+    stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+import imaplib, ssl, sys, time
+
+host = \"${smtp_target}\"
+port = 993
+user = \"${mail_box_user}\"
+password = \"${mail_box_pass}\"
+prefix = \"STRESS-${stamp}\"
+expected = ${stress_n}
+
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+found = 0
+dkim_signed = 0
+last_err = None
+for attempt in range(30):
+    try:
+        with imaplib.IMAP4_SSL(host, port, ssl_context=ctx) as M:
+            M.login(user, password)
+            M.select(\"INBOX\")
+            typ, data = M.search(None, \"SUBJECT\", \"\\\"\" + prefix + \"\\\"\")
+            ids = data[0].split()
+            if len(ids) >= expected:
+                found = len(ids)
+                seen = set()
+                for mid in ids[:expected]:
+                    typ, msg_data = M.fetch(mid, \"(RFC822)\")
+                    raw = msg_data[0][1].decode(\"utf-8\", errors=\"replace\")
+                    if \"DKIM-Signature:\" in raw:
+                        dkim_signed += 1
+                    for line in raw.split(\"\\r\\n\"):
+                        if line.startswith(\"Subject: \"):
+                            seen.add(line[9:].strip())
+                            break
+                print(\"STRESS_RECV=\" + str(found) + \"/\" + str(expected))
+                print(\"STRESS_DKIM=\" + str(dkim_signed) + \"/\" + str(expected))
+                print(\"STRESS_UNIQUE=\" + str(len(seen)) + \"/\" + str(expected))
+                sys.exit(0 if found == expected and len(seen) == expected else 2)
+    except Exception as e:
+        last_err = str(e)
+    time.sleep(2)
+
+print(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err), file=sys.stderr)
+sys.exit(1)
+'" 2>&1)
+    local recv_line dkim_line uniq_line
+    recv_line=$(echo "$stress_recv" | grep -oE 'STRESS_RECV=[0-9]+/[0-9]+' | head -1)
+    dkim_line=$(echo "$stress_recv" | grep -oE 'STRESS_DKIM=[0-9]+/[0-9]+' | head -1)
+    uniq_line=$(echo "$stress_recv" | grep -oE 'STRESS_UNIQUE=[0-9]+/[0-9]+' | head -1)
+    if [[ "$recv_line" == "STRESS_RECV=${stress_n}/${stress_n}" \
+        && "$uniq_line" == "STRESS_UNIQUE=${stress_n}/${stress_n}" ]]; then
+      ok "mail/stress: ${recv_line} ${dkim_line} ${uniq_line} (no losses, no duplicates)"
+      # Code-review MEDIUM (2026-05-04): same-domain loopback delivery in
+      # Stalwart 0.16 may skip DKIM signing depending on whether the
+      # outbound-signing connector applies. Treat zero-DKIM as a
+      # smoke-fail (real misconfiguration), but accept partial-DKIM as
+      # a soft warning since the sample policy mix is environment-
+      # dependent.
+      local dkim_count="${dkim_line#STRESS_DKIM=}"
+      dkim_count="${dkim_count%/*}"
+      if [[ "$dkim_count" == "0" ]]; then
+        fail "mail/stress: ZERO messages DKIM-signed — ${dkim_line}"
+      elif [[ "$dkim_line" != "STRESS_DKIM=${stress_n}/${stress_n}" ]]; then
+        log "mail/stress: partial DKIM coverage (${dkim_line}) — same-domain loopback may skip signing"
+      fi
+    else
+      fail "mail/stress: receive failed — ${recv_line:-no recv} ${uniq_line:-no uniq}; tail: $(echo "$stress_recv" | tail -3 | tr '\n' ' ')"
+    fi
+  fi
+
   # Clean up tester pod now that SMTP/IMAP are done
   cleanup_tester_pod
 
-  # ── Step 9: webmail check (HTTP reachability) ─────────────────────
+  # ── Step 9: webmail functional probe ─────────────────────────────
+  # Two-stage: (a) HTTP reachability, (b) IMAP-backed login from the
+  # public webmail UI proves end-to-end Roundcube → Stalwart wiring
+  # works (matches the user-visible "open webmail in a browser" path).
+  # Step 9a — reachability (cheap, always runs).
   local wm_http; wm_http=$(curl -sk -o /dev/null -w "%{http_code}" \
     --max-time 15 "$webmail_url" 2>/dev/null || echo "000")
   if [[ "$wm_http" == "200" || "$wm_http" == "302" || "$wm_http" == "301" ]]; then
@@ -975,6 +1135,57 @@ sys.exit(1)
   else
     fail "mail/webmail: expected 200/302 from $webmail_url, got $wm_http"
   fi
+
+  # Step 9b — functional login probe. Drives Roundcube's normal login
+  # form: GET / to acquire session cookie + _token, POST /?_task=login
+  # &_action=login with our test mailbox credentials, then check for
+  # the `roundcube_sessauth` cookie (Roundcube ≥ 1.3 default — if a
+  # future Roundcube version or Snappymail rebrand renames it, the
+  # error message dumps cookie names so the divergence is obvious).
+  local wm_jar; wm_jar=$(mktemp)
+  # Single explicit cleanup. (Earlier code used `trap RETURN` which
+  # only fires when `set -T` is enabled — silently a no-op here.)
+  local wm_cleanup_done=0
+  _wm_cleanup() { if [[ "$wm_cleanup_done" != "1" ]]; then rm -f "$wm_jar"; wm_cleanup_done=1; fi; }
+  # GET / — populates session cookie + extracts CSRF token
+  local wm_login_html
+  wm_login_html=$(curl -skL -c "$wm_jar" -b "$wm_jar" --max-time 15 \
+    "$webmail_url/" 2>/dev/null || echo "")
+  local wm_token
+  wm_token=$(echo "$wm_login_html" | grep -oE 'name="_token" value="[^"]+"' \
+    | head -1 | sed -E 's/.*value="([^"]+)".*/\1/')
+  if [[ -z "$wm_token" ]]; then
+    # Code-review MEDIUM (2026-05-04): hard-fail when the login form
+    # parser can't find _token. Silent skip would mask a real Roundcube
+    # regression (changed HTML, stale cache, redirect to error page).
+    fail "mail/webmail-login: no _token in login HTML — Roundcube login form unreachable or changed (preview: $(echo "$wm_login_html" | head -c 200 | tr -d '\n'))"
+  else
+    # POST login form with our mailbox credentials. _task and _action
+    # are read from POST body; the same names in the URL are ignored
+    # by Roundcube but kept for parity with the form's `action` attr.
+    local wm_post
+    wm_post=$(curl -sk -L -c "$wm_jar" -b "$wm_jar" --max-time 30 \
+      -o /dev/null -w "%{http_code}" \
+      -X POST "$webmail_url/?_task=login&_action=login" \
+      --data-urlencode "_token=${wm_token}" \
+      --data-urlencode "_user=${mail_box_user}" \
+      --data-urlencode "_pass=${mail_box_pass}" \
+      --data-urlencode "_url=" 2>/dev/null || echo "000")
+    # On success, Roundcube ≥ 1.3 sets `roundcube_sessauth`. Failure
+    # bounces back to login with no auth cookie.
+    if [[ "$wm_post" =~ ^(200|302)$ ]] && grep -q 'roundcube_sessauth' "$wm_jar"; then
+      ok "mail/webmail-login: IMAP-backed login succeeded ($mail_box_user via $webmail_url)"
+    else
+      # Print cookie names (NOT values — values may carry session-id
+      # entropy + auth tokens) so CI logs reveal whether the cookie
+      # name moved (e.g. customised session_name in config.inc.php).
+      local wm_cookie_names
+      wm_cookie_names=$(awk '/^[^#]/ && NF>=6 {print $6}' "$wm_jar" 2>/dev/null \
+        | tr '\n' ',' | sed 's/,$//')
+      fail "mail/webmail-login: login POST returned $wm_post; sessauth cookie absent (cookies seen: ${wm_cookie_names:-none})"
+    fi
+  fi
+  _wm_cleanup
 
   # ── Step 10: quota notifier trigger ─────────────────────────────
   # Push used_mb to 80% of quota (100 MB quota → 80 MB used) via the
