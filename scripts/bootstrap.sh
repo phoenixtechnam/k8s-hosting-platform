@@ -3099,6 +3099,129 @@ RCSQL
   fi
 }
 
+# ─── Stalwart master-user (impersonation) provisioning ──────────────────────
+#
+# Cut 3 (2026-05-04): Stalwart 0.16 master-auth is implemented as an Account
+# with the built-in `Admin` role (which includes the `impersonate` permission).
+# Roundcube's jwt_auth plugin uses the IMAP `<target>%<master>` syntax with
+# the master account's password to authenticate as any mailbox.
+#
+# Sequence (each step idempotent):
+#   1. Ensure a `master.local` Domain exists (synthetic, never sends/receives
+#      mail — only hosts the master Account).
+#   2. Ensure an Account `master@master.local` exists.
+#   3. Set credentials = STALWART_MASTER_PASSWORD from roundcube-secrets.
+#   4. Assign roles = {@type: Admin} (built-in role, includes impersonate).
+#
+# Source: Stalwart 0.16 UPGRADING guide + Authorization/Roles docs.
+# https://stalw.art/docs/auth/authorization/administrator/
+#
+# Skipped when:
+#   - roundcube-secrets does not exist (mail stack not deployed)
+#   - stalwart-mail-v016 Deployment is not Ready
+provision_stalwart_master_user() {
+  log ""
+  log "── Stalwart master user (Roundcube SSO impersonator) ──"
+
+  if ! kctl get secret -n mail roundcube-secrets &>/dev/null 2>&1; then
+    log "  roundcube-secrets not found — skipping (mail/webmail not deployed)."
+    return 0
+  fi
+  if ! kctl get deployment -n mail stalwart-mail-v016 &>/dev/null 2>&1; then
+    log "  stalwart-mail-v016 Deployment not found — skipping."
+    return 0
+  fi
+
+  local recovery_pw master_pw
+  recovery_pw=$(kctl get secret -n mail stalwart-admin-creds \
+    -o jsonpath='{.data.recoveryPassword}' 2>/dev/null | base64 -d || echo "")
+  master_pw=$(kctl get secret -n mail roundcube-secrets \
+    -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' 2>/dev/null | base64 -d || echo "")
+  if [[ -z "$recovery_pw" || -z "$master_pw" ]]; then
+    warn "  recovery or master password missing from Secrets — skipping."
+    return 0
+  fi
+
+  # Run the cli sequence inside an alpine pod that downloads stalwart-cli
+  # v1.0.4 once and chains create/update calls. Idempotent: cli `create`
+  # on an existing object errors with non-zero exit, which we tolerate.
+  local job_name="stalwart-master-provision-$(date +%s)"
+  kctl delete pod -n mail "$job_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  cat <<EOF | kctl apply -n mail -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${job_name}
+  labels:
+    app.kubernetes.io/component: stalwart-master-provision
+spec:
+  restartPolicy: Never
+  containers:
+  - name: provision
+    image: alpine:3.20
+    env:
+    - { name: STALWART_URL,      value: "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" }
+    - { name: STALWART_USER,     value: "admin" }
+    - { name: STALWART_PASSWORD, value: "${recovery_pw}" }
+    - { name: MASTER_PW,         value: "${master_pw}" }
+    command: ["sh","-c"]
+    args:
+    - |
+      set -e
+      apk add --no-cache wget tar xz jq >/dev/null
+      cd /tmp
+      wget -q -O cli.tar.xz "https://github.com/stalwartlabs/cli/releases/download/v1.0.4/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+      echo "9683c1cf45e5d0e91ca7fb036a98d2b5e21b91ff0b27a6d82cf2c0f23ef0b1e6  cli.tar.xz" | sha256sum -c - 2>&1 || echo "sha256 advisory only — proceeding"
+      tar -xJf cli.tar.xz
+      CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli
+      chmod +x "\$CLI"
+
+      # Step 1: ensure master.local Domain exists.
+      DOMAIN_ID=\$("\$CLI" query Domain 2>/dev/null | awk 'NR>1 && \$2=="master.local" {print \$1}' | head -1)
+      if [ -z "\$DOMAIN_ID" ]; then
+        "\$CLI" create Domain --field "name=master.local" 2>&1 | tee /tmp/d.out
+        DOMAIN_ID=\$(grep -oE 'Created Domain [a-z0-9]+' /tmp/d.out | awk '{print \$NF}')
+      fi
+      [ -n "\$DOMAIN_ID" ] || { echo "ERROR: no master.local domain id"; exit 1; }
+      echo "domain id=\$DOMAIN_ID"
+
+      # Step 2: ensure master@master.local Account exists.
+      ACCOUNT_ID=\$("\$CLI" query Account 2>/dev/null | awk 'NR>1 && \$2=="master@master.local" {print \$1}' | head -1)
+      if [ -z "\$ACCOUNT_ID" ]; then
+        "\$CLI" create Account/User --field "name=master" --field "domainId=\$DOMAIN_ID" 2>&1 | tee /tmp/a.out
+        ACCOUNT_ID=\$(grep -oE 'Created Account [a-z0-9]+' /tmp/a.out | awk '{print \$NF}')
+      fi
+      [ -n "\$ACCOUNT_ID" ] || { echo "ERROR: no master account id"; exit 1; }
+      echo "account id=\$ACCOUNT_ID"
+
+      # Step 3: set credentials. Always update so password rotations converge.
+      "\$CLI" update Account "\$ACCOUNT_ID" \
+        --field "credentials={\"0\":{\"@type\":\"Password\",\"secret\":\"\${MASTER_PW}\"}}"
+
+      # Step 4: assign Admin role (includes impersonate). Always update so
+      # role changes converge.
+      "\$CLI" update Account "\$ACCOUNT_ID" --field 'roles={"@type":"Admin"}'
+
+      echo "provision-ok account=\$ACCOUNT_ID"
+EOF
+
+  # Wait for the pod to complete.
+  for _i in $(seq 1 90); do
+    local ph
+    ph=$(kctl get pod -n mail "$job_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [[ "$ph" == "Succeeded" || "$ph" == "Failed" ]]; then break; fi
+    sleep 2
+  done
+
+  if [[ "$(kctl get pod -n mail "$job_name" -o jsonpath='{.status.phase}' 2>/dev/null)" == "Succeeded" ]]; then
+    log "  Master user provisioned (Roundcube SSO ready)."
+  else
+    warn "  Master-user provision Pod did not complete cleanly. Logs:"
+    kctl logs -n mail "$job_name" 2>&1 | tail -20 | sed 's/^/    /' || true
+  fi
+  kctl delete pod -n mail "$job_name" --ignore-not-found >/dev/null 2>&1 || true
+}
+
 # ─── Stalwart 0.16 first-install bootstrap ───────────────────────────────────
 #
 # Called from main() AFTER apply_platform_manifests so the stalwart-v016
@@ -3765,6 +3888,11 @@ main() {
     # Runs after Stalwart bootstrap so platform CNPG is up + Roundcube
     # secrets exist. Idempotent — DO BLOCK skips if role/db already exist.
     create_roundcube_db
+    # Cut 3 (2026-05-04): Stalwart master user (Roundcube SSO impersonator).
+    # Runs after bootstrap_stalwart_v016 (so Stalwart is up + the recovery
+    # admin can authenticate to the cli). Idempotent — re-runs only update
+    # credentials/roles to converge after rotation.
+    provision_stalwart_master_user
     # Tier-1 secrets bundle for offline retrieval. Runs after
     # generate_platform_secrets + generate_operator_recipient + bootstrap_stalwart_v016
     # so all bundled material (including stalwart-admin-creds) exists.

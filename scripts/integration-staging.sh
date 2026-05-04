@@ -1120,7 +1120,44 @@ sys.exit(1)
     fi
   fi
 
-  # Clean up tester pod now that SMTP/IMAP are done
+  # ── Step 8c: Stalwart master-auth (impersonation) probe ─────────
+  # Roundcube's jwt_auth plugin authenticates to Stalwart using the
+  # `<target>%<master>` IMAP login syntax. Verify that the master
+  # account (provisioned by scripts/bootstrap.sh:provision_stalwart_master_user)
+  # can in fact log in as our test mailbox. This is what the SSO
+  # endpoint at /api/v1/admin/mail/sso?to= depends on. MUST run while
+  # the tester pod is still up.
+  if [[ "$tester_spawned" == "1" ]]; then
+    local master_user_secret_cmd="kubectl get secret -n mail roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"
+    local master_pw
+    master_pw=$(ssh_cp "$master_user_secret_cmd" 2>/dev/null || echo "")
+    if [[ -n "$master_pw" ]]; then
+      local master_probe
+      master_probe=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+import imaplib, ssl, sys
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+try:
+    M = imaplib.IMAP4_SSL(\"${smtp_target}\", 993, ssl_context=ctx)
+    # Stalwart 0.16 master-auth: <target>%<master_user> with master_pw
+    M.login(\"${mail_box_user}%master@master.local\", \"${master_pw}\")
+    M.select(\"INBOX\")
+    print(\"MASTER_LOGIN_OK\")
+    M.logout()
+except Exception as e:
+    print(\"MASTER_LOGIN_FAIL: \" + str(e), file=sys.stderr)
+    sys.exit(1)
+'" 2>&1)
+      if echo "$master_probe" | grep -qF "MASTER_LOGIN_OK"; then
+        ok "mail/master-auth: <target>%master@master.local login succeeded for $mail_box_user"
+      else
+        fail "mail/master-auth: master-auth IMAP login FAILED — Roundcube SSO won't work. tail: $(echo "$master_probe" | tail -3 | tr '\n' ' ')"
+      fi
+    else
+      log "mail/master-auth: STALWART_MASTER_PASSWORD secret missing — skipping (provision via bootstrap.sh:provision_stalwart_master_user)"
+    fi
+  fi
+
+  # Clean up tester pod now that SMTP/IMAP/master-auth probes are done
   cleanup_tester_pod
 
   # ── Step 9: webmail functional probe ─────────────────────────────
