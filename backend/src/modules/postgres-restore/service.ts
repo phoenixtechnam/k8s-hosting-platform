@@ -1135,17 +1135,26 @@ export async function promotePostgresFromSnapshot(
     }
     steps.push({ step: 'delete-source', ok: true, elapsedMs: nowMs() - t7 });
 
-    // 8. Re-create source Cluster from temp's snapshot
+    // 8. Re-create source Cluster from temp's snapshot.
+    //
+    // Timeout: 8 min for the primary's snapshot recovery + 4 min per
+    // additional replica (streaming clone + WAL sync). A 3-instance HA
+    // cluster therefore gets 16 min, single-instance keeps the original
+    // 8 min budget. Without this scaling the orchestrator times out
+    // mid-replica-join and reports `recreate-source` failed even though
+    // CNPG is making forward progress.
     const t8 = nowMs();
+    const targetInstances = pre.cluster.spec?.instances ?? 1;
+    const recreateTimeoutMs = (8 + Math.max(0, targetInstances - 1) * 4) * 60_000;
     const newSrcBody = buildRecoveryCluster(
       pre.cluster, inputs.clusterName, inputs.clusterNamespace,
       tempSnap.volumeSnapshotName, null /* no PITR — temp already replayed */,
-      pre.cluster.spec?.instances ?? 1,
+      targetInstances,
       false /* isTemp: rebuilding the production source */,
     );
     await createCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', body: newSrcBody });
-    const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000);
-    steps.push({ step: 'recreate-source', ok: srcHealth.ok, elapsedMs: nowMs() - t8, detail: `phase=${srcHealth.phase ?? '?'}` });
+    const srcHealth = await waitClusterHealthy(deps.k8s, inputs.clusterNamespace, inputs.clusterName, recreateTimeoutMs);
+    steps.push({ step: 'recreate-source', ok: srcHealth.ok, elapsedMs: nowMs() - t8, detail: `phase=${srcHealth.phase ?? '?'} instances=${targetInstances} timeoutMs=${recreateTimeoutMs}` });
     if (!srcHealth.ok) throw new Error(`Recreated source cluster did not become healthy: phase=${srcHealth.phase}`);
 
     // 8b. Normalize spec.bootstrap so Flux's apply of the original git
@@ -1404,11 +1413,14 @@ export async function createPitrJob(
     spec: {
       backoffLimit: 0,
       ttlSecondsAfterFinished: 86400,
-      // ActiveDeadlineSeconds: 30 min — kills the Job pod if the
-      // orchestration hangs past the worst-case wall-clock (8 min temp
-      // cluster wait + 8 min recreate-source wait + slack). Without
-      // this, a hung Job would hold the lock forever.
-      activeDeadlineSeconds: 1800,
+      // ActiveDeadlineSeconds: 45 min — kills the Job pod if the
+      // orchestration hangs past the worst-case wall-clock for an HA
+      // cluster (8 min temp + 16 min recreate-source @ 3 instances +
+      // ~5 min snapshot/cleanup + slack). Single-instance clusters
+      // typically finish in ~6 min; HA clusters stretch into the
+      // 25-30 min range. Without this, a hung Job would hold the lock
+      // forever.
+      activeDeadlineSeconds: 2700,
       template: {
         metadata: { labels: podLabels },
         spec: {
