@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: roundcube-config-extra
+  namespace: mail
+data:
+  jwt_auth.inc.php: |
+    <?php
+    // Staging Roundcube config — Cut 3 (2026-05-04).
+    //
+    // verify_peer is false on the in-cluster IMAP/SMTP hop because
+    // Stalwart's LE cert SAN list covers the public subdomains
+    // (mail.${DOMAIN}, stalwart.${DOMAIN}, webmail.${DOMAIN}), NOT
+    // the in-cluster Service hostname stalwart-mail-v016.mail.svc.
+    // The browser → ingress hop IS verified normally.
+
+    if (!in_array('jwt_auth', $config['plugins'] ?? [])) {
+      $config['plugins'][] = 'jwt_auth';
+    }
+
+    $config['imap_host'] = getenv('ROUNDCUBEMAIL_DEFAULT_HOST');
+    $config['smtp_host'] = getenv('ROUNDCUBEMAIL_SMTP_SERVER');
+
+    $config['imap_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
+      ],
+    ];
+    $config['smtp_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => false,
+        'verify_peer_name'  => false,
+        'allow_self_signed' => true,
+      ],
+    ];
+
+    // Roundcube sits behind nginx ingress on https://webmail.${DOMAIN}.
+    $config['use_https'] = true;
+    $config['proxy_whitelist'] = ['10.0.0.0/8', '127.0.0.1'];
+
+    $config['username_domain'] = '';
+    $config['request_check_tokens'] = false;

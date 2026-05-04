@@ -16,6 +16,12 @@ resources:
 # Generate the jwt_auth plugin ConfigMap from the PHP source file.
 # Kustomize tracks the file content; any change to jwt_auth.php produces
 # a new ConfigMap hash, which triggers a Roundcube pod restart on apply.
+#
+# Note: roundcube-config-extra is a directly-declared ConfigMap in
+# configmap-config.yaml (NOT a generator), so overlays cannot use
+# configMapGenerator behavior: merge against it. Overlays that need to
+# override jwt_auth.inc.php must use a strategic-merge ConfigMap patch
+# under `patches:` (see k8s/overlays/staging/roundcube/).
 configMapGenerator:
   - name: roundcube-jwt-plugin
     files:

@@ -780,21 +780,27 @@ scenario_mail() {
     cleanup_mail; return 1
   }
 
-  # ── Step 6b: assert Stalwart-side x:Account exists for the mailbox ──
-  # Same approach as Step 4b — list-and-grep instead of broken
-  # server-side filter. Account `name` is the local-part (no @domain).
-  local x_account_blob
-  x_account_blob=$(ssh_cp "kubectl run mail-jmap-acc-${stamp} -n mail \
-      --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
-      curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
-      -o jsonpath='{.data.adminPassword}' | base64 -d) \
-      -X POST http://stalwart-mgmt-v016:8080/jmap \
-      -H Content-Type:application/json \
-      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
-  if echo "$x_account_blob" | grep -qF "\"name\":\"$mb_local\""; then
-    ok "mail/jmap: x:Account/get returned a row with name=$mb_local"
+  # ── Step 6b: assert Stalwart-side account is provisioned (IMAP login) ──
+  # Cut 3 (2026-05-04): we used to assert via JMAP `x:Account/get` here,
+  # but Stalwart 0.16's `x:Account/get` (and `Principal/get`) only return
+  # accounts owned by the *calling* principal. The recovery-admin owns no
+  # child Accounts, so the call returns `list:[]` even when accounts
+  # exist — see project_cut3_mail_status_2026_05_04.md. The user-visible
+  # proof of "account exists in Stalwart" is `IMAP LOGIN` succeeding;
+  # this probe runs a one-shot login + INBOX select. (Step 8 also does
+  # full receive, but step 6b runs early so a wire-level provisioning
+  # failure surfaces before SMTP/IMAP tester pod spin-up.)
+  local imap_probe
+  imap_probe=$(ssh_cp "kubectl run mail-imap-probe-${stamp} -n mail \
+      --rm -i --restart=Never --image=python:3.12-alpine --timeout=20s -- \
+      python3 -c 'import imaplib,ssl,sys;
+ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE;
+M=imaplib.IMAP4_SSL(\"stalwart-mail-v016.mail.svc.cluster.local\",993,ssl_context=ctx);
+M.login(\"${mail_box_user}\",\"${mail_box_pass}\"); M.select(\"INBOX\"); print(\"IMAP_LOGIN_OK\"); M.logout()'" 2>&1)
+  if echo "$imap_probe" | grep -qF "IMAP_LOGIN_OK"; then
+    ok "mail/jmap: Stalwart-side account provisioned (IMAP LOGIN ok for $mail_box_user)"
   else
-    fail "mail/jmap: x:Account/get did not contain $mb_local — Stalwart-side account not provisioned"
+    fail "mail/jmap: Stalwart-side account NOT provisioned — IMAP login failed: $(echo "$imap_probe" | tail -3 | tr '\n' ' ')"
   fi
 
   # ── Step 7 + 8 setup: tester pod inside the cluster ─────────────

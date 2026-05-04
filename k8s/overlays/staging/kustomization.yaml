@@ -22,11 +22,28 @@ resources:
   # (the bcrypt-hashed admin password Secret consumed by the Deployment).
   # See docs/02-operations/STALWART_DEPLOYMENT.md.
   - stalwart-v016/
+  # Cut 3 (2026-05-04): Roundcube webmail is always deployed alongside
+  # Stalwart on staging+production. Operator-bootstrap step creates the
+  # `roundcube-secrets` Secret + the `roundcube` PG database/role on
+  # the platform CNPG cluster + the Stalwart master user — see
+  # `scripts/bootstrap.sh:generate_roundcube_secrets`. Without those,
+  # the Roundcube pod fails to start (CrashLoopBackOff on PG connect /
+  # IMAP master-auth handshake).
+  - roundcube/
   # Cross-namespace NetworkPolicy so Stalwart (mail ns) can reach
   # Postgres (platform ns). Lives at the overlay root, not under
   # stalwart/, because it targets the platform namespace and the
   # stalwart subdir's `namespace: mail` directive would reparent it.
   - allow-mail-to-postgres-netpol.yaml
+  # NOTE: Roundcube also uses platform Postgres for session/contacts
+  # storage (Phase 3.A.5), and the existing allow-mail-to-postgres
+  # netpol already covers it (`from.namespaceSelector: mail` matches
+  # every pod in mail ns including roundcube). No separate netpol.
+  # Public-facing Ingress for webmail.${DOMAIN} — base ships a
+  # local-CA dev-only ingress (k8s/base/roundcube-deployment.yaml line
+  # 69-86) wired for k8s-platform.test. Staging gets its own ingress
+  # with the LE prod cluster issuer.
+  - webmail-ingress.yaml
   # Flux Image Automation — auto-promotes newly-built timestamp-tagged
   # images to the staging branch. Requires the
   # image-reflector-controller + image-automation-controller Flux

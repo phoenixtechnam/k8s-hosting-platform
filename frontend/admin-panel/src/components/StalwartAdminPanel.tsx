@@ -21,10 +21,17 @@ import { usePlatformUrls, resolveStalwartAdminUrl } from '@/hooks/use-platform-u
  *
  *  • SHOW STALWART CREDENTIALS — reveals username + password (click to copy)
  *  • OPEN STALWART             — opens the Stalwart web-admin in a modal
- *                                iframe served same-origin via nginx proxy
- *                                (no public ingress route)
+ *                                iframe whose src is the dedicated
+ *                                stalwart.${DOMAIN} subdomain (resolved via
+ *                                /api/v1/admin/platform-urls). The subdomain
+ *                                is gated by ingress auth_request which
+ *                                validates the platform_session cookie set
+ *                                with Domain=.${APEX} so SSO is automatic.
+ *                                Sub-path embedding (`/__stalwart/`) is NOT
+ *                                viable because Stalwart 0.16's bundled
+ *                                WebUI uses root-relative asset URLs.
  *  • ROTATE PASSWORD           — confirmation modal → rotate endpoint
- *                                (warns that Stalwart + platform-api restart)
+ *                                (in-flight via JMAP — no Stalwart restart)
  */
 export default function StalwartAdminPanel() {
   const [revealed, setRevealed] = useState(false);
@@ -33,6 +40,9 @@ export default function StalwartAdminPanel() {
 
   const creds = useStalwartCredentials(revealed);
   const rotate = useRotateStalwartPassword();
+  const { data: urls, isLoading: urlsLoading } = usePlatformUrls();
+  const stalwartUrl = resolveStalwartAdminUrl(urls) || config.STALWART_ADMIN_URL || '';
+  const canOpen = !urlsLoading && stalwartUrl !== '';
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-4">
@@ -81,11 +91,25 @@ export default function StalwartAdminPanel() {
         <button
           type="button"
           onClick={() => setShowIframe(true)}
+          disabled={!canOpen}
           data-testid="stalwart-open"
-          className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600"
+          title={canOpen ? 'Open Stalwart admin in modal iframe' : 'Resolving Stalwart admin URL…'}
+          className="inline-flex items-center gap-2 rounded-lg border border-brand-500 bg-brand-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <ExternalLink size={14} /> Open Stalwart
+          {urlsLoading ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+          Open Stalwart
         </button>
+        {canOpen ? (
+          <a
+            href={stalwartUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            data-testid="stalwart-open-tab"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            <ExternalLink size={14} /> Open in new tab
+          </a>
+        ) : null}
 
         <button
           type="button"
@@ -106,7 +130,9 @@ export default function StalwartAdminPanel() {
         />
       )}
 
-      {showIframe && <StalwartIframeModal onClose={() => setShowIframe(false)} />}
+      {showIframe && canOpen && (
+        <StalwartIframeModal url={stalwartUrl} onClose={() => setShowIframe(false)} />
+      )}
 
       {confirmRotate && (
         <RotateConfirmModal
@@ -208,9 +234,12 @@ function CopyableField({ label, value, testId, mono }: CopyableFieldProps) {
   );
 }
 
-function StalwartIframeModal({ onClose }: { readonly onClose: () => void }) {
-  const { data: urls } = usePlatformUrls();
-  const stalwartUrl = resolveStalwartAdminUrl(urls) || config.STALWART_ADMIN_URL || '/__stalwart/';
+interface StalwartIframeModalProps {
+  readonly url: string;
+  readonly onClose: () => void;
+}
+
+function StalwartIframeModal({ url, onClose }: StalwartIframeModalProps) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
@@ -240,7 +269,7 @@ function StalwartIframeModal({ onClose }: { readonly onClose: () => void }) {
           // paste the credentials from "Show Stalwart credentials". Stalwart
           // stores its own token in localStorage under THIS origin, so
           // subsequent opens skip login until the token expires.
-          src={stalwartUrl}
+          src={url}
           title="Stalwart Web Admin"
           className="flex-1 w-full border-0 bg-white"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"

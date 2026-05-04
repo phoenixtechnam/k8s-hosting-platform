@@ -62,6 +62,14 @@ const STATELESS_DEPLOYMENTS: ReadonlyArray<{ namespace: string; name: string }> 
   { namespace: 'platform', name: 'platform-api' },
   { namespace: 'platform', name: 'oauth2-proxy' },
   { namespace: 'platform', name: 'dex' },
+  // Cut 3 (2026-05-04): mail data-plane services follow the same
+  // HA scaling policy as the platform stateless tier. Stalwart 0.16
+  // is a Deployment (not StatefulSet — state lives in mail-pg CNPG)
+  // so it fits the stateless replicas list. Roundcube is similarly
+  // stateless (sessions persisted in Postgres since Phase 3.A.5,
+  // emptyDir for the install dir).
+  { namespace: 'mail', name: 'stalwart-mail-v016' },
+  { namespace: 'mail', name: 'roundcube' },
 ];
 // Single-server (local) installs default to 1 replica per stateless
 // service. HA scales to readyServerCount (capped) so each Deployment

@@ -1,0 +1,35 @@
+# Cut 3 (2026-05-04): staging Roundcube overlay.
+#
+# Webmail is always deployed alongside Stalwart on staging and
+# production — operator-bootstrapped Secret `roundcube-secrets` plus a
+# `roundcube` Postgres database/role on the platform CNPG cluster are
+# created by `scripts/bootstrap.sh` (see generate_roundcube_secrets +
+# create_roundcube_db). The Stalwart master user is provisioned
+# separately by the cutover script (one-time JMAP call).
+#
+# In-cluster IMAP/SMTP from Roundcube → stalwart-mail-v016 uses
+# verify_peer=false because Stalwart's LE cert has SANs for the public
+# subdomains (mail.${DOMAIN}, stalwart.${DOMAIN}) but NOT the in-cluster
+# Service hostname (stalwart-mail-v016.mail.svc.cluster.local). The
+# external HTTPS the user's browser hits at https://webmail.${DOMAIN} is
+# verified normally by the browser; only the Roundcube → Stalwart hop is
+# unverified, and that hop never leaves the cluster.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/roundcube
+
+# Override jwt_auth.inc.php in the existing ConfigMap. Strategic-merge
+# patch (not configMapGenerator behavior:merge) because the base ships
+# the ConfigMap directly via configmap-config.yaml (not via generator),
+# and configMapGenerator merge only works against generator-produced
+# targets.
+patches:
+  - target:
+      kind: ConfigMap
+      name: roundcube-config-extra
+    path: roundcube-config-extra-patch.yaml

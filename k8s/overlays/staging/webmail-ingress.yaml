@@ -1,0 +1,44 @@
+# Cut 3 (2026-05-04): public Ingress for Roundcube webmail at
+# https://webmail.${DOMAIN} on staging.
+#
+# The base k8s/base/roundcube-deployment.yaml ships a dev-only Ingress
+# (local-CA issuer, k8s-platform.test). Staging needs the LE prod
+# cluster issuer + nginx ingressClass. Production should ship its own
+# equivalent under k8s/overlays/production/.
+#
+# Auth: NO admin-auth gate — webmail is end-user-facing. Authentication
+# is handled by Roundcube itself (IMAP LOGIN with Stalwart) and by the
+# JWT-SSO plugin when arriving via /api/v1/admin/mail/sso?to=...
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-webmail-ingress
+  namespace: mail
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: webmail
+  annotations:
+    cert-manager.io/cluster-issuer: "${CLUSTER_ISSUER_NAME}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Webmail attachments can be sizeable; align with Stalwart's
+    # maxSizeAttachmentsPerEmail = 50 MB.
+    nginx.ingress.kubernetes.io/proxy-body-size: "55m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - webmail.${DOMAIN}
+      secretName: platform-webmail-tls
+  rules:
+    - host: webmail.${DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: roundcube
+                port:
+                  number: 80

@@ -49,6 +49,19 @@ spec:
                 secretKeyRef:
                   name: platform-jwt-secret
                   key: secret
+            # Cut 3 (2026-05-04): independent webmail SSO signing secret
+            # (separate from JWT_SECRET so a leak of one doesn't enable
+            # forged tokens of the other). Mirrors the Roundcube
+            # `roundcube-secrets/JWT_AUTH_SECRET` value so platform-api's
+            # /api/v1/admin/mail/sso?to= flow signs tokens Roundcube can
+            # validate. Marked optional so non-mail clusters still come
+            # up; the mail SSO endpoint returns a clear error when unset.
+            - name: WEBMAIL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-webmail-jwt
+                  key: WEBMAIL_JWT_SECRET
+                  optional: true
             # Admin seed credentials — only consumed during db/seed.js on
             # startup; harmless to leave set after seed completes. Secret
             # is created by bootstrap.sh and marked optional so the Pod

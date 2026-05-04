@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: roundcube-config-extra
+  namespace: mail
+data:
+  jwt_auth.inc.php: |
+    <?php
+    // Production Roundcube config — Phase 3.A.2.
+    //
+    // verify_peer = true on the Roundcube → Stalwart hop. Requires
+    // Stalwart to serve a cert whose SAN list includes the in-cluster
+    // Service hostname (stalwart-mail-v016.mail.svc.cluster.local).
+    // The default cert-manager + Let's Encrypt path only covers the
+    // public subdomains, so production operators must either issue an
+    // internal cert (cert-manager CA issuer) or mount a private CA
+    // bundle. Otherwise switch to verify_peer=false (staging pattern).
+
+    if (!in_array('jwt_auth', $config['plugins'] ?? [])) {
+      $config['plugins'][] = 'jwt_auth';
+    }
+
+    $config['imap_host'] = getenv('ROUNDCUBEMAIL_DEFAULT_HOST');
+    $config['smtp_host'] = getenv('ROUNDCUBEMAIL_SMTP_SERVER');
+
+    $config['imap_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => true,
+        'verify_peer_name'  => true,
+        'allow_self_signed' => false,
+      ],
+    ];
+    $config['smtp_conn_options'] = [
+      'ssl' => [
+        'verify_peer'       => true,
+        'verify_peer_name'  => true,
+        'allow_self_signed' => false,
+      ],
+    ];
+
+    $config['use_https'] = true;
+    $config['proxy_whitelist'] = ['10.0.0.0/8', '127.0.0.1'];
+
+    $config['username_domain'] = '';
+    $config['request_check_tokens'] = false;

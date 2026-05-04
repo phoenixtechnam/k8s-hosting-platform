@@ -8,10 +8,14 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: webmail
 spec:
-  replicas: 1
+  # Cut 3 (2026-05-04): replicas removed from manifest — owned by the
+  # platform-storage-policy reconciler. Apply HA scales Roundcube to
+  # readyServerCount (capped at MAX_HA_REPLICAS). Fresh clusters land
+  # at k8s default = 1 until the policy fires.
   strategy:
-    # Phase 3.A.5: RollingUpdate is now safe because session state
-    # lives in the shared Postgres database, not on a RWO PVC.
+    # Phase 3.A.5: RollingUpdate is safe because session state lives in
+    # the shared Postgres DB, not on a RWO PVC. maxSurge=1/Unavailable=0
+    # gives zero-downtime rollouts on multi-replica deployments.
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
@@ -26,6 +30,16 @@ spec:
         app.kubernetes.io/part-of: hosting-platform
         app.kubernetes.io/component: webmail
     spec:
+      # Spread replicas across server-role nodes so a node failure
+      # leaves at least one Roundcube pod scheduled. ScheduleAnyway lets
+      # single-node staging still bring up replicas if HA isn't applied.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: roundcube
       terminationGracePeriodSeconds: 30
       containers:
         - name: roundcube
@@ -77,11 +91,11 @@ spec:
             # Stalwart connection details (IMAPS and submission, both go to
             # the same in-cluster service in the mail namespace)
             - name: ROUNDCUBEMAIL_DEFAULT_HOST
-              value: "ssl://stalwart-mail.mail.svc.cluster.local"
+              value: "ssl://stalwart-mail-v016.mail.svc.cluster.local"
             - name: ROUNDCUBEMAIL_DEFAULT_PORT
               value: "993"
             - name: ROUNDCUBEMAIL_SMTP_SERVER
-              value: "ssl://stalwart-mail.mail.svc.cluster.local"
+              value: "ssl://stalwart-mail-v016.mail.svc.cluster.local"
             - name: ROUNDCUBEMAIL_SMTP_PORT
               value: "465"
             # Phase 3.A.5: Postgres backend for Roundcube session /
