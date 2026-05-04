@@ -32,8 +32,15 @@ export function startStoragePolicyAdvisor(db: Database, k8s: K8sClients): { stop
       // the cluster only converges when an operator clicks "Apply
       // Tier" in the UI; in practice that means stale state most of
       // the time.
+      //
+      // Skip volumes that aren't `attached` yet (provisioning,
+      // detached for restore, etc.) — patching their replica count
+      // mid-rebuild thrashes the reconcile and floods the log with
+      // spurious "drift detected" entries until Longhorn converges
+      // naturally. Once attached we can safely diff currentReplicas
+      // against desiredReplicas.
       const drift = state.volumes.some(
-        (v) => v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica,
+        (v) => v.phase === 'attached' && (v.currentReplicas !== v.desiredReplicas || v.hasOffSystemReplica),
       );
       if (drift) {
         console.log(`[storage-policy-advisor] drift detected — applying ${policy.systemTier} tier`);
