@@ -124,15 +124,18 @@ spec:
                 exit 1
               fi
 
-              # NOTE: stalwart-cli v1.0.4 uses `--user` (not --username),
-              # and authentication is via STALWART_PASSWORD env (the
-              # CLI does not accept --password on the command line).
+              # NOTE: stalwart-cli v1.0.4:
+              #   - `--user` (not `--username`)
+              #   - auth via STALWART_PASSWORD env (CLI does not accept
+              #     a --password flag on the command line)
+              #   - `apply` takes `--file <PATH>` or `--stdin`, not a
+              #     positional argument
               HOME=/tmp \
               STALWART_PASSWORD="$${STALWART_RECOVERY_PASSWORD}" \
                 /shared/stalwart-cli \
                   --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
                   --user "admin" \
-                  apply /plan/plan.json
+                  apply --file /plan/plan.json
 
               echo "Bootstrap plan applied successfully."
           env:
