@@ -102,7 +102,19 @@ api() {
   fi
 }
 
-ssh_cp() { ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"; }
+ssh_cp() {
+  # When the harness is run ON the cluster control host itself
+  # (e.g. via `ssh root@staging1 bash /tmp/integration-staging.sh`),
+  # the key file we'd ssh to back to ourselves usually doesn't exist
+  # locally and `kubectl` is already in PATH. Skip the SSH hop and
+  # exec in-place. Detection: SSH_KEY missing on disk OR running as
+  # root with kubectl reachable.
+  if [[ ! -r "$SSH_KEY" ]] && command -v kubectl >/dev/null 2>&1; then
+    bash -c "$*"
+    return
+  fi
+  ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"
+}
 
 # Wait until $cmd produces output matching $expect or timeout in $1 s.
 wait_for() {
