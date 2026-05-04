@@ -17,6 +17,11 @@
  * output. The module re-reads LOG_LEVEL at first import only, so
  * vi.stubEnv('LOG_LEVEL', 'silent') must run BEFORE any module that
  * imports mailLogger.
+ *
+ * NOTE: when adding a new mail module, prefer
+ *   const log = mailLogger().child({ module: '<name>' });
+ * over importing the bare logger so each line carries the originating
+ * module in structured fields (Loki + journalctl filters key off it).
  */
 
 import pino, { type Logger } from 'pino';

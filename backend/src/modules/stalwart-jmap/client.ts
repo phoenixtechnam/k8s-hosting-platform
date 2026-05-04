@@ -166,6 +166,13 @@ const STALWART_MGMT_URL =
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_PRINCIPALS = 'urn:ietf:params:jmap:principals';
+// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its OWN
+// extension namespace for principal management — `x:Account/*` for
+// individual mailboxes / admin users and `x:Domain/*` for mail domains.
+// Standard JMAP `Principal/*` (RFC 8620) is NOT implemented; calls
+// against it return `urn:ietf:params:jmap:error:notRequest`. Use
+// JMAP_STALWART for every Account/Domain operation.
+const JMAP_STALWART = 'urn:stalwart:jmap';
 
 /**
  * Resolve admin Basic-Auth credentials using the same priority order
@@ -361,15 +368,205 @@ export async function getJmapSession(
   return data as JmapSession;
 }
 
+// ── Stalwart x:Account / x:Domain primitives ────────────────────────────────
+//
+// Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its own JMAP
+// extension namespace for principal management — `x:Account/*` for
+// individual users (mailboxes, admins) and `x:Domain/*` for mail
+// domains. RFC 8620 standard `Principal/*` is NOT implemented; calls
+// against it return 400 with `notRequest`. The functions below are
+// the on-the-wire-correct primitives; the legacy `principalGet/Set`
+// helpers further down route through these.
+
+/** Raw response shape from x:Account/get. */
+interface XAccountGetResponse {
+  readonly accountId: JmapAccountId;
+  readonly state: string;
+  readonly list: readonly Record<string, unknown>[];
+  readonly notFound: readonly string[];
+}
+
+/** Raw response shape from x:Account/query. */
+interface XQueryResponse {
+  readonly accountId: JmapAccountId;
+  readonly state: string;
+  readonly ids: readonly string[];
+  readonly position?: number;
+  readonly total?: number;
+}
+
+async function _xCall<T>(
+  capability: string,
+  method: string,
+  args: Record<string, unknown>,
+  baseUrl: string = STALWART_MGMT_URL,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  const auth = adminBasicAuth(env);
+  const callId = 'c0';
+  const req: JmapRequest = {
+    using: [JMAP_CORE, capability],
+    methodCalls: [[method, args, callId]],
+  };
+  const res = await jmapPost(baseUrl, auth, req);
+  return extractResponse<T>(res, method, callId);
+}
+
 /**
- * `Principal/get` — fetch one or more principals by ID.
+ * `x:Account/get` — fetch one or more accounts (users, admins) by ID.
+ * Pass `ids: null` to list all accounts.
+ */
+export async function accountGet(params: {
+  accountId: JmapAccountId;
+  ids: readonly string[] | null;
+  properties?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<XAccountGetResponse> {
+  const { accountId, ids, properties, baseUrl, env } = params;
+  return _xCall<XAccountGetResponse>(
+    JMAP_STALWART,
+    'x:Account/get',
+    { accountId, ids: ids ?? null, ...(properties ? { properties } : {}) },
+    baseUrl, env,
+  );
+}
+
+/**
+ * `x:Account/query` — search accounts by filter.
+ * Stalwart accepts `{ name }`, `{ domainId }`, etc. on the filter.
+ */
+export async function accountQuery(params: {
+  accountId: JmapAccountId;
+  filter?: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<XQueryResponse> {
+  const { accountId, filter, baseUrl, env } = params;
+  return _xCall<XQueryResponse>(
+    JMAP_STALWART,
+    'x:Account/query',
+    { accountId, ...(filter ? { filter } : {}) },
+    baseUrl, env,
+  );
+}
+
+/**
+ * `x:Account/set` — create / update / destroy accounts.
+ * The `create` payload requires `@type: "User"` and uses
+ * `domainId` (not `emails`) to bind the account to its domain.
+ * Password updates use the `credentials` map shape:
+ *   `{ "credentials/0/secret": "<new>" }`
+ * for partial updates, or full replace via
+ *   `{ "credentials": { "0": { "@type": "Password", "secret": ... } } }`.
+ */
+export async function accountSet(params: {
+  accountId: JmapAccountId;
+  request: JmapSetRequest<Record<string, unknown>>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<Record<string, unknown>>> {
+  const { accountId, request, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<Record<string, unknown>>>(
+    JMAP_STALWART,
+    'x:Account/set',
+    { accountId, ...request },
+    baseUrl, env,
+  );
+}
+
+/** `x:Domain/get` — fetch one or more domains by ID. */
+export async function domainGet(params: {
+  accountId: JmapAccountId;
+  ids: readonly string[] | null;
+  properties?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<XAccountGetResponse> {
+  const { accountId, ids, properties, baseUrl, env } = params;
+  return _xCall<XAccountGetResponse>(
+    JMAP_STALWART,
+    'x:Domain/get',
+    { accountId, ids: ids ?? null, ...(properties ? { properties } : {}) },
+    baseUrl, env,
+  );
+}
+
+/** `x:Domain/query` — search domains by filter (typically `{ name }`). */
+export async function domainQuery(params: {
+  accountId: JmapAccountId;
+  filter?: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<XQueryResponse> {
+  const { accountId, filter, baseUrl, env } = params;
+  return _xCall<XQueryResponse>(
+    JMAP_STALWART,
+    'x:Domain/query',
+    { accountId, ...(filter ? { filter } : {}) },
+    baseUrl, env,
+  );
+}
+
+/** `x:Domain/set` — create / update / destroy domains. */
+export async function domainSet(params: {
+  accountId: JmapAccountId;
+  request: JmapSetRequest<Record<string, unknown>>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<Record<string, unknown>>> {
+  const { accountId, request, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<Record<string, unknown>>>(
+    JMAP_STALWART,
+    'x:Domain/set',
+    { accountId, ...request },
+    baseUrl, env,
+  );
+}
+
+// ── Legacy Principal/* compatibility shims ──────────────────────────────────
+//
+// `principalGet` / `principalSet` keep their old signatures (a unified
+// "type": individual|domain shape) so existing callers compile without
+// change. Internally they fan out to x:Account + x:Domain. Eventually
+// every call site should move to the typed x:* helpers above; until
+// then, the shim ensures we never hit the unsupported standard
+// `Principal/*` methods on the wire.
+
+/**
+ * Map an x:Account/get list entry to the legacy `StalwartPrincipal`
+ * shape (with `type: 'individual'`).
+ */
+function _accountToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
+  const id = typeof raw.id === 'string' ? raw.id : undefined;
+  const name = typeof raw.name === 'string' ? raw.name : '';
+  const description = typeof raw.description === 'string' ? raw.description : null;
+  // x:Account binds to a single domainId; the platform-side legacy
+  // shape stores email addresses. Synthesize the email from the
+  // emails array if present, else leave undefined and let the caller
+  // backfill via domainGet if needed.
+  const emails = Array.isArray(raw.emails)
+    ? (raw.emails as string[]).filter((e) => typeof e === 'string')
+    : undefined;
+  return { id, type: 'individual', name, description, emails };
+}
+
+function _domainToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
+  const id = typeof raw.id === 'string' ? raw.id : undefined;
+  const name = typeof raw.name === 'string' ? raw.name : '';
+  const description = typeof raw.description === 'string' ? raw.description : null;
+  const dnsZoneFile = typeof raw.dnsZoneFile === 'string' ? raw.dnsZoneFile : null;
+  return { id, type: 'domain', name, description, dnsZoneFile };
+}
+
+/**
+ * `principalGet` (legacy) — fetches individuals and/or domains and
+ * returns them as a unified list. Routes through x:Account/get and
+ * x:Domain/get under the hood.
  *
- * Pass `ids: null` to list ALL principals (use with caution on large
- * installs; Stalwart applies a server-side limit and paginates).
- * Pass `ids: [id1, id2]` to fetch specific entries.
- *
- * The `properties` array controls which fields are returned; omit for
- * all fields.
+ * Pass `ids: null` to list ALL principals across both namespaces.
+ * Pass `ids: [...]` and we'll try x:Account first, then x:Domain for
+ * any IDs that came back in `notFound`.
  */
 export async function principalGet(params: {
   accountId: JmapAccountId;
@@ -378,34 +575,50 @@ export async function principalGet(params: {
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<JmapGetResponse<StalwartPrincipal>> {
-  const {
-    accountId,
-    ids,
-    properties,
-    baseUrl = STALWART_MGMT_URL,
-    env = process.env,
-  } = params;
+  const { accountId, ids, properties, baseUrl, env } = params;
 
-  const auth = adminBasicAuth(env);
-  const callId = 'c0';
-
-  const req: JmapRequest = {
-    using: [JMAP_CORE, JMAP_PRINCIPALS],
-    methodCalls: [
-      [
-        'Principal/get',
-        {
-          accountId,
-          ids: ids ?? null,
-          ...(properties ? { properties } : {}),
-        },
-        callId,
+  // List all → query both namespaces in parallel.
+  if (ids === null) {
+    const [accounts, domains] = await Promise.all([
+      accountGet({ accountId, ids: null, properties, baseUrl, env }),
+      domainGet({ accountId, ids: null, properties, baseUrl, env }),
+    ]);
+    return {
+      accountId,
+      state: `${accounts.state}|${domains.state}`,
+      list: [
+        ...accounts.list.map(_accountToPrincipal),
+        ...domains.list.map(_domainToPrincipal),
       ],
-    ],
-  };
+      notFound: [],
+    };
+  }
 
-  const res = await jmapPost(baseUrl, auth, req);
-  return extractResponse<JmapGetResponse<StalwartPrincipal>>(res, 'Principal/get', callId);
+  // Specific IDs — try x:Account first; anything in notFound retry on x:Domain.
+  const accountResp = await accountGet({ accountId, ids, properties, baseUrl, env });
+  const stillMissing = accountResp.notFound;
+  let domainList: StalwartPrincipal[] = [];
+  let trulyNotFound: readonly string[] = [];
+  if (stillMissing.length > 0) {
+    const domainResp = await domainGet({
+      accountId,
+      ids: stillMissing,
+      properties,
+      baseUrl,
+      env,
+    });
+    domainList = domainResp.list.map(_domainToPrincipal);
+    trulyNotFound = domainResp.notFound;
+  }
+  return {
+    accountId,
+    state: accountResp.state,
+    list: [
+      ...accountResp.list.map(_accountToPrincipal),
+      ...domainList,
+    ],
+    notFound: trulyNotFound,
+  };
 }
 
 /**
@@ -426,11 +639,16 @@ export async function principalGetOne(params: {
 }
 
 /**
- * `Principal/set` — create, update, or destroy principals.
+ * `principalSet` (legacy compatibility shim) — dispatches each
+ * `create` entry to x:Account/set or x:Domain/set based on the
+ * `type` field, and `update` / `destroy` IDs are sent to x:Account
+ * first with x:Domain as the fallback.
  *
- * This is the low-level entry point. Use the typed helpers
- * `createMailbox`, `createDomain`, `updatePrincipal`, and
- * `destroyPrincipal` for the common cases.
+ * The Stalwart 0.16 server doesn't support a unified `Principal/set`
+ * method — it expects calls split per principal kind. This shim
+ * keeps the legacy callers (mailboxes/email-domains/principals-sync)
+ * working without forcing them to know which namespace each ID lives
+ * in.
  */
 export async function principalSet<T extends Partial<StalwartPrincipal>>(params: {
   accountId: JmapAccountId;
@@ -438,29 +656,150 @@ export async function principalSet<T extends Partial<StalwartPrincipal>>(params:
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<JmapSetResponse<StalwartPrincipal>> {
-  const {
+  const { accountId, request, baseUrl, env } = params;
+
+  // Split create into account creates vs domain creates by `type`.
+  const accountCreates: Record<string, Record<string, unknown>> = {};
+  const domainCreates: Record<string, Record<string, unknown>> = {};
+  for (const [k, v] of Object.entries(request.create ?? {})) {
+    const principal = v as unknown as StalwartPrincipal & {
+      readonly emails?: readonly string[];
+      readonly secrets?: readonly string[];
+    };
+    if (principal.type === 'individual') {
+      // Map legacy → x:Account/User shape.
+      const credentials: Record<string, unknown> = {};
+      const secrets = principal.secrets ?? [];
+      secrets.forEach((s, i) => {
+        credentials[String(i)] = {
+          '@type': 'Password',
+          secret: s,
+          allowedIps: {},
+          expiresAt: null,
+        };
+      });
+      // x:Account requires `domainId`, but the legacy callers only
+      // pass `emails`. The mailboxes/service.ts caller now resolves
+      // domainId before calling createMailbox; older paths still
+      // passing `emails` will fail with a clear server error.
+      const accountPayload: Record<string, unknown> = {
+        '@type': 'User',
+        name: principal.name,
+      };
+      if (principal.description) accountPayload.description = principal.description;
+      if (principal.emails && principal.emails.length > 0) {
+        accountPayload.emails = principal.emails;
+      }
+      if (Object.keys(credentials).length > 0) accountPayload.credentials = credentials;
+      accountCreates[k] = accountPayload;
+    } else if (principal.type === 'domain') {
+      domainCreates[k] = { name: principal.name };
+    }
+  }
+
+  // Updates / destroys: dispatch by trying x:Account first.
+  const updates = request.update ?? {};
+  const destroys = request.destroy ?? [];
+
+  // Run x:Account/set with the account-side slices.
+  const accountResp = await accountSet({
     accountId,
-    request,
-    baseUrl = STALWART_MGMT_URL,
-    env = process.env,
-  } = params;
+    request: {
+      ...(Object.keys(accountCreates).length > 0 ? { create: accountCreates } : {}),
+      ...(Object.keys(updates).length > 0 ? { update: updates as Record<string, Record<string, unknown>> } : {}),
+      ...(destroys.length > 0 ? { destroy: destroys } : {}),
+      ifInState: request.ifInState,
+    },
+    baseUrl,
+    env,
+  });
 
-  const auth = adminBasicAuth(env);
-  const callId = 'c0';
+  // Anything not-{updated|destroyed} on x:Account because of `notFound`
+  // → retry on x:Domain. Stalwart's `notUpdated` / `notDestroyed`
+  // payloads include `type: 'notFound'` for IDs in the wrong namespace.
+  const domainUpdates: Record<string, Record<string, unknown>> = {};
+  for (const [id, err] of Object.entries(accountResp.notUpdated ?? {})) {
+    if (err.type === 'notFound' && updates[id]) {
+      domainUpdates[id] = updates[id] as Record<string, unknown>;
+    }
+  }
+  const domainDestroys: string[] = [];
+  for (const [id, err] of Object.entries(accountResp.notDestroyed ?? {})) {
+    if (err.type === 'notFound') domainDestroys.push(id);
+  }
 
-  const jmapReq: JmapRequest = {
-    using: [JMAP_CORE, JMAP_PRINCIPALS],
-    methodCalls: [
-      [
-        'Principal/set',
-        { accountId, ...request },
-        callId,
-      ],
-    ],
+  if (
+    Object.keys(domainCreates).length === 0 &&
+    Object.keys(domainUpdates).length === 0 &&
+    domainDestroys.length === 0
+  ) {
+    // Pure-account operation; map the response directly.
+    return {
+      accountId: accountResp.accountId,
+      oldState: accountResp.oldState,
+      newState: accountResp.newState,
+      created: accountResp.created
+        ? Object.fromEntries(
+            Object.entries(accountResp.created).map(([k, v]) => [k, _accountToPrincipal(v)]),
+          )
+        : null,
+      updated: accountResp.updated as Record<string, StalwartPrincipal | null> | null,
+      destroyed: accountResp.destroyed,
+      notCreated: accountResp.notCreated,
+      notUpdated: accountResp.notUpdated,
+      notDestroyed: accountResp.notDestroyed,
+    };
+  }
+
+  const domainResp = await domainSet({
+    accountId,
+    request: {
+      ...(Object.keys(domainCreates).length > 0 ? { create: domainCreates } : {}),
+      ...(Object.keys(domainUpdates).length > 0 ? { update: domainUpdates } : {}),
+      ...(domainDestroys.length > 0 ? { destroy: domainDestroys } : {}),
+      ifInState: request.ifInState,
+    },
+    baseUrl,
+    env,
+  });
+
+  // Merge the two responses. Account-side notUpdated/notDestroyed
+  // entries that were resolved on x:Domain are removed from the
+  // notFound bucket.
+  const mergedNotUpdated: Record<string, JmapSetError> = { ...(accountResp.notUpdated ?? {}) };
+  for (const id of Object.keys(domainUpdates)) {
+    if (domainResp.updated && id in domainResp.updated) delete mergedNotUpdated[id];
+    if (domainResp.notUpdated && id in domainResp.notUpdated) {
+      mergedNotUpdated[id] = domainResp.notUpdated[id];
+    }
+  }
+  const mergedNotDestroyed: Record<string, JmapSetError> = { ...(accountResp.notDestroyed ?? {}) };
+  for (const id of domainDestroys) {
+    if (domainResp.destroyed?.includes(id)) delete mergedNotDestroyed[id];
+    if (domainResp.notDestroyed && id in domainResp.notDestroyed) {
+      mergedNotDestroyed[id] = domainResp.notDestroyed[id];
+    }
+  }
+
+  const created: Record<string, StalwartPrincipal> = {};
+  if (accountResp.created) {
+    for (const [k, v] of Object.entries(accountResp.created)) created[k] = _accountToPrincipal(v);
+  }
+  if (domainResp.created) {
+    for (const [k, v] of Object.entries(domainResp.created)) created[k] = _domainToPrincipal(v);
+  }
+
+  return {
+    accountId,
+    oldState: accountResp.oldState,
+    newState: `${accountResp.newState}|${domainResp.newState}`,
+    created: Object.keys(created).length > 0 ? created : null,
+    updated: { ...(accountResp.updated as object | null ?? {}), ...(domainResp.updated as object | null ?? {}) } as Record<string, StalwartPrincipal | null> | null,
+    destroyed: [...(accountResp.destroyed ?? []), ...(domainResp.destroyed ?? [])],
+    notCreated: { ...(accountResp.notCreated ?? {}), ...(domainResp.notCreated ?? {}) },
+    notUpdated: Object.keys(mergedNotUpdated).length > 0 ? mergedNotUpdated : null,
+    notDestroyed: Object.keys(mergedNotDestroyed).length > 0 ? mergedNotDestroyed : null,
   };
-
-  const res = await jmapPost(baseUrl, auth, jmapReq);
-  return extractResponse<JmapSetResponse<StalwartPrincipal>>(res, 'Principal/set', callId);
 }
 
 /**
@@ -636,30 +975,33 @@ export async function principalChanges(params: {
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<JmapChangesResponse> {
-  const {
+  const { accountId, sinceState, maxChanges = 256, baseUrl, env } = params;
+  // Stalwart 0.16: split the call across x:Account/changes and
+  // x:Domain/changes; merge the deltas into the legacy unified shape.
+  const sinceStates = sinceState.split('|', 2);
+  const sinceAccount = sinceStates[0] ?? '';
+  const sinceDomain = sinceStates[1] ?? sinceStates[0] ?? '';
+  const [accountChanges, domainChanges] = await Promise.all([
+    _xCall<JmapChangesResponse>(
+      JMAP_STALWART, 'x:Account/changes',
+      { accountId, sinceState: sinceAccount, maxChanges },
+      baseUrl, env,
+    ),
+    _xCall<JmapChangesResponse>(
+      JMAP_STALWART, 'x:Domain/changes',
+      { accountId, sinceState: sinceDomain, maxChanges },
+      baseUrl, env,
+    ),
+  ]);
+  return {
     accountId,
-    sinceState,
-    maxChanges = 256,
-    baseUrl = STALWART_MGMT_URL,
-    env = process.env,
-  } = params;
-
-  const auth = adminBasicAuth(env);
-  const callId = 'c0';
-
-  const req: JmapRequest = {
-    using: [JMAP_CORE, JMAP_PRINCIPALS],
-    methodCalls: [
-      [
-        'Principal/changes',
-        { accountId, sinceState, maxChanges },
-        callId,
-      ],
-    ],
+    oldState: sinceState,
+    newState: `${accountChanges.newState}|${domainChanges.newState}`,
+    hasMoreChanges: accountChanges.hasMoreChanges || domainChanges.hasMoreChanges,
+    created: [...accountChanges.created, ...domainChanges.created],
+    updated: [...accountChanges.updated, ...domainChanges.updated],
+    destroyed: [...accountChanges.destroyed, ...domainChanges.destroyed],
   };
-
-  const res = await jmapPost(baseUrl, auth, req);
-  return extractResponse<JmapChangesResponse>(res, 'Principal/changes', callId);
 }
 
 /**
@@ -706,16 +1048,24 @@ export async function findDomainByName(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, domainName, baseUrl, env } = params;
-  const result = await principalGet({
+  // x:Domain/query supports server-side `name` filtering — no need to
+  // list-and-filter client-side anymore.
+  const queryRes = await domainQuery({
     accountId,
-    ids: null,
-    properties: ['id', 'name', 'type', 'dnsZoneFile'],
+    filter: { name: domainName },
     baseUrl,
     env,
   });
-  return result.list.find(
-    (p) => p.type === 'domain' && p.name === domainName,
-  ) ?? null;
+  if (queryRes.ids.length === 0) return null;
+  const getRes = await domainGet({
+    accountId,
+    ids: [queryRes.ids[0]],
+    properties: ['id', 'name', 'description', 'dnsZoneFile'],
+    baseUrl,
+    env,
+  });
+  const raw = getRes.list[0];
+  return raw ? _domainToPrincipal(raw) : null;
 }
 
 /**
@@ -731,14 +1081,23 @@ export async function findMailboxByEmail(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, email, baseUrl, env } = params;
-  const result = await principalGet({
+  // Server-side filter via x:Account/query, then x:Account/get for the
+  // matching IDs. Stalwart 0.16 indexes accounts by email; one query
+  // returns at most one match.
+  const queryRes = await accountQuery({
     accountId,
-    ids: null,
-    properties: ['id', 'name', 'type', 'emails'],
+    filter: { email },
     baseUrl,
     env,
   });
-  return result.list.find(
-    (p) => p.type === 'individual' && p.emails?.includes(email),
-  ) ?? null;
+  if (queryRes.ids.length === 0) return null;
+  const getRes = await accountGet({
+    accountId,
+    ids: [queryRes.ids[0]],
+    properties: ['id', 'name', 'description', 'emails'],
+    baseUrl,
+    env,
+  });
+  const raw = getRes.list[0];
+  return raw ? _accountToPrincipal(raw) : null;
 }
