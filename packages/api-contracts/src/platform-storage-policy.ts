@@ -86,5 +86,41 @@ export const applyPlatformStoragePolicyResponseSchema = z.object({
     patched: z.boolean(),
     error: z.string().nullable(),
   })),
+  // Phase 3 — Apply HA persistent run id. Frontend polls
+  // /admin/platform-storage-policy/runs/:id for live convergence
+  // progress. runStatus is the post-patch initial status:
+  // running | succeeded | partial | failed | capacity_blocked
+  runId: z.string().uuid(),
+  runStatus: z.enum(['running', 'succeeded', 'partial', 'failed', 'capacity_blocked']),
 });
 export type ApplyPlatformStoragePolicyResponse = z.infer<typeof applyPlatformStoragePolicyResponseSchema>;
+
+// GET /admin/platform-storage-policy/runs/:id polling shape.
+export const platformStorageApplyRunSchema = z.object({
+  id: z.string().uuid(),
+  tier: z.enum(['local', 'ha']),
+  status: z.enum(['running', 'succeeded', 'partial', 'failed', 'capacity_blocked']),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  actorUserId: z.string().nullable(),
+  patchOutcome: z.unknown().nullable(),
+  convergence: z.object({
+    volumesConverged: z.number().int(),
+    volumesTotal: z.number().int(),
+    volumesOffSystem: z.number().int(),
+    cnpgConverged: z.number().int(),
+    cnpgTotal: z.number().int(),
+    deploymentsConverged: z.number().int(),
+    deploymentsTotal: z.number().int(),
+    lastObservedAt: z.string(),
+    elapsedMs: z.number().int().nonnegative(),
+    stuckResources: z.array(z.object({
+      kind: z.enum(['volume', 'cnpg', 'deployment']),
+      name: z.string(),
+      observed: z.number().int(),
+      desired: z.number().int(),
+      reason: z.string().optional(),
+    })),
+  }).nullable(),
+});
+export type PlatformStorageApplyRun = z.infer<typeof platformStorageApplyRunSchema>;

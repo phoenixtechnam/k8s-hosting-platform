@@ -6,6 +6,7 @@ import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
 import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
+import StuckDeprovisionsPanel from '@/components/StuckDeprovisionsPanel';
 
 /**
  * Storage Configuration
@@ -48,6 +49,7 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
 
       {/* ─── Live inventory ─── */}
       <StorageInventoryCard />
+      <StuckDeprovisionsPanel />
 
       {/* Platform-storage replication policy lives on the dedicated
           "HA Settings" tab in the Nodes & Storage page (M13/M14).

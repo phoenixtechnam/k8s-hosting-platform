@@ -4,6 +4,7 @@ import {
   usePlatformStoragePolicy,
   useUpdatePlatformStoragePolicy,
 } from '@/hooks/use-platform-storage-policy';
+import ApplyHaProgressModal from './ApplyHaProgressModal';
 
 // Display labels for the (wire-stable) tier values. Wire stays
 // `local`/`ha` everywhere — URL, DB, API. Only the human-facing string
@@ -23,6 +24,7 @@ export default function PlatformStoragePolicyCard() {
   const { data, isLoading, error, refetch } = usePlatformStoragePolicy();
   const update = useUpdatePlatformStoragePolicy();
   const [confirming, setConfirming] = useState<'local' | 'ha' | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -57,7 +59,14 @@ export default function PlatformStoragePolicyCard() {
   const onConfirm = async () => {
     if (!confirming) return;
     try {
-      await update.mutateAsync({ systemTier: confirming, pinnedByAdmin: true });
+      const resp = await update.mutateAsync({ systemTier: confirming, pinnedByAdmin: true });
+      // Backend returns runId on success — open the progress modal so
+      // the operator sees the post-patch convergence (Longhorn replica
+      // rebuild + CNPG join) live. Without this, the synchronous patch
+      // returns in <5s and the operator has no UI signal that volumes
+      // are still being moved across nodes for ~10 min after.
+      const runId = resp?.data?.runId;
+      if (runId) setActiveRunId(runId);
     } finally {
       setConfirming(null);
     }
@@ -241,6 +250,9 @@ export default function PlatformStoragePolicyCard() {
             </div>
           </div>
         </div>
+      )}
+      {activeRunId && (
+        <ApplyHaProgressModal runId={activeRunId} onClose={() => setActiveRunId(null)} />
       )}
     </div>
   );
