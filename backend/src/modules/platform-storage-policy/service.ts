@@ -567,6 +567,115 @@ async function patchStatelessDeployments(
   return results;
 }
 
+/**
+ * Parse a Kubernetes resource quantity string like "10Gi", "500Mi",
+ * "1G", "1024" into bytes. Supports binary (Ki/Mi/Gi/Ti) and decimal
+ * (k/M/G/T) suffixes. Defaults to bytes if no suffix.
+ */
+export function parseSizeToBytes(s: string): number {
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*([KMGTP]i?)?$/);
+  if (!m) return 0;
+  const num = parseFloat(m[1]);
+  const unit = m[2] ?? '';
+  const multipliers: Record<string, number> = {
+    '': 1,
+    'K': 1000, 'M': 1000 ** 2, 'G': 1000 ** 3, 'T': 1000 ** 4, 'P': 1000 ** 5,
+    'Ki': 1024, 'Mi': 1024 ** 2, 'Gi': 1024 ** 3, 'Ti': 1024 ** 4, 'Pi': 1024 ** 5,
+  };
+  return Math.ceil(num * (multipliers[unit] ?? 1));
+}
+
+/**
+ * Capacity precheck for CNPG instance scale-up.
+ *
+ * Verifies that adding (target - current) instances, each requiring
+ * `sizeBytes` of storage on a system-tagged Longhorn node, can fit
+ * the per-node free-to-schedule budget. Returns the worst-case
+ * deficit so the operator's Apply HA dialog can show actionable
+ * remediation ("free 8 GB on staging1 OR add a server node").
+ *
+ * Design: even with longhorn-system-local SC (replicas=1), each new
+ * instance's PVC needs >= sizeBytes free on at least one tag=system
+ * node. We check the K best-fit nodes can each take an instance.
+ */
+interface CapacityPrecheckResult {
+  readonly ok: boolean;
+  readonly required: { addedInstances: number; sizeBytesPer: number };
+  readonly perNode: ReadonlyArray<{ name: string; freeBytes: number; canFit: boolean }>;
+  readonly fittingNodes: number;
+  readonly reason?: string;
+}
+
+async function precheckCapacityForInstances(
+  k8s: K8sClients,
+  addedInstances: number,
+  sizeBytesPer: number,
+): Promise<CapacityPrecheckResult> {
+  if (addedInstances <= 0) {
+    return {
+      ok: true,
+      required: { addedInstances: 0, sizeBytesPer },
+      perNode: [], fittingNodes: 0,
+    };
+  }
+  interface LhDiskSpec { allowScheduling?: boolean; storageReserved?: number }
+  interface LhDiskStatus { storageMaximum?: number; storageScheduled?: number }
+  interface LhNode {
+    metadata?: { name?: string };
+    spec?: { tags?: string[]; allowScheduling?: boolean; disks?: Record<string, LhDiskSpec> };
+    status?: { diskStatus?: Record<string, LhDiskStatus> };
+  }
+  let lhResp: { items?: LhNode[] };
+  try {
+    lhResp = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhNode[] };
+  } catch (err) {
+    // Longhorn unavailable — fail open; CNPG provisioner will surface
+    // the issue itself. The reconciler's notification path catches it
+    // after the fact.
+    return {
+      ok: true,
+      required: { addedInstances, sizeBytesPer },
+      perNode: [], fittingNodes: 0,
+      reason: `longhorn unavailable: ${(err as Error).message}; precheck skipped`,
+    };
+  }
+  const perNode: Array<{ name: string; freeBytes: number; canFit: boolean }> = [];
+  for (const lhNode of lhResp.items ?? []) {
+    const name = lhNode.metadata?.name;
+    if (!name) continue;
+    if (lhNode.spec?.allowScheduling === false) continue;
+    // System-tagged only — that's where CNPG PVCs land via the
+    // longhorn-system-local SC's nodeSelector.
+    if (!(lhNode.spec?.tags ?? []).includes('system')) continue;
+    let freeBytes = 0;
+    for (const [diskKey, diskSpec] of Object.entries(lhNode.spec?.disks ?? {})) {
+      if (diskSpec.allowScheduling === false) continue;
+      const stat = lhNode.status?.diskStatus?.[diskKey] ?? {};
+      const max = stat.storageMaximum ?? 0;
+      const sched = stat.storageScheduled ?? 0;
+      const reserved = diskSpec.storageReserved ?? 0;
+      freeBytes += Math.max(0, max - sched - reserved);
+    }
+    perNode.push({ name, freeBytes, canFit: freeBytes >= sizeBytesPer });
+  }
+  // Each of the new instances will have its OWN PVC with replicas=1
+  // (CNPG_DESIRED_REPLICAS) — and CNPG anti-affinity steers each
+  // instance onto a distinct server. So we need (addedInstances)
+  // DISTINCT system nodes with freeBytes >= sizeBytesPer.
+  const fittingNodes = perNode.filter((n) => n.canFit).length;
+  const ok = fittingNodes >= addedInstances;
+  return {
+    ok,
+    required: { addedInstances, sizeBytesPer },
+    perNode,
+    fittingNodes,
+    reason: ok ? undefined : `need ${addedInstances} system node(s) with >= ${Math.ceil(sizeBytesPer / 1024 / 1024 / 1024)} GiB free; only ${fittingNodes} qualify`,
+  };
+}
+
 async function patchCnpgClusters(
   k8s: K8sClients,
   tier: 'local' | 'ha',
@@ -580,7 +689,7 @@ async function patchCnpgClusters(
       const live = await k8s.custom.getNamespacedCustomObject({
         group: 'postgresql.cnpg.io', version: 'v1',
         namespace: c.namespace, plural: 'clusters', name: c.name,
-      }).catch(() => null) as { spec?: { instances?: number } } | null;
+      }).catch(() => null) as { spec?: { instances?: number; storage?: { size?: string } } } | null;
       if (!live) {
         // CNPG cluster not yet created (manifest still reconciling).
         // Don't fail Apply HA — Flux will reconcile to the correct
@@ -601,6 +710,24 @@ async function patchCnpgClusters(
           patched: false, error: null,
         });
         continue;
+      }
+      // Capacity precheck — only when SCALING UP. Scaling down doesn't
+      // need new storage. Parses sizes like "10Gi", "5Gi", etc.
+      const addedInstances = desired - previousInstances;
+      if (addedInstances > 0) {
+        const sizeStr = live.spec?.storage?.size ?? '10Gi';
+        const sizeBytes = parseSizeToBytes(sizeStr);
+        const cap = await precheckCapacityForInstances(k8s, addedInstances, sizeBytes);
+        if (!cap.ok) {
+          const detail = cap.perNode.map((n) => `${n.name}=${(n.freeBytes / 1024 / 1024 / 1024).toFixed(1)}GiB`).join(', ');
+          results.push({
+            namespace: c.namespace, name: c.name,
+            previousInstances, newInstances: desired,
+            patched: false,
+            error: `INSUFFICIENT_STORAGE: ${cap.reason}. Per-node free: ${detail}. Free up space (delete unused tenants / orphan PVs) or add a server node.`,
+          });
+          continue;
+        }
       }
       const patch = { spec: { instances: desired } };
       await k8s.custom.patchNamespacedCustomObject({

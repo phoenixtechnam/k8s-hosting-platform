@@ -435,6 +435,15 @@ scenario_reaper() {
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "reaper: client create failed"; return 1; }
   ok "reaper: client created cid=$cid"
+  # Persist for the file-scope EXIT trap so any subsequent failure
+  # (including SIGKILL / CI timeout) reliably drops this client via
+  # the cascading client-lifecycle DELETE — same pattern as
+  # scenario_mail's _persist_mail_cid. Without this, every reaper-
+  # scenario early-return between here and the final DELETE leaks
+  # a `client-reaper-test-*` namespace and ~1 GB of tenant PVC,
+  # which on staging accumulated to ~150 GB of orphan capacity
+  # observed 2026-05-04.
+  echo "$cid" >> /tmp/integration.cids
 
   wait_for 90 "reaper: namespace provisioned" "Active" \
     "ssh_cp 'kubectl get ns -l client=$cid --no-headers'" || return 1

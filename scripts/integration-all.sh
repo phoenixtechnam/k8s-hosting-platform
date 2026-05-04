@@ -100,4 +100,15 @@ printf '  %bpassed:%b %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
 printf '  %bfailed:%b %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
 for s in "${passed_suites[@]}"; do printf '    %b✓%b %s\n' "$GREEN" "$RESET" "$s"; done
 for s in "${failed_suites[@]}"; do printf '    %b✗%b %s\n' "$RED" "$RESET" "$s"; done
+
+# Always-run cleanup pass — drops any test clients that escaped the
+# per-suite EXIT traps (mid-suite SIGKILL, Ctrl+C between suites,
+# scripts that don't yet wire trap-cleanup correctly). Uses the
+# official lifecycle DELETE so cascade hooks fire (DNS / backups /
+# secrets / namespace / PV reclaim / Longhorn volume delete) — the
+# same path production operators use.
+log "Post-suite cleanup pass (deletes leftover test clients via lifecycle API)"
+yes y | ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/integration-cleanup.sh" 2>&1 \
+  | tail -20 || warn "integration-cleanup.sh reported errors — re-run manually if leaks persist"
+
 [[ ${#failed_suites[@]} -eq 0 ]] || exit 1

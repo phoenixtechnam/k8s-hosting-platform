@@ -4,7 +4,8 @@ import { authenticate, requireRole, requirePanel, type JwtPayload } from '../../
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
-import { auditLogs } from '../../db/schema.js';
+import { auditLogs, notifications, users } from '../../db/schema.js';
+import { inArray } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
@@ -92,6 +93,47 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
       // log so it surfaces in observability and move on.
       app.log.warn({ err }, 'platform-storage-policy: audit log insert failed');
     });
+
+    // Admin-notification fan-out so Apply HA outcomes show up in the
+    // bell icon (durable history of every storage-policy change). The
+    // operator's UI shows the in-flight result; the notification is
+    // for OTHER admins + post-hoc audit. Failures here are non-fatal.
+    try {
+      const failed = [
+        ...outcome.volumes.filter((v) => !v.patched && v.error),
+        ...outcome.deployments.filter((d) => !d.patched && d.error),
+        ...outcome.cnpgClusters.filter((c) => !c.patched && c.error),
+      ];
+      const isInsufficientStorage = outcome.cnpgClusters.some((c) => c.error?.startsWith('INSUFFICIENT_STORAGE'));
+      const title = failed.length === 0
+        ? `Platform storage tier set to ${updated.systemTier}`
+        : isInsufficientStorage
+          ? `Platform storage Apply ${updated.systemTier} blocked — insufficient capacity`
+          : `Platform storage Apply ${updated.systemTier} completed with ${failed.length} failure(s)`;
+      const lines: string[] = [];
+      lines.push(`Volumes: ${outcome.volumes.filter((v) => v.patched).length} patched, ${outcome.volumes.filter((v) => !v.patched && !v.error).length} no-op, ${outcome.volumes.filter((v) => v.error).length} failed.`);
+      lines.push(`Deployments: ${outcome.deployments.filter((d) => d.patched).length} patched, ${outcome.deployments.filter((d) => !d.patched && !d.error).length} no-op, ${outcome.deployments.filter((d) => d.error).length} failed.`);
+      lines.push(`CNPG clusters: ${outcome.cnpgClusters.filter((c) => c.patched).length} patched, ${outcome.cnpgClusters.filter((c) => !c.patched && !c.error).length} no-op, ${outcome.cnpgClusters.filter((c) => c.error).length} failed.`);
+      for (const f of failed.slice(0, 5)) {
+        if ('volumeName' in f) lines.push(`  ✗ vol ${f.volumeName}: ${f.error}`);
+        else if ('previousInstances' in f) lines.push(`  ✗ cluster ${f.namespace}/${f.name}: ${f.error}`);
+        else lines.push(`  ✗ deploy ${f.namespace}/${f.name}: ${f.error}`);
+      }
+      const adminRows = await app.db.select({ id: users.id }).from(users).where(inArray(users.roleName, ['super_admin', 'admin']));
+      for (const a of adminRows) {
+        await app.db.insert(notifications).values({
+          id: crypto.randomUUID(),
+          userId: a.id,
+          type: failed.length === 0 ? 'info' : (isInsufficientStorage ? 'error' : 'warning'),
+          title,
+          message: lines.join(' '),
+          resourceType: 'platform_storage_policy',
+          resourceId: 'singleton',
+        }).catch(() => undefined);
+      }
+    } catch (err) {
+      app.log.warn({ err }, 'platform-storage-policy: notification fan-out failed');
+    }
 
     return success({
       policy: {
