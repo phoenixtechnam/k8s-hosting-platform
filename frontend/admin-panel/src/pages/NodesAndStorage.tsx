@@ -142,8 +142,8 @@ export default function NodesAndStorage() {
           data-testid="ha-settings-tab"
         >
           <span data-testid="cluster-settings-tab" className="sr-only" aria-hidden="true" />
-          <NodeDefaultsCard />
           <PlatformStoragePolicyCard />
+          <NodeDefaultsCard />
         </div>
       )}
     </div>
