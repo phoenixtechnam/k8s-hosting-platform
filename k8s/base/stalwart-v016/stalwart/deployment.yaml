@@ -71,16 +71,22 @@ spec:
             - sh
             - -c
             - |
-              esc() { printf '%s' "$1" | sed 's/[&\\|]/\\&/g'; }
-              H=$(esc "$STALWART_PG_HOST")
-              D=$(esc "$STALWART_PG_DATABASE")
-              U=$(esc "$STALWART_PG_USER")
-              P=$(esc "$STALWART_PG_PASSWORD")
+              # All $$ escapes here protect the inline shell variables
+              # from Flux postBuild envsubst — Flux otherwise tries to
+              # resolve `${STALWART_PG_HOST}` against platform-cluster-
+              # config (where it isn't defined) and the apply fails with
+              # "envsubst error: variable substitution failed".
+              # `$${VAR}` → `${VAR}` after Flux render; sh then expands.
+              esc() { printf '%s' "$$1" | sed 's/[&\\|]/\\&/g'; }
+              H=$$(esc "$$STALWART_PG_HOST")
+              D=$$(esc "$$STALWART_PG_DATABASE")
+              U=$$(esc "$$STALWART_PG_USER")
+              P=$$(esc "$$STALWART_PG_PASSWORD")
               sed \
-                -e "s|\${STALWART_PG_HOST}|$H|g" \
-                -e "s|\${STALWART_PG_DATABASE}|$D|g" \
-                -e "s|\${STALWART_PG_USER}|$U|g" \
-                -e "s|\${STALWART_PG_PASSWORD}|$P|g" \
+                -e "s|\$${STALWART_PG_HOST}|$$H|g" \
+                -e "s|\$${STALWART_PG_DATABASE}|$$D|g" \
+                -e "s|\$${STALWART_PG_USER}|$$U|g" \
+                -e "s|\$${STALWART_PG_PASSWORD}|$$P|g" \
                 /tmpl/config.json > /etc/stalwart/config.json
               echo "Rendered /etc/stalwart/config.json"
           env:

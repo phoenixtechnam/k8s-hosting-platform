@@ -71,17 +71,19 @@ spec:
             - |
               set -eu
               CLI_VERSION="v1.0.4"
-              CLI_URL="https://github.com/stalwartlabs/cli/releases/download/${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
+              # NOTE: $$ escapes Flux postBuild envsubst so the rendered
+              # YAML still carries `${...}` for sh to expand at runtime.
+              CLI_URL="https://github.com/stalwartlabs/cli/releases/download/$${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
               CLI_SHA256="01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa"
 
-              echo "Downloading stalwart-cli ${CLI_VERSION}..."
-              wget -q -O /tmp/stalwart-cli.tar.xz "${CLI_URL}"
+              echo "Downloading stalwart-cli $${CLI_VERSION}..."
+              wget -q -O /tmp/stalwart-cli.tar.xz "$${CLI_URL}"
 
               actual=$(sha256sum /tmp/stalwart-cli.tar.xz | awk '{print $1}')
-              if [ "${actual}" != "${CLI_SHA256}" ]; then
+              if [ "$${actual}" != "$${CLI_SHA256}" ]; then
                 echo "ERROR: stalwart-cli SHA256 mismatch" >&2
-                echo "  expected: ${CLI_SHA256}" >&2
-                echo "  actual:   ${actual}" >&2
+                echo "  expected: $${CLI_SHA256}" >&2
+                echo "  actual:   $${actual}" >&2
                 exit 1
               fi
 
@@ -107,7 +109,9 @@ spec:
               # The rendered plan (with passwords/DKIM substituted) is
               # mounted from stalwart-bootstrap-plan Secret at /plan/plan.json.
               # Fail fast if it's the unrendered template (contains '${').
-              if grep -q '\${' /plan/plan.json 2>/dev/null; then
+              # The $${ escape stops Flux postBuild from trying to interpret
+              # the literal as a variable reference at apply time.
+              if grep -q '\$${' /plan/plan.json 2>/dev/null; then
                 echo "ERROR: bootstrap plan contains unsubstituted variables." >&2
                 echo "       bootstrap.sh must render the plan before unsuspending this Job." >&2
                 exit 1
@@ -116,7 +120,7 @@ spec:
               HOME=/tmp /shared/stalwart-cli \
                 --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
                 --username "admin" \
-                --password "${STALWART_RECOVERY_PASSWORD}" \
+                --password "$${STALWART_RECOVERY_PASSWORD}" \
                 apply /plan/plan.json
 
               echo "Bootstrap plan applied successfully."

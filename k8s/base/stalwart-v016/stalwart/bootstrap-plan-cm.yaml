@@ -23,7 +23,11 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
 data:
+  # The $${VAR} escape stops Flux postBuild substituteFrom from trying
+  # to resolve these placeholders at apply time. Flux substitutes
+  # `$${VAR}` → `${VAR}` literal in the rendered ConfigMap; bootstrap.sh
+  # then sed-replaces them with real values into the Secret.
   bootstrap-plan.json: |
-    {"@type":"update","object":"Bootstrap","value":{"serverHostname":"${STALWART_HOSTNAME}","defaultDomain":"${STALWART_DOMAIN}","generateDkimKeys":false,"requestTlsCertificate":false}}
-    {"@type":"update","object":"Account","id":"${STALWART_ADMIN_ID}","value":{"@type":"User","credentials":{"0":{"@type":"Password","secret":"${STALWART_ADMIN_PASSWORD}","allowedIps":{},"expiresAt":null}}}}
-    {"@type":"create","object":"DkimSignature","value":{"dkim-default":{"@type":"Dkim1Ed25519Sha256","domainId":"${STALWART_DOMAIN_ID}","selector":"default","canonicalization":"relaxed/relaxed","headers":{"From":true,"To":true,"Date":true,"Subject":true,"Message-ID":true},"privateKey":{"@type":"Text","secret":"${STALWART_DKIM_PRIVATE_KEY_PEM}"},"report":false,"stage":"active","thirdParty":null,"thirdPartyHash":null,"auid":null,"expire":null,"memberTenantId":null,"nextTransitionAt":null}}}
+    {"@type":"update","object":"Bootstrap","value":{"serverHostname":"$${STALWART_HOSTNAME}","defaultDomain":"$${STALWART_DOMAIN}","generateDkimKeys":false,"requestTlsCertificate":false}}
+    {"@type":"update","object":"Account","id":"$${STALWART_ADMIN_ID}","value":{"@type":"User","credentials":{"0":{"@type":"Password","secret":"$${STALWART_ADMIN_PASSWORD}","allowedIps":{},"expiresAt":null}}}}
+    {"@type":"create","object":"DkimSignature","value":{"dkim-default":{"@type":"Dkim1Ed25519Sha256","domainId":"$${STALWART_DOMAIN_ID}","selector":"default","canonicalization":"relaxed/relaxed","headers":{"From":true,"To":true,"Date":true,"Subject":true,"Message-ID":true},"privateKey":{"@type":"Text","secret":"$${STALWART_DKIM_PRIVATE_KEY_PEM}"},"report":false,"stage":"active","thirdParty":null,"thirdPartyHash":null,"auid":null,"expire":null,"memberTenantId":null,"nextTransitionAt":null}}}

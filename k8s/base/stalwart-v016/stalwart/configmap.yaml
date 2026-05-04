@@ -37,16 +37,21 @@ data:
   # They are NOT resolved by Stalwart itself or by Kustomize.
   # The file is parsed as a DataStore spec: "@type": "PostgreSql" at
   # the top level tells Stalwart which store driver to load.
+  #
+  # The $${VAR} escapes Flux postBuild substituteFrom — Flux otherwise
+  # tries to envsubst the placeholders at apply time and fails because
+  # platform-cluster-config only defines DOMAIN. The escape collapses
+  # to `${VAR}` in the rendered ConfigMap.
   config.json: |
     {
       "@type": "PostgreSql",
-      "host": "${STALWART_PG_HOST}",
+      "host": "$${STALWART_PG_HOST}",
       "port": 5432,
-      "database": "${STALWART_PG_DATABASE}",
-      "authUsername": "${STALWART_PG_USER}",
+      "database": "$${STALWART_PG_DATABASE}",
+      "authUsername": "$${STALWART_PG_USER}",
       "authSecret": {
         "@type": "Value",
-        "secret": "${STALWART_PG_PASSWORD}"
+        "secret": "$${STALWART_PG_PASSWORD}"
       },
       "useTls": false,
       "allowInvalidCerts": false,
