@@ -32,6 +32,9 @@ import {
   type StalwartPrincipal,
 } from './client.js';
 import type { Database } from '../../db/index.js';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -109,17 +112,11 @@ export function createPrincipalsSyncScheduler(
         // line then re-installs the periodic interval — also stop()able.
         timer = null;
         void runCycle().catch((err) => {
-          console.error(
-            '[stalwart-principals-sync] Initial cycle failed:',
-            err instanceof Error ? err.message : String(err),
-          );
+          log.error({ err: err instanceof Error ? err.message : String(err) }, 'initial cycle failed');
         });
         timer = setInterval(() => {
           void runCycle().catch((err) => {
-            console.error(
-              '[stalwart-principals-sync] Cycle failed:',
-              err instanceof Error ? err.message : String(err),
-            );
+            log.error({ err: err instanceof Error ? err.message : String(err) }, 'cycle failed');
           });
         }, intervalMs);
       }, initialDelay) as unknown as ReturnType<typeof setInterval>;
@@ -217,9 +214,11 @@ async function syncPrincipals(params: {
           // now `mailboxOrphansLogged` to match the actual behaviour;
           // operators must scrape these warnings from logs until a
           // real orphan column ships.
-          console.warn(
-            `[stalwart-principals-sync] Mailbox '${row.fullAddress}' (id=${row.id}) exists in platform DB but not in Stalwart. stalwartPrincipalId=${row.stalwartPrincipalId}. Operator action required.`,
-          );
+          log.warn({
+            mailboxId: row.id,
+            fullAddress: row.fullAddress,
+            stalwartPrincipalId: row.stalwartPrincipalId,
+          }, 'mailbox exists in platform DB but not in Stalwart — operator action required');
           mailboxOrphansMarked++;
         }
         // If stalwartPrincipalId is null AND not in Stalwart → genuinely missing;
@@ -257,9 +256,11 @@ async function syncPrincipals(params: {
 
       if (!stalwartId) {
         if (row.stalwartDomainId !== null) {
-          console.warn(
-            `[stalwart-principals-sync] Email domain '${row.domainName}' (id=${row.id}) exists in platform DB but not in Stalwart. stalwartDomainId=${row.stalwartDomainId}. Operator review needed.`,
-          );
+          log.warn({
+            emailDomainId: row.id,
+            domainName: row.domainName,
+            stalwartDomainId: row.stalwartDomainId,
+          }, 'email domain exists in platform DB but not in Stalwart — operator review needed');
           domainOrphansLogged++;
         }
         continue;
@@ -278,9 +279,13 @@ async function syncPrincipals(params: {
   }
 
   if (mailboxesBackfilled > 0 || domainsBackfilled > 0 || errors.length > 0) {
-    console.info(
-      `[stalwart-principals-sync] mailboxesBackfilled=${mailboxesBackfilled} domainsBackfilled=${domainsBackfilled} mailboxOrphans=${mailboxOrphansMarked} domainOrphans=${domainOrphansLogged} errors=${errors.length}`,
-    );
+    log.info({
+      mailboxesBackfilled,
+      domainsBackfilled,
+      mailboxOrphans: mailboxOrphansMarked,
+      domainOrphans: domainOrphansLogged,
+      errors: errors.length,
+    }, 'reconcile cycle complete');
   }
 
   return { mailboxesBackfilled, domainsBackfilled, mailboxOrphansMarked, domainOrphansLogged, errors };

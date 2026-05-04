@@ -297,7 +297,24 @@ async function jmapPost(
     );
   }
 
-  return res.json() as Promise<JmapResponse>;
+  // Code-review L1 fix (2026-05-04): guard the network boundary.
+  // A 200 response from a reverse-proxy error page (Cloudflare, nginx
+  // landing page, etc.) would JSON.parse fine but lack the expected
+  // shape — extractResponse would then throw a confusing TypeError on
+  // .methodResponses. Validate the minimal shape before returning.
+  const data = (await res.json()) as unknown;
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Array.isArray((data as { methodResponses?: unknown }).methodResponses)
+  ) {
+    throw new JmapError(
+      `JMAP response from ${url} did not match the protocol shape (missing methodResponses array)`,
+      'malformedResponse',
+      data,
+    );
+  }
+  return data as JmapResponse;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -328,7 +345,20 @@ export async function getJmapSession(
       { status: res.status, body: text.slice(0, 500) },
     );
   }
-  return res.json() as Promise<JmapSession>;
+  // Same protocol-shape guard as jmapPost — see L1 comment there.
+  const data = (await res.json()) as unknown;
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    typeof (data as { primaryAccounts?: unknown }).primaryAccounts !== 'object'
+  ) {
+    throw new JmapError(
+      `JMAP session from ${baseUrl} did not match the protocol shape (missing primaryAccounts object)`,
+      'malformedResponse',
+      data,
+    );
+  }
+  return data as JmapSession;
 }
 
 /**

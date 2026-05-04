@@ -46,6 +46,9 @@ import {
   type StalwartPrincipal,
 } from './client.js';
 import type { Database } from '../../db/index.js';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'stalwart-dns-sync' });
 
 // ── Zone-file parsing ─────────────────────────────────────────────────────────
 
@@ -124,8 +127,11 @@ export function parseZoneFile(zoneText: string): readonly ZoneRecord[] {
         break;
 
       case 'MX': {
-        // MX priority target
-        const prio = parseInt(rest[0] ?? '10', 10);
+        // MX priority target. Code-review L4 fix (2026-05-04): guard
+        // parseInt against NaN so a malformed Stalwart zone-file entry
+        // doesn't store NaN as the priority column value (DB write
+        // would store it as 0 or fail, depending on PG dialect).
+        const prio = parseDnsInt(rest[0], 10);
         const target = rest[1] ?? '';
         records.push({ name, ttl, type, rdata: target, priority: prio, weight: null, port: null });
         break;
@@ -139,10 +145,10 @@ export function parseZoneFile(zoneText: string): readonly ZoneRecord[] {
       }
 
       case 'SRV': {
-        // SRV priority weight port target
-        const prio = parseInt(rest[0] ?? '0', 10);
-        const weight = parseInt(rest[1] ?? '1', 10);
-        const port = parseInt(rest[2] ?? '0', 10);
+        // SRV priority weight port target. Same NaN guard as MX.
+        const prio = parseDnsInt(rest[0], 0);
+        const weight = parseDnsInt(rest[1], 1);
+        const port = parseDnsInt(rest[2], 0);
         const target = rest[3] ?? '';
         // Platform stores SRV rdata as "weight port target" and priority separately
         records.push({ name, ttl, type, rdata: `${weight} ${port} ${target}`, priority: prio, weight, port });
@@ -193,6 +199,17 @@ function stripQuotes(s: string): string {
     return s.slice(1, -1).replace(/\\"/g, '"');
   }
   return s;
+}
+
+/**
+ * Parse an integer from a zone-file token, returning the fallback when
+ * the token is missing, empty, or non-numeric. NaN-safe replacement
+ * for `parseInt(token ?? defaultStr, 10)` — review L4.
+ */
+function parseDnsInt(token: string | undefined, fallback: number): number {
+  if (token === undefined || token === null || token === '') return fallback;
+  const n = parseInt(token, 10);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // ── Diff + sync ───────────────────────────────────────────────────────────────
@@ -320,11 +337,11 @@ export async function syncDomainDnsRecords(params: {
     // itself or a subdomain of it.
     const lowerName = normalName.toLowerCase();
     if (lowerName !== normalisedDomain && !lowerName.endsWith(`.${normalisedDomain}`)) {
-      console.warn(
-        `[stalwart-dns-sync] REFUSING out-of-scope record from Stalwart zone file: ` +
-          `type=${zr.type} name='${normalName}' expected scope='${normalisedDomain}'. ` +
-          `Possible Stalwart misconfiguration or compromise.`,
-      );
+      log.warn({
+        type: zr.type,
+        name: normalName,
+        expectedScope: normalisedDomain,
+      }, 'refusing out-of-scope record from Stalwart zone file (possible misconfiguration or compromise)');
       continue;
     }
 
@@ -339,10 +356,11 @@ export async function syncDomainDnsRecords(params: {
         priority: zr.priority,
       }, domainId);
     } catch (err) {
-      console.warn(
-        `[stalwart-dns-sync] Provider push failed for ${zr.type} '${normalName}'; deferring DB write:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      log.warn({
+        type: zr.type,
+        name: normalName,
+        err: err instanceof Error ? err.message : String(err),
+      }, 'provider push failed — deferring DB write to next cycle');
       continue;  // next sync cycle will retry — provider is source of truth
     }
 
@@ -379,10 +397,11 @@ export async function syncDomainDnsRecords(params: {
           id: row.id,
         }, domainId);
       } catch (err) {
-        console.warn(
-          `[stalwart-dns-sync] Provider delete failed for ${row.recordType} '${row.recordName}'; deferring DB delete:`,
-          err instanceof Error ? err.message : String(err),
-        );
+        log.warn({
+          type: row.recordType,
+          name: row.recordName,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'provider delete failed — deferring DB delete to next cycle');
         continue;  // next sync cycle will retry
       }
       await db.delete(dnsRecords).where(eq(dnsRecords.id, row.id));
@@ -502,10 +521,7 @@ export function createDnsSyncScheduler(
         principalAccountId = result.accountId;
       });
     } catch (err) {
-      console.error(
-        '[stalwart-dns-sync] Sync cycle failed:',
-        err instanceof Error ? err.message : String(err),
-      );
+      log.error({ err: err instanceof Error ? err.message : String(err) }, 'sync cycle failed');
     } finally {
       running = false;
     }
@@ -619,15 +635,17 @@ async function runSyncCycle(params: {
       });
 
       if (result.added > 0 || result.removed > 0) {
-        console.info(
-          `[stalwart-dns-sync] ${principal.name}: +${result.added} -${result.removed} records`,
-        );
+        log.info({
+          domain: principal.name,
+          added: result.added,
+          removed: result.removed,
+        }, 'dns records synced');
       }
     } catch (err) {
-      console.error(
-        `[stalwart-dns-sync] Failed to sync ${principal.name}:`,
-        err instanceof Error ? err.message : String(err),
-      );
+      log.error({
+        domain: principal.name,
+        err: err instanceof Error ? err.message : String(err),
+      }, 'failed to sync domain');
     }
   }
 
