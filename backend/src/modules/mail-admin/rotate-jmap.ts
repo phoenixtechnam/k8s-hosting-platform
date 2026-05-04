@@ -37,6 +37,17 @@ export interface RotateJmapOptions {
   readonly stalwartNamespace: string;
   readonly secretName: string;
   readonly username: string;
+  /**
+   * Optional cross-namespace mirror Secret. Used to keep the platform-
+   * namespace `platform-stalwart-creds` Secret (mounted into platform-api
+   * at /etc/stalwart-creds/) in sync with the rotated mail-namespace
+   * `stalwart-admin-creds` Secret. Without this, platform-api would
+   * keep reading the OLD password and fail to authenticate to Stalwart
+   * after the next pod restart. Best-effort: a missing mirror Secret
+   * is logged but does not fail the rotation.
+   */
+  readonly mirrorNamespace?: string;
+  readonly mirrorSecretName?: string;
   /** Timeout for credential verification in ms. Default: 30s. */
   readonly verifyTimeoutMs?: number;
 }
@@ -92,6 +103,30 @@ export async function rotateAdminPasswordViaJmapImpl(
         ADMIN_SECRET_PLAIN: plain,
       },
     });
+    // 4b. Mirror to the cross-namespace platform Secret if configured.
+    // platform-api reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN from a
+    // volume mount of `platform-stalwart-creds` (same key set as the
+    // mail-namespace Secret). Without this mirror, the rotated password
+    // is in mail/stalwart-admin-creds but platform-api keeps reading
+    // the old one. Best-effort: log + continue if the mirror Secret
+    // doesn't exist on this cluster (older installs may not have it).
+    if (opts.mirrorNamespace && opts.mirrorSecretName) {
+      try {
+        await deps.patchK8sSecret({
+          namespace: opts.mirrorNamespace,
+          name: opts.mirrorSecretName,
+          stringData: {
+            adminPassword: plain,
+            ADMIN_SECRET_PLAIN: plain,
+          },
+        });
+      } catch (mirrorErr) {
+        console.warn(
+          `[mail-admin] platform-stalwart-creds mirror patch failed (non-fatal): ${mirrorErr instanceof Error ? mirrorErr.message : String(mirrorErr)}. ` +
+            `platform-api will keep reading the old password until the operator updates the mirror manually.`,
+        );
+      }
+    }
   } catch (err) {
     // Stalwart already has the new password. Code-review MEDIUM-3 fix
     // (2026-05-03): use ApiError so the response envelope carries the

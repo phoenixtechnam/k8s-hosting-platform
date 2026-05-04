@@ -87,6 +87,13 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
         stalwartNamespace: 'mail',
         secretName: 'stalwart-admin-creds',
+        // platform-api reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN
+        // from a volume mount of platform/platform-stalwart-creds.
+        // Mirror the rotated password into that Secret so platform-api
+        // picks it up on the next kubelet refresh (~60s) without needing
+        // a pod restart.
+        mirrorNamespace: 'platform',
+        mirrorSecretName: 'platform-stalwart-creds',
         username: readStalwartCredentials(process.env).username,
       });
       app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: rotation succeeded (JMAP)');

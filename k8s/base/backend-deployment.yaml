@@ -188,6 +188,15 @@ spec:
                   name: platform-config
                   key: platform-tls-secret-name
                   optional: true
+            # Cross-namespace mirror of the Stalwart admin password.
+            # The backend reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN
+            # at JMAP call time so a rotated password lands within the
+            # kubelet's ~60s Secret-volume refresh window — no
+            # platform-api restart required. Volume mount + Secret are
+            # below; rotate-jmap.ts keeps the Secret in sync via its
+            # mirrorNamespace/mirrorSecretName options.
+            - name: STALWART_ADMIN_CREDS_DIR
+              value: /etc/stalwart-creds
             - name: INGRESS_DEFAULT_IPV4
               valueFrom:
                 configMapKeyRef:
@@ -274,11 +283,25 @@ spec:
             # and later reaps expired ones).
             - name: platform-snapshots
               mountPath: /snapshots
+            # Cross-namespace mirror of mail/stalwart-admin-creds.
+            # platform-api reads ADMIN_SECRET_PLAIN at call time for
+            # JMAP authentication. The mirror is kept in sync by the
+            # rotate-jmap flow (mirrorNamespace/mirrorSecretName).
+            # Marked optional so platform-api still comes up on
+            # clusters that pre-date v016; the rotate route will 503
+            # cleanly until the mirror exists.
+            - name: stalwart-creds
+              mountPath: /etc/stalwart-creds
+              readOnly: true
       volumes:
         - name: platform-snapshots
           hostPath:
             path: /var/lib/platform/snapshots
             type: DirectoryOrCreate
+        - name: stalwart-creds
+          secret:
+            secretName: platform-stalwart-creds
+            optional: true
 ---
 apiVersion: v1
 kind: Service

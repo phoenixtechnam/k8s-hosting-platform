@@ -153,6 +153,41 @@ echo "==> Step 5b: Deleting any 0.15 webadmin Ingress on stalwart.<domain>..."
 _kubectl delete ingress -n mail stalwart-webadmin-ingress --ignore-not-found=true
 echo "    Done."
 
+# ── Step 5c: Ensure mail-pg-app-credentials Secret exists for v016 ──────────
+# CNPG reads this Secret at initdb. If missing, the cluster comes up
+# "healthy" but pg_authid.rolpassword IS NULL → Stalwart can't auth.
+# bootstrap.sh creates this on fresh installs; cutover-day on existing
+# clusters needs it added explicitly. The username field is fixed
+# (stalwart_app); the password is random.
+echo "==> Step 5c: Checking mail-pg-app-credentials Secret (required by 0.16)..."
+if _kubectl get secret -n mail mail-pg-app-credentials &>/dev/null; then
+  echo "    OK — mail-pg-app-credentials already exists."
+else
+  echo "    Secret missing. Generating a fresh password and creating it."
+  mail_pg_pw="$(openssl rand -hex 32)"
+  _kubectl create secret generic mail-pg-app-credentials \
+    --namespace=mail \
+    --from-literal=username="stalwart_app" \
+    --from-literal=password="$mail_pg_pw"
+
+  # If mail-pg already exists (CNPG bootstrapped without the Secret
+  # because we're running cutover late), apply the password to the
+  # primary now so Stalwart can connect.
+  pg_pod="$(_kubectl get pod -n mail -l cnpg.io/cluster=mail-pg,role=primary \
+              --no-headers -o custom-columns=":metadata.name" 2>/dev/null | head -1 || true)"
+  if [[ -n "$pg_pod" ]]; then
+    echo "    mail-pg primary already running ($pg_pod) — applying password to PG."
+    _kubectl exec -n mail "$pg_pod" -c postgres -- \
+      psql -U postgres -tAc "ALTER USER stalwart_app WITH PASSWORD '$mail_pg_pw';" \
+      &>/dev/null || echo "    WARN: ALTER USER failed; verify manually."
+  fi
+
+  pg_pw_file="$(mktemp -t mail-pg-app-pw.XXXXXX)"
+  chmod 600 "$pg_pw_file"
+  printf '%s\n' "$mail_pg_pw" > "$pg_pw_file"
+  echo "    mail-pg-app password written to $pg_pw_file (chmod 600)."
+fi
+
 # ── Step 6: Ensure stalwart-admin-creds Secret exists for v016 ─────────────
 echo "==> Step 6: Checking stalwart-admin-creds Secret (required by 0.16)..."
 if _kubectl get secret -n mail stalwart-admin-creds &>/dev/null; then
@@ -171,6 +206,25 @@ else
     --from-literal=adminPassword="$stalwart_admin_pw" \
     --from-literal=recoveryPassword="$stalwart_admin_pw" \
     --from-literal=recoveryAdmin="admin:${stalwart_admin_pw}"
+
+  # Cross-namespace mirror so platform-api can read the password via
+  # /etc/stalwart-creds/ADMIN_SECRET_PLAIN volume mount. Without this,
+  # the /admin/mail/rotate-admin-password route 500s with "Stalwart
+  # admin password is not configured" because platform-api can't see
+  # mail/stalwart-admin-creds (cross-namespace mounts aren't supported).
+  if _kubectl get secret -n platform platform-stalwart-creds &>/dev/null; then
+    echo "    platform-stalwart-creds mirror already exists — patching with new password."
+    _kubectl patch secret -n platform platform-stalwart-creds --type=json -p="$(printf '[{"op":"replace","path":"/data/adminPassword","value":"%s"},{"op":"replace","path":"/data/ADMIN_SECRET_PLAIN","value":"%s"}]' \
+      "$(printf %s "$stalwart_admin_pw" | base64 -w0)" "$(printf %s "$stalwart_admin_pw" | base64 -w0)")" >/dev/null \
+      || echo "    WARN: mirror patch failed; rotate via admin panel will fail until fixed."
+  else
+    _kubectl create secret generic platform-stalwart-creds \
+      --namespace=platform \
+      --from-literal=adminPassword="$stalwart_admin_pw" \
+      --from-literal=ADMIN_SECRET_PLAIN="$stalwart_admin_pw"
+    echo "    platform-stalwart-creds (mirror) created in platform namespace."
+  fi
+
   # Code-review M-1 fix (2026-05-04): write the cleartext to a chmod-600
   # tempfile instead of stdout. CI runs of this script with --force
   # would otherwise leak the password into job log artifacts. The

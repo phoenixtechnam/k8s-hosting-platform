@@ -90,6 +90,18 @@ jobs:
       - name: Verify every patch call has an explicit middleware shim
         run: ./scripts/ci-k8s-patch-check.sh
 
+  flux-envsubst-check:
+    name: Flux postBuild envsubst safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify no malformed ${...} sequences in rendered overlays
+        # Catches the parse-error class that crashed the 2026-05-04
+        # staging cutover apply (`${'`, `${ `, `${{` etc.) — Flux's
+        # drone/envsubst aborts the kustomization with "unable to
+        # parse variable name" and the cluster freezes mid-cutover.
+        run: ./scripts/ci-flux-envsubst-check.sh
+
   system-affinity-check:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest
