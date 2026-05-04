@@ -84,19 +84,39 @@ export async function rotateAdminPasswordViaJmapImpl(
   // 1. Resolve JMAP account ID
   const accountId = await deps.getJmapAccountId();
 
-  // 2. Find admin principal ID
+  // 2. Find admin principal ID. The admin can be served two ways:
+  //   (a) via STALWART_RECOVERY_ADMIN env (recovery / bootstrap mode —
+  //       no Account row exists in the DB); the credential lives in
+  //       the stalwart-admin-creds Secret only.
+  //   (b) via a real x:Account/User principal in the DB; createMailbox
+  //       puts user mailboxes here, and bootstrap installs `admin`
+  //       once the cluster is past first-init.
+  // For (a), JMAP rotation is impossible — there's nothing to update.
+  // For (b), we issue x:Account/set to update credentials/0/secret.
+  // Either way, the Secret-side patch in step 4 is what platform-api
+  // and the kubelet pick up; Reloader rolls Stalwart on Secret change
+  // so the recovery-admin path picks up the new password too.
   const principalId = await deps.findAdminPrincipalId(accountId, opts.username);
-  if (!principalId) {
-    throw new Error(
-      `JMAP: admin principal '${opts.username}' not found in Stalwart — cannot rotate password.`,
-    );
-  }
 
-  // 3. Update Stalwart's admin secret via JMAP (in-flight, no restart)
-  await deps.updateAdminPassword(accountId, principalId, plain);
+  // 3. If a real Account exists, update its secret via JMAP so the
+  //    rotation is in-flight (no Stalwart restart). Skip cleanly when
+  //    only the recovery-admin credential is in play.
+  if (principalId) {
+    await deps.updateAdminPassword(accountId, principalId, plain);
+  } else {
+    log.info({
+      username: opts.username,
+    }, 'no Stalwart Account principal — rotating recovery-admin Secret only (Reloader will roll the pod)');
+  }
 
   // 4. Patch the k8s Secret mirror so platform-api picks up the new
   //    cleartext via volume-mount refresh (~60s, no restart needed).
+  //    Update ALL three keys the Stalwart Deployment / platform-api
+  //    consume: adminPassword + ADMIN_SECRET_PLAIN (platform-api reads),
+  //    recoveryPassword + recoveryAdmin (Stalwart's STALWART_RECOVERY_*
+  //    env-vars, only consumed when no Account exists). Reloader rolls
+  //    the Stalwart pod on Secret change so the recovery-admin path
+  //    picks up the new password automatically.
   try {
     await deps.patchK8sSecret({
       namespace: opts.stalwartNamespace,
@@ -104,6 +124,8 @@ export async function rotateAdminPasswordViaJmapImpl(
       stringData: {
         adminPassword: plain,
         ADMIN_SECRET_PLAIN: plain,
+        recoveryPassword: plain,
+        recoveryAdmin: `${opts.username}:${plain}`,
       },
     });
     // 4b. Mirror to the cross-namespace platform Secret if configured.
