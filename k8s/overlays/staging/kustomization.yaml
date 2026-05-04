@@ -27,6 +27,14 @@ resources:
   # stalwart/, because it targets the platform namespace and the
   # stalwart subdir's `namespace: mail` directive would reparent it.
   - allow-mail-to-postgres-netpol.yaml
+  # Flux Image Automation — auto-promotes newly-built timestamp-tagged
+  # images to the staging branch. Requires the
+  # image-reflector-controller + image-automation-controller Flux
+  # components installed on the cluster (CRDs verified at install
+  # time). Without this wiring, ImagePolicies sit ignored and every
+  # CI build needs a manual `kubectl rollout restart` to converge
+  # all replicas to the same digest.
+  - ../../base/flux/image-automation
 
 # Admin-auth gate — applies an auth_request to every Ingress labelled
 # `platform.phoenix-host.net/admin-ui=true` (Longhorn UI, Stalwart web-

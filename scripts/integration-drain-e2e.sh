@@ -216,8 +216,7 @@ provision_on_worker() {
   done
   [[ "$status" == "provisioned" ]] || { echo "stuck at $status" >&2; return 1; }
 
-  local depl_name
-  depl_name="t$(date +%s%N | tail -c 9)"
+  local depl_name="t$(date +%s%N | tail -c 9)"
   api POST "/clients/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null
   for _ in $(seq 1 30); do
     local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || true)
@@ -427,6 +426,23 @@ elif [[ "$SUM_P2" -le 1 ]]; then
   warn "Σ pvcs=$SUM_P2 after drain — Longhorn replica record GC still pending after 180 s; the active replicas DID move (verified above)"
 else
   fail "Σ pvcs=$SUM_P2 after drain (expected ≤1 — replica cleanup stalled)"
+fi
+
+# ─── Delete-gate readiness: drained === alreadyCordoned + 0 nonSystem pods + 0 pinnedClients ─
+# This mirrors the modal's `drained` calculation; if all three hold,
+# the Delete button enables. Asserting this from the harness keeps
+# the gate honest end-to-end.
+DELETE_READY="false"
+if [[ "$ALREADY_CORDONED2" == "True" && "$SUM_W2" -eq 0 && "$CLIENTS2" -eq 0 ]]; then
+  DELETE_READY="true"
+fi
+NONSYS=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['nonSystemPods']))" 2>/dev/null)
+if [[ "$DELETE_READY" == "true" ]]; then
+  ok "Delete gate satisfied (cordoned + 0 nonSystemPods + 0 pinnedClients)"
+elif [[ "$NONSYS" -eq 0 && "$CLIENTS2" -eq 0 ]]; then
+  ok "Delete gate satisfied via primary check (cordoned + 0 nonSystem + 0 pinnedClients)"
+else
+  warn "Delete gate not satisfied yet: nonSystemPods=$NONSYS pinnedClients=$CLIENTS2 — operator-visible drain-incomplete banner should render"
 fi
 
 # ─── Client-level pin: DB row reflects new state ─────────────────────

@@ -10,9 +10,38 @@ import {
   useDeleteNode,
   useClusterNodes,
 } from '@/hooks/use-cluster-nodes';
+import { useWorkerUsageSummary, type WorkerUsage } from '@/hooks/use-worker-usage';
 import type { ClusterNodeResponse, DrainImpact } from '@k8s-hosting/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+
+/**
+ * Render "free / total" CPU + RAM + Disk for a worker option in the
+ * Re-pin dropdown. Mirrors the formatter used by the client-detail
+ * Placement card so the operator sees the same shape in both places.
+ * Returns "" when usage data isn't loaded yet (option still shows the
+ * bare node name).
+ */
+function formatNodeAvailability(usage: WorkerUsage | undefined): string {
+  if (!usage) return '';
+  const parts: string[] = [];
+  if (usage.cpuMillicoresAllocatable != null && usage.cpuMillicoresUsed != null) {
+    const total = usage.cpuMillicoresAllocatable / 1000;
+    const free = Math.max(0, (usage.cpuMillicoresAllocatable - usage.cpuMillicoresUsed) / 1000);
+    parts.push(`${free.toFixed(1)}/${total.toFixed(0)} CPU`);
+  }
+  if (usage.memoryBytesAllocatable != null && usage.memoryBytesUsed != null) {
+    const total = usage.memoryBytesAllocatable / 1024 ** 3;
+    const free = Math.max(0, (usage.memoryBytesAllocatable - usage.memoryBytesUsed) / 1024 ** 3);
+    parts.push(`${free.toFixed(1)}/${total.toFixed(0)} GB RAM`);
+  }
+  if (usage.diskBytesTotal != null && usage.diskBytesFree != null) {
+    const total = usage.diskBytesTotal / 1024 ** 3;
+    const free = usage.diskBytesFree / 1024 ** 3;
+    parts.push(`${free.toFixed(0)}/${total.toFixed(0)} GB disk`);
+  }
+  return parts.length > 0 ? ` — ${parts.join(' · ')}` : '';
+}
 
 interface NodeDrainDeleteModalProps {
   readonly node: ClusterNodeResponse;
@@ -42,6 +71,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const [forceLastReplica, setForceLastReplica] = useState(false);
   const impactQuery = useDrainImpact(node.name, true);
   const nodesQuery = useClusterNodes();
+  const usageQuery = useWorkerUsageSummary();
   const drain = useDrainNode(node.name);
   const del = useDeleteNode(node.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -53,9 +83,19 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({});
 
   const impact: DrainImpact | undefined = impactQuery.data?.data;
+  // Delete is only safe when the node has no remaining tenant
+  // attachment of any kind. Three concurrent conditions:
+  //   - alreadyCordoned (k8s scheduler will refuse new pods)
+  //   - no non-system pods left to evict (the live workloads are gone)
+  //   - no pinnedClients left (no Deployment/StatefulSet/Volume in
+  //     any tenant namespace still references this node, even at rest
+  //     — a stopped tenant pod or an unattached PVC would otherwise
+  //     keep the node bound to the client and a delete would orphan
+  //     them).
   const drained = impact !== undefined
     && impact.alreadyCordoned
-    && impact.nonSystemPods.length === 0;
+    && impact.nonSystemPods.length === 0
+    && impact.pinnedClients.length === 0;
   // Reserve the "Last-replica risk" banner for PLATFORM volumes —
   // tenant volumes are already represented in their client row above
   // (where the re-pin dropdown lives).
@@ -63,12 +103,18 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
     (r) => r.isLastReplica && r.clientId === null,
   ) ?? [];
 
+  // Build target options once, joining the cluster-nodes list with
+  // worker-usage so each <option> shows live capacity in the same
+  // format the client-detail Placement card uses.
+  const usageByName = useMemo(() => {
+    return new Map((usageQuery.data?.data ?? []).map((u) => [u.name, u]));
+  }, [usageQuery.data]);
   const targetNodeOptions = useMemo(() => {
     const list = nodesQuery.data?.data ?? [];
     return list
       .filter((n) => n.name !== node.name && n.canHostClientWorkloads)
-      .map((n) => n.name);
-  }, [nodesQuery.data, node.name]);
+      .map((n) => ({ name: n.name, usage: usageByName.get(n.name) }));
+  }, [nodesQuery.data, node.name, usageByName]);
 
   // Block "Apply re-pin & drain" only when the operator has EXPLICITLY
   // set a client to "stay" — that's a refusal-to-move signal and
@@ -242,7 +288,9 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                                   <option value="stay">Stay (refuse to move)</option>
                                   <option value="">Auto (clear pin)</option>
                                   {targetNodeOptions.map((n) => (
-                                    <option key={n} value={n}>{n}</option>
+                                    <option key={n.name} value={n.name}>
+                                      {n.name}{formatNodeAvailability(n.usage)}
+                                    </option>
                                   ))}
                                 </select>
                               </td>
@@ -463,8 +511,27 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {drained && !confirmDelete && (
             <div className="rounded-lg border border-green-300 bg-green-50 p-3 text-xs text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
               <div className="flex items-center gap-1 font-semibold">
-                <CheckCircle size={12} /> Node is fully drained. You may now delete it from the cluster.
+                <CheckCircle size={12} /> Node is fully drained — cordoned, no tenant pods, no pinned clients, no PVC replicas attached. You may now delete it from the cluster.
               </div>
+            </div>
+          )}
+
+          {/* Post-cordon but not yet fully drained — explain to the
+              operator exactly which condition is still holding Delete
+              back, so they don't have to count rows in the tables. */}
+          {!drained && impact?.alreadyCordoned && (impact.nonSystemPods.length > 0 || impact.pinnedClients.length > 0) && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-100" data-testid="drain-incomplete-banner">
+              <div className="flex items-center gap-1 font-semibold">
+                <AlertTriangle size={12} /> Drain not yet complete — Delete is disabled.
+              </div>
+              <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                {impact.nonSystemPods.length > 0 && (
+                  <li>{impact.nonSystemPods.length} non-system pod(s) still on the node.</li>
+                )}
+                {impact.pinnedClients.length > 0 && (
+                  <li>{impact.pinnedClients.length} client(s) still have workloads or PVC replicas attached. Re-pin them above and click <strong>Apply re-pin &amp; drain</strong> again, or wait for Longhorn to finish replica garbage-collection.</li>
+                )}
+              </ul>
             </div>
           )}
 
