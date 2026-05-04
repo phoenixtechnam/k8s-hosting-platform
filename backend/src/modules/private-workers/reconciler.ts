@@ -36,7 +36,11 @@ const FRPS_CONFIGMAP_NAME = 'private-worker-server-config';
 const FRPS_NETPOL_NAME = 'private-worker-server-policy';
 const FRPS_SECRET_NAME = 'private-worker-tokens';
 const PLATFORM_SYSTEM_NAMESPACE = 'platform-system';
-const NGINX_INGRESS_NAMESPACE = 'nginx-ingress';
+// The NGINX-ingress controller's namespace is `ingress-nginx` per the
+// upstream Helm chart default. Operators with a different deployment
+// can override via env (deferred — overlays + bootstrap pin this).
+const NGINX_INGRESS_NAMESPACE =
+  process.env.NGINX_INGRESS_NAMESPACE ?? 'ingress-nginx';
 const FRPS_BIND_PORT = 7000;
 const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.62.1';
 
@@ -131,11 +135,23 @@ async function apply(
     () => upsertFrpsConfigMap(deps.k8s.core, namespace, sharedSecret, allowedPorts),
   );
 
-  // 2. Per-worker Service pw-<workerId>. Each one points at the frps
-  //    pod and exposes the proxy's remote port. Tenant ingress targets
-  //    these Services like any other in-namespace deployment.
+  // 2a. frps control-plane Service (`private-worker-server`). The
+  //     `tunnel-<slug>` ExternalName Service in platform-system points
+  //     at this Service via DNS — that's how the WSS dial-in lands on
+  //     the frps pod. Without this Service, NGINX-ingress sees an
+  //     unresolvable ExternalName and returns 503.
+  await safe(
+    errors,
+    'service:frps-control',
+    () =>
+      upsertControlPlaneService(deps.k8s.core, namespace),
+  );
+
+  // 2b. Per-worker Service pw-<workerId>. Each one points at the frps
+  //     pod and exposes the proxy's remote port. Tenant ingress targets
+  //     these Services like any other in-namespace deployment.
   for (const w of workers) {
-     
+
     await safe(
       errors,
       `service:${w.id}`,
@@ -375,6 +391,55 @@ async function upsertFrpsConfigMap(
   } catch (err) {
     if (!isNotFound(err)) throw err;
     await core.createNamespacedConfigMap({ namespace, body } as never);
+  }
+}
+
+async function upsertControlPlaneService(
+  core: k8s.CoreV1Api,
+  namespace: string,
+): Promise<void> {
+  // Stable Service for the frps control plane. The
+  // platform-system/tunnel-<slug> ExternalName resolves to this
+  // Service name; NGINX-ingress proxies the WSS Upgrade to it.
+  const body: k8s.V1Service = {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name: FRPS_DEPLOYMENT_NAME,
+      namespace,
+      labels: {
+        'app.kubernetes.io/name': FRPS_DEPLOYMENT_NAME,
+        'app.kubernetes.io/managed-by': 'platform-api',
+      },
+    },
+    spec: {
+      selector: { 'app.kubernetes.io/name': FRPS_DEPLOYMENT_NAME },
+      ports: [
+        {
+          name: 'control',
+          port: FRPS_BIND_PORT,
+          targetPort: FRPS_BIND_PORT,
+          protocol: 'TCP',
+        },
+      ],
+    },
+  };
+
+  try {
+    const existing = await core.readNamespacedService({
+      name: FRPS_DEPLOYMENT_NAME,
+      namespace,
+    } as never);
+    body.spec!.clusterIP = (existing as k8s.V1Service).spec?.clusterIP;
+    body.metadata!.resourceVersion = (existing as k8s.V1Service).metadata?.resourceVersion;
+    await core.replaceNamespacedService({
+      name: FRPS_DEPLOYMENT_NAME,
+      namespace,
+      body,
+    } as never);
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    await core.createNamespacedService({ namespace, body } as never);
   }
 }
 
