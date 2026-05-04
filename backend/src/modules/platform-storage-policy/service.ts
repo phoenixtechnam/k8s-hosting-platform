@@ -294,6 +294,18 @@ export async function readClusterState(
   // count). desiredReplicas comes from the same REPLICAS_FOR table
   // so the column stays consistent across PVC sources, and the
   // existing patchLonghornVolumes() loop handles reconcile.
+  // CNPG PVCs use Longhorn replicas=1 INDEPENDENTLY of the system
+  // tier. CNPG streaming replication is the HA mechanism for postgres
+  // — having N postgres instances across N servers with N×N Longhorn
+  // replicas would pay quadratic write amplification for redundancy
+  // that already exists at the CNPG layer. Each CNPG instance's PVC
+  // only needs 1 replica (single-node disk-failure tolerance via the
+  // CNPG instance failover, not via Longhorn). The CNPG instance
+  // count itself scales with readyServerCount via
+  // cnpgInstancesForSystemTier so total fault tolerance still tracks
+  // server count (4 servers = 4 postgres instances = 2-server-loss
+  // tolerance, with 1× the storage write cost instead of N×).
+  const CNPG_DESIRED_REPLICAS = 1;
   for (const c of CNPG_CLUSTERS) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
       namespace: c.namespace,
@@ -319,7 +331,7 @@ export async function readClusterState(
         pvcName: name,
         volumeName: lhVolName,
         currentReplicas,
-        desiredReplicas,
+        desiredReplicas: CNPG_DESIRED_REPLICAS,
         healthy,
         phase: state,
         replicaNodes,

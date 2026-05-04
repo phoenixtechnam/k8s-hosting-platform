@@ -162,9 +162,14 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     expect(pg1?.namespace).toBe('platform');
     expect(pg1?.volumeName).toBe('pvc-pg-1');
 
-    // desiredReplicas comes from the same REPLICAS_FOR table, regardless of source.
-    expect(pg1?.desiredReplicas).toBe(3); // ha tier
-    expect(stalwart?.desiredReplicas).toBe(3);
+    // CNPG-managed PVCs always desiredReplicas=1 INDEPENDENTLY of
+    // the system tier — CNPG streaming replication is the HA layer
+    // (4 servers = 4 postgres instances, not 4 Longhorn replicas of
+    // each instance's PVC). StatefulSet PVCs (Stalwart) still scale
+    // with readyServerCount because Stalwart is a single pod whose
+    // HA comes from Longhorn replicas.
+    expect(pg1?.desiredReplicas).toBe(1); // CNPG: always 1 regardless of tier
+    expect(stalwart?.desiredReplicas).toBe(3); // StatefulSet HA: 3 in this test (3 servers, ha tier)
 
     // Longhorn-observed numbers carried through verbatim.
     expect(pg1?.currentReplicas).toBe(1);
@@ -239,5 +244,44 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
 
     const state = await readClusterState(k8s, db);
     expect(state.volumes).toEqual([]);
+  });
+});
+
+describe('replicasForSystemTier — HA scales to readyServerCount, capped at MAX_HA_REPLICAS', () => {
+  it('local tier always returns 1 regardless of server count', async () => {
+    const { replicasForSystemTier } = await import('./service.js');
+    expect(replicasForSystemTier('local', 1)).toBe(1);
+    expect(replicasForSystemTier('local', 3)).toBe(1);
+    expect(replicasForSystemTier('local', 7)).toBe(1);
+  });
+
+  it('HA tier scales to readyServerCount when between min(2) and max(5)', async () => {
+    const { replicasForSystemTier } = await import('./service.js');
+    expect(replicasForSystemTier('ha', 2)).toBe(2);
+    expect(replicasForSystemTier('ha', 3)).toBe(3);
+    expect(replicasForSystemTier('ha', 4)).toBe(4); // ← THIS IS THE NEW BEHAVIOR
+    expect(replicasForSystemTier('ha', 5)).toBe(5);
+  });
+
+  it('HA tier caps at MAX_HA_REPLICAS=5 to bound write amplification', async () => {
+    const { replicasForSystemTier } = await import('./service.js');
+    expect(replicasForSystemTier('ha', 6)).toBe(5);
+    expect(replicasForSystemTier('ha', 10)).toBe(5);
+  });
+
+  it('HA tier never goes below 2 (1 = local; HA implies multi-replica)', async () => {
+    const { replicasForSystemTier } = await import('./service.js');
+    expect(replicasForSystemTier('ha', 0)).toBe(2);
+    expect(replicasForSystemTier('ha', 1)).toBe(2);
+  });
+
+  it('cnpgInstancesForSystemTier + deploymentReplicasForSystemTier follow same shape', async () => {
+    const { cnpgInstancesForSystemTier, deploymentReplicasForSystemTier } = await import('./service.js');
+    expect(cnpgInstancesForSystemTier('local', 4)).toBe(1);
+    expect(cnpgInstancesForSystemTier('ha', 4)).toBe(4);
+    expect(cnpgInstancesForSystemTier('ha', 7)).toBe(5);
+    expect(deploymentReplicasForSystemTier('local', 4)).toBe(1);
+    expect(deploymentReplicasForSystemTier('ha', 4)).toBe(4);
+    expect(deploymentReplicasForSystemTier('ha', 7)).toBe(5);
   });
 });

@@ -31,6 +31,15 @@ metadata:
   labels:
     app: postgres
     app.kubernetes.io/part-of: hosting-platform
+  annotations:
+    # Tell Flux to merge-patch (don't claim ownership of every field
+    # via SSA Apply). Without this, Apply HA / PITR-normalize-bootstrap
+    # / storage-policy reconciler patches to spec.instances or
+    # spec.bootstrap or spec.storage are reverted on the next Flux
+    # reconcile because Flux owns those fields and reasserts the
+    # manifest values. With merge mode, runtime patches stick and
+    # Flux only enforces fields the manifest explicitly sets.
+    kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Apply our `app: postgres` label to every Pod CNPG creates so
   # existing K8s NetworkPolicies (allow-platform-internal selects
