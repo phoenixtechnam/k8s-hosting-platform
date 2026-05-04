@@ -26,7 +26,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   getJmapSession,
-  accountQuery,
+  accountGet,
   accountSet,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
@@ -226,15 +226,24 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
     },
 
     async findAdminPrincipalId(accountId: JmapAccountId, username: string): Promise<string | null> {
-      // Stalwart 0.16: x:Account/query supports server-side filter by
-      // `name`. The standard Principal/get path doesn't exist on this
-      // server; calls against it return urn:ietf:params:jmap:error:notRequest.
-      const result = await accountQuery({
+      // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
+      // does NOT honour `{ name }` (or any tested filter) — silently
+      // returns ids: []. We list-and-filter via x:Account/get + client-
+      // side match until a working filter shape is documented. The
+      // expected user count for the admin namespace is tiny (1–10),
+      // so the full list is cheap.
+      const result = await accountGet({
         accountId,
-        filter: { name: username },
+        ids: null,
+        properties: ['id', 'name'],
         baseUrl,
       });
-      return result.ids[0] ?? null;
+      const target = username.toLowerCase();
+      const match = result.list.find((r) => {
+        const name = typeof r.name === 'string' ? r.name.toLowerCase() : '';
+        return name === target;
+      });
+      return (match?.id as string | undefined) ?? null;
     },
 
     async updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void> {

@@ -1,8 +1,8 @@
-import { useState, useMemo } from 'react';
+import { Fragment, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   X, AlertTriangle, Loader2, AlertCircle, CheckCircle, Trash2, ShieldAlert,
-  ExternalLink, Database as DatabaseIcon,
+  ExternalLink, Database as DatabaseIcon, ChevronRight, ChevronDown,
 } from 'lucide-react';
 import {
   useDrainImpact,
@@ -21,20 +21,22 @@ interface NodeDrainDeleteModalProps {
 
 /**
  * Two-stage destructive flow for a node:
- *   1. DRAIN  — cordon + evict every non-system pod. Per-row dropdowns
- *               let the operator re-pin tenant workloads + PVCs to a
- *               specific node (or "Auto" / "Stay") before eviction.
+ *   1. DRAIN  — cordon + evict every non-system pod. Operators re-pin
+ *               affected CLIENTS (not individual workloads or PVCs);
+ *               pinning is a client-level property and the orchestrator
+ *               propagates the chosen target across every Deployment,
+ *               StatefulSet, FM sidecar, and Longhorn volume in the
+ *               client's namespace.
  *   2. DELETE — only enabled after the node is fully drained.
  *
  * Design goals:
- *  - Show every affected resource grouped by kind: pinned workloads,
- *    non-system pods (live), tenant PVCs, last-replica platform volumes,
- *    system pods (info only, never evicted).
- *  - Each tenant resource carries its client name with a link to the
- *    client detail page.
- *  - The re-pin dropdowns are populated from the live Cluster Nodes
- *    list, excluding the node being drained, restricted to those that
- *    accept client workloads.
+ *  - One re-pin target per client (matches the client-detail page,
+ *    where pinning is also expressed at the client level).
+ *  - Each row expandable to show the workloads + PVCs that will be
+ *    moved together — informational, not editable.
+ *  - The "Last-replica risk" banner is reserved for PLATFORM volumes
+ *    (postgres, longhorn-system, mail) since tenant volumes are
+ *    already represented inside their client row.
  */
 export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteModalProps) {
   const [forceLastReplica, setForceLastReplica] = useState(false);
@@ -44,25 +46,19 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const del = useDeleteNode(node.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // workloadPlacement keyed by "<ns>/<kind>/<name>", value is "" (auto),
-  // "<targetNode>", or "stay". Defaults to "" (auto) — kubectl drain
-  // semantics: drain MOVES things by default. Operator can opt into
-  // "stay" or a specific target if they need a refusal-to-move signal.
-  // Pre-this-default it was "stay" and "Drain Node" silently no-op'd
-  // for operators who didn't realise per-row selection was required.
-  const [workloadPlacement, setWorkloadPlacement] = useState<Record<string, string>>({});
-  const [pvcPlacement, setPvcPlacement] = useState<Record<string, string>>({});
+  // clientPlacement keyed by clientId. Values: "" (auto, default),
+  // "<targetNode>" (re-pin), or "stay" (refuse to move).
+  const [clientPlacement, setClientPlacement] = useState<Record<string, string>>({});
+  // Per-client expand state for the workloads/PVCs detail.
+  const [expandedClients, setExpandedClients] = useState<Record<string, boolean>>({});
 
   const impact: DrainImpact | undefined = impactQuery.data?.data;
   const drained = impact !== undefined
     && impact.alreadyCordoned
     && impact.nonSystemPods.length === 0;
-  // Tenant volumes that hit isLastReplica are already rendered in the
-  // Tenant PVCs table above, with their own per-row "Re-pin to"
-  // dropdown — surface them again here without a dropdown would just
-  // confuse the operator into thinking re-pin isn't an option.
-  // Reserve this danger banner for PLATFORM last-replicas (postgres,
-  // longhorn-system, mail, etc.) where tenant-PVC re-pin doesn't apply.
+  // Reserve the "Last-replica risk" banner for PLATFORM volumes —
+  // tenant volumes are already represented in their client row above
+  // (where the re-pin dropdown lives).
   const lastReplicaVolumes = impact?.longhornReplicas.filter(
     (r) => r.isLastReplica && r.clientId === null,
   ) ?? [];
@@ -74,44 +70,38 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
       .map((n) => n.name);
   }, [nodesQuery.data, node.name]);
 
-  // Block the drain button only when the operator has EXPLICITLY set
-  // a pinned workload to "stay" — that's a real refusal-to-move signal
-  // and the drain would otherwise leave the workload's nodeSelector
-  // pointing at the cordoned node (replacement pods stuck Pending).
-  // Default is now "auto" so plain "Drain Node" actually moves things.
-  const stayPinnedWorkloads = (impact?.pinnedWorkloads ?? []).filter(
-    (w) => workloadPlacement[`${w.namespace}/${w.kind}/${w.name}`] === 'stay',
+  // Block "Apply re-pin & drain" only when the operator has EXPLICITLY
+  // set a client to "stay" — that's a refusal-to-move signal and
+  // letting the drain proceed would evict pods but leave their
+  // nodeSelector pointing at the cordoned node.
+  const stayPinnedClients = (impact?.pinnedClients ?? []).filter(
+    (c) => clientPlacement[c.clientId] === 'stay',
   );
-  const anyStayPinned = stayPinnedWorkloads.length > 0;
+  const anyStayPinned = stayPinnedClients.length > 0;
 
   const handleDrain = async (): Promise<void> => {
     try {
-      // Fill in defaults: if the operator didn't explicitly pick a
-      // placement for an impacted item, send "" (auto) so the backend
-      // re-pins it. Without this, an empty `workloadPlacement` map
-      // means the backend's iteration finds zero entries and no
-      // workload gets re-pinned — pods get evicted but their
-      // nodeSelector still points at the cordoned node, leaving them
-      // stuck Pending. Same for PVCs.
-      const finalWorkloadPlacement = { ...workloadPlacement };
-      for (const w of impact?.pinnedWorkloads ?? []) {
-        const key = `${w.namespace}/${w.kind}/${w.name}`;
-        if (!(key in finalWorkloadPlacement)) finalWorkloadPlacement[key] = '';
-      }
-      const finalPvcPlacement = { ...pvcPlacement };
-      for (const p of impact?.tenantPvcs ?? []) {
-        if (!(p.volumeName in finalPvcPlacement)) finalPvcPlacement[p.volumeName] = '';
+      // Auto-fill: any pinned client without an explicit placement
+      // gets "" (auto). Backend defaults the same — this is just a
+      // defence-in-depth so an older backend that hasn't rolled the
+      // server-side default still gets a complete map.
+      const finalClientPlacement = { ...clientPlacement };
+      for (const c of impact?.pinnedClients ?? []) {
+        if (!(c.clientId in finalClientPlacement)) finalClientPlacement[c.clientId] = '';
       }
       await drain.mutateAsync({
         forceLastReplica,
-        workloadPlacement: finalWorkloadPlacement,
-        pvcPlacement: finalPvcPlacement,
+        clientPlacement: finalClientPlacement,
       });
       // Refetch impact so the modal flips to "drained → ready to delete".
       await impactQuery.refetch();
     } catch {
       // surfaced via drain.error below
     }
+  };
+
+  const toggleExpand = (clientId: string) => {
+    setExpandedClients((prev) => ({ ...prev, [clientId]: !prev[clientId] }));
   };
 
   const handleDelete = async (): Promise<void> => {
@@ -174,61 +164,132 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   : 'Not cordoned yet. Drain will cordon the node first, then evict pods.'}
               />
 
-              {/* ─── Pinned workloads — re-pin dropdowns ─── */}
-              {impact.pinnedWorkloads.length > 0 && (
+              {/* ─── Pinned clients — one re-pin target per client ─── */}
+              {impact.pinnedClients.length > 0 && (
                 <ImpactSection
-                  title={`Pinned workloads (${impact.pinnedWorkloads.length})`}
-                  tone="warn"
-                  content="These Deployments / StatefulSets have nodeSelector/nodeAffinity locking them to this node. Pick a target node OR Auto (clear pin) below — drain will patch the workload and let the scheduler place it."
+                  title={`Pinned clients (${impact.pinnedClients.length})`}
+                  tone={impact.pinnedClients.some((c) => c.pvcs.some((p) => p.isLastReplica)) ? 'danger' : 'warn'}
+                  content="These tenants have one or more workloads or volumes on this node. Pinning is a client-level property — pick one target per client; drain will patch every Deployment, StatefulSet, and Longhorn volume in the client's namespace consistently. Click a row to see what will be moved."
                 >
                   <table className="mt-3 w-full text-xs">
                     <thead className="text-gray-500 dark:text-gray-400">
                       <tr>
+                        <th className="w-6"></th>
                         <th className="text-left py-1 pr-2">Client</th>
-                        <th className="text-left py-1 pr-2">Workload</th>
-                        <th className="text-left py-1 pr-2">Pin via</th>
-                        <th className="text-right py-1 pr-2">Replicas</th>
+                        <th className="text-left py-1 pr-2">Tier</th>
+                        <th className="text-left py-1 pr-2">Current pin</th>
+                        <th className="text-right py-1 pr-2">Workloads</th>
+                        <th className="text-right py-1 pr-2">PVCs</th>
                         <th className="text-left py-1">Re-pin to</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {impact.pinnedWorkloads.map((w) => {
-                        const key = `${w.namespace}/${w.kind}/${w.name}`;
-                        const value = workloadPlacement[key] ?? '';
+                      {impact.pinnedClients.map((c) => {
+                        const isExpanded = expandedClients[c.clientId] === true;
+                        const value = clientPlacement[c.clientId] ?? '';
+                        const hasLastReplica = c.pvcs.some((p) => p.isLastReplica);
+                        const rowBorder = hasLastReplica
+                          ? 'border-t border-red-200/60 dark:border-red-700/40'
+                          : 'border-t border-amber-200/60 dark:border-amber-700/40';
                         return (
-                          <tr key={key} className="border-t border-amber-200/60 dark:border-amber-700/40">
-                            <td className="py-1.5 pr-2">
-                              {w.clientId ? (
-                                <Link
-                                  to={`/clients/${w.clientId}`}
-                                  className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-                                  data-testid={`pinned-workload-client-link-${key}`}
+                          <Fragment key={c.clientId}>
+                            <tr className={rowBorder}>
+                              <td className="py-1.5 pl-1">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpand(c.clientId)}
+                                  className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                                  aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
+                                  data-testid={`expand-client-${c.clientId}`}
                                 >
-                                  {w.clientName ?? w.clientId.slice(0, 8)}
+                                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                </button>
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <Link
+                                  to={`/clients/${c.clientId}`}
+                                  className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
+                                  data-testid={`pinned-client-link-${c.clientId}`}
+                                >
+                                  {c.clientName}
                                   <ExternalLink size={10} />
                                 </Link>
-                              ) : (
-                                <span className="text-gray-400 italic">{w.namespace}</span>
-                              )}
-                            </td>
-                            <td className="py-1.5 pr-2 font-mono">{w.kind}/{w.name}</td>
-                            <td className="py-1.5 pr-2 text-gray-500">{w.pinKind}</td>
-                            <td className="py-1.5 pr-2 text-right tabular-nums">{w.replicas}</td>
-                            <td className="py-1.5">
-                              <select
-                                className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs dark:bg-gray-800 dark:border-amber-700"
-                                value={value}
-                                onChange={(e) => setWorkloadPlacement((prev) => ({ ...prev, [key]: e.target.value }))}
-                                data-testid={`workload-placement-${key}`}
-                              >
-                                <option value="stay">Stay (refuse to move)</option>
-                                <option value="">Auto (clear pin, scheduler decides)</option>
-                                {targetNodeOptions.map((n) => (
-                                  <option key={n} value={n}>{n}</option>
-                                ))}
-                              </select>
-                            </td>
-                          </tr>
+                              </td>
+                              <td className="py-1.5 pr-2">
+                                <span className={c.storageTier === 'ha'
+                                  ? 'rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
+                                  : 'rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-700 dark:bg-gray-800 dark:text-gray-300'}>
+                                  {c.storageTier}
+                                </span>
+                              </td>
+                              <td className="py-1.5 pr-2 font-mono text-gray-600 dark:text-gray-400">
+                                {c.currentWorkerNodeName ?? <span className="italic text-gray-400">—</span>}
+                              </td>
+                              <td className="py-1.5 pr-2 text-right tabular-nums">{c.workloads.length}</td>
+                              <td className="py-1.5 pr-2 text-right tabular-nums">
+                                {c.pvcs.length}
+                                {hasLastReplica && (
+                                  <span className="ml-1 rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-800 dark:bg-red-900/40 dark:text-red-300">LAST</span>
+                                )}
+                              </td>
+                              <td className="py-1.5">
+                                <select
+                                  className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs dark:bg-gray-800 dark:border-amber-700"
+                                  value={value}
+                                  onChange={(e) => setClientPlacement((prev) => ({ ...prev, [c.clientId]: e.target.value }))}
+                                  data-testid={`client-placement-${c.clientId}`}
+                                >
+                                  <option value="stay">Stay (refuse to move)</option>
+                                  <option value="">Auto (clear pin)</option>
+                                  {targetNodeOptions.map((n) => (
+                                    <option key={n} value={n}>{n}</option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-amber-50/50 dark:bg-amber-900/10">
+                                <td></td>
+                                <td colSpan={6} className="py-2 pr-2">
+                                  <div className="space-y-2">
+                                    {c.workloads.length > 0 && (
+                                      <div>
+                                        <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Workloads</div>
+                                        <ul className="mt-0.5 space-y-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300">
+                                          {c.workloads.map((w) => (
+                                            <li key={`${w.kind}/${w.name}`}>
+                                              {w.kind}/{w.name}
+                                              <span className="ml-2 text-gray-500">replicas={w.replicas} · pin={w.pinKind}</span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {c.pvcs.length > 0 && (
+                                      <div>
+                                        <div className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Volumes</div>
+                                        <ul className="mt-0.5 space-y-0.5 font-mono text-[11px] text-gray-700 dark:text-gray-300">
+                                          {c.pvcs.map((p) => {
+                                            const sizeGiB = (p.sizeBytes / (1024 ** 3)).toFixed(0);
+                                            return (
+                                              <li key={p.volumeName} className="flex items-center gap-1">
+                                                <DatabaseIcon size={10} className="text-gray-400" />
+                                                {p.pvcName || p.volumeName}
+                                                <span className="ml-2 text-gray-500">{sizeGiB} GiB · replicas={p.replicaCount}</span>
+                                                {p.isLastReplica && (
+                                                  <span className="ml-1 rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-800 dark:bg-red-900/40 dark:text-red-300">LAST</span>
+                                                )}
+                                              </li>
+                                            );
+                                          })}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tbody>
@@ -287,75 +348,6 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   </table>
                 )}
               </ImpactSection>
-
-              {/* ─── Tenant PVCs ─── */}
-              {impact.tenantPvcs.length > 0 && (
-                <ImpactSection
-                  title={`Tenant PVCs with replicas here (${impact.tenantPvcs.length})`}
-                  tone={impact.tenantPvcs.some((p) => p.isLastReplica) ? 'danger' : 'warn'}
-                  content="Pick a target node to migrate the replica, or Auto to let Longhorn pick. Volumes with replicas elsewhere will rebuild without operator action."
-                >
-                  <table className="mt-2 w-full text-xs">
-                    <thead className="text-gray-500 dark:text-gray-400">
-                      <tr>
-                        <th className="text-left py-1 pr-2">Client</th>
-                        <th className="text-left py-1 pr-2">Volume</th>
-                        <th className="text-right py-1 pr-2">Size</th>
-                        <th className="text-right py-1 pr-2">Replicas</th>
-                        <th className="text-left py-1">Re-pin to</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {impact.tenantPvcs.map((p) => {
-                        const sizeGiB = (p.sizeBytes / (1024 ** 3)).toFixed(0);
-                        const value = pvcPlacement[p.volumeName] ?? '';
-                        return (
-                          <tr key={p.volumeName} className="border-t border-gray-200/60 dark:border-gray-700/40">
-                            <td className="py-1.5 pr-2">
-                              {p.clientId ? (
-                                <Link
-                                  to={`/clients/${p.clientId}`}
-                                  className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-                                >
-                                  {p.clientName ?? p.clientId.slice(0, 8)}
-                                  <ExternalLink size={10} />
-                                </Link>
-                              ) : (
-                                <span className="text-gray-400 italic">{p.namespace}</span>
-                              )}
-                            </td>
-                            <td className="py-1.5 pr-2 font-mono flex items-center gap-1">
-                              <DatabaseIcon size={10} className="text-gray-400" />
-                              {p.pvcName || p.volumeName}
-                            </td>
-                            <td className="py-1.5 pr-2 text-right tabular-nums">{sizeGiB} GiB</td>
-                            <td className="py-1.5 pr-2 text-right tabular-nums">
-                              {p.replicaCount}
-                              {p.isLastReplica && (
-                                <span className="ml-1 rounded bg-red-100 px-1 py-0.5 text-[10px] text-red-800 dark:bg-red-900/40 dark:text-red-300">LAST</span>
-                              )}
-                            </td>
-                            <td className="py-1.5">
-                              <select
-                                className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs dark:bg-gray-800 dark:border-amber-700"
-                                value={value}
-                                onChange={(e) => setPvcPlacement((prev) => ({ ...prev, [p.volumeName]: e.target.value }))}
-                                data-testid={`pvc-placement-${p.volumeName}`}
-                              >
-                                <option value="stay">Stay</option>
-                                <option value="">Auto (Longhorn picks)</option>
-                                {targetNodeOptions.map((n) => (
-                                  <option key={n} value={n}>{n}</option>
-                                ))}
-                              </select>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </ImpactSection>
-              )}
 
               {/* ─── Platform last-replica risk ─── */}
               {lastReplicaVolumes.length > 0 && (
@@ -446,7 +438,8 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           )}
           {drain.isSuccess && (
             <p className="text-xs text-gray-600 dark:text-gray-400">
-              Re-pinned: {drain.data?.data.rePinnedWorkloads ?? 0} workload(s), {drain.data?.data.rePinnedPvcs ?? 0} PVC(s).
+              Re-pinned: {drain.data?.data.rePinnedClients ?? 0} client(s)
+              {' '}({drain.data?.data.rePinnedWorkloads ?? 0} workload(s), {drain.data?.data.rePinnedPvcs ?? 0} PVC(s)).
             </p>
           )}
           {delErr && (
@@ -461,9 +454,9 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
           {!drained && anyStayPinned && (
             <div className="rounded-lg border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-600 dark:bg-amber-900/40 dark:text-amber-100" data-testid="drain-blocked-stay-pinned">
               <div className="flex items-center gap-1 font-semibold">
-                <AlertTriangle size={12} /> Drain blocked — {stayPinnedWorkloads.length} pinned workload(s) still set to &quot;Stay&quot;.
+                <AlertTriangle size={12} /> Drain blocked — {stayPinnedClients.length} client(s) still set to &quot;Stay&quot;.
               </div>
-              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned workload. Leaving them on &quot;Stay&quot; would evict the pod but its nodeSelector would still point at this cordoned node — replacement pods sit Pending forever.</p>
+              <p className="mt-1">Pick &quot;Auto&quot; or a specific target node for each pinned client. Leaving a client on &quot;Stay&quot; would evict its pods but their nodeSelectors would still point at this cordoned node — replacement pods sit Pending forever.</p>
             </div>
           )}
 
@@ -506,7 +499,7 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   || anyStayPinned
                 }
                 title={anyStayPinned
-                  ? `${stayPinnedWorkloads.length} pinned workload(s) still set to "Stay" — pick Auto or a target node first`
+                  ? `${stayPinnedClients.length} client(s) still set to "Stay" — pick Auto or a target node first`
                   : undefined}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
                 data-testid={`drain-node-${node.name}-button`}

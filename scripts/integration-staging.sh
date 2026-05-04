@@ -713,23 +713,23 @@ scenario_mail() {
   ok "mail/email-domain: enabled edid=$mail_edid"
 
   # ── Step 4b: assert Stalwart-side x:Domain exists ───────────────────
-  # Cut 3 (2026-05-04): the platform-api → JMAP path now uses Stalwart's
-  # `x:Domain/*` extension namespace. A successful enable should have
-  # created the domain on the Stalwart side; verify by querying.
-  local x_domain_count
-  x_domain_count=$(ssh_cp "kubectl run mail-jmap-probe-${stamp} -n mail \
+  # Cut 3 (2026-05-04): use x:Domain/get with ids:null (server-side
+  # filtering on x:Domain/query is broken — silently returns []),
+  # then grep client-side for the expected name. The kubectl run
+  # output may include kubelet bookkeeping lines after the JMAP
+  # response, so we just grep for the literal domain name.
+  local x_domain_blob
+  x_domain_blob=$(ssh_cp "kubectl run mail-jmap-probe-${stamp} -n mail \
       --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
       curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
       -o jsonpath='{.data.adminPassword}' | base64 -d) \
       -X POST http://stalwart-mgmt-v016:8080/jmap \
       -H Content-Type:application/json \
-      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/query\",{\"accountId\":\"d333333\",\"filter\":{\"name\":\"$test_domain\"}},\"r0\"]]}'" 2>&1 \
-    | python3 -c "import json,sys; raw=sys.stdin.read(); idx=raw.find('{\"methodResponses'); d=json.loads(raw[idx:]) if idx>=0 else {}; print(len(d.get('methodResponses',[[None,{}]])[0][1].get('ids',[])))" 2>/dev/null \
-    || echo "0")
-  if [[ "${x_domain_count:-0}" -ge 1 ]]; then
-    ok "mail/jmap: x:Domain/query for $test_domain returned $x_domain_count match(es)"
+      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
+  if echo "$x_domain_blob" | grep -qF "\"name\":\"$test_domain\""; then
+    ok "mail/jmap: x:Domain/get returned a row with name=$test_domain"
   else
-    fail "mail/jmap: x:Domain/query for $test_domain returned 0 matches — Stalwart-side domain not provisioned"
+    fail "mail/jmap: x:Domain/get did not contain $test_domain — Stalwart-side domain not provisioned"
   fi
 
   # ── Step 5: verify DKIM key generated ───────────────────────────
@@ -774,20 +774,20 @@ scenario_mail() {
   }
 
   # ── Step 6b: assert Stalwart-side x:Account exists for the mailbox ──
-  local x_account_count
-  x_account_count=$(ssh_cp "kubectl run mail-jmap-acc-${stamp} -n mail \
+  # Same approach as Step 4b — list-and-grep instead of broken
+  # server-side filter. Account `name` is the local-part (no @domain).
+  local x_account_blob
+  x_account_blob=$(ssh_cp "kubectl run mail-jmap-acc-${stamp} -n mail \
       --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
       curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
       -o jsonpath='{.data.adminPassword}' | base64 -d) \
       -X POST http://stalwart-mgmt-v016:8080/jmap \
       -H Content-Type:application/json \
-      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/query\",{\"accountId\":\"d333333\",\"filter\":{\"name\":\"$mb_local\"}},\"r0\"]]}'" 2>&1 \
-    | python3 -c "import json,sys; raw=sys.stdin.read(); idx=raw.find('{\"methodResponses'); d=json.loads(raw[idx:]) if idx>=0 else {}; print(len(d.get('methodResponses',[[None,{}]])[0][1].get('ids',[])))" 2>/dev/null \
-    || echo "0")
-  if [[ "${x_account_count:-0}" -ge 1 ]]; then
-    ok "mail/jmap: x:Account/query for $mb_local returned $x_account_count match(es)"
+      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
+  if echo "$x_account_blob" | grep -qF "\"name\":\"$mb_local\""; then
+    ok "mail/jmap: x:Account/get returned a row with name=$mb_local"
   else
-    fail "mail/jmap: x:Account/query for $mb_local returned 0 matches — Stalwart-side account not provisioned"
+    fail "mail/jmap: x:Account/get did not contain $mb_local — Stalwart-side account not provisioned"
   fi
 
   # ── Step 7 + 8 setup: tester pod inside the cluster ─────────────
