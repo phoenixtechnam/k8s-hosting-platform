@@ -138,7 +138,19 @@ echo "    Done."
 
 # ── Step 5: Delete 0.15 Services (keeps 0.16 Services untouched) ────────────
 echo "==> Step 5: Deleting stalwart-mail Services (0.15)..."
-_kubectl delete service stalwart-mail stalwart-mail-mgmt -n mail --ignore-not-found=true
+_kubectl delete service stalwart-mail stalwart-mail-mgmt stalwart-mail-headless -n mail --ignore-not-found=true
+echo "    Done."
+
+# ── Step 5b: Delete 0.15 webadmin Ingress (overlay-specific) ────────────────
+# The 0.15 staging overlay shipped a `stalwart-webadmin-ingress` Ingress on
+# stalwart.${DOMAIN}. The 0.16 base ships `stalwart-v016-webadmin` on the
+# same host+path. Flux refuses the v016 apply with `host already defined
+# in ingress mail/stalwart-webadmin-ingress` until the old one is gone.
+# Flux's prune will eventually remove it (it's no longer in the kustomize
+# output), but cutover-day the operator should clean it up immediately so
+# the v016 ingress can come up.
+echo "==> Step 5b: Deleting any 0.15 webadmin Ingress on stalwart.<domain>..."
+_kubectl delete ingress -n mail stalwart-webadmin-ingress --ignore-not-found=true
 echo "    Done."
 
 # ── Step 6: Ensure stalwart-admin-creds Secret exists for v016 ─────────────
