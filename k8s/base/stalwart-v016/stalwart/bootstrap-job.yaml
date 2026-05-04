@@ -124,11 +124,15 @@ spec:
                 exit 1
               fi
 
-              HOME=/tmp /shared/stalwart-cli \
-                --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
-                --username "admin" \
-                --password "$${STALWART_RECOVERY_PASSWORD}" \
-                apply /plan/plan.json
+              # NOTE: stalwart-cli v1.0.4 uses `--user` (not --username),
+              # and authentication is via STALWART_PASSWORD env (the
+              # CLI does not accept --password on the command line).
+              HOME=/tmp \
+              STALWART_PASSWORD="$${STALWART_RECOVERY_PASSWORD}" \
+                /shared/stalwart-cli \
+                  --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
+                  --user "admin" \
+                  apply /plan/plan.json
 
               echo "Bootstrap plan applied successfully."
           env:

@@ -31,6 +31,9 @@ import {
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import { rotateStalwartPasswordResponseSchema, type RotateStalwartPasswordResponse } from '@k8s-hosting/api-contracts';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'mail-admin-rotate' });
 
 export interface RotateJmapOptions {
   readonly kubeconfigPath: string | undefined;
@@ -121,10 +124,9 @@ export async function rotateAdminPasswordViaJmapImpl(
           },
         });
       } catch (mirrorErr) {
-        console.warn(
-          `[mail-admin] platform-stalwart-creds mirror patch failed (non-fatal): ${mirrorErr instanceof Error ? mirrorErr.message : String(mirrorErr)}. ` +
-            `platform-api will keep reading the old password until the operator updates the mirror manually.`,
-        );
+        log.warn({
+          err: mirrorErr instanceof Error ? mirrorErr.message : String(mirrorErr),
+        }, 'platform-stalwart-creds mirror patch failed (non-fatal — platform-api will keep reading the old password until operator updates the mirror manually)');
       }
     }
   } catch (err) {

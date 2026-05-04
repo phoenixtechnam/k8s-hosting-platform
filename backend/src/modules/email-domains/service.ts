@@ -4,6 +4,9 @@ import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 import { notifyClientEmailBootstrapped } from '../notifications/events.js';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'email-domains' });
 // canManageDnsZone / getActiveServersForDomain are not imported here:
 // provisionEmailDns enforces the dns-zone authority gate internally.
 import {
@@ -205,9 +208,11 @@ export async function disableEmailForDomain(
           baseUrl: process.env.STALWART_MGMT_URL,
         });
       } catch (err) {
-        console.warn(
-          `[email-domains] disableEmailForDomain: JMAP destroy failed for domain '${domainId}' (${existing.stalwartDomainId}): ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log.warn({
+          domainId,
+          stalwartDomainId: existing.stalwartDomainId,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'disableEmailForDomain: JMAP destroy failed (platform row deleted; principals-sync will flag orphan)');
       }
     }
   }
@@ -561,9 +566,10 @@ export async function updateEmailDomain(
         }
       }
     } catch (err) {
-      console.warn(
-        `[email-domains] webmail DNS sync failed for ${domainId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      log.warn({
+        domainId,
+        err: err instanceof Error ? err.message : String(err),
+      }, 'webmail DNS sync failed (idempotent — next reconcile will retry)');
     }
   }
 
@@ -755,9 +761,7 @@ export async function ensureWebmailIngress(
     certResult = await ensureRouteCertificate(db, k8s, row.domainId, hostname);
   } catch (err) {
     certError = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[email-domains] ensureRouteCertificate failed for ${hostname}: ${certError}`,
-    );
+    log.warn({ hostname, err: certError }, 'ensureRouteCertificate failed (Ingress will publish without TLS until cert-manager catches up)');
   }
 
   const tls = certResult && !certResult.skipped && certResult.secretName

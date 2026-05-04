@@ -1,6 +1,9 @@
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { eq, and } from 'drizzle-orm';
+import { mailLogger } from '../../shared/mail-logger.js';
+
+const log = mailLogger().child({ module: 'mailboxes' });
 import { mailboxes, mailboxAccess, emailDomains, domains, users, clients } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getClientMailboxLimit, getClientMailboxCount } from './limit.js';
@@ -225,9 +228,10 @@ export async function createMailbox(
         id: stalwartPrincipalId,
         baseUrl: process.env.STALWART_MGMT_URL,
       }).catch((cleanupErr) => {
-        console.warn(
-          `[mailboxes] compensating Stalwart destroy failed for orphan ${stalwartPrincipalId}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
-        );
+        log.warn({
+          stalwartPrincipalId,
+          err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        }, 'compensating Stalwart destroy failed for orphan principal');
       });
     }
     throw dbErr;
@@ -340,9 +344,10 @@ export async function updateMailbox(
             baseUrl: process.env.STALWART_MGMT_URL,
           });
         } catch (err) {
-          console.warn(
-            `[mailboxes] updateMailbox: JMAP patch failed for '${mailboxId}': ${err instanceof Error ? err.message : String(err)}`,
-          );
+          log.warn({
+            mailboxId,
+            err: err instanceof Error ? err.message : String(err),
+          }, 'updateMailbox: JMAP patch failed (platform DB authoritative; principals-sync will reconcile)');
         }
       }
     }
@@ -381,9 +386,11 @@ export async function deleteMailbox(
           baseUrl: process.env.STALWART_MGMT_URL,
         });
       } catch (err) {
-        console.warn(
-          `[mailboxes] deleteMailbox: JMAP destroy failed for '${row.fullAddress}' (${row.stalwartPrincipalId}): ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log.warn({
+          fullAddress: row.fullAddress,
+          stalwartPrincipalId: row.stalwartPrincipalId,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'deleteMailbox: JMAP destroy failed (platform row deleted anyway; principals-sync will flag orphan)');
       }
     }
   }
@@ -420,9 +427,10 @@ export async function changeMailboxPassword(
           baseUrl: process.env.STALWART_MGMT_URL,
         });
       } catch (err) {
-        console.warn(
-          `[mailboxes] changeMailboxPassword: JMAP update failed for mailbox '${mailboxId}': ${err instanceof Error ? err.message : String(err)}`,
-        );
+        log.warn({
+          mailboxId,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'changeMailboxPassword: JMAP update failed (platform DB authoritative)');
       }
     }
   }
