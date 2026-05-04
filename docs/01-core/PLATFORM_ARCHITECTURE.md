@@ -249,30 +249,32 @@ version combination. Note: application-specific images like WordPress are in the
 
 **Runtimes:**
 
-| Catalog ID               | Base Image              | Web Server | Runtime     | Status      |
-| ------------------------ | ----------------------- | ---------- | ----------- | ----------- |
-| `apache-php84`           | php:8.4-apache-alpine   | Apache 2.4 | PHP 8.4     | Active      |
-| `apache-php83`           | php:8.3-apache-alpine   | Apache 2.4 | PHP 8.3     | Active      |
-| `apache-php82`           | php:8.2-apache-alpine   | Apache 2.4 | PHP 8.2     | Deprecated  |
-| `nginx-php84`            | custom (nginx + php-fpm)| Nginx      | PHP 8.4     | Active      |
-| `nginx-php83`            | custom (nginx + php-fpm)| Nginx      | PHP 8.3     | Active      |
-| `node22`                 | node:22-alpine          | PM2        | Node.js 22  | Active      |
-| `node20`                 | node:20-alpine          | PM2        | Node.js 20  | Active      |
-| `python312`              | python:3.12-slim        | Gunicorn   | Python 3.12 | Active      |
-| `python311`              | python:3.11-slim        | Gunicorn   | Python 3.11 | Active      |
-| `ruby34`                 | ruby:3.4-alpine         | Puma       | Ruby 3.4    | Active      |
-| `dotnet9`                | mcr.microsoft.com/dotnet/aspnet:9.0 | Kestrel | .NET 9 | Active   |
-| `java21`                 | eclipse-temurin:21-jre-alpine | Tomcat/embedded | Java 21 | Active |
-| `static-nginx`           | nginx:alpine            | Nginx      | Static only | Active      |
+| Catalog ID               | Base Image                          | Web Server | Runtime         | Status |
+| ------------------------ | ----------------------------------- | ---------- | --------------- | ------ |
+| `apache-php`             | serversideup/php:8.4-fpm-apache     | Apache 2.4 | PHP 8.3/8.4/8.5 | Active |
+| `nginx-php`              | serversideup/php:8.4-fpm-nginx-alpine | Nginx    | PHP 8.3/8.4/8.5 | Active |
+| `nodejs`                 | node:22-alpine                      | (none)     | Node.js 22      | Active |
+| `python-312`             | python:3.12-slim                    | (none)     | Python 3.12     | Active |
+| `ruby-33`                | ruby:3.3-alpine                     | (none)     | Ruby 3.3        | Active |
+| `golang-122`             | golang:1.22-alpine                  | (none)     | Go 1.22         | Active |
+| `java-21`                | eclipse-temurin:21-jre-alpine       | (none)     | Java 21         | Active |
+| `dotnet-8`               | mcr.microsoft.com/dotnet/aspnet:8.0 | Kestrel    | .NET 8          | Active |
+| `bun-latest`             | oven/bun:latest                     | (none)     | Bun             | Active |
+| `rust-stable`            | rust:1.85-slim                      | (none)     | Rust stable     | Active |
+| `static-nginx`           | nginx:1.27-alpine                   | Nginx      | Static only     | Active |
+| `static-apache`          | httpd:2.4-alpine                    | Apache     | Static only     | Active |
 
 **Databases & Services:**
 
-| Catalog ID               | Image                   | Type       | Version     | Status      |
-| ------------------------ | ----------------------- | ---------- | ----------- | ----------- |
-| `mariadb-106`            | mariadb:10.6            | Database   | MariaDB 10.6| Active      |
-| `postgresql-16`          | postgres:16-alpine      | Database   | PostgreSQL 16| Active     |
-| `redis-7`                | redis:7-alpine          | Service    | Redis 7     | Active      |
-| `static-caddy`           | caddy:alpine            | Caddy      | Static only | Active      |
+| Catalog ID               | Image                   | Type       | Version          | Status |
+| ------------------------ | ----------------------- | ---------- | ---------------- | ------ |
+| `mariadb`                | mariadb:11.8            | Database   | MariaDB 11.8     | Active |
+| `mysql`                  | mysql:8                 | Database   | MySQL 8          | Active |
+| `postgresql`             | postgres:18             | Database   | PostgreSQL 18    | Active |
+| `mongodb-7`              | mongo:7                 | Database   | MongoDB 7        | Active |
+| `redis-7`                | redis:7-alpine          | Service    | Redis 7          | Active |
+| `memcached-alpine`       | memcached:1.6-alpine    | Service    | Memcached 1.6    | Active |
+| `minio`                  | minio/minio             | Service    | Object storage   | Active |
 
 ### 2.3 Dedicated Pod Provisioning (All Plans)
 
@@ -283,7 +285,7 @@ Every client gets a dedicated pod in their own `client-{id}` namespace:
 
 **How it works:**
 1. Management API creates `client-{id}` namespace with ResourceQuota, NetworkPolicy, and RBAC
-2. Dedicated pod provisioned with selected catalog image (default: `nginx-php84`)
+2. Dedicated pod provisioned with selected catalog image (default: `nginx-php`)
 3. Client's PVC created and mounted at `/var/www/html`
 4. Ingress rule created pointing client's domain to the client's pod Service
 5. Secrets created for SFTP credentials (and DB credentials if database add-on is enabled)
@@ -313,13 +315,15 @@ Workload definitions are **not maintained in this monorepo**. They live in **ext
 
 ```
 <repo-root>/
-├── catalog.json              # Index of available workloads
-├── apache-php84/
-│   └── manifest.json         # Per-workload manifest
-├── nginx-php84/
-│   └── manifest.json
-├── node22/
-│   └── manifest.json
+├── catalog.json              # Index: { entries: ["apache-php", "nginx-php", ...] }
+├── apache-php/
+│   ├── manifest.json         # Per-entry manifest
+│   ├── chart/                # Helm chart shipped with the entry
+│   └── Dockerfile            # Optional — only for CI-published images
+├── nginx-php/
+│   └── ...
+├── nodejs/
+│   └── ...
 └── ...
 ```
 
@@ -376,9 +380,9 @@ The admin panel provides full lifecycle control over catalog repos and container
 
 ### 2.6 Container Upgrade Workflow
 
-When a new container version is published (e.g., `apache-php84` with a security patch):
+When a new container version is published (e.g., `apache-php` with a security patch):
 
-1. Admin publishes new version in Harbor registry
+1. CI in the catalog repo (`https://github.com/phoenixtechnam/k8s-application-catalog`) builds and pushes the new image to GHCR
 2. Management API marks old version as deprecated
 3. Notification sent to all affected clients
 4. Rolling update automatically migrates clients to new version (configurable per admin)
@@ -398,7 +402,7 @@ For cases where a client needs a PHP extension or system package not in the defa
 | Approach                         | Complexity | Recommendation        |
 | -------------------------------- | ---------- | --------------------- |
 | Include all common extensions in base image | Low | Default approach — cover 95% of cases |
-| Offer "extended" image variants (e.g., `apache-php84-imagick`) | Medium | For popular extras |
+| Offer "extended" image variants (e.g., `apache-php-imagick`) | Medium | For popular extras |
 | Init container that installs extras at startup | Medium | Flexible but slower startup |
 | Client requests admin to add extension to catalog | Low | Manual but controlled |
 | Allow custom Dockerfiles         | High       | **Not supported** — breaks the model |
@@ -421,14 +425,14 @@ The platform maintains **two distinct catalogs** with different deployment mecha
 
 | Catalog                      | Purpose                                          | Deployment     | Example                        |
 | ---------------------------- | ------------------------------------------------ | -------------- | ------------------------------ |
-| **Workload Catalog** (Section 2) | Composable runtimes, databases, services — clients assemble their own stack | Platform-generated K8s manifests | `apache-php84`, `node22`, `mariadb-106`, `redis-7` |
+| **Workload Catalog** (Section 2) | Composable runtimes, databases, services — clients assemble their own stack | Platform-generated K8s manifests | `apache-php`, `nodejs`, `mariadb`, `redis-7` |
 | **Application Catalog** (this section) | Managed application stacks — one-click deploy, self-contained | Helm charts (`helm install`) | WordPress, Nextcloud, Jitsi, Gitea, Matomo, Moodle, Keycloak |
 
 **Key difference:** A workload is a generic runtime where clients upload and manage their own software (like cPanel/Plesk). An application is a **complete, pre-configured stack** — often multiple containers with its own database — deployed as a unit. A workload's database is shared and platform-managed; an application's database is bundled and chart-managed.
 
 > **Note:** WordPress was previously listed in the Workload Catalog as `wordpress-php84`. Per ADR-026,
 > it has been moved to the Application Catalog. Clients who want to manually install WordPress should
-> use the generic `apache-php84` runtime with a database add-on.
+> use the generic `apache-php` runtime with a database add-on.
 
 **Key difference:** A workload container is a single runtime image that serves client-provided
 files. An application is a **complete stack** — often multiple containers, its own database,

@@ -34,24 +34,22 @@ The catalog is a curated set of pre-built, tested runtime images. Each entry def
 
 | Catalog ID | Base Image | Web Server | Runtime | Plan | Status |
 | --- | --- | --- | --- | --- | --- |
-| `apache-php84` | php:8.4-apache-alpine | Apache 2.4 | PHP 8.4 | All | Active |
-| `apache-php83` | php:8.3-apache-alpine | Apache 2.4 | PHP 8.3 | All | Active |
-| `apache-php82` | php:8.2-apache-alpine | Apache 2.4 | PHP 8.2 | All | Deprecated |
-| `nginx-php84` | custom (nginx + php-fpm) | Nginx | PHP 8.4 | All | Active |
-| `nginx-php83` | custom (nginx + php-fpm) | Nginx | PHP 8.3 | All | Active |
-| `wordpress-php84` | wordpress:php8.4-apache | Apache 2.4 | PHP 8.4 + WP optimized | All | Active |
-| `wordpress-php83` | wordpress:php8.3-apache | Apache 2.4 | PHP 8.3 + WP optimized | All | Active |
-| `node22` | node:22-alpine | PM2 | Node.js 22 | Business / Premium only | Active |
-| `node20` | node:20-alpine | PM2 | Node.js 20 | Business / Premium only | Active |
-| `python312` | python:3.12-slim | Gunicorn | Python 3.12 | All | Active |
-| `python311` | python:3.11-slim | Gunicorn | Python 3.11 | All | Active |
-| `ruby34` | ruby:3.4-alpine | Puma | Ruby 3.4 | All | Active |
-| `dotnet9` | mcr.microsoft.com/dotnet/aspnet:9.0 | Kestrel | .NET 9 | All | Active |
-| `java21` | eclipse-temurin:21-jre-alpine | Tomcat/embedded | Java 21 | All | Active |
-| `static-nginx` | nginx:alpine | Nginx | Static only | All | Active |
-| `static-caddy` | caddy:alpine | Caddy | Static only | All | Active |
+| `apache-php` | serversideup/php:8.4-fpm-apache | Apache 2.4 | PHP 8.3 / 8.4 / 8.5 | All | Active |
+| `nginx-php` | serversideup/php:8.4-fpm-nginx-alpine | Nginx | PHP 8.3 / 8.4 / 8.5 | All | Active |
+| `nodejs` | node:22-alpine | (none) | Node.js 22 | Business / Premium only | Active |
+| `python-312` | python:3.12-slim | (none) | Python 3.12 | All | Active |
+| `ruby-33` | ruby:3.3-alpine | (none) | Ruby 3.3 | All | Active |
+| `golang-122` | golang:1.22-alpine | (none) | Go 1.22 | All | Active |
+| `java-21` | eclipse-temurin:21-jre-alpine | (none) | Java 21 | All | Active |
+| `dotnet-8` | mcr.microsoft.com/dotnet/aspnet:8.0 | Kestrel | .NET 8 | All | Active |
+| `bun-latest` | oven/bun:latest | (none) | Bun | All | Active |
+| `rust-stable` | rust:1.85-slim | (none) | Rust stable | All | Active |
+| `static-nginx` | nginx:1.27-alpine | Nginx | Static only | All | Active |
+| `static-apache` | httpd:2.4-alpine | Apache | Static only | All | Active |
 
-**Node.js runtime contract:** `node22` and `node20` use PM2 as the process manager. The app must listen on `process.env.PORT` (injected as `3000`) and expose `GET /healthz` returning HTTP 200. See **NODE_RUNTIME_SPECIFICATION.md** for the full runtime contract, Kubernetes manifests, startup options, and deployment guide.
+> The version field in the manifest (`version`, `supportedVersions`) drives which language version actually runs. WordPress is no longer a runtime — it is now an Application catalog entry with its own bundled wp-cli/database/cron components (see `wordpress/manifest.json`).
+
+**Per-version overrides:** PHP runtimes pick image variants per `supportedVersions[].components[].image` — e.g. nginx-php publishes 8.3, 8.4, 8.5 from the same entry.
 
 ### Image Contents
 
@@ -136,13 +134,18 @@ Each catalog repo contains a `catalog.json` index and per-workload `manifest.jso
 
 ```
 <repo-root>/
-├── catalog.json              # Index: array of entries or { workloads: ["apache-php84", ...] }
-├── apache-php84/
-│   └── manifest.json         # { name, code, type, image, supported_versions, resources, ... }
-├── nginx-php84/
-│   └── manifest.json
+├── catalog.json              # Index: { entries: ["apache-php", "nginx-php", ...] }
+├── apache-php/
+│   ├── manifest.json         # { name, code, type, image, supportedVersions, resources, ... }
+│   ├── chart/                # Helm chart shipped with the entry
+│   ├── Dockerfile            # Optional — only when CI builds & publishes to GHCR
+│   └── icon.png
+├── nginx-php/
+│   └── ...
 └── ...
 ```
+
+The official catalog is `https://github.com/phoenixtechnam/k8s-application-catalog`. Image builds for entries with a `Dockerfile` are CI-published to `ghcr.io/phoenixtechnam/k8s-application-catalog/<entry>:<tag>` by `.github/workflows/build-images.yml` in that repo.
 
 ### Sync Flow
 
@@ -203,7 +206,7 @@ For cases where a client needs a PHP extension or system package not in the defa
 | Approach | Complexity | Recommendation |
 | --- | --- | --- |
 | Include all common extensions in base image | Low | **Default approach** — cover 95% of cases |
-| Offer "extended" image variants (e.g., `apache-php84-imagick`) | Medium | For popular extras |
+| Offer "extended" image variants (e.g., `apache-php-imagick`) | Medium | For popular extras |
 | Init container that installs extras at startup | Medium | Flexible but slower startup |
 | Client requests admin to add extension to catalog | Low | Manual but controlled |
 | Allow custom Dockerfiles | High | **Not supported** — breaks the model |

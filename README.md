@@ -63,10 +63,12 @@ frontend/
 k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
-catalog-images/           # Dockerfiles for workload types (nginx, apache, node, wordpress)
 scripts/                  # bootstrap.sh, provision, install scripts
 docs/                     # Architecture docs, ADRs, specs
 ```
+
+> Workload Dockerfiles (apache-php, nginx-php, nodejs, static-nginx, etc.) live in the external catalog repo:
+> `https://github.com/phoenixtechnam/k8s-application-catalog`. CI in that repo builds and publishes them to GHCR.
 
 ## Server Deployment
 

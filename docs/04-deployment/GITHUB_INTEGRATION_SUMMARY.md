@@ -66,7 +66,6 @@ hosting-platform/
 │   │   ├── staging/
 │   │   └── production/
 ├── helm/                     # Helm charts for platform services
-├── catalog-images/           # Dockerfiles for workload catalog images
 ├── scripts/                  # Utility shell scripts (setup, backup, rotate secrets)
 └── docs/                     # Additional documentation (if not in /config/)
 ```

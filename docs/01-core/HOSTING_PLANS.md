@@ -22,7 +22,7 @@ The platform supports a **flexible, fully customizable hosting plan system** wit
 Every client gets their own dedicated pod in a `client-{id}` namespace with full Kubernetes-native isolation, regardless of plan tier. Plan differentiation is based on resource limits and features, not isolation model.
 
 **Characteristics:**
-- One pod per client running selected catalog image (default: `nginx-php84`)
+- One pod per client running selected catalog image (default: `nginx-php`)
 - NGINX+PHP-FPM default; Apache+PHP-FPM available per domain (ADR-023)
 - Guaranteed CPU/memory limits per plan
 - Scale-to-zero capability (optional, via KEDA)
@@ -116,7 +116,7 @@ Every parameter below is set at the **plan level** (global default) and can be *
 | Parameter | Description | Example Values |
 | --- | --- | --- |
 | `web_mode` | Deployment mode (dedicated only since ADR-024) | `dedicated` |
-| `catalog_image` | Workload container from catalog (see note below) | `apache-php84` / `wordpress-php84` / `node22` |
+| `catalog_image` | Workload container from catalog (see note below) | `apache-php` / `nginx-php` / `nodejs` |
 | `allow_web_server_switch` | Enable switching between web servers | `true` / `false` |
 | `allowed_catalog_images` | Whitelist of allowed catalog images for switching | Array of image IDs |
 | `cpu_request` | CPU request (dedicated pods only) | `50m` / `100m` / `200m` |
@@ -210,10 +210,10 @@ Every client consumes a dedicated pod (~50m CPU request, ~64Mi memory request fo
 Admin can create additional plans beyond the three defaults:
 
 **Examples:**
-- **WordPress Optimized**: Starter plan with `catalog_image: wordpress-php84`, higher `php_memory_limit`
+- **WordPress Optimized**: Starter plan deploying the `wordpress` Application catalog entry (bundles WP + DB + cron) with higher `php_memory_limit`
 - **E-Commerce**: Business plan with dedicated database + higher storage quota
 - **Developer**: Premium plan with `git_deploy_enabled: true`, `file_manager_enabled: true`
-- **API Services**: Dedicated pod with `catalog_image: node22`, higher CPU/memory, `scale_to_zero: true`
+- **API Services**: Dedicated pod with `catalog_image: nodejs`, higher CPU/memory, `scale_to_zero: true`
 
 All plans follow the same parameter structure and customization rules.
 

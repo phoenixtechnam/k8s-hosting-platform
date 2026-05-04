@@ -53,7 +53,6 @@ docs
 *.bak
 *.log
 images
-catalog-images
 config
 
 # Compose + k8s — not consumed by app images

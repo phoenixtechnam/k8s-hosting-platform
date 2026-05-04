@@ -272,7 +272,7 @@ spec:
 │ container_images         │
 │                          │
 │ id (PK)                  │
-│ code                     │ ← 'apache-php84', 'node22'
+│ code                     │ ← 'apache-php', 'nodejs'
 │ name                     │
 │ image_type               │ ← 'runtime', 'database', 'service'
 │ registry_url             │
@@ -817,7 +817,7 @@ CREATE TABLE workload_repositories (
 -- from different repos without collision.
 CREATE TABLE container_images (
   id VARCHAR(36) PRIMARY KEY,
-  code VARCHAR(50) NOT NULL COMMENT 'apache-php84, node22, wordpress-php84',
+  code VARCHAR(50) NOT NULL COMMENT 'apache-php, nodejs, nginx-php',
   name VARCHAR(255) NOT NULL,
   image_type VARCHAR(50) NOT NULL DEFAULT 'runtime' COMMENT 'runtime, database, service',
   registry_url VARCHAR(500) COMMENT 'Container registry URL (nullable if repo supplies Dockerfile)',
