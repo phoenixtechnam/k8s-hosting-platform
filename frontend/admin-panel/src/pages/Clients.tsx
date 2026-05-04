@@ -204,16 +204,19 @@ export default function Clients() {
                         metrics={metricsMap[client.id]}
                         loading={metricsLoading}
                         resource="cpu"
+                        clientStatus={client.status}
                       />
                       <MetricsCell
                         metrics={metricsMap[client.id]}
                         loading={metricsLoading}
                         resource="memory"
+                        clientStatus={client.status}
                       />
                       <MetricsCell
                         metrics={metricsMap[client.id]}
                         loading={metricsLoading}
                         resource="storage"
+                        clientStatus={client.status}
                       />
                       <td className="hidden px-3 py-3.5 text-xs xl:table-cell">
                         {client.workerNodeName ? (
@@ -368,11 +371,26 @@ function MetricsCell({
   metrics,
   loading,
   resource,
+  clientStatus,
 }: {
   readonly metrics: ResourceMetrics | null | undefined;
   readonly loading: boolean;
   readonly resource: 'cpu' | 'memory' | 'storage';
+  readonly clientStatus?: string;
 }) {
+  // Suspended/archived clients have no live workloads — Deployments are scaled
+  // to zero (suspended) or namespace is being torn down (archived). The
+  // metrics number that comes back is either stale or zero, and the green
+  // "healthy" dot is misleading. Render an em-dash placeholder instead so the
+  // row keeps consistent column widths.
+  if (clientStatus === 'suspended' || clientStatus === 'archived') {
+    return (
+      <td className="hidden px-3 py-3.5 text-xs font-mono text-gray-400 dark:text-gray-500 md:table-cell">
+        —
+      </td>
+    );
+  }
+
   if (loading) {
     return (
       <td className="hidden px-3 py-3.5 md:table-cell">

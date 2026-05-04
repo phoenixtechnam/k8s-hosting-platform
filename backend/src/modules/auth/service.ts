@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
-import { users } from '../../db/schema.js';
+import { users, clients } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
 
 const SALT_ROUNDS = 12;
@@ -44,6 +44,21 @@ export async function authenticateUser(
 
   if (user.status !== 'active') {
     throw invalidToken();
+  }
+
+  // Archived clients are terminal — block login for any user attached to one.
+  // Suspended is allowed (user still sees the suspension banner in client-panel
+  // and can request reactivation); archived is irreversible and the data is
+  // pending purge, so authenticating offers nothing useful.
+  if (user.clientId) {
+    const [c] = await db
+      .select({ status: clients.status })
+      .from(clients)
+      .where(eq(clients.id, user.clientId))
+      .limit(1);
+    if (c && c.status === 'archived') {
+      throw invalidToken();
+    }
   }
 
   // Re-hash legacy SHA-256 passwords to bcrypt on successful login

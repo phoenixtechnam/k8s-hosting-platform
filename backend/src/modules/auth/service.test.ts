@@ -117,6 +117,65 @@ describe('authenticateUser', () => {
       .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
   });
 
+  it('should throw INVALID_TOKEN when the user.s client is archived', async () => {
+    const password = 'my-password';
+    const userRow = {
+      id: 'u1',
+      email: 'tenant-admin@example.com',
+      passwordHash: await hashNewPassword(password),
+      fullName: 'Tenant Admin',
+      roleName: 'client_admin',
+      panel: 'client',
+      clientId: 'c1',
+      status: 'active',
+    };
+    // Two consecutive selects: 1) users 2) clients(status). The mock returns
+    // the user row first, then a client row marked archived.
+    const limit = vi.fn()
+      .mockResolvedValueOnce([userRow])
+      .mockResolvedValueOnce([{ status: 'archived' }]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    } as unknown as Parameters<typeof authenticateUser>[0];
+
+    await expect(authenticateUser(db, 'tenant-admin@example.com', password))
+      .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
+  });
+
+  it('should still authenticate when the user.s client is suspended (only archived blocks login)', async () => {
+    const password = 'my-password';
+    const userRow = {
+      id: 'u2',
+      email: 'tenant-admin@example.com',
+      passwordHash: await hashNewPassword(password),
+      fullName: 'Tenant Admin',
+      roleName: 'client_admin',
+      panel: 'client',
+      clientId: 'c2',
+      status: 'active',
+    };
+    const limit = vi.fn()
+      .mockResolvedValueOnce([userRow])
+      .mockResolvedValueOnce([{ status: 'suspended' }]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    } as unknown as Parameters<typeof authenticateUser>[0];
+
+    const result = await authenticateUser(db, 'tenant-admin@example.com', password);
+    expect(result.id).toBe('u2');
+    expect(result.clientId).toBe('c2');
+  });
+
   it('should return user data and update last login on success', async () => {
     const password = 'my-password';
     const updateWhere = vi.fn().mockResolvedValue(undefined);

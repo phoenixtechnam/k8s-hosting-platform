@@ -612,6 +612,21 @@ export async function authRoutes(app: FastifyInstance) {
       throw invalidToken();
     }
 
+    // Archived client → terminal state, kill the session. Suspended is
+    // still allowed so the user can see the suspension banner.
+    if (user.clientId) {
+      const { clients } = await import('../../db/schema.js');
+      const [c] = await app.db
+        .select({ status: clients.status })
+        .from(clients)
+        .where(eq(clients.id, user.clientId))
+        .limit(1);
+      if (c && c.status === 'archived') {
+        await revokeRefreshTokenById(app.db, validation.id, 'admin_revoke');
+        throw invalidToken();
+      }
+    }
+
     // Rotate: revoke the presented token (rotated), issue a new one.
     await revokeRefreshTokenById(app.db, validation.id, 'rotated');
     const issued = await issueRefreshToken(app.db, {
