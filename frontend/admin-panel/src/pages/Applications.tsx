@@ -1305,12 +1305,12 @@ function InstalledTab() {
                                 <Play size={14} />
                               </button>
                             )}
-                            {isRunning && (
+                            {(isRunning || isStuck) && (
                               <button
                                 type="button"
                                 onClick={() => { setSelected(new Set([d.id])); setBulkAction('stop'); }}
-                                className="rounded-md p-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                                title="Stop"
+                                className="rounded-md p-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                                title={isStuck ? 'Stop stuck deployment (preferred over delete — keeps data + config)' : 'Stop'}
                                 data-testid={`stop-btn-${d.id}`}
                               >
                                 <Square size={14} />

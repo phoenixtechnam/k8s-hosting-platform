@@ -608,8 +608,18 @@ export async function updateDeployment(
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
   if (input.configuration !== undefined) updateValues.configuration = input.configuration;
-  // For start/stop: set to 'pending' first, let status-reconciler confirm final state
-  if (input.status === 'running' || input.status === 'stopped') {
+  // Status transitions:
+  //   stopped from any state → land directly on 'stopped'. Operator/customer
+  //     intent is "kill it now" — going via 'pending' would re-show the
+  //     stuck-loading UI we are escaping from.
+  //   running from stopped → 'pending' (transitional), reconciler confirms
+  //     once pods are Ready.
+  //   running from anything else (pending/deploying/failed) → 'pending', let
+  //     reconciler confirm.
+  if (input.status === 'stopped') {
+    updateValues.status = 'stopped';
+    updateValues.lastError = null;
+  } else if (input.status === 'running') {
     updateValues.status = 'pending';
     updateValues.lastError = null;
   } else if (input.status !== undefined) {

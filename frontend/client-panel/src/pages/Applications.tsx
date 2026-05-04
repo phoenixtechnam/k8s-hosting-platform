@@ -1054,6 +1054,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {activeDeployments.map((deployment) => {
               const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
+              // Long-stuck = pending/deploying with a stale updated_at (>5min) OR
+              // any failed row. The status-reconciler escalates pending→failed
+              // after 60min, but the customer needs an escape hatch sooner —
+              // 5min is enough to know K8s has had time to report progress.
+              const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+              const isLongStuck = isTransitioning &&
+                Date.now() - new Date(deployment.updatedAt).getTime() > STUCK_THRESHOLD_MS;
+              const showStopOnStuck = isLongStuck || deployment.status === 'failed';
 
               return (
                 <div
@@ -1096,7 +1104,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                               : deployment.status === 'upgrading' ? 'Upgrading'
                               : deployment.status === 'deleting' ? 'Deleting'
                               : deployment.status === 'pending' ? 'Starting'
-                              : deployment.status}...
+                              : deployment.status}{isLongStuck ? ' (taking longer than expected)' : '...'}
                           </span>
                         </div>
                         {friendlyStatusMessage(deployment.status, deployment.statusMessage ?? null) && (
@@ -1156,27 +1164,39 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     />
                   </div>
 
-                  {!isTransitioning && (
+                  {(!isTransitioning || showStopOnStuck) && (
                   <div className="mt-4 flex gap-2">
+                    {/* For stuck deployments, force the action to "Stop" — the
+                        normal toggle would try to start a stuck row, which is
+                        not what the customer wants. Stop scales to 0 and the
+                        reconciler then settles the row to 'stopped'. */}
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); handleToggleStatus(deployment.id, deployment.status); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (showStopOnStuck && (isTransitioning || deployment.status === 'failed')) {
+                          updateDeployment.mutate({ deploymentId: deployment.id, status: 'stopped' });
+                        } else {
+                          handleToggleStatus(deployment.id, deployment.status);
+                        }
+                      }}
                       disabled={updateDeployment.isPending}
                       className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                        deployment.status === 'running'
+                        deployment.status === 'running' || showStopOnStuck
                           ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
                           : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40'
                       }`}
                       data-testid={`toggle-app-${deployment.id}`}
+                      title={showStopOnStuck ? 'Stop the stuck deployment — preserves data and config' : undefined}
                     >
                       {updateDeployment.isPending ? (
                         <Loader2 size={16} className="animate-spin" />
-                      ) : deployment.status === 'running' ? (
+                      ) : (deployment.status === 'running' || showStopOnStuck) ? (
                         <Square size={16} />
                       ) : (
                         <Play size={16} />
                       )}
-                      {deployment.status === 'running' ? 'Stop' : 'Start'}
+                      {deployment.status === 'running' || showStopOnStuck ? 'Stop' : 'Start'}
                     </button>
                     <button
                       type="button"
@@ -1190,9 +1210,10 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setSoftDeleteConfirm({ id: deployment.id, name: deployment.name }); }}
-                      disabled={isTransitioning}
+                      disabled={isTransitioning && !showStopOnStuck}
                       className="rounded-lg border border-red-200 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
                       data-testid={`delete-app-${deployment.id}`}
+                      title="Delete (use Stop instead to keep data + config)"
                     >
                       <Trash2 size={14} />
                     </button>
