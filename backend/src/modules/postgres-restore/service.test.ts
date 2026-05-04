@@ -205,10 +205,13 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     });
     expect(result.namespace).toBe('platform');
     expect(result.jobName).toMatch(/^pitr-postgres-\d+$/);
-    const createCall = (k8s.batch as unknown as { createNamespacedJob: { mock: { calls: Array<[{ namespace: string; body: { metadata: { name: string; labels: Record<string, string> }; spec: { template: { spec: { containers: Array<{ image: string; env: Array<{ name: string; value?: string }> }> } } } } }]> } } }).createNamespacedJob.mock.calls[0];
+    const createCall = (k8s.batch as unknown as { createNamespacedJob: { mock: { calls: Array<[{ namespace: string; body: { metadata: { name: string; labels: Record<string, string> }; spec: { template: { metadata: { labels: Record<string, string> }; spec: { containers: Array<{ image: string; env: Array<{ name: string; value?: string }> }> } } } } }]> } } }).createNamespacedJob.mock.calls[0];
     expect(createCall[0].namespace).toBe('platform');
     expect(createCall[0].body.metadata.labels['platform.phoenix-host.net/pitr-restore']).toBe('true');
     expect(createCall[0].body.metadata.labels['platform.phoenix-host.net/pitr-namespace']).toBe('platform');
+    // Pod-template MUST carry app=platform-api so the existing
+    // allow-platform-internal NetworkPolicy lets the Job reach postgres.
+    expect(createCall[0].body.spec.template.metadata.labels.app).toBe('platform-api');
     const envByName: Record<string, string | undefined> = {};
     for (const e of createCall[0].body.spec.template.spec.containers[0].env) {
       if (e.value !== undefined) envByName[e.name] = e.value;

@@ -1234,11 +1234,23 @@ export async function createPitrJob(
   // shares the ServiceAccount, secrets, and config. Source cluster
   // namespace is passed as a Job env var; not necessarily 'platform'.
   const jobNamespace = 'platform';
-  const labels = {
+  // The pod-template labels also include `app: platform-api` so the
+  // existing NetworkPolicy `allow-platform-internal` (selector
+  // `app in (dex,platform-api,postgres,redis)`) lets the Job pod
+  // reach postgres for its DB-backed lock. Without this, the Job pod
+  // hangs at SELECT 1 with "Connection terminated due to connection
+  // timeout" because default-deny-ingress on postgres blocks the
+  // unlabeled Job. The Job-CR-level labels (used by harness +
+  // recoverInterruptedRestore) only need pitr-restore + pitr-namespace.
+  const jobLabels = {
     'platform.phoenix-host.net/pitr-restore': 'true',
     'platform.phoenix-host.net/pitr-namespace': inputs.clusterNamespace,
     'app.kubernetes.io/part-of': 'hosting-platform',
     'app.kubernetes.io/component': 'pitr-job',
+  };
+  const podLabels = {
+    ...jobLabels,
+    app: 'platform-api',
   };
 
   const env: Array<Record<string, unknown>> = [
@@ -1260,7 +1272,7 @@ export async function createPitrJob(
   const body = {
     apiVersion: 'batch/v1',
     kind: 'Job',
-    metadata: { name: jobName, namespace: jobNamespace, labels },
+    metadata: { name: jobName, namespace: jobNamespace, labels: jobLabels },
     spec: {
       backoffLimit: 0,
       ttlSecondsAfterFinished: 86400,
@@ -1270,7 +1282,7 @@ export async function createPitrJob(
       // this, a hung Job would hold the lock forever.
       activeDeadlineSeconds: 1800,
       template: {
-        metadata: { labels },
+        metadata: { labels: podLabels },
         spec: {
           serviceAccountName: 'platform-api',
           restartPolicy: 'Never',
