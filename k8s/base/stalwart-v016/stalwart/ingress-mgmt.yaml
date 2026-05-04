@@ -39,14 +39,17 @@ metadata:
     # auth_request gate — same design as 0.15 webadmin-ingress.yaml
     nginx.ingress.kubernetes.io/auth-url: "http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/verify-admin-session"
     nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
-    nginx.ingress.kubernetes.io/auth-snippet: |
-      proxy_set_header Cookie $http_cookie;
-      proxy_set_header Authorization "";
-    # Stalwart's Leptos login POST /auth/token uses Content-Type: text/plain
-    # which trips OWASP CRS 920420 ("content type not allowed").
-    nginx.ingress.kubernetes.io/modsecurity-snippet: |
-      SecRule REQUEST_URI "@beginsWith /auth/token" \
-          "id:1100003,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
+    # NOTE: auth-snippet + modsecurity-snippet (both used by 0.15) are
+    # NOT used here. ingress-nginx 1.15+ ships with
+    # `allow-snippet-annotations: false` by default — letting any
+    # tenant Ingress inject arbitrary nginx config is a known cluster-
+    # wide privilege-escalation vector. The default Authorization
+    # header pass-through for nginx auth-request works for our
+    # cookie-based platform_session gate without explicit overrides.
+    # If a future Stalwart release reintroduces the
+    # Content-Type: text/plain login form that trips OWASP CRS 920420,
+    # add a per-host ingress-controller `modsecurity-rules` config
+    # entry rather than re-enabling per-Ingress snippets.
     # WebSocket support for live metrics / log streaming.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
