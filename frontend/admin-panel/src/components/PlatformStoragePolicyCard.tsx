@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Database, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Database, AlertTriangle, CheckCircle2, RefreshCw, Rocket } from 'lucide-react';
 import {
   usePlatformStoragePolicy,
   useUpdatePlatformStoragePolicy,
@@ -83,11 +83,13 @@ export default function PlatformStoragePolicyCard() {
       </p>
 
       {showRecommendBanner && (
-        <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 flex gap-3">
-          <AlertTriangle size={20} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <div className="text-sm text-amber-900 dark:text-amber-200">
-            <strong>Cluster reached HA size.</strong> {cluster.readyServerCount} of {cluster.totalNodeCount} server
-            nodes are in <strong>Ready state</strong>. Switch to <strong>High Availability Mode</strong> to
+        <div className="rounded-lg border border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/20 p-4 flex gap-3">
+          <Rocket size={20} className="text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+          <div className="text-sm text-purple-900 dark:text-purple-200">
+            <strong>Cluster reached HA size.</strong>
+            <br />
+            {cluster.readyServerCount} of {cluster.totalNodeCount} server nodes are in{' '}
+            <strong>Ready state</strong>. Switch to <strong>High Availability Mode</strong> to
             replicate platform volumes (System DB + Mail DB) and scale platform services to survive
             server node loss and enable <strong>Load Balancing</strong>. Reversible — switch back to{' '}
             <strong>Local Mode</strong> anytime.
