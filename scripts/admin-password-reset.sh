@@ -194,12 +194,16 @@ BEGIN;
 WITH updated AS (
   UPDATE users
     SET password_hash = '${HASH_ESC}',
-        -- Operator escape-hatch: a user that's been locked into 2FA
-        -- mode and lost all their passkeys is recovered by this
-        -- script. Clear passkey_mode so the new password alone can
-        -- log them back in. Existing passkeys (if any) are kept;
-        -- the user can re-enable 2FA in one click after login.
-        passkey_mode = NULL,
+        -- Operator escape-hatch is scoped to 2fa mode only:
+        --   * passkey_mode = '2fa'         → cleared (user locked
+        --     into 2FA + lost passkeys; CLI reset must be enough to
+        --     log them back in with a password alone).
+        --   * passkey_mode = 'alternative' → preserved (passkey is
+        --     an additional sign-in path, not a gate; resetting the
+        --     password shouldn't disturb that, the user still has
+        --     their passkey login working).
+        --   * passkey_mode IS NULL         → no-op.
+        passkey_mode = CASE WHEN passkey_mode = '2fa' THEN NULL ELSE passkey_mode END,
         updated_at = NOW()
     WHERE email = '${EMAIL_ESC}'
     RETURNING id
