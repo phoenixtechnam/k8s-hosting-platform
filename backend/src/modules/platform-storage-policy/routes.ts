@@ -7,6 +7,7 @@ import { updatePlatformStoragePolicySchema } from '@k8s-hosting/api-contracts';
 import { auditLogs, notifications, users } from '../../db/schema.js';
 import { inArray } from 'drizzle-orm';
 import { getPolicy, setPolicy, readClusterState, applyPolicy } from './service.js';
+import { readClusterCapacity } from './capacity-reconciler.js';
 
 export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -18,6 +19,23 @@ export async function platformStoragePolicyRoutes(app: FastifyInstance): Promise
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   // GET /api/v1/admin/platform-storage-policy
+  // GET /api/v1/admin/cluster-capacity
+  // Per-node Longhorn commitPct + cluster aggregate. Drives the
+  // top-of-page capacity banner in admin panel ("Storage at 92% —
+  // provisioning may fail"). Same data the capacity-reconciler tick
+  // uses to decide warning/critical notifications.
+  app.get('/admin/cluster-capacity', {
+    schema: {
+      tags: ['PlatformStoragePolicy'],
+      summary: 'Per-node Longhorn capacity (storageScheduled vs effective max) for the operator banner',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    return success(await readClusterCapacity(k8s));
+  });
+
   // Returns the current policy + observed cluster state
   // (server count, recommended tier, per-volume replica facts).
   app.get('/admin/platform-storage-policy', {

@@ -587,6 +587,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const storageAdvisorHandle = startStoragePolicyAdvisor(app.db, k8sForImapsync);
         app.addHook('onClose', () => storageAdvisorHandle.stop());
 
+        // Cluster-storage capacity reconciler — 5-min tick that emits
+        // admin notifications when any node OR the cluster as a whole
+        // crosses 80 % (warning) or 95 % (critical) commitPct. Catches
+        // the failure mode where new client provisioning / Apply HA
+        // scale-up SILENTLY fails because Longhorn precheck rejects
+        // ("insufficient storage") before the operator notices the
+        // cluster filled up.
+        const { startCapacityReconciler } = await import('./modules/platform-storage-policy/capacity-reconciler.js');
+        const capacityReconcilerHandle = startCapacityReconciler(app.db, k8sForImapsync);
+        app.addHook('onClose', () => capacityReconcilerHandle.stop());
+
         // System pod placement: pin Helm-installed singletons (Longhorn
         // CSI controllers, Calico typha + kube-controllers, Longhorn UI)
         // to server-role nodes, scale Calico typha with HA size, and

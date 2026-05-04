@@ -30,8 +30,35 @@ export interface StorageInventory {
     readonly total: number;
     readonly attached: number;
     readonly degraded: number;
+    /** Sum of every volume's spec.size — logical capacity. Includes
+     * orphans / detached volumes still pinning Longhorn replicas. */
     readonly capacityBytes: number;
+    /** Sum of every volume's status.actualSize — bytes actually written
+     * to disk. ALWAYS smaller than what Longhorn's scheduler reserves. */
     readonly allocatedBytes: number;
+  };
+  /**
+   * Cluster-wide capacity from Longhorn's scheduler perspective. This
+   * is the source of truth for "is there room to provision a new
+   * volume" — the older `volumes.allocatedBytes` (actual bytes written)
+   * is misleading because Longhorn reserves the FULL volume size as
+   * `scheduledBytes` when a replica is created, regardless of how
+   * much data is actually in it. The 5 GB-allocated vs 220 GB-scheduled
+   * discrepancy on 2026-05-04 staging was exactly this confusion.
+   *
+   * Each field is a sum across all schedulable disks on every Longhorn
+   * node (workers AND servers — UI may further split by node-role).
+   */
+  readonly scheduler: {
+    /** Sum of disk.storageMaximum minus operator-set storageReserved. */
+    readonly capacityBytes: number;
+    /** What Longhorn has reserved for live replicas (incl. orphan / detached). */
+    readonly scheduledBytes: number;
+    /** capacityBytes - scheduledBytes. New replicas can fit if their
+     * size is ≤ this (and at least one node has the space contiguously). */
+    readonly freeToScheduleBytes: number;
+    /** scheduledBytes / capacityBytes as a percentage 0..100. */
+    readonly commitPct: number;
   };
   /**
    * Orphaned volume summary — surfaces the count + total bytes that would
@@ -57,8 +84,14 @@ interface LonghornListResponse<T> {
 
 interface LonghornNode {
   metadata?: { name?: string };
-  spec?: { allowScheduling?: boolean };
-  status?: { conditions?: Array<{ type?: string; status?: string }> };
+  spec?: {
+    allowScheduling?: boolean;
+    disks?: Record<string, { allowScheduling?: boolean; storageReserved?: number }>;
+  };
+  status?: {
+    conditions?: Array<{ type?: string; status?: string }>;
+    diskStatus?: Record<string, { storageAvailable?: number; storageMaximum?: number; storageScheduled?: number }>;
+  };
 }
 
 interface LonghornVolume {
@@ -84,6 +117,7 @@ export async function getStorageInventory(db?: Database): Promise<StorageInvento
     message: 'Longhorn not reachable',
     nodes: { total: 0, ready: 0, schedulable: 0 },
     volumes: { total: 0, attached: 0, degraded: 0, capacityBytes: 0, allocatedBytes: 0 },
+    scheduler: { capacityBytes: 0, scheduledBytes: 0, freeToScheduleBytes: 0, commitPct: 0 },
     orphaned: { count: 0, totalBytes: 0 },
     backupTarget: { url: '', available: false, message: 'unknown' },
   };
@@ -122,9 +156,11 @@ export async function getStorageInventory(db?: Database): Promise<StorageInvento
       db ? detectOrphans(db, clients) : Promise.resolve(null),
     ]);
 
-    const nodes = nodesResp.status === 'fulfilled'
-      ? summariseNodes((nodesResp.value as LonghornListResponse<LonghornNode>).items ?? [])
-      : empty.nodes;
+    const nodeItems = nodesResp.status === 'fulfilled'
+      ? (nodesResp.value as LonghornListResponse<LonghornNode>).items ?? []
+      : [];
+    const nodes = summariseNodes(nodeItems);
+    const scheduler = summariseScheduler(nodeItems);
 
     const volumes = volumesResp.status === 'fulfilled'
       ? summariseVolumes((volumesResp.value as LonghornListResponse<LonghornVolume>).items ?? [])
@@ -142,12 +178,36 @@ export async function getStorageInventory(db?: Database): Promise<StorageInvento
       available: true,
       nodes,
       volumes,
+      scheduler,
       orphaned,
       backupTarget,
     };
   } catch (err) {
     return { ...empty, message: err instanceof Error ? err.message : 'k8s API failed' };
   }
+}
+
+function summariseScheduler(items: LonghornNode[]): StorageInventory['scheduler'] {
+  let capacityBytes = 0;
+  let scheduledBytes = 0;
+  for (const n of items) {
+    if (n.spec?.allowScheduling === false) continue;
+    for (const [diskKey, diskSpec] of Object.entries(n.spec?.disks ?? {})) {
+      if (diskSpec.allowScheduling === false) continue;
+      const stat = n.status?.diskStatus?.[diskKey] ?? {};
+      const max = stat.storageMaximum ?? 0;
+      const sched = stat.storageScheduled ?? 0;
+      const reserved = diskSpec.storageReserved ?? 0;
+      // Effective capacity = total disk minus operator reserve. Each
+      // node's "available for new replicas" budget is this minus the
+      // already-scheduled bytes; sum across nodes for the cluster view.
+      capacityBytes += Math.max(0, max - reserved);
+      scheduledBytes += sched;
+    }
+  }
+  const freeToScheduleBytes = Math.max(0, capacityBytes - scheduledBytes);
+  const commitPct = capacityBytes > 0 ? Math.round((scheduledBytes / capacityBytes) * 1000) / 10 : 0;
+  return { capacityBytes, scheduledBytes, freeToScheduleBytes, commitPct };
 }
 
 function summariseNodes(items: LonghornNode[]): StorageInventory['nodes'] {
