@@ -157,7 +157,7 @@ if [[ "$HTTP" = "200" ]]; then
   pass "restore lifecycle returned 200 with full step trace"
 
   echo "  waiting for stalwart pod to recover…"
-  for i in {1..30}; do
+  for _ in {1..30}; do
     if $KUBECTL get pod -n mail stalwart-mail-0 -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
       sleep 5
       break

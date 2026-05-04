@@ -111,7 +111,7 @@ SNAP=$(python3 -c 'import json; print(json.load(open("/tmp/snap-take.json"))["da
 [[ -n "$SNAP" ]] && pass "snapshot $SNAP requested" || fail "snapshot creation failed: $(cat /tmp/snap-take.json)"
 
 # Wait for snapshot to be ready
-for i in {1..30}; do
+for _ in {1..30}; do
   READY=$($KUBECTL get -n longhorn-system snapshot.longhorn.io "$SNAP" -o jsonpath='{.status.readyToUse}' 2>/dev/null || echo "")
   [[ "$READY" = "true" ]] && break
   sleep 2
@@ -149,7 +149,7 @@ pass "PITR async accepted in ${ELAPSED}s — orchestration started"
 log "7b) Poll status until orchestration completes (≤12 min)"
 START_POLL=$(date +%s)
 LAST_PHASE=""
-for i in {1..72}; do
+for _ in {1..72}; do
   IN_PROGRESS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
   CLUSTER_PHASE=$($KUBECTL get cluster -n platform postgres -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
   if [[ "$CLUSTER_PHASE" != "$LAST_PHASE" ]]; then

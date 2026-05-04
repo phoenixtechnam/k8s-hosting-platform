@@ -216,7 +216,8 @@ provision_on_worker() {
   done
   [[ "$status" == "provisioned" ]] || { echo "stuck at $status" >&2; return 1; }
 
-  local depl_name="t$(date +%s%N | tail -c 9)"
+  local depl_name
+  depl_name="t$(date +%s%N | tail -c 9)"
   api POST "/clients/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null
   for _ in $(seq 1 30); do
     local ns; ns=$(ssh_cp "kubectl get ns -l client=$cid -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || true)

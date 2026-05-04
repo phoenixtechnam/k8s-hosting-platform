@@ -64,6 +64,11 @@ for pattern in "${PATTERNS[@]}"; do
       `# These are bcrypt-hashed test users for OIDC login flows; the email is` \
       `# never sent and the password is hashed inline.` \
       | grep -vE '/dex/config\.yaml:.*email:.*@' \
+      `# Dev overlay (k8s/overlays/dev) uses literal k8s-platform.test for the` \
+      `# local DinD apex. local.sh applies the dev overlay with plain` \
+      `# kubectl apply -k (no envsubst), so ${DOMAIN} placeholders cannot be` \
+      `# substituted there — the literal is intentional and required.` \
+      | grep -vE '^\./k8s/overlays/dev/.*k8s-platform\.test' \
       || true
   )
   if [ -n "$matches" ]; then

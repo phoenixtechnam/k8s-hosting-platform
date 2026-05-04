@@ -639,6 +639,9 @@ scenario_mail() {
   # externalIP (staging3 = 89.167.3.56), NOT every cluster node. Defaulting
   # MAIL_HOST to CONTROL_HOST (staging2) sends traffic to a node where
   # Stalwart isn't listening → ECONNREFUSED on 587/993.
+  # shellcheck disable=SC2034 # Reserved for upcoming SMTP/IMAP probe
+  # additions to this scenario; keep here so the env override
+  # documentation in the comment above stays accurate.
   local mail_host="${MAIL_HOST:-89.167.3.56}"
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.phoenix-host.net}"

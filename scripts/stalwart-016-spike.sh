@@ -52,7 +52,10 @@ export DOCKER_HOST
 CONTAINER="stalwart-spike"
 PG_CONTAINER="stalwart-spike-pg"
 IMAGE="docker.io/stalwartlabs/stalwart:v0.16.3"
-CLI_IMAGE="docker.io/stalwartlabs/stalwart:v0.16.3"  # cli injected at runtime
+# shellcheck disable=SC2034 # CLI_IMAGE retained for future spike steps
+# that exec the cli inside a separate container; current spike uses the
+# pre-built stalwart-cli binary downloaded from GitHub releases (CLI_URL).
+CLI_IMAGE="docker.io/stalwartlabs/stalwart:v0.16.3"
 CLI_VERSION="v1.0.4"
 CLI_URL="https://github.com/stalwartlabs/cli/releases/download/${CLI_VERSION}/stalwart-cli-x86_64-unknown-linux-musl.tar.xz"
 # SHA256 of the tar.xz tarball, pinned 2026-05-03 from GitHub release.

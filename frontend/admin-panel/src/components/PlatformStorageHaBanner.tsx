@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Database, X } from 'lucide-react';
+import { Rocket, X } from 'lucide-react';
 import { usePlatformStoragePolicy } from '@/hooks/use-platform-storage-policy';
 
 // sessionStorage key — bumped if banner copy/scope changes so old
 // dismissals don't suppress a meaningfully-different recommendation.
-const DISMISS_KEY = 'platform-storage-ha-banner-dismissed-v2';
+const DISMISS_KEY = 'platform-storage-ha-banner-dismissed-v3';
 
 // Recommendation banner shown across every admin page when the cluster
 // has reached HA size (>=3 Ready servers) but platform storage is still
@@ -41,13 +41,14 @@ export default function PlatformStorageHaBanner() {
       data-testid="platform-storage-ha-banner"
       role="status"
       aria-live="polite"
-      className="mx-4 mt-4 lg:mx-6 lg:mt-6 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 px-4 py-3"
+      className="mx-4 mt-4 lg:mx-6 lg:mt-6 rounded-lg border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/30 px-4 py-3"
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
-          <Database size={16} className="shrink-0 text-amber-500 dark:text-amber-400" />
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-2 text-sm text-purple-800 dark:text-purple-200">
+          <Rocket size={16} className="mt-0.5 shrink-0 text-purple-500 dark:text-purple-400" />
           <span>
-            <strong>Cluster reached HA size.</strong>{' '}
+            <strong>Cluster reached HA size.</strong>
+            <br />
             {clusterState.readyServerCount} of {clusterState.totalNodeCount} server nodes are in{' '}
             <strong>Ready state</strong>. Switch to <strong>High Availability Mode</strong> to
             replicate platform volumes (System DB + Mail DB) and scale platform services to
@@ -60,7 +61,7 @@ export default function PlatformStorageHaBanner() {
           <Link
             to="/nodes-and-storage?tab=ha"
             data-testid="platform-storage-ha-banner-link"
-            className="text-sm font-medium underline text-amber-800 dark:text-amber-200"
+            className="text-sm font-medium underline text-purple-800 dark:text-purple-200"
           >
             Cluster Settings
           </Link>
@@ -68,7 +69,7 @@ export default function PlatformStorageHaBanner() {
             type="button"
             data-testid="platform-storage-ha-banner-dismiss"
             onClick={onDismiss}
-            className="rounded-md p-1 text-amber-600 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+            className="rounded-md p-1 text-purple-600 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
             aria-label="Dismiss HA recommendation"
           >
             <X size={16} />

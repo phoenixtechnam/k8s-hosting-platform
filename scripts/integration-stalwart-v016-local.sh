@@ -263,8 +263,8 @@ if [[ -n "${DOMAIN_ID:-}" ]]; then
     python3 -c "import sys,json; d=json.load(sys.stdin); ids=d['methodResponses'][0][1].get('ids',[]); print(','.join('\"'+i+'\"' for i in ids))" 2>/dev/null || echo "")
 
   if [[ -n "$DKIM_IDS" ]]; then
-    DEL_DKIM=$(jmap_call "$STALWART_POD" "$STALWART_ADMIN" "$STALWART_ADMIN_PW" \
-      "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:DkimSignature/set\",{\"accountId\":\"${ACCOUNT_ID}\",\"destroy\":[${DKIM_IDS}]},\"r0\"]]}")
+    jmap_call "$STALWART_POD" "$STALWART_ADMIN" "$STALWART_ADMIN_PW" \
+      "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:DkimSignature/set\",{\"accountId\":\"${ACCOUNT_ID}\",\"destroy\":[${DKIM_IDS}]},\"r0\"]]}" >/dev/null
     pass "DKIM signatures deleted"
   fi
 

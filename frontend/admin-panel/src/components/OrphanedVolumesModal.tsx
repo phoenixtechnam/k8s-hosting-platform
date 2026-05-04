@@ -113,6 +113,12 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
         });
       }
       setConfirmDelete(null);
+      // Explicit refetch — same effect as pressing the refresh button so
+      // the row disappears immediately (and the operator gets the fetch
+      // spinner in the header). The mutation already invalidates this
+      // query, but invalidation is best-effort + can race with staleTime;
+      // an explicit refetch is the visible-feedback guarantee.
+      await list.refetch();
     } catch { /* surfaced below */ }
   };
 
@@ -122,6 +128,8 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
       // the server's purge set matches the rows the operator saw.
       await purge.mutateAsync({ stalePvThresholdDays: stale });
       setConfirmPurge(false);
+      // Same reasoning as handleDelete — drive a visible refresh.
+      await list.refetch();
     } catch { /* surfaced below */ }
   };
 
