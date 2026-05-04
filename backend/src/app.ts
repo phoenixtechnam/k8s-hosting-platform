@@ -146,6 +146,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
     genReqId: () => crypto.randomUUID(),
     bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports
+    // trustProxy: nginx-ingress terminates TLS and forwards as HTTP
+    // to the platform-api pod. Without this, request.protocol returns
+    // "http" — which breaks OIDC because the redirect_uri sent to
+    // Dex is "http://admin.../callback" while Dex's static client
+    // only allows "https://admin.../callback" → "Unregistered
+    // redirect_uri." Surfaced by integration-oidc-dex.sh.
+    trustProxy: true,
   });
 
   // Plugins

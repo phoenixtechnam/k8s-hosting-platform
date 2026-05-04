@@ -69,6 +69,7 @@ suites=(
   "grow:integration-grow-e2e.sh"
   "lifecycle:integration-lifecycle-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
+  "oidc-dex:integration-oidc-dex.sh"
   "firewall:integration-firewall-e2e.sh"
   "system-snapshots:integration-system-snapshots.sh"
   "drain:integration-drain-e2e.sh"
