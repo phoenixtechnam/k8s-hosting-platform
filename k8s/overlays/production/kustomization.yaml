@@ -14,6 +14,21 @@ resources:
   # Included in production + staging only — dev DinD has no real etcd and
   # backups-against-local-path would be noise.
   - ../../base/backup
+  # Cut 3 (2026-05-04): Stalwart 0.16 mail server. Cutover from v015
+  # is operator-driven via scripts/cutover-stalwart-v015-to-v016.sh
+  # — when production cuts over, leave this entry uncommented.
+  - stalwart-v016/
+  # Roundcube webmail — always deployed alongside Stalwart on
+  # staging+production. Operator-bootstrap step creates the
+  # `roundcube-secrets` Secret + the `roundcube` PG database/role on
+  # the platform CNPG cluster (scripts/bootstrap.sh:create_roundcube_db).
+  - roundcube/
+  # Cross-namespace NetworkPolicy so mail-namespace pods (Stalwart,
+  # Roundcube, future MTA components) can reach platform Postgres.
+  - allow-mail-to-postgres-netpol.yaml
+  # Public-facing Ingress for webmail.${DOMAIN}. Substituted via Flux
+  # postBuild substituteFrom (platform-cluster-config / DOMAIN key).
+  - webmail-ingress.yaml
 
 # M1: pin all system workloads to nodes labelled
 # platform.phoenix-host.net/node-role=server. Operators MUST have

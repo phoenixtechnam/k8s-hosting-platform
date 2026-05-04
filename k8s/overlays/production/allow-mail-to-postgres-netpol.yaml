@@ -1,0 +1,34 @@
+# Allow Stalwart + Roundcube (mail ns) to reach Postgres (platform ns).
+#
+# Same shape as the staging/dev sibling. The base network-policies.yaml
+# in k8s/base has a default-deny-ingress on the platform namespace;
+# without this rule, in-cluster mail-side workloads can't reach the
+# platform CNPG primary, so Roundcube's session-store + Stalwart's
+# auth lookups time out.
+#
+# Scoped: only pods with `app=postgres` in platform ns accept ingress
+# from the entire mail namespace on 5432. The match is namespace-wide
+# rather than per-pod-label so future mail workloads (Roundcube,
+# additional MTA components) inherit it automatically.
+#
+# LOAD-BEARING: explicit `namespace: platform` is REQUIRED — see
+# staging sibling header for the full reasoning.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mail-to-postgres
+  namespace: platform
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+      ports:
+        - protocol: TCP
+          port: 5432

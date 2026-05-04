@@ -1,0 +1,73 @@
+# Cut 3 (2026-05-04): production overlay for Stalwart 0.16.
+#
+# Production cutover from v015 to v016 follows the same path staging
+# took (scripts/cutover-stalwart-v015-to-v016.sh). When operator is
+# ready to cut over production, run the script with --force after
+# uncommenting this overlay in the production kustomization.yaml.
+#
+# Differences from base:
+#   1. No externalIPs patch — production runs on multi-node clusters
+#      with a real LoadBalancer (MetalLB or hetzner-cloud-controller),
+#      so the base Service type=LoadBalancer is correct.
+#   2. ingress-mgmt: hardcode letsencrypt-prod-http01 cert-issuer +
+#      auth-signin redirect (matches staging pattern; same reasoning:
+#      ${CLUSTER_ISSUER_NAME} isn't in platform-cluster-config).
+#   3. Reloader watches the prod TLS cert Secret (rolled by cert-manager
+#      on LE renewal) so a pod restart picks up the new chain.
+#
+# Notes for the cutover operator:
+#   - mail-pg CNPG cluster lives in `mail` ns; bootstrap.sh creates
+#     mail-pg-app-credentials before Flux applies this overlay.
+#   - stalwart-admin-creds + platform-stalwart-creds (mirror) are
+#     operator-bootstrapped — see scripts/bootstrap.sh.
+#   - The bootstrap Job (stalwart-v016-bootstrap) is suspend:true in
+#     base; bootstrap.sh unsuspends it after rendering the plan.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/stalwart-v016
+
+patches:
+  # Hardcode cert-issuer (no ${CLUSTER_ISSUER_NAME} substitution from
+  # platform-cluster-config — only DOMAIN is exposed there). Same shape
+  # as staging overlay's patch.
+  - patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: stalwart-v016-webadmin
+        namespace: mail
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod-http01
+          nginx.ingress.kubernetes.io/auth-signin: "https://admin.${DOMAIN}/login?redirect=/settings/mail"
+      spec:
+        tls:
+          - hosts:
+              - stalwart.${DOMAIN}
+            secretName: stalwart-webadmin-prod-tls
+    target:
+      kind: Ingress
+      name: stalwart-v016-webadmin
+
+  # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
+  # MUST list ALL three Secrets — strategic-merge replaces the
+  # annotation value as a single string (not a list), so dropping any
+  # entry stops Reloader from watching it. Code-review CRITICAL fix
+  # (2026-05-04 staging cutover): early version listed only TLS+admin
+  # and silently dropped mail-pg-app-credentials, masking CNPG password
+  # rotations.
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+        annotations:
+          secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
+    target:
+      kind: Deployment
+      name: stalwart-mail-v016

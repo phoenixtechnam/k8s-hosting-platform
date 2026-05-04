@@ -19,6 +19,17 @@ spec:
   sourceRef:
     kind: GitRepository
     name: hosting-platform-stable
+  # Operator-domain templating — same path staging uses (see
+  # kustomization-staging.yaml). Production overlay's ingress-patch.yaml
+  # and platform-config-patch.yaml already reference ${DOMAIN}, so the
+  # ConfigMap is required for those to render correctly. bootstrap.sh
+  # creates platform-cluster-config in the flux-system namespace at
+  # install time.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-cluster-config
+        optional: false
   healthChecks:
     - apiVersion: apps/v1
       kind: Deployment
