@@ -487,16 +487,11 @@ interface RawPod {
  * drain. Three primary kinds of resources are surfaced:
  *
  *  1. nonSystemPods   — live Pods on this node that will be evicted
- *  2. pinnedWorkloads — Deployment/StatefulSet specs pinned here, even
- *                       when replicas=0 or pods are in unusual phases
- *                       (these are the re-pin targets the operator
- *                       actually wants to move)
- *  3. tenantPvcs      — Longhorn PVCs in tenant namespaces with a
- *                       replica on this node
- *
- * Each entry carries client attribution (clientId + clientName via the
- * platform DB's `clients.kubernetesNamespace` lookup) so the modal
- * shows a human label and a link to the client detail page.
+ *  2. pinnedClients   — tenant clients with pinned workloads OR PVCs on
+ *                       this node, aggregated by client (the unit of
+ *                       re-pinning per the lifecycle architecture)
+ *  3. longhornReplicas — every Longhorn replica record on this node,
+ *                       used for platform last-replica risk surfacing
  *
  * `db` is required for the client lookup; pass app.db.
  */
@@ -514,18 +509,26 @@ export async function buildDrainImpact(
     pinnedToThisNode: boolean;
     workloadKind: string | null; workloadName: string | null;
   }>;
-  pinnedWorkloads: Array<{
-    namespace: string; kind: 'Deployment' | 'StatefulSet'; name: string;
-    clientId: string | null; clientName: string | null;
-    replicas: number;
-    pinKind: 'nodeSelector' | 'nodeAffinity';
-  }>;
-  tenantPvcs: Array<{
-    namespace: string; pvcName: string; volumeName: string;
-    clientId: string | null; clientName: string | null;
-    sizeBytes: number; replicaCount: number;
-    isLastReplica: boolean;
-    currentNodeSelector: string[];
+  pinnedClients: Array<{
+    clientId: string;
+    clientName: string;
+    namespace: string;
+    storageTier: 'local' | 'ha';
+    currentWorkerNodeName: string | null;
+    workloads: Array<{
+      kind: 'Deployment' | 'StatefulSet';
+      name: string;
+      replicas: number;
+      pinKind: 'nodeSelector' | 'nodeAffinity';
+    }>;
+    pvcs: Array<{
+      pvcName: string;
+      volumeName: string;
+      sizeBytes: number;
+      replicaCount: number;
+      isLastReplica: boolean;
+      currentNodeSelector: string[];
+    }>;
   }>;
   longhornReplicas: Array<{
     volumeName: string;
@@ -550,17 +553,35 @@ export async function buildDrainImpact(
     throw err;
   }
 
-  // 2) Cluster-wide client lookup table (namespace → {id, name}).
+  // 2) Cluster-wide client lookup table (namespace → {id, name, tier, pin}).
   //    Single SELECT covers every tenant; cheaper than per-namespace queries.
+  //    storageTier and workerNodeName are needed by the pinnedClients
+  //    aggregation to render the per-client expand view + show the
+  //    operator the current pin (so they know what they're changing).
   const { clients: clientsTbl } = await import('../../db/schema.js');
   const clientRows = await db.select({
     id: clientsTbl.id,
     name: clientsTbl.companyName,
     ns: clientsTbl.kubernetesNamespace,
+    tier: clientsTbl.storageTier,
+    pin: clientsTbl.workerNodeName,
   }).from(clientsTbl);
-  const clientByNs = new Map<string, { id: string; name: string }>();
+  type ClientLite = {
+    id: string;
+    name: string;
+    tier: 'local' | 'ha';
+    pin: string | null;
+  };
+  const clientByNs = new Map<string, ClientLite>();
   for (const c of clientRows) {
-    if (c.ns) clientByNs.set(c.ns, { id: c.id, name: c.name });
+    if (c.ns) {
+      clientByNs.set(c.ns, {
+        id: c.id,
+        name: c.name,
+        tier: (c.tier as 'local' | 'ha') ?? 'local',
+        pin: c.pin ?? null,
+      });
+    }
   }
 
   // 3) Pods on this node (excluding terminal phase)
@@ -838,13 +859,83 @@ export async function buildDrainImpact(
     }
   }
 
+  // 7) Aggregate tenant pinned workloads + PVCs by client so the modal
+  //    can offer ONE re-pin target per client (matching the lifecycle
+  //    architecture: pinning is a client-level property in
+  //    clients.worker_node_name, propagated to every workload + volume
+  //    in the namespace by the orchestrator).
+  type ClientAgg = {
+    clientId: string;
+    clientName: string;
+    namespace: string;
+    storageTier: 'local' | 'ha';
+    currentWorkerNodeName: string | null;
+    workloads: Array<{
+      kind: 'Deployment' | 'StatefulSet';
+      name: string;
+      replicas: number;
+      pinKind: 'nodeSelector' | 'nodeAffinity';
+    }>;
+    pvcs: Array<{
+      pvcName: string;
+      volumeName: string;
+      sizeBytes: number;
+      replicaCount: number;
+      isLastReplica: boolean;
+      currentNodeSelector: string[];
+    }>;
+  };
+  const byClient = new Map<string, ClientAgg>();
+  const ensureClient = (clientId: string, ns: string): ClientAgg | null => {
+    const existing = byClient.get(clientId);
+    if (existing) return existing;
+    const c = clientByNs.get(ns);
+    if (!c) return null;
+    const agg: ClientAgg = {
+      clientId,
+      clientName: c.name,
+      namespace: ns,
+      storageTier: c.tier,
+      currentWorkerNodeName: c.pin,
+      workloads: [],
+      pvcs: [],
+    };
+    byClient.set(clientId, agg);
+    return agg;
+  };
+  for (const w of pinnedWorkloads) {
+    if (!w.clientId) continue;
+    const agg = ensureClient(w.clientId, w.namespace);
+    if (!agg) continue;
+    agg.workloads.push({
+      kind: w.kind,
+      name: w.name,
+      replicas: w.replicas,
+      pinKind: w.pinKind,
+    });
+  }
+  for (const p of tenantPvcs) {
+    if (!p.clientId) continue;
+    const agg = ensureClient(p.clientId, p.namespace);
+    if (!agg) continue;
+    agg.pvcs.push({
+      pvcName: p.pvcName,
+      volumeName: p.volumeName,
+      sizeBytes: p.sizeBytes,
+      replicaCount: p.replicaCount,
+      isLastReplica: p.isLastReplica,
+      currentNodeSelector: p.currentNodeSelector,
+    });
+  }
+  const pinnedClients = Array.from(byClient.values()).sort((a, b) =>
+    a.clientName.localeCompare(b.clientName));
+
   return {
     nodeName: name,
     alreadyCordoned,
     systemPods,
     nonSystemPods,
-    pinnedWorkloads,
-    tenantPvcs,
+    pinnedClients,
     longhornReplicas,
   };
 }
@@ -867,15 +958,21 @@ export async function drainNode(
   opts: {
     readonly forceLastReplica?: boolean;
     readonly gracePeriodSeconds?: number;
-    /** "<ns>/<kind>/<name>" → "" (auto) | "<targetNode>" | "stay" */
-    readonly workloadPlacement?: Record<string, string>;
-    /** "<volumeName>" → "" (auto) | "<targetNode>" */
-    readonly pvcPlacement?: Record<string, string>;
+    /**
+     * Per-client re-pin instructions. Key = clientId. Values:
+     *   ""        → clear the pin (auto)
+     *   "<node>"  → re-pin the entire client (workloads + volumes) to <node>
+     *   "stay"    → keep the pin on the draining node (drain refuses
+     *               unless forceLastReplica covers data risk)
+     * Any pinned client missing from the map defaults to "" (auto).
+     */
+    readonly clientPlacement?: Record<string, string>;
   },
 ): Promise<{
   cordoned: boolean;
   evicted: number;
   failed: Array<{ namespace: string; name: string; error: string }>;
+  rePinnedClients: number;
   rePinnedWorkloads: number;
   rePinnedPvcs: number;
 }> {
@@ -892,187 +989,182 @@ export async function drainNode(
     );
   }
 
-  // 1.5) Apply re-pin instructions BEFORE cordoning.
+  // 1.5) Apply CLIENT-LEVEL re-pin instructions BEFORE cordoning.
   //
-  // We read the existing Deployment / StatefulSet, mutate the
-  // nodeSelector map in-place (drop or set the hostname key), then
-  // write the entire map back via merge-patch. This avoids the
-  // strategic-merge "null deletes" trick whose behavior is fragile
-  // across content-type encodings — full map replacement is
-  // unambiguous regardless of which patch type the client picks.
+  // Pinning is a client-level property — clients.worker_node_name in
+  // the platform DB is the source of truth, and the orchestrator is
+  // responsible for ensuring every Deployment, StatefulSet, FM
+  // sidecar, and Longhorn volume in the client's namespace inherits
+  // that pin. The drain endpoint therefore takes one re-pin target
+  // per client and applies it consistently across the entire
+  // namespace, rather than letting the operator pick conflicting
+  // targets per-workload (which would violate the lifecycle
+  // architecture).
   //
-  // Race note: between this patch and the eviction in step 3, the
-  // Deployment controller has milliseconds to roll the new template.
-  // The new pod usually schedules on the chosen target, but under
-  // load it can land elsewhere (the ReplicaSet snapshot may still
-  // reflect the old template when the eviction's replacement pod
-  // is created). Documented; operator must verify post-drain.
-  // Auto-fill: any pinned workload / tenant PVC the caller didn't
-  // explicitly target gets "" (auto = clear pin → scheduler/Longhorn
-  // chooses a peer). Without this, an API caller passing empty maps
-  // (curl, scripts, or a UI that forgets to populate them) cordons
-  // the node and evicts pods but leaves their nodeSelector pointing
-  // at the cordoned host — pods come back Pending. The React UI also
-  // does this client-side; doing it server-side too means *every*
-  // caller is correct, not just the modal.
-  const workloadPlacement: Record<string, string> = { ...(opts.workloadPlacement ?? {}) };
-  for (const w of impact.pinnedWorkloads) {
-    const k = `${w.namespace}/${w.kind}/${w.name}`;
-    if (!(k in workloadPlacement)) workloadPlacement[k] = '';
-  }
-  const pvcPlacement: Record<string, string> = { ...(opts.pvcPlacement ?? {}) };
-  for (const p of impact.tenantPvcs) {
-    if (!(p.volumeName in pvcPlacement)) pvcPlacement[p.volumeName] = '';
+  // Auto-fill: any client present in pinnedClients but not in the
+  // request gets "" (auto = clear pin → scheduler/Longhorn picks).
+  // Without this, an API caller passing an empty map cordons the
+  // node and evicts pods but leaves their nodeSelector pointing at
+  // the cordoned host — pods come back Pending.
+  const clientPlacement: Record<string, string> = { ...(opts.clientPlacement ?? {}) };
+  for (const c of impact.pinnedClients) {
+    if (!(c.clientId in clientPlacement)) clientPlacement[c.clientId] = '';
   }
 
-  let rePinnedWorkloads = 0;
-  let rePinnedDbSyncFailures = 0;
-  for (const [key, target] of Object.entries(workloadPlacement)) {
-    const parts = key.split('/');
-    if (parts.length !== 3) continue;
-    const [ns, kind, wname] = parts;
-    if (target === 'stay') continue;
-
-    interface RawWorkload {
-      spec?: { template?: { spec?: { nodeSelector?: Record<string, string> } } };
-    }
-    let live: RawWorkload | null = null;
+  // Validate target nodes referenced by the operator BEFORE doing any
+  // patches — a typo'd node name shouldn't leave the cluster half-
+  // converted. We skip 'stay' and '' (auto) since they don't refer
+  // to a target node.
+  const referencedTargets = new Set<string>();
+  for (const t of Object.values(clientPlacement)) {
+    if (t && t !== 'stay') referencedTargets.add(t);
+  }
+  for (const target of referencedTargets) {
     try {
-      if (kind === 'Deployment') {
-        live = await k8s.apps.readNamespacedDeployment({ namespace: ns, name: wname }) as RawWorkload;
-      } else if (kind === 'StatefulSet') {
-        live = await k8s.apps.readNamespacedStatefulSet({ namespace: ns, name: wname }) as RawWorkload;
-      }
+      await k8s.custom.getNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'nodes', name: target,
+      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]);
     } catch (err) {
-      console.warn(`[nodes] re-pin read ${kind}/${wname} in ${ns} failed:`, (err as Error).message);
-      continue;
-    }
-    if (!live) continue;
-
-    // Build a JSON-Merge-Patch (RFC 7396) body. With merge-patch, null
-    // on a key means "delete this key from the target," which is
-    // exactly how we clear an auto-pin while preserving any other
-    // operator-set selector keys. Strategic-merge would silently
-    // merge {} into the existing selector — leaving the cordoned
-    // hostname in place — which is the bug that broke this drain
-    // path on staging (rePinnedWorkloads counted, but the hostname
-    // selector never actually cleared).
-    const selectorPatch: Record<string, string | null> =
-      target === ''
-        ? { 'kubernetes.io/hostname': null }
-        : { 'kubernetes.io/hostname': target };
-
-    const body = {
-      spec: {
-        template: {
-          spec: { nodeSelector: selectorPatch },
-        },
-      },
-    };
-    try {
-      if (kind === 'Deployment') {
-        await k8s.apps.patchNamespacedDeployment({
-          namespace: ns, name: wname, body,
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-          MERGE_PATCH);
-      } else if (kind === 'StatefulSet') {
-        await k8s.apps.patchNamespacedStatefulSet({
-          namespace: ns, name: wname, body,
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
-          MERGE_PATCH);
+      const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
+      if (status === 404) {
+        throw new ApiError(
+          'NODE_REPIN_TARGET_NOT_FOUND',
+          `Target node '${target}' not found in Longhorn — cannot re-pin to a non-existent node.`,
+          400,
+          { target },
+        );
       }
-      // Also persist the platform-side pin record so the next deploy
-      // doesn't snap back. Best-effort — failure logged + counted but
-      // not fatal (the k8s patch IS the source of truth at runtime).
-      try {
-        const { clients: clientsTbl } = await import('../../db/schema.js');
-        const clientRow = await db.select({ id: clientsTbl.id })
-          .from(clientsTbl)
-          .where(eq(clientsTbl.kubernetesNamespace, ns))
-          .limit(1);
-        if (clientRow[0]) {
-          await db.update(clientsTbl)
-            .set({ workerNodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
-            .where(eq(clientsTbl.id, clientRow[0].id));
-        } else {
-          rePinnedDbSyncFailures += 1;
-          console.warn(`[nodes] re-pin DB sync skipped — no clients row for namespace ${ns} (orphaned workload?)`);
-        }
-      } catch (err) {
-        rePinnedDbSyncFailures += 1;
-        console.warn(`[nodes] platform pin DB sync failed for ${ns}:`, (err as Error).message);
-      }
-      rePinnedWorkloads += 1;
-    } catch (err) {
-      console.warn(`[nodes] re-pin ${kind}/${wname} in ${ns} failed:`, (err as Error).message);
     }
   }
 
-  // 1.6) Apply tenant PVC re-pin instructions.
-  //
-  // Longhorn Volume.spec.nodeSelector is matched against
-  // `node.longhorn.io.spec.tags` — NOT against k8s hostname labels.
-  // To pin a tenant volume to a specific worker we therefore have to:
-  //   (a) ensure the target Longhorn Node CR carries the per-host tag
-  //       `node-<hostname>` (idempotent — patched at drain-time)
-  //   (b) write that tag into the Volume's spec.nodeSelector
-  //
-  // For "auto" (target === ''), we just clear the selector → Longhorn
-  // schedules anywhere except the draining node (which Longhorn skips
-  // automatically once the disk is in eviction mode + cordoned).
-  let rePinnedPvcs = 0;
+  // Per-host Longhorn tag tracking — we add the tag to the target
+  // Longhorn Node CR exactly once even when several clients are
+  // re-pinned to it.
   const PER_HOST_TAG_PREFIX = 'node-';
-  for (const [volumeName, target] of Object.entries(pvcPlacement)) {
-    if (target === 'stay') continue;
+  const taggedTargets = new Set<string>();
+  const ensureLonghornHostTag = async (target: string): Promise<string> => {
+    const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
+    if (taggedTargets.has(target)) return hostTag;
+    const existing = await k8s.custom.getNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'nodes', name: target,
+    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
+    const currentTags = existing.spec?.tags ?? [];
+    if (!currentTags.includes(hostTag)) {
+      await k8s.custom.patchNamespacedCustomObject({
+        group: 'longhorn.io', version: 'v1beta2',
+        namespace: 'longhorn-system', plural: 'nodes', name: target,
+        body: { spec: { tags: [...currentTags, hostTag] } },
+      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+        MERGE_PATCH);
+    }
+    taggedTargets.add(target);
+    return hostTag;
+  };
 
+  let rePinnedClients = 0;
+  let rePinnedWorkloads = 0;
+  let rePinnedPvcs = 0;
+
+  // Lookup workloads + PVCs by namespace once — buildDrainImpact
+  // already has them grouped by client.
+  const clientById = new Map(impact.pinnedClients.map((c) => [c.clientId, c]));
+
+  // Order of operations per client (matters for partial-failure recovery):
+  //   (a) Pre-flight: ensure the target Longhorn Node CR carries the
+  //       per-host tag. This is the most likely fail-fast step (CRD
+  //       not installed, Longhorn API down, target node missing tag-
+  //       management permission). Doing it first means a failure
+  //       leaves zero state mutated for this client.
+  //   (b) Patch every Longhorn volume in the namespace.
+  //   (c) Patch every Deployment + StatefulSet in the namespace.
+  //   (d) Update clients.worker_node_name in the DB so the next
+  //       reconciler tick / next deploy doesn't snap back.
+  //
+  // If (b) or (c) partially fails, the orchestrator's next reconciler
+  // tick re-derives state from clients.worker_node_name (already
+  // updated in (d)) and brings the cluster back into shape. Doing
+  // (d) last is therefore important — if it ran first and (b)/(c)
+  // fully failed, the DB would advertise a pin the cluster never
+  // accepted and the next deploy would inherit the wrong node.
+  for (const [clientId, target] of Object.entries(clientPlacement)) {
+    if (target === 'stay') continue;
+    const c = clientById.get(clientId);
+    if (!c) continue; // operator targeted a client that has no pins on this node — no-op
+    const ns = c.namespace;
+
+    // (a) Resolve the Longhorn host-tag for the target. Failure here
+    //     skips the entire client — none of (b)/(c)/(d) run, so no
+    //     partial state.
     let nextSelector: string[] = [];
     if (target !== '') {
-      const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
-      // Add the tag to the target Longhorn Node CR (idempotent — read
-      // existing tags first, append if missing). Treats the target node
-      // not existing as a fatal error so the operator hears about it
-      // rather than silently stranding the volume.
       try {
-        const existing = await k8s.custom.getNamespacedCustomObject({
-          group: 'longhorn.io', version: 'v1beta2',
-          namespace: 'longhorn-system', plural: 'nodes', name: target,
-        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
-        const currentTags = existing.spec?.tags ?? [];
-        if (!currentTags.includes(hostTag)) {
-          await k8s.custom.patchNamespacedCustomObject({
-            group: 'longhorn.io', version: 'v1beta2',
-            namespace: 'longhorn-system', plural: 'nodes', name: target,
-            body: { spec: { tags: [...currentTags, hostTag] } },
-          } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-            MERGE_PATCH);
-        }
-        nextSelector = [hostTag];
+        nextSelector = [await ensureLonghornHostTag(target)];
       } catch (err) {
-        const status = (err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode;
-        if (status === 404) {
-          throw new ApiError(
-            'NODE_REPIN_TARGET_NOT_FOUND',
-            `Target node '${target}' not found in Longhorn — cannot re-pin volume ${volumeName}.`,
-            400,
-            { volumeName, target },
-          );
-        }
-        console.warn(`[nodes] PVC re-pin ${volumeName} → ${target} (tag step) failed:`, (err as Error).message);
+        console.warn(`[nodes] re-pin client=${clientId} target tag step on ${target} failed (skipping client):`, (err as Error).message);
         continue;
       }
     }
 
-    try {
-      await k8s.custom.patchNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'volumes',
-        name: volumeName, body: { spec: { nodeSelector: nextSelector } },
-      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-        MERGE_PATCH);
-      rePinnedPvcs += 1;
-    } catch (err) {
-      console.warn(`[nodes] PVC re-pin ${volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
+    // (b) Patch every Longhorn volume in the namespace.
+    for (const p of c.pvcs) {
+      try {
+        await k8s.custom.patchNamespacedCustomObject({
+          group: 'longhorn.io', version: 'v1beta2',
+          namespace: 'longhorn-system', plural: 'volumes',
+          name: p.volumeName, body: { spec: { nodeSelector: nextSelector } },
+        } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
+          MERGE_PATCH);
+        rePinnedPvcs += 1;
+      } catch (err) {
+        console.warn(`[nodes] re-pin client=${clientId} volume=${p.volumeName} → ${target || 'auto'} failed:`, (err as Error).message);
+      }
     }
+
+    // (c) Patch every Deployment + StatefulSet in the namespace.
+    //     MERGE_PATCH (RFC 7396) so null on a key deletes it — the
+    //     only patch type that reliably clears the hostname selector
+    //     when target=''. Strategic-merge silently merges {} into the
+    //     existing map.
+    const selectorPatch: Record<string, string | null> =
+      target === ''
+        ? { 'kubernetes.io/hostname': null }
+        : { 'kubernetes.io/hostname': target };
+    const body = { spec: { template: { spec: { nodeSelector: selectorPatch } } } };
+
+    for (const w of c.workloads) {
+      try {
+        if (w.kind === 'Deployment') {
+          await k8s.apps.patchNamespacedDeployment({
+            namespace: ns, name: w.name, body,
+          } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+            MERGE_PATCH);
+        } else {
+          await k8s.apps.patchNamespacedStatefulSet({
+            namespace: ns, name: w.name, body,
+          } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
+            MERGE_PATCH);
+        }
+        rePinnedWorkloads += 1;
+      } catch (err) {
+        console.warn(`[nodes] re-pin client=${clientId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+      }
+    }
+
+    // (d) Persist the new pin in the platform DB. Done LAST so the DB
+    //     never advertises a pin the cluster failed to accept; if (b)
+    //     or (c) partially failed, the reconciler reads this row on
+    //     its next tick and re-applies the patches.
+    try {
+      const { clients: clientsTbl } = await import('../../db/schema.js');
+      await db.update(clientsTbl)
+        .set({ workerNodeName: target === '' ? null : target, updatedAt: sql`NOW()` })
+        .where(eq(clientsTbl.id, clientId));
+    } catch (err) {
+      console.warn(`[nodes] platform pin DB sync failed for client=${clientId}:`, (err as Error).message);
+    }
+    rePinnedClients += 1;
   }
 
   // 2) Cordon (idempotent — patch unschedulable=true).
@@ -1136,7 +1228,7 @@ export async function drainNode(
     }
   }
 
-  return { cordoned, evicted, failed, rePinnedWorkloads, rePinnedPvcs };
+  return { cordoned, evicted, failed, rePinnedClients, rePinnedWorkloads, rePinnedPvcs };
 }
 
 /**

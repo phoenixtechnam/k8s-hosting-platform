@@ -23,23 +23,23 @@
 #
 #   Drain preview (impact endpoint)
 #     5. GET /admin/nodes/W/drain-impact:
-#         - pinnedWorkloads contains both tenant Deployments.
-#         - tenantPvcs contains both tenant PVCs.
-#         - For LOCAL: tenantPvcs[].isLastReplica=true (only 1 replica).
-#         - For HA   : tenantPvcs[].isLastReplica=false (2 replicas).
+#         - pinnedClients[] contains both tenants (each with nested
+#           workloads[] + pvcs[]).
+#         - For LOCAL client: pvcs[0].isLastReplica=true (1 replica).
+#         - For HA    client: pvcs[0].isLastReplica=false (2 replicas).
+#         - currentWorkerNodeName=W on both clients.
 #         - alreadyCordoned=false.
 #
 #   Drain execution
 #     6. POST /admin/nodes/W/drain with:
 #         - forceLastReplica=true   (LOCAL tenant blocks otherwise)
-#         - workloadPlacement = {} (empty — tests that backend's
-#           "auto-fill on submit" lands a placement for every entry,
-#           per fix a79420d)
-#         - pvcPlacement = {}
+#         - clientPlacement = {} (empty — exercises the server-side
+#           auto-fill that defaults every pinned client to "" / auto)
 #        Asserts response: cordoned=true, evicted ≥ 4,
-#        rePinnedWorkloads ≥ 2, rePinnedPvcs ≥ 2 (one per client).
-#     7. GET drain-impact again → alreadyCordoned=true, pinnedWorkloads
-#        and tenantPvcs both empty (everything moved off W).
+#        rePinnedClients ≥ 2 (one per tenant), rePinnedWorkloads + PVCs
+#        ≥ the per-client sums observed in step 5.
+#     7. GET drain-impact again → alreadyCordoned=true, pinnedClients
+#        empty (every workload + PVC has left W).
 #
 #   Live verification
 #     8. Within 120 s every tenant pod (tenant + FM × 2 clients) is
@@ -270,58 +270,73 @@ H_FM_NODE=$(pods_on_node "$HA_NS" "app=file-manager" | head -1)
 [[ "$H_FM_NODE"     == "$WORKER_NODE" ]] && ok "HA FM on W"         || fail "HA FM on $H_FM_NODE"
 
 # ─── Drain impact preview ────────────────────────────────────────────
-# pinnedWorkloads / tenantPvcs counts are non-deterministic on a
-# multi-tenant cluster: HA tier uses preferredDuringScheduling
-# (counted as nodeAffinity pins), the FM patches onto each tenant
-# asynchronously, and the impact-endpoint only sees pins that have
-# already been applied. So we assert ≥1 (the LOCAL-tier hostname
-# pin is always present) and capture the number we observe — the
-# subsequent drain assertion then checks that EVERY pin observed
-# here gets handled, regardless of the exact count.
+# Pinning is now a CLIENT-LEVEL property, so the impact endpoint
+# returns a single `pinnedClients[]` collection (each client carries
+# its workloads + PVCs nested for the modal's expand view). We assert
+# both tenants are present, capture their per-client workload + PVC
+# counts, and verify isLastReplica per tier.
 log "── GET /admin/nodes/$WORKER_NODE/drain-impact (preview) ──"
 IMPACT=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
 ALREADY_CORDONED=$(echo "$IMPACT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
-PINNED_COUNT=$(echo "$IMPACT" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedWorkloads']))" 2>/dev/null)
-TENANT_PVC_COUNT=$(echo "$IMPACT" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['tenantPvcs']))" 2>/dev/null)
+CLIENTS_PINNED=$(echo "$IMPACT" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+SUM_WORKLOADS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+SUM_PVCS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
 [[ "$ALREADY_CORDONED" == "False" ]] && ok "alreadyCordoned=false" || fail "alreadyCordoned=$ALREADY_CORDONED (expected false)"
-[[ "$PINNED_COUNT"     -ge 1     ]]    && ok "pinnedWorkloads=$PINNED_COUNT (≥1)" || fail "pinnedWorkloads=$PINNED_COUNT (expected ≥1 — LOCAL tenant is always pinned)"
-[[ "$TENANT_PVC_COUNT" -ge 2     ]]    && ok "tenantPvcs=$TENANT_PVC_COUNT (≥2)"  || fail "tenantPvcs=$TENANT_PVC_COUNT (expected ≥2)"
+[[ "$CLIENTS_PINNED"   -ge 2     ]]    && ok "pinnedClients=$CLIENTS_PINNED (≥2 — LOCAL + HA)" || fail "pinnedClients=$CLIENTS_PINNED (expected ≥2)"
+[[ "$SUM_WORKLOADS"    -ge 1     ]]    && ok "Σ workloads across pinnedClients = $SUM_WORKLOADS" || fail "no pinned workloads (expected ≥1 from LOCAL tenant)"
+[[ "$SUM_PVCS"         -ge 2     ]]    && ok "Σ pvcs across pinnedClients = $SUM_PVCS"          || fail "Σ pvcs=$SUM_PVCS (expected ≥2 — both tenants have storage)"
 
-# LOCAL volume should mark isLastReplica=true (single replica),
-# HA volume isLastReplica=false (2 replicas, drain has a peer).
+# LOCAL client's PVC isLastReplica=true (1 replica, single tier);
+# HA client's PVC isLastReplica=false (2 replicas).
 LOCAL_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
-for p in d['tenantPvcs']:
-    if p['volumeName'] == '$LOCAL_PV': print(p['isLastReplica']); break
+for c in d['pinnedClients']:
+    if c['clientId'] == '$LOCAL_CID':
+        for p in c['pvcs']:
+            if p['volumeName'] == '$LOCAL_PV': print(p['isLastReplica']); break
+        break
 " 2>/dev/null)
 HA_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
-for p in d['tenantPvcs']:
-    if p['volumeName'] == '$HA_PV': print(p['isLastReplica']); break
+for c in d['pinnedClients']:
+    if c['clientId'] == '$HA_CID':
+        for p in c['pvcs']:
+            if p['volumeName'] == '$HA_PV': print(p['isLastReplica']); break
+        break
 " 2>/dev/null)
-[[ "$LOCAL_LAST_REPL" == "True"  ]] && ok "LOCAL volume isLastReplica=true"  || fail "LOCAL isLastReplica=$LOCAL_LAST_REPL (expected true — single replica tier)"
-[[ "$HA_LAST_REPL"    == "False" ]] && ok "HA volume isLastReplica=false"    || fail "HA isLastReplica=$HA_LAST_REPL (expected false — 2 replicas)"
+[[ "$LOCAL_LAST_REPL" == "True"  ]] && ok "LOCAL client's volume isLastReplica=true"  || fail "LOCAL isLastReplica=$LOCAL_LAST_REPL (expected true — single replica tier)"
+[[ "$HA_LAST_REPL"    == "False" ]] && ok "HA client's volume isLastReplica=false"   || fail "HA isLastReplica=$HA_LAST_REPL (expected false — 2 replicas)"
+
+# Each client's currentWorkerNodeName should equal W (we pinned them on create).
+LOCAL_CUR_PIN=$(echo "$IMPACT" | python3 -c "
+import json, sys
+for c in json.load(sys.stdin)['data']['pinnedClients']:
+    if c['clientId'] == '$LOCAL_CID': print(c['currentWorkerNodeName']); break
+" 2>/dev/null)
+[[ "$LOCAL_CUR_PIN" == "$WORKER_NODE" ]] && ok "LOCAL client's currentWorkerNodeName=$LOCAL_CUR_PIN" \
+  || fail "LOCAL currentWorkerNodeName=$LOCAL_CUR_PIN (expected $WORKER_NODE)"
 
 # ─── Drain ───────────────────────────────────────────────────────────
-# Empty workloadPlacement / pvcPlacement on purpose: this exercises
-# the auto-fill-on-submit fix (a79420d). With force=true the LOCAL
-# last-replica guard is bypassed.
-log "── POST /admin/nodes/$WORKER_NODE/drain (empty placement, force) ──"
+# Empty clientPlacement on purpose: this exercises the server-side
+# auto-fill — every pinned client gets "" (auto = clear pin) when
+# the request body is empty. With force=true the LOCAL last-replica
+# guard is bypassed.
+log "── POST /admin/nodes/$WORKER_NODE/drain (empty clientPlacement, force) ──"
 DRAIN_RESP=$(api POST "/admin/nodes/$WORKER_NODE/drain" '{"forceLastReplica":true}')
 DRAIN_CORDONED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['cordoned'])" 2>/dev/null)
 DRAIN_EVICTED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['evicted'])" 2>/dev/null)
+DRAIN_REPIN_C=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedClients'])" 2>/dev/null)
 DRAIN_REPIN_W=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedWorkloads'])" 2>/dev/null)
 DRAIN_REPIN_P=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedPvcs'])" 2>/dev/null)
 HARNESS_CORDONED_NODE="true"
 
 [[ "$DRAIN_CORDONED" == "True" ]] && ok "drain.cordoned=true" || fail "drain.cordoned=$DRAIN_CORDONED"
 [[ "$DRAIN_EVICTED"  -ge 4    ]] && ok "drain.evicted=$DRAIN_EVICTED (≥4)" || fail "drain.evicted=$DRAIN_EVICTED (expected ≥4 — 2 tenants + 2 FMs)"
-# Every pin the preview saw should be re-pinned by drain; auto-fill
-# is the assertion target. PVCs the same.
-[[ "$DRAIN_REPIN_W"  -ge "$PINNED_COUNT"     ]] && ok "drain.rePinnedWorkloads=$DRAIN_REPIN_W covers preview's $PINNED_COUNT pinned workload(s)" || fail "drain.rePinnedWorkloads=$DRAIN_REPIN_W < preview pinnedWorkloads=$PINNED_COUNT (auto-fill missed entries)"
-[[ "$DRAIN_REPIN_P"  -ge "$TENANT_PVC_COUNT" ]] && ok "drain.rePinnedPvcs=$DRAIN_REPIN_P covers preview's $TENANT_PVC_COUNT tenant PVC(s)"     || fail "drain.rePinnedPvcs=$DRAIN_REPIN_P < preview tenantPvcs=$TENANT_PVC_COUNT"
+[[ "$DRAIN_REPIN_C"  -ge "$CLIENTS_PINNED" ]] && ok "drain.rePinnedClients=$DRAIN_REPIN_C covers preview's $CLIENTS_PINNED pinned client(s)" || fail "drain.rePinnedClients=$DRAIN_REPIN_C < preview pinnedClients=$CLIENTS_PINNED (server-side auto-fill missed)"
+[[ "$DRAIN_REPIN_W"  -ge "$SUM_WORKLOADS" ]] && ok "drain.rePinnedWorkloads=$DRAIN_REPIN_W covers preview's $SUM_WORKLOADS workload(s)"   || fail "drain.rePinnedWorkloads=$DRAIN_REPIN_W < preview Σ workloads=$SUM_WORKLOADS"
+[[ "$DRAIN_REPIN_P"  -ge "$SUM_PVCS"      ]] && ok "drain.rePinnedPvcs=$DRAIN_REPIN_P covers preview's $SUM_PVCS PVC(s)"                  || fail "drain.rePinnedPvcs=$DRAIN_REPIN_P < preview Σ pvcs=$SUM_PVCS"
 
 # ─── Wait for everyone to leave W ────────────────────────────────────
 log "── waiting up to 120s for workloads to land off W ──"
@@ -392,29 +407,41 @@ HA_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $HA_PV 
 # counts tenant PVCs with ANY non-deleted replica on the node, so
 # we poll for up to 90 s before asserting.
 log "── drain-impact reflects post-drain state ──"
-ALREADY_CORDONED2=""; PINNED2=""; TPVCS2=""
+ALREADY_CORDONED2=""; CLIENTS2=""; SUM_W2=""; SUM_P2=""
 for _ in $(seq 1 60); do
   IMPACT2=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
   ALREADY_CORDONED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
-  PINNED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedWorkloads']))" 2>/dev/null)
-  TPVCS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['tenantPvcs']))" 2>/dev/null)
-  [[ "$PINNED2" -eq 0 && "$TPVCS2" -eq 0 ]] && break
+  CLIENTS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+  SUM_W2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+  SUM_P2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+  [[ "$SUM_W2" -eq 0 && "$SUM_P2" -eq 0 ]] && break
   sleep 3
 done
 [[ "$ALREADY_CORDONED2" == "True" ]] && ok "alreadyCordoned=true after drain" || fail "alreadyCordoned=$ALREADY_CORDONED2"
-[[ "$PINNED2" -eq 0 ]] && ok "pinnedWorkloads=0 after drain" || fail "pinnedWorkloads=$PINNED2 (expected 0 — workloads should have left W)"
+[[ "$SUM_W2" -eq 0 ]] && ok "Σ workloads on W = 0 after drain" || fail "Σ workloads=$SUM_W2 (expected 0 — workloads should have left W)"
 # Accept up to 1 PVC still showing 3 minutes after drain — Longhorn
-# replica record GC is best-effort and can stall under load. Strict
-# 0 expectation flapped on staging when other suites contended for
-# Longhorn API throughput. The strict assertion (0 PVCs) is
-# preferred when the cluster is idle.
-if [[ "$TPVCS2" -eq 0 ]]; then
-  ok "tenantPvcs=0 after drain (Longhorn replica GC complete)"
-elif [[ "$TPVCS2" -le 1 ]]; then
-  warn "tenantPvcs=$TPVCS2 after drain — Longhorn replica record GC still pending after 180 s; the active replicas DID move (verified above)"
+# replica record GC is best-effort and can stall under load.
+if [[ "$SUM_P2" -eq 0 ]]; then
+  ok "Σ pvcs on W = 0 after drain (Longhorn replica GC complete) — pinnedClients=$CLIENTS2"
+elif [[ "$SUM_P2" -le 1 ]]; then
+  warn "Σ pvcs=$SUM_P2 after drain — Longhorn replica record GC still pending after 180 s; the active replicas DID move (verified above)"
 else
-  fail "tenantPvcs=$TPVCS2 after drain (expected ≤1 — replica cleanup stalled)"
+  fail "Σ pvcs=$SUM_P2 after drain (expected ≤1 — replica cleanup stalled)"
 fi
+
+# ─── Client-level pin: DB row reflects new state ─────────────────────
+# The drain endpoint now updates clients.worker_node_name in the
+# platform DB (the source of truth for "this client is pinned to
+# node X") so subsequent deploys / orchestrator reconciles inherit
+# the new pin. With auto-fill (target=""), both clients should land
+# on worker_node_name=null.
+log "── client-level pin propagation ──"
+LOCAL_DB_PIN=$(api GET "/clients/$LOCAL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
+HA_DB_PIN=$(api GET "/clients/$HA_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName') or 'NULL')" 2>/dev/null)
+[[ "$LOCAL_DB_PIN" == "NULL" ]] && ok "LOCAL clients.worker_node_name cleared (auto-pin propagated to DB)" \
+  || fail "LOCAL clients.worker_node_name=$LOCAL_DB_PIN (expected NULL after auto re-pin)"
+[[ "$HA_DB_PIN"    == "NULL" ]] && ok "HA clients.worker_node_name cleared" \
+  || fail "HA clients.worker_node_name=$HA_DB_PIN (expected NULL after auto re-pin)"
 
 # ─── HTTP probe — Service still answers after drain ──────────────────
 log "── HTTP smoke through tenant Service (post-drain) ──"

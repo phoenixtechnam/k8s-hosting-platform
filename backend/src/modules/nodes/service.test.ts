@@ -5,13 +5,34 @@ import { buildDrainImpact } from './service.js';
 
 // Schema mock so the dynamic import inside service.ts doesn't blow up.
 vi.mock('../../db/schema.js', () => ({
-  clients: { id: 'clients.id', companyName: 'clients.companyName', kubernetesNamespace: 'clients.kubernetesNamespace' },
+  clients: {
+    id: 'clients.id',
+    companyName: 'clients.companyName',
+    kubernetesNamespace: 'clients.kubernetesNamespace',
+    storageTier: 'clients.storageTier',
+    workerNodeName: 'clients.workerNodeName',
+  },
 }));
 
-function makeMockDb(clientRows: Array<{ id: string; name: string; ns: string | null }>): Database {
+interface MockClientRow {
+  id: string;
+  name: string;
+  ns: string | null;
+  tier?: 'local' | 'ha';
+  pin?: string | null;
+}
+function makeMockDb(clientRows: MockClientRow[]): Database {
   return {
     select: () => ({
-      from: () => Promise.resolve(clientRows),
+      from: () => Promise.resolve(
+        clientRows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          ns: r.ns,
+          tier: r.tier ?? 'local',
+          pin: r.pin ?? null,
+        })),
+      ),
     }),
   } as unknown as Database;
 }
@@ -66,15 +87,20 @@ describe('buildDrainImpact', () => {
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
 
-    expect(impact.pinnedWorkloads).toHaveLength(1);
-    expect(impact.pinnedWorkloads[0]).toMatchObject({
+    // Pinning is exposed as a per-client aggregate now — the modal
+    // shows clients (not workloads) and re-pins one client at a time.
+    expect(impact.pinnedClients).toHaveLength(1);
+    expect(impact.pinnedClients[0]).toMatchObject({
+      clientId: 'client-foo-id',
+      clientName: 'Foo Co',
       namespace: 'client-foo',
+    });
+    expect(impact.pinnedClients[0].workloads).toHaveLength(1);
+    expect(impact.pinnedClients[0].workloads[0]).toMatchObject({
       kind: 'Deployment',
       name: 'nginx-php',
       pinKind: 'nodeSelector',
       replicas: 0,
-      clientId: 'client-foo-id',
-      clientName: 'Foo Co',
     });
   });
 
@@ -137,9 +163,10 @@ describe('buildDrainImpact', () => {
     const db = makeMockDb([{ id: 'client-baz-id', name: 'Baz Co', ns: 'client-baz' }]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    expect(impact.pinnedWorkloads).toHaveLength(1);
-    expect(impact.pinnedWorkloads[0].pinKind).toBe('nodeAffinity');
-    expect(impact.pinnedWorkloads[0].kind).toBe('StatefulSet');
+    expect(impact.pinnedClients).toHaveLength(1);
+    expect(impact.pinnedClients[0].workloads).toHaveLength(1);
+    expect(impact.pinnedClients[0].workloads[0].pinKind).toBe('nodeAffinity');
+    expect(impact.pinnedClients[0].workloads[0].kind).toBe('StatefulSet');
   });
 
   it('flags tenant PVCs with a replica on the draining node', async () => {
@@ -158,13 +185,16 @@ describe('buildDrainImpact', () => {
     const db = makeMockDb([{ id: 'client-foo-id', name: 'Foo Co', ns: 'client-foo' }]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    expect(impact.tenantPvcs).toHaveLength(1);
-    expect(impact.tenantPvcs[0]).toMatchObject({
-      namespace: 'client-foo',
-      pvcName: 'data',
-      volumeName: 'pvc-foo',
+    expect(impact.pinnedClients).toHaveLength(1);
+    expect(impact.pinnedClients[0]).toMatchObject({
       clientId: 'client-foo-id',
       clientName: 'Foo Co',
+      namespace: 'client-foo',
+    });
+    expect(impact.pinnedClients[0].pvcs).toHaveLength(1);
+    expect(impact.pinnedClients[0].pvcs[0]).toMatchObject({
+      pvcName: 'data',
+      volumeName: 'pvc-foo',
       replicaCount: 1,
       isLastReplica: true,
     });
@@ -267,6 +297,8 @@ describe('buildDrainImpact', () => {
     const db = makeMockDb([]);
 
     const impact = await buildDrainImpact(k8s, db, 'worker');
-    expect(impact.pinnedWorkloads).toHaveLength(0);
+    // No pinned tenant clients on the node — system-namespace
+    // workloads are filtered out before aggregation.
+    expect(impact.pinnedClients).toHaveLength(0);
   });
 });
