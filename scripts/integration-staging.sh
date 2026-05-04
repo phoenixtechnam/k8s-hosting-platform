@@ -976,8 +976,10 @@ sys.exit(1)
   if [[ "${MAIL_STRESS:-0}" == "1" && "$tester_spawned" == "1" ]]; then
     local stress_n="${MAIL_STRESS_COUNT:-20}"
     local stalwart_replicas
+    # Use spec.replicas not status.readyReplicas — readyReplicas lags
+    # during rolling updates and can read 1 transiently while spec=3.
     stalwart_replicas=$(ssh_cp "kubectl get deploy -n mail stalwart-mail-v016 \
-        -o jsonpath='{.status.readyReplicas}'" 2>/dev/null || echo "1")
+        -o jsonpath='{.spec.replicas}'" 2>/dev/null || echo "1")
     log "mail/stress: starting N=${stress_n} concurrent sends (stalwart replicas=${stalwart_replicas})"
 
     # Spawn a background kubectl-delete-pod after a 2s delay if 2+
@@ -1001,7 +1003,7 @@ sys.exit(1)
     # message index so duplicates / losses are detectable downstream.
     local stress_send
     stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
-import smtplib, ssl, threading, sys
+import smtplib, ssl, threading, sys, time
 
 host = \"${smtp_target}\"
 port = 465
@@ -1016,6 +1018,13 @@ ctx.verify_mode = ssl.CERT_NONE
 
 results = [None] * n
 
+# Stalwart 0.16 ships with a default per-IP submission throttle of
+# ~5 concurrent SMTP auths from the same source IP. From an in-cluster
+# tester pod every connection has the same source IP so a naive
+# all-at-once start trips that limit and ~75% fail with auth-blocked.
+# Stagger 100ms between thread starts so all N still overlap heavily
+# (each SMTPS handshake takes ~1-2s) but the AUTH cmd doesn't fan out
+# in a single tick.
 def send_one(i):
     try:
         with smtplib.SMTP_SSL(host, port, context=ctx, timeout=45) as s:
@@ -1027,15 +1036,23 @@ def send_one(i):
     except Exception as e:
         results[i] = \"FAIL: \" + str(e)
 
-threads = [threading.Thread(target=send_one, args=(i,)) for i in range(n)]
-for t in threads: t.start()
-for t in threads: t.join(60)
+threads = []
+for i in range(n):
+    t = threading.Thread(target=send_one, args=(i,))
+    threads.append(t)
+    t.start()
+    time.sleep(0.1)
+for t in threads: t.join(90)
 
 ok_count = sum(1 for r in results if r == \"OK\")
-print(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n))
+# flush=True is REQUIRED — kubectl exec terminates the stream on
+# sys.exit(1) and can drop unflushed stdout. Buffered prints would
+# leave \"got no result\" in the harness assertion even though the
+# python actually computed a count.
+print(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n), flush=True)
 if ok_count != n:
     for i, r in enumerate(results):
-        if r != \"OK\": print(\"  fail[\" + str(i) + \"]: \" + str(r), file=sys.stderr)
+        if r != \"OK\": print(\"  fail[\" + str(i) + \"]: \" + str(r), file=sys.stderr, flush=True)
     sys.exit(1)
 '" 2>&1)
     local stress_ok; stress_ok=$(echo "$stress_send" | grep -oE 'STRESS_SENT_OK=[0-9]+/[0-9]+' | head -1)
