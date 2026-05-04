@@ -225,7 +225,24 @@ TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
 STATUS_NOW=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])' 2>/dev/null || echo "unreachable")
 [[ "$STATUS_NOW" = "False" ]] && pass "post-restore status=idle (lock released)" || warn "lock state: inProgress=$STATUS_NOW (DB lock should clear on next platform-api restart via recoverInterruptedRestore)"
 
-log "13) Cleanup sentinel table"
+log "13) Flux Kustomization MUST NOT be left suspended"
+# PITR suspends the platform Kustomization for the cutover window.
+# The orchestrator's finally block + recoverInterruptedRestore are the
+# only places that resume it. If we land here with suspend=true the
+# cluster is in suspended-Flux limbo (manifest changes don't propagate)
+# until an operator notices.
+FLUX_SUSPEND=$($KUBECTL get kustomization -n flux-system platform -o jsonpath='{.spec.suspend}' 2>/dev/null || echo "missing")
+if [[ "$FLUX_SUSPEND" = "true" ]]; then
+  warn "Flux Kustomization platform/flux-system is suspended — auto-resume failed; forcing resume"
+  $KUBECTL patch kustomization -n flux-system platform --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
+  fail "PITR left Flux suspended; orchestrator's resume path is broken"
+elif [[ "$FLUX_SUSPEND" = "missing" ]]; then
+  warn "Flux Kustomization platform/flux-system not found — skipping suspend assertion"
+else
+  pass "Flux Kustomization resumed (spec.suspend=$FLUX_SUSPEND)"
+fi
+
+log "14) Cleanup sentinel table"
 psql_pg "DROP TABLE IF EXISTS e2e_pitr_marker;" >/dev/null
 pass "sentinel table dropped"
 

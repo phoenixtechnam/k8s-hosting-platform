@@ -86,6 +86,67 @@ interface PersistedLock {
   // and Flux's apply of the original git manifest (initdb) is rejected
   // by CNPG's webhook ("Too many bootstrap types specified") forever.
   readonly originalInitdb?: unknown;
+  // True when the orchestration suspended Flux's `platform` Kustomization
+  // for the cutover window (see suspendFluxKustomization). Persisted so
+  // recoverInterruptedRestore can resume Flux on next platform-api boot
+  // if the orchestration crashed between suspend and the finally-block
+  // resume — otherwise Flux stays suspended forever and no manifest
+  // changes (storage, ingress, scaling) propagate.
+  readonly fluxSuspended?: boolean;
+}
+
+// Flux Kustomization that owns the platform manifests. Always patched in
+// flux-system. The default name `platform` matches what bootstrap.sh
+// installs; an operator-overridden Kustomization can be flagged via the
+// PITR_FLUX_KS_NAME env var (e.g. for a forked deployment).
+const FLUX_KS_GROUP = 'kustomize.toolkit.fluxcd.io';
+const FLUX_KS_VERSION = 'v1';
+const FLUX_KS_PLURAL = 'kustomizations';
+const FLUX_KS_NAMESPACE = process.env.PITR_FLUX_KS_NAMESPACE || 'flux-system';
+const FLUX_KS_NAME = process.env.PITR_FLUX_KS_NAME || 'platform';
+
+/**
+ * Suspend the platform Flux Kustomization for the duration of the PITR
+ * cutover. Without this, Flux's 5-min reconcile races our delete-source
+ * step and re-creates the cluster from git's bootstrap.initdb manifest
+ * BEFORE step 8 recreate-source runs — recreate then HTTP-409s and the
+ * source comes up with an empty DB.
+ *
+ * Returns true if suspend succeeded, false if the Kustomization is not
+ * present (best-effort: PITR proceeds anyway). Throws on any other error
+ * so the orchestration aborts before destroying source data.
+ */
+async function suspendFluxKustomization(k8s: K8sClients): Promise<boolean> {
+  try {
+    await patchCustomMerge(k8s, {
+      group: FLUX_KS_GROUP, version: FLUX_KS_VERSION,
+      namespace: FLUX_KS_NAMESPACE, plural: FLUX_KS_PLURAL, name: FLUX_KS_NAME,
+      body: { spec: { suspend: true } },
+    });
+    return true;
+  } catch (err) {
+    const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+    if (code === 404) {
+      // No Flux Kustomization installed (dev cluster, hand-applied
+      // manifests, etc.) — nothing to suspend, nothing to race.
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Resume the platform Flux Kustomization. Best-effort — failure here is
+ * logged via step trace but does not throw, so a failed resume cannot
+ * mask the orchestration's actual outcome. Operator can resume manually
+ * via `flux resume kustomization platform -n flux-system`.
+ */
+async function resumeFluxKustomization(k8s: K8sClients): Promise<void> {
+  await patchCustomMerge(k8s, {
+    group: FLUX_KS_GROUP, version: FLUX_KS_VERSION,
+    namespace: FLUX_KS_NAMESPACE, plural: FLUX_KS_PLURAL, name: FLUX_KS_NAME,
+    body: { spec: { suspend: false } },
+  });
 }
 
 async function writePersistedLock(db: Database, payload: PersistedLock): Promise<void> {
@@ -347,6 +408,23 @@ export async function recoverInterruptedRestore(
         }
       }
     } catch { /* best effort */ }
+
+    // Resume Flux if the dying orchestration left it suspended. Without
+    // this, the cluster sits in suspended-Flux limbo until an operator
+    // notices — the only way out otherwise is `flux resume kustomization
+    // platform`. Best-effort, with admin notification on failure.
+    if (lock.fluxSuspended) {
+      try {
+        await resumeFluxKustomization(k8s);
+      } catch (rerr) {
+        await emitAdminNotification(
+          db,
+          `Crashed PITR left Flux Kustomization ${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} suspended; auto-resume failed (${(rerr as Error).message}). ` +
+          `Manifest changes will NOT reconcile until: flux resume kustomization ${FLUX_KS_NAME} -n ${FLUX_KS_NAMESPACE}`,
+          'PITR recovery — Flux Kustomization stuck suspended',
+        ).catch(() => undefined);
+      }
+    }
 
     // Normalize source cluster's spec.bootstrap if it's still in
     // recovery mode (orchestration died before its own step 8b ran).
@@ -904,6 +982,7 @@ export async function promotePostgresFromSnapshot(
   let tempSnap: { volumeSnapshotName: string; contentName: string } | null = null;
   let tempSnapName: string | null = null;
   let sourceDeleted = false;
+  let fluxSuspended = false;
   // Hoisted so the catch block can reference the original cluster spec
   // (database/owner/secret/imageName/storage size) for auto-recovery.
   let pre: { snap: RawSnap; cluster: CnpgCluster; primaryPvc: string } | null = null;
@@ -965,6 +1044,25 @@ export async function promotePostgresFromSnapshot(
     }).catch(() => undefined);
     steps.push({ step: 'quiesce-consumers', ok: true, elapsedMs: nowMs() - t5, detail: 'stalwart-mail scaled to 0; platform-api left running (self-host)' });
 
+    // 5b. Suspend the platform Flux Kustomization so its 5-min reconcile
+    //     does not race delete-source + recreate-source. Without this,
+    //     Flux re-applies the source Cluster CR (with bootstrap.initdb
+    //     from git) DURING the gap between delete and recreate, and
+    //     step 8 createCustom HTTP-409s — leaving the source up with
+    //     an empty DB. fluxSuspended persists into the lock so the
+    //     finally-block + recoverInterruptedRestore can guarantee
+    //     resume even if the orchestrator crashes.
+    const t5b = nowMs();
+    fluxSuspended = await suspendFluxKustomization(deps.k8s);
+    steps.push({
+      step: 'suspend-flux',
+      ok: true,
+      elapsedMs: nowMs() - t5b,
+      detail: fluxSuspended
+        ? `${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} suspended for cutover`
+        : `no Flux Kustomization at ${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} — no race possible`,
+    });
+
     // 6. Snapshot the temp cluster's primary PVC so we can re-bootstrap
     //    the source Cluster name from the same point-in-time data.
     //    Longhorn snapshot CRs reference volumes by their Longhorn name
@@ -1017,6 +1115,11 @@ export async function promotePostgresFromSnapshot(
       // dies before step 8b, the next platform-api startup uses this
       // to normalize the rebuilt source cluster's bootstrap.
       originalInitdb: pre.cluster.spec?.bootstrap?.initdb,
+      // Persist whether we suspended Flux so recoverInterruptedRestore
+      // can resume it (the finally block in this function only runs if
+      // the same process survives — Job-pod kill / OOM / node failure
+      // all need the next-boot recovery path to handle resume).
+      fluxSuspended,
     });
 
     // 7. Delete source (PVCs survive: Retain reclaim)
@@ -1166,6 +1269,31 @@ export async function promotePostgresFromSnapshot(
     (e as Error & { steps?: PitrStep[] }).steps = steps;
     throw e;
   } finally {
+    // Always resume Flux if we suspended it, even on the failure path.
+    // Without this, a thrown error before the success-path `finally`
+    // would leave Flux suspended forever — no manifest changes propagate
+    // (storage tier flips, ingress, scaling, anything) until an operator
+    // notices and runs `flux resume kustomization platform`.
+    if (fluxSuspended) {
+      try {
+        await resumeFluxKustomization(deps.k8s);
+        steps.push({ step: 'resume-flux', ok: true, detail: `${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} resumed` });
+      } catch (rerr) {
+        steps.push({
+          step: 'resume-flux', ok: false,
+          detail: `failed: ${(rerr as Error).message}. Run: flux resume kustomization ${FLUX_KS_NAME} -n ${FLUX_KS_NAMESPACE}`,
+        });
+        // Surface to admins so the cluster doesn't sit in suspended-Flux
+        // limbo silently — this is the only place a successful PITR
+        // could leave the platform partially broken.
+        await emitAdminNotification(
+          deps.db,
+          `PITR cleanup left Flux Kustomization ${FLUX_KS_NAMESPACE}/${FLUX_KS_NAME} suspended (resume failed: ${(rerr as Error).message}). ` +
+          `Manifest changes will NOT reconcile until an operator runs: flux resume kustomization ${FLUX_KS_NAME} -n ${FLUX_KS_NAMESPACE}`,
+          'PITR — Flux Kustomization stuck suspended',
+        ).catch(() => undefined);
+      }
+    }
     // Always release both locks, even on success path.
     activeRestore = null;
     await clearPersistedLock(deps.db).catch(() => undefined);

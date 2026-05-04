@@ -212,6 +212,15 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["backups", "snapshots"]
     verbs: ["create", "delete"]
+  # PITR orchestrator suspends Flux's `platform` Kustomization for the
+  # cutover window so its 5-min reconcile does not race delete-source +
+  # recreate-source. Without this the orchestrator gets HTTP 409 on
+  # recreate (Flux re-applied the cluster from git's bootstrap.initdb
+  # mid-cutover) and the source comes up with an empty DB. Get/list are
+  # for the resume-on-recovery path; patch is the suspend/resume verb.
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "patch"]
 ---
 # ServiceAccount for the management API
 apiVersion: v1
