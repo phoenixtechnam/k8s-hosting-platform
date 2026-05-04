@@ -1048,24 +1048,24 @@ export async function findDomainByName(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, domainName, baseUrl, env } = params;
-  // x:Domain/query supports server-side `name` filtering — no need to
-  // list-and-filter client-side anymore.
-  const queryRes = await domainQuery({
-    accountId,
-    filter: { name: domainName },
-    baseUrl,
-    env,
-  });
-  if (queryRes.ids.length === 0) return null;
+  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Domain/query does
+  // not support a `name` filter — it silently returns `ids: []` for
+  // any filter shape we tried, while x:Domain/get with `ids: null`
+  // returns the full list correctly. Use list-and-filter until
+  // Stalwart documents a working filter shape.
   const getRes = await domainGet({
     accountId,
-    ids: [queryRes.ids[0]],
+    ids: null,
     properties: ['id', 'name', 'description', 'dnsZoneFile'],
     baseUrl,
     env,
   });
-  const raw = getRes.list[0];
-  return raw ? _domainToPrincipal(raw) : null;
+  const target = domainName.toLowerCase();
+  const match = getRes.list.find((r) => {
+    const name = typeof r.name === 'string' ? r.name.toLowerCase() : '';
+    return name === target;
+  });
+  return match ? _domainToPrincipal(match) : null;
 }
 
 /**
@@ -1081,23 +1081,23 @@ export async function findMailboxByEmail(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<StalwartPrincipal | null> {
   const { accountId, email, baseUrl, env } = params;
-  // Server-side filter via x:Account/query, then x:Account/get for the
-  // matching IDs. Stalwart 0.16 indexes accounts by email; one query
-  // returns at most one match.
-  const queryRes = await accountQuery({
-    accountId,
-    filter: { email },
-    baseUrl,
-    env,
-  });
-  if (queryRes.ids.length === 0) return null;
+  // Cut 3 follow-up (2026-05-04): Stalwart 0.16's x:Account/query
+  // doesn't accept a working `email` / `name` filter (silently returns
+  // ids: []). List-and-filter via x:Account/get with ids: null until
+  // a working filter shape is documented.
   const getRes = await accountGet({
     accountId,
-    ids: [queryRes.ids[0]],
+    ids: null,
     properties: ['id', 'name', 'description', 'emails'],
     baseUrl,
     env,
   });
-  const raw = getRes.list[0];
-  return raw ? _accountToPrincipal(raw) : null;
+  const target = email.toLowerCase();
+  const match = getRes.list.find((r) => {
+    const emails = Array.isArray(r.emails)
+      ? (r.emails as string[]).map((e) => e.toLowerCase())
+      : [];
+    return emails.includes(target);
+  });
+  return match ? _accountToPrincipal(match) : null;
 }
