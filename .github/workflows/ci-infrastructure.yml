@@ -74,6 +74,20 @@ jobs:
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
+  no-dex-in-production:
+    name: Dex must not ship in production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+      - name: Verify production overlay does not deploy Dex
+        run: ./scripts/ci-no-dex-in-production.sh
+
   no-pinned-domains:
     name: No hard-coded apex domains in K8s manifests
     runs-on: ubuntu-latest
