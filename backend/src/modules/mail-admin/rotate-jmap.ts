@@ -26,8 +26,8 @@
 import { randomBytes } from 'node:crypto';
 import {
   getJmapSession,
-  principalGet,
-  updatePrincipal,
+  accountQuery,
+  accountSet,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import { rotateStalwartPasswordResponseSchema, type RotateStalwartPasswordResponse } from '@k8s-hosting/api-contracts';
@@ -204,25 +204,35 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
     },
 
     async findAdminPrincipalId(accountId: JmapAccountId, username: string): Promise<string | null> {
-      const result = await principalGet({
+      // Stalwart 0.16: x:Account/query supports server-side filter by
+      // `name`. The standard Principal/get path doesn't exist on this
+      // server; calls against it return urn:ietf:params:jmap:error:notRequest.
+      const result = await accountQuery({
         accountId,
-        ids: null,
-        properties: ['id', 'name', 'type'],
+        filter: { name: username },
         baseUrl,
       });
-      const admin = result.list.find(
-        (p) => p.type === 'individual' && p.name === username,
-      );
-      return admin?.id ?? null;
+      return result.ids[0] ?? null;
     },
 
     async updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void> {
-      await updatePrincipal({
+      // Patch path `credentials/0/secret` mirrors the structure
+      // x:Account/set expects when the User has a `credentials` map
+      // with a single Password entry at index "0" — see
+      // scripts/integration-stalwart-v016-local.sh for the create-side
+      // shape that Stalwart accepts.
+      const result = await accountSet({
         accountId,
-        id: principalId,
-        patch: { 'secrets/0': newPassword },
+        request: { update: { [principalId]: { 'credentials/0/secret': newPassword } } },
         baseUrl,
       });
+      const notUpdated = result.notUpdated?.[principalId];
+      if (notUpdated) {
+        throw new Error(
+          `JMAP x:Account/set update failed for admin '${principalId}': `
+          + `${notUpdated.description ?? notUpdated.type}`,
+        );
+      }
     },
 
     async patchK8sSecret({ namespace, name, stringData }) {
