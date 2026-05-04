@@ -13,6 +13,7 @@ import { registerCronjobsEnableHook } from './db-cronjobs.js';
 import { registerMailboxesStatusHook } from './db-mailboxes.js';
 import { registerEmailAliasesEnableHook } from './db-email-aliases.js';
 import { registerDeploymentsStatusHook } from './db-deployments.js';
+import { registerPrivateWorkersLifecycleHook } from './db-private-workers.js';
 import { registerClientsStatusStampHook } from './db-clients-stamp.js';
 import { registerIngressHooks } from './k8s-ingress.js';
 import { registerDnsZoneCleanupHook } from './dns-zone-cleanup.js';
@@ -29,6 +30,7 @@ export function registerAllLifecycleHooks(): void {
   registerMailboxesStatusHook();
   registerEmailAliasesEnableHook();
   registerDeploymentsStatusHook();
+  registerPrivateWorkersLifecycleHook();
   registerClientsStatusStampHook();
 
   // Phase 3: K8s ingress suspend / resume / reconcile.

@@ -16,3 +16,8 @@ data:
   # postBuild.substituteFrom (or bootstrap envsubst).
   passkey-rp-id: "${DOMAIN}"
   passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  # Private Worker — wildcard A record `tunnels.${DOMAIN}` must point
+  # at cluster ingress (one-time DNS setup at install).
+  tunnel-base-url: "wss://tunnels.${DOMAIN}"
+  private-worker-frps-image: "fatedier/frps:v0.62.1"
+  private-worker-agent-image: "ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest"

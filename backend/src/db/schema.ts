@@ -71,6 +71,18 @@ export const catalogRepoStatusEnum = pgEnum('catalog_repo_status', ['active', 'e
 export const catalogEntryTypeEnum = pgEnum('catalog_entry_type', ['application', 'runtime', 'database', 'service', 'static']);
 export const catalogEntryStatusEnum = pgEnum('catalog_entry_status', ['available', 'beta', 'deprecated']);
 export const deploymentStatusEnum = pgEnum('deployment_status', ['deploying', 'running', 'stopped', 'failed', 'deleting', 'upgrading', 'pending', 'deleted']);
+
+// Migration 0076 — private_workers + polymorphic ingress_routes target.
+export const privateWorkerStatusEnum = pgEnum('private_worker_status', [
+  'pending',
+  'active',
+  'revoked',
+  'suspended',
+]);
+export const ingressTargetTypeEnum = pgEnum('ingress_target_type', [
+  'deployment',
+  'private_worker',
+]);
 export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warning', 'error', 'success']);
 export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3']);
 export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
@@ -226,6 +238,11 @@ export const clients = pgTable('clients', {
   contactEmail: varchar('contact_email', { length: 255 }),
   status: clientStatusEnum().notNull().default('pending'),
   kubernetesNamespace: varchar('kubernetes_namespace', { length: 63 }).notNull(),
+  // Migration 0077 — per-client shared auth secret for private-worker frps.
+  // Generated on first worker mint, re-used across all workers in this
+  // client (frps 0.62 = one auth.token per server). Per-worker revocation
+  // happens via frps `allowPorts` rendered from active workers' ports.
+  privateWorkerSharedSecret: varchar('private_worker_shared_secret', { length: 64 }),
   planId: varchar('plan_id', { length: 36 }).notNull(),
   cpuLimitOverride: numeric('cpu_limit_override', { precision: 5, scale: 2 }),
   memoryLimitOverride: numeric('memory_limit_override', { precision: 5, scale: 2 }),
@@ -736,7 +753,11 @@ export const ingressRoutes = pgTable('ingress_routes', {
     .references(() => domains.id, { onDelete: 'cascade' }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   path: varchar('path', { length: 255 }).notNull().default('/'),
+  // Migration 0076 — polymorphic target. Exactly one of deploymentId or
+  // privateWorkerId is set (CHECK constraint at the SQL layer).
+  targetType: ingressTargetTypeEnum('target_type').notNull().default('deployment'),
   deploymentId: varchar('deployment_id', { length: 36 }),
+  privateWorkerId: varchar('private_worker_id', { length: 36 }),
   ingressCname: varchar('ingress_cname', { length: 255 }).notNull(),
   nodeHostname: varchar('node_hostname', { length: 255 }),
   isApex: integer('is_apex').notNull().default(0),
@@ -766,6 +787,7 @@ export const ingressRoutes = pgTable('ingress_routes', {
   uniqueIndex('ingress_routes_hostname_path_domain_unique').on(table.hostname, table.path, table.domainId),
   index('ingress_routes_domain_idx').on(table.domainId),
   index('ingress_routes_deployment_idx').on(table.deploymentId),
+  index('ingress_routes_private_worker_idx').on(table.privateWorkerId),
 ]);
 
 export type IngressRoute = typeof ingressRoutes.$inferSelect;
@@ -2123,3 +2145,57 @@ export type BackupComponent = typeof backupComponents.$inferSelect;
 export type NewBackupComponent = typeof backupComponents.$inferInsert;
 export type ClientBackupSchedule = typeof clientBackupSchedules.$inferSelect;
 export type NewClientBackupSchedule = typeof clientBackupSchedules.$inferInsert;
+
+// ─── Private Workers (migration 0076) ─────────────────────────────────────
+// Per-client tunnel agents. A home box runs the private-worker-agent docker
+// container which dials in over WSS to tunnels.${DOMAIN}/c/{slug}/. A frps pod
+// in the client namespace terminates the tunnel and exposes a Service that
+// the existing ingressRoutes target. See docs/04-deployment/PRIVATE_WORKER.md.
+// (Enums for this feature are declared near the top of the file alongside
+// the other pgEnum declarations because ingressRoutes.targetType references
+// ingressTargetTypeEnum and pgEnum forward-references aren't supported.)
+
+export const privateWorkers = pgTable('private_workers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  clientId: varchar('client_id', { length: 36 })
+    .notNull()
+    .references(() => clients.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 120 }).notNull(),
+  slug: varchar('slug', { length: 60 }).notNull().unique(),
+  workerTokenHash: varchar('worker_token_hash', { length: 64 }).notNull(),
+  status: privateWorkerStatusEnum('status').notNull().default('pending'),
+  exposedPort: integer('exposed_port').notNull(),
+  description: text('description'),
+  lastSeenAt: timestamp('last_seen_at'),
+  lastUsedIp: inet('last_used_ip'),
+  bytesIn: bigint('bytes_in', { mode: 'number' }).notNull().default(0),
+  bytesOut: bigint('bytes_out', { mode: 'number' }).notNull().default(0),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  revokedAt: timestamp('revoked_at'),
+  revokedBy: varchar('revoked_by', { length: 36 }),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('private_workers_client_idx').on(table.clientId),
+  index('private_workers_status_idx').on(table.status),
+  uniqueIndex('private_workers_client_name_uq').on(table.clientId, table.name),
+]);
+
+export const privateWorkerAudit = pgTable('private_worker_audit', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  privateWorkerId: varchar('private_worker_id', { length: 36 })
+    .notNull()
+    .references(() => privateWorkers.id, { onDelete: 'cascade' }),
+  event: varchar('event', { length: 40 }).notNull(),
+  ip: inet('ip'),
+  detail: jsonb('detail'),
+  occurredAt: timestamp('occurred_at').notNull().defaultNow(),
+}, (table) => [
+  index('private_worker_audit_worker_idx').on(table.privateWorkerId, table.occurredAt),
+  index('private_worker_audit_event_idx').on(table.event, table.occurredAt),
+]);
+
+export type PrivateWorker = typeof privateWorkers.$inferSelect;
+export type NewPrivateWorker = typeof privateWorkers.$inferInsert;
+export type PrivateWorkerAuditRow = typeof privateWorkerAudit.$inferSelect;
+export type NewPrivateWorkerAuditRow = typeof privateWorkerAudit.$inferInsert;

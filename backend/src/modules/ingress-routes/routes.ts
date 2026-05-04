@@ -112,15 +112,30 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const body = parsed.data as { hostname: string; path?: string; deployment_id?: string | null };
-    const route = await createRoute(app.db, domainId, clientId, body.hostname, body.deployment_id, body.path ?? '/');
+    const body = parsed.data as {
+      hostname: string;
+      path?: string;
+      deployment_id?: string | null;
+      private_worker_id?: string | null;
+    };
+    const route = await createRoute(
+      app.db,
+      domainId,
+      clientId,
+      body.hostname,
+      body.deployment_id,
+      body.path ?? '/',
+      body.private_worker_id,
+    );
     await triggerReconcile(clientId);
 
     // Phase 2c: delegate cert provisioning to the central certificates
     // module. It picks the right ClusterIssuer based on the domain's
     // dnsMode + DNS provider, issues a wildcard when possible, and
     // writes a single Certificate CR per domain (not per-route).
-    if (body.deployment_id) {
+    // Issue the cert as soon as we have ANY backend (deployment or
+    // private_worker) so TLS is ready before the user dials in.
+    if (body.deployment_id || body.private_worker_id) {
       const k8s = getK8s();
       if (k8s) {
         try {
@@ -153,9 +168,10 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
 
     const updated = await updateRoute(app.db, routeId, {
       deploymentId: parsed.data.deployment_id,
+      privateWorkerId: parsed.data.private_worker_id,
       tlsMode: parsed.data.tls_mode,
       nodeHostname: parsed.data.node_hostname,
-    });
+    }, clientId);
     await triggerReconcile(clientId);
     return success(updated);
   });

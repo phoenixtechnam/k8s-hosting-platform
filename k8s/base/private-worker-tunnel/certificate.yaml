@@ -1,0 +1,45 @@
+# cert-manager Certificate for the Private Worker tunnel anchor host.
+#
+# Single FQDN tunnels.${DOMAIN} terminates every client's frpc dial-in
+# WebSocket (path-routed by /c/{slug}/). One cert, one DNS A/AAAA
+# record — no wildcard, no per-tunnel cert.
+#
+# ${DOMAIN} is substituted by Flux postBuild.substituteFrom in each
+# overlay (same pattern as every other Ingress/Certificate hostname in
+# this repo). The base must keep ${DOMAIN} literal — do not pre-render.
+#
+# Default issuer is the http01 ClusterIssuer because every install has
+# port 80 reachable for ACME challenges. Operators with DNS-01 wired
+# (PowerDNS, Cloudflare, Hetzner, Route53, ClouDNS) can patch this
+# Certificate via overlay to use letsencrypt-prod-dns01-powerdns (or
+# whichever DNS-01 ClusterIssuer matches their setup) — see
+# k8s/base/cert-manager/clusterissuer-letsencrypt-dns01-*.yaml.
+#
+# duration / renewBefore match the platform default (90d cert,
+# renew at 30d remaining) used by other Let's Encrypt certificates.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tunnels-platform-domain
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: private-worker-tunnel
+spec:
+  secretName: tunnels-platform-domain-tls
+  duration: 2160h    # 90d (Let's Encrypt max)
+  renewBefore: 720h  # 30d before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - tunnels.${DOMAIN}
+  issuerRef:
+    name: letsencrypt-prod-http01
+    kind: ClusterIssuer
+    group: cert-manager.io

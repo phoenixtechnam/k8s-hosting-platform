@@ -1,0 +1,88 @@
+# Anchor Ingress for the Private Worker tunnel feature.
+#
+# Holds the TLS certificate for tunnels.${DOMAIN} and serves a
+# catch-all default backend (the platform suspended page) for
+# unrouted requests.
+#
+# Per-client Ingresses (tunnel-{slug}) are created at runtime by the
+# backend reconciler on the SAME host (tunnels.${DOMAIN}) with
+# path /c/{slug}/(.*). NGINX-ingress merges path rules across
+# multiple Ingress objects on the same host, so:
+#   - frpc dial-ins on /c/{slug}/* hit the per-client Ingress
+#     (which targets the per-client ExternalName Service)
+#   - anything else falls through to this anchor's catch-all
+#
+# WebSocket handling is required because frps uses HTTP Upgrade for
+# its WSS transport. The Connection / Upgrade headers are forwarded
+# via configuration-snippet; $connection_upgrade is a `map` defined
+# by ingress-nginx by default. The 1h read/send timeouts give the
+# tunnel control-plane plenty of slack — frps sends keepalives every
+# 30s, but bursty clients may go quiet between reconnects.
+#
+# ${DOMAIN} is substituted by Flux postBuild.substituteFrom in each
+# overlay. Base must keep ${DOMAIN} literal.
+---
+# Default catch-all backend — points at the existing platform-suspended
+# Service in the `platform` namespace. ExternalName lets us cross
+# namespaces without duplicating the suspended deployment. If the
+# operator removes the suspended page in their overlay, they should
+# also patch this ExternalName to point at a different backend (e.g.
+# platform-api.platform.svc.cluster.local).
+apiVersion: v1
+kind: Service
+metadata:
+  name: tunnel-anchor-default
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: private-worker-tunnel
+spec:
+  type: ExternalName
+  externalName: platform-suspended.platform.svc.cluster.local
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tunnel-anchor
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: private-worker-tunnel
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-http01
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # WebSocket support for frp WSS transport. $connection_upgrade is
+    # provided by ingress-nginx's default `map` directive.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # WebSocket support for frp WSS transport
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Rate-limit anchor catch-all to defend against scanning. The
+    # per-client tunnel-<slug> Ingresses created at runtime add their
+    # own tighter limits.
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - tunnels.${DOMAIN}
+      secretName: tunnels-platform-domain-tls
+  rules:
+    - host: tunnels.${DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tunnel-anchor-default
+                port:
+                  number: 80

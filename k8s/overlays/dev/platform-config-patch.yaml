@@ -40,3 +40,9 @@ data:
   # postBuild.substituteFrom (or bootstrap envsubst).
   passkey-rp-id: "${DOMAIN}"
   passkey-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
+  # Private Worker — local dev uses ws:// (no TLS) so the agent can dial
+  # in without a self-signed cert dance. Wildcard host needs an
+  # /etc/hosts line: `127.0.0.1  tunnels.k8s-platform.test`.
+  tunnel-base-url: "ws://tunnels.${DOMAIN}:2010"
+  private-worker-frps-image: "fatedier/frps:v0.62.1"
+  private-worker-agent-image: "private-worker-agent:latest"

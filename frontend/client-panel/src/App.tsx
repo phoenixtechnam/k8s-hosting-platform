@@ -22,6 +22,7 @@ import SubUsers from '@/pages/SubUsers';
 import DatabaseManager from '@/pages/DatabaseManager';
 import SshKeys from '@/pages/SshKeys';
 import SftpUsers from '@/pages/SftpUsers';
+import PrivateWorkers from '@/pages/PrivateWorkers';
 import ResourceUsage from '@/pages/ResourceUsage';
 import Notifications from '@/pages/Notifications';
 import Placeholder from '@/pages/Placeholder';
@@ -82,6 +83,7 @@ export default function App() {
             <Route path="users" element={<LifecycleGate><SubUsers /></LifecycleGate>} />
             <Route path="ssh-keys" element={<LifecycleGate><SshKeys /></LifecycleGate>} />
             <Route path="sftp" element={<LifecycleGate><SftpUsers /></LifecycleGate>} />
+            <Route path="private-workers" element={<LifecycleGate><PrivateWorkers /></LifecycleGate>} />
             <Route path="database-manager" element={<LifecycleGate><DatabaseManager /></LifecycleGate>} />
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>

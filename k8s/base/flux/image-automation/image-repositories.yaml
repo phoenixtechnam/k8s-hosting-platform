@@ -49,3 +49,13 @@ spec:
   image: ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar
   interval: 1m
   provider: generic
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: private-worker-agent
+  namespace: flux-system
+spec:
+  image: ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent
+  interval: 1m
+  provider: generic

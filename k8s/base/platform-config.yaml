@@ -32,3 +32,12 @@ data:
   # and production overlays swap to the GHCR paths so the pods can
   # pull from a real registry.
   file-manager-image: "file-manager-sidecar:latest"
+
+  # Private Worker — per-client tunnel agent the client runs at home.
+  # tunnel-base-url is the dial-in FQDN. Cluster-side frps image is the
+  # upstream frp server; agent docker image is what clients run at home.
+  # Overlays MUST patch tunnel-base-url with the real public hostname
+  # (the wildcard DNS entry must point at cluster ingress).
+  tunnel-base-url: "wss://tunnels.${DOMAIN}"
+  private-worker-frps-image: "fatedier/frps:v0.62.1"
+  private-worker-agent-image: "ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest"

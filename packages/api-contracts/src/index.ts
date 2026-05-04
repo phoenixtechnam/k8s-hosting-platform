@@ -58,6 +58,7 @@ export * from './zrok-providers.js';
 export * from './deployment-network-access.js';
 export * from './ssh-keys.js';
 export * from './sftp-users.js';
+export * from './private-workers.js';
 export * from './storage.js';
 export * from './mail-imapsync.js';
 export * from './sub-users.js';

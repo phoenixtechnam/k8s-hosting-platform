@@ -75,3 +75,18 @@ spec:
   policy:
     numerical:
       order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: private-worker-agent
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: private-worker-agent
+  filterTags:
+    pattern: '^(?P<ts>\d{14})-[0-9a-f]{7,40}$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc

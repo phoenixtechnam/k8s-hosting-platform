@@ -30,6 +30,16 @@ const configSchema = z.object({
   PLATFORM_TLS_SECRET_NAME: z.string().optional(),
   PLATFORM_NAMESPACE: z.string().default('platform'),
   FILE_MANAGER_IMAGE: z.string().default('ghcr.io/phoenixtechnam/file-manager:latest'),
+  // Private Worker — overlay-supplied. TUNNEL_BASE_URL is the public WSS
+  // dial-in (e.g. wss://tunnels.staging.phoenix-host.net). The agent token
+  // blob's server_url field is built from this. The frps image is the
+  // cluster-side tunnel server; the agent image is what the client runs at
+  // home (only referenced from generated docker-compose snippets).
+  TUNNEL_BASE_URL: z.string().default('wss://tunnels.example.com'),
+  PRIVATE_WORKER_FRPS_IMAGE: z.string().default('fatedier/frps:v0.62.1'),
+  PRIVATE_WORKER_AGENT_IMAGE: z
+    .string()
+    .default('ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest'),
   // Storage-lifecycle snapshot store. Dev default = hostPath; prod
   // operators would swap to s3 + credentials via the STORAGE_SNAPSHOT_*
   // prefix. STORAGE_SNAPSHOT_HOST_ROOT is the path ON THE NODE the

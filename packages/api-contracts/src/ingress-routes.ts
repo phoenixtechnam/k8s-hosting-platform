@@ -16,7 +16,11 @@ export const ingressRouteResponseSchema = z.object({
   domainId: z.string(),
   hostname: z.string(),
   path: z.string(),
+  // Polymorphic target (migration 0076). Exactly one of deploymentId /
+  // privateWorkerId is set; targetType identifies which.
+  targetType: z.enum(['deployment', 'private_worker']),
   deploymentId: z.string().nullable(),
+  privateWorkerId: z.string().nullable(),
   ingressCname: z.string(),
   nodeHostname: z.string().nullable(),
   isApex: z.number(),
@@ -46,17 +50,34 @@ export const ingressRouteResponseSchema = z.object({
 
 // ─── Input ──────────────────────────────────────────────────────────────────
 
-export const createIngressRouteSchema = z.object({
-  hostname: z.string().min(1).max(255),
-  path: z.string().min(1).max(255).optional(),
-  deployment_id: uuidField.nullable().optional(),
-});
+// An ingress route targets exactly one of: a deployment, or a private_worker.
+// At most one of deployment_id / private_worker_id may be set on create or
+// update. A null on either field clears it. target_type is implied by which
+// id is non-null (the backend persists it; the client doesn't need to send
+// it explicitly).
+export const createIngressRouteSchema = z
+  .object({
+    hostname: z.string().min(1).max(255),
+    path: z.string().min(1).max(255).optional(),
+    deployment_id: uuidField.nullable().optional(),
+    private_worker_id: uuidField.nullable().optional(),
+  })
+  .refine(
+    (v) => !(v.deployment_id && v.private_worker_id),
+    { message: 'A route can target a deployment or a private_worker, not both' },
+  );
 
-export const updateIngressRouteSchema = z.object({
-  deployment_id: uuidField.nullable().optional(),
-  tls_mode: z.enum(['auto', 'custom', 'none']).optional(),
-  node_hostname: z.string().max(255).nullable().optional(),
-});
+export const updateIngressRouteSchema = z
+  .object({
+    deployment_id: uuidField.nullable().optional(),
+    private_worker_id: uuidField.nullable().optional(),
+    tls_mode: z.enum(['auto', 'custom', 'none']).optional(),
+    node_hostname: z.string().max(255).nullable().optional(),
+  })
+  .refine(
+    (v) => !(v.deployment_id && v.private_worker_id),
+    { message: 'A route can target a deployment or a private_worker, not both' },
+  );
 
 // ─── Route Settings Inputs ──────────────────────────────────────────────────
 

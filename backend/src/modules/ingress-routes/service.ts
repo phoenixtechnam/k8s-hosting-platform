@@ -6,7 +6,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries } from '../../db/schema.js';
+import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders } from '../dns-records/service.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
@@ -114,7 +114,17 @@ export async function createRoute(
   hostname: string,
   deploymentId?: string | null,
   path?: string,
+  privateWorkerId?: string | null,
 ) {
+  // Polymorphic target validation (migration 0076).
+  // Exactly zero or one of deploymentId / privateWorkerId may be set.
+  if (deploymentId && privateWorkerId) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'A route can target a deployment or a private_worker, not both',
+      400,
+    );
+  }
   // Normalize path — default to "/", ensure leading and trailing slashes
   let routePath = path && path.trim() !== '' ? path.trim() : '/';
   if (!routePath.startsWith('/')) routePath = `/${routePath}`;
@@ -178,6 +188,28 @@ export async function createRoute(
     }
   }
 
+  // Validate private_worker target (must exist + belong to this client + active).
+  if (privateWorkerId) {
+    const [pw] = await db
+      .select()
+      .from(privateWorkers)
+      .where(and(eq(privateWorkers.id, privateWorkerId), eq(privateWorkers.clientId, clientId)));
+    if (!pw) {
+      throw new ApiError(
+        'PRIVATE_WORKER_NOT_FOUND',
+        `Private worker '${privateWorkerId}' not found for this client`,
+        404,
+      );
+    }
+    if (pw.status === 'revoked') {
+      throw new ApiError(
+        'PRIVATE_WORKER_REVOKED',
+        `Private worker '${pw.name}' has been revoked; rotate or recreate before routing traffic to it`,
+        400,
+      );
+    }
+  }
+
   // Check for duplicate hostname+path combination
   const [existing] = await db
     .select({ id: ingressRoutes.id })
@@ -202,12 +234,15 @@ export async function createRoute(
   const apex = isApexHostname(hostname, domain.domainName);
 
   const id = crypto.randomUUID();
+  const targetType: 'deployment' | 'private_worker' = privateWorkerId ? 'private_worker' : 'deployment';
   await db.insert(ingressRoutes).values({
     id,
     domainId,
     hostname,
     path: routePath,
-    deploymentId: deploymentId ?? null,
+    targetType,
+    deploymentId: privateWorkerId ? null : (deploymentId ?? null),
+    privateWorkerId: privateWorkerId ?? null,
     ingressCname,
     nodeHostname: null, // uses default node
     isApex: apex ? 1 : 0,
@@ -264,15 +299,80 @@ export async function createRoute(
 export async function updateRoute(
   db: Database,
   routeId: string,
-  input: { deploymentId?: string | null; tlsMode?: string; nodeHostname?: string | null },
+  input: {
+    deploymentId?: string | null;
+    privateWorkerId?: string | null;
+    tlsMode?: string;
+    nodeHostname?: string | null;
+  },
+  // Required when privateWorkerId is being set — we re-verify the worker
+  // belongs to this client to defend against route-id enumeration that
+  // would otherwise let client A repoint client B's route at A's worker.
+  clientId?: string,
 ) {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
     throw new ApiError('ROUTE_NOT_FOUND', `Ingress route '${routeId}' not found`, 404);
   }
 
+  // Polymorphic target swap (migration 0076). If either deploymentId or
+  // privateWorkerId is set, clear the other side and flip target_type.
+  // Both undefined means "don't touch the target."
+  if (input.deploymentId && input.privateWorkerId) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      'A route can target a deployment or a private_worker, not both',
+      400,
+    );
+  }
+
+  // Cross-tenant guard for the new private-worker target. Without this,
+  // a caller authenticated as client A could PATCH client B's route to
+  // target a worker in A's namespace. We re-verify ownership here using
+  // the same shape as createRoute.
+  if (input.privateWorkerId) {
+    if (!clientId) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        'clientId is required when setting private_worker_id on an ingress route',
+        400,
+      );
+    }
+    const [pw] = await db
+      .select({ id: privateWorkers.id, status: privateWorkers.status })
+      .from(privateWorkers)
+      .where(and(eq(privateWorkers.id, input.privateWorkerId), eq(privateWorkers.clientId, clientId)));
+    if (!pw) {
+      throw new ApiError(
+        'PRIVATE_WORKER_NOT_FOUND',
+        `Private worker '${input.privateWorkerId}' not found for this client`,
+        404,
+      );
+    }
+    if (pw.status === 'revoked') {
+      throw new ApiError(
+        'PRIVATE_WORKER_REVOKED',
+        'Cannot point an ingress route at a revoked private worker',
+        400,
+      );
+    }
+  }
+
   const updateValues: Record<string, unknown> = {};
-  if (input.deploymentId !== undefined) updateValues.deploymentId = input.deploymentId;
+  if (input.deploymentId !== undefined) {
+    updateValues.deploymentId = input.deploymentId;
+    if (input.deploymentId) {
+      updateValues.targetType = 'deployment';
+      updateValues.privateWorkerId = null;
+    }
+  }
+  if (input.privateWorkerId !== undefined) {
+    updateValues.privateWorkerId = input.privateWorkerId;
+    if (input.privateWorkerId) {
+      updateValues.targetType = 'private_worker';
+      updateValues.deploymentId = null;
+    }
+  }
   if (input.tlsMode !== undefined) updateValues.tlsMode = input.tlsMode;
   if (input.nodeHostname !== undefined) updateValues.nodeHostname = input.nodeHostname;
 

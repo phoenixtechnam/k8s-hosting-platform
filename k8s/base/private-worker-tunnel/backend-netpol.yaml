@@ -1,0 +1,38 @@
+# NetworkPolicy: scope private-worker connect-event endpoint to frps pods.
+#
+# /api/v1/internal/private-workers/connect-event must only be reachable
+# from the per-client frps Deployments — same defence-in-depth pattern
+# as backend-allow-sftp-gateway.yaml. The X-Internal-Token header check
+# still runs in-process, but a network-layer fence prevents compromised
+# tenant pods from reaching the endpoint at all.
+#
+# This policy is *additive* with backend-allow-sftp-gateway — both
+# attach to the platform-api pod and contribute additional ingress
+# rules. Kubernetes ORs all matching policies, so the union is
+# {sftp-gateway pods, ingress-nginx, frps pods}.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-allow-private-worker-frps
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: private-worker-tunnel
+spec:
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow per-client frps pods → platform-api connect-event endpoint.
+    # Reconciler stamps app.kubernetes.io/name=private-worker-server on
+    # every frps pod regardless of namespace.
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: private-worker-server
+      ports:
+        - port: 3000
+          protocol: TCP

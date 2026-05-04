@@ -156,6 +156,25 @@ spec:
                   name: platform-config
                   key: file-manager-image
                   optional: true
+            # Private Worker — overlay-supplied per environment.
+            - name: TUNNEL_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: tunnel-base-url
+                  optional: true
+            - name: PRIVATE_WORKER_FRPS_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: private-worker-frps-image
+                  optional: true
+            - name: PRIVATE_WORKER_AGENT_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: private-worker-agent-image
+                  optional: true
             # System-settings defaults populated by seed.ts on a fresh install.
             # All optional — when unset the seed leaves the column NULL and
             # the admin can fill it in via the UI later. Values come from

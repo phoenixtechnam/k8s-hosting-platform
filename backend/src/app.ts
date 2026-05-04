@@ -52,6 +52,8 @@ import { protectedDirectoryRoutes } from './modules/protected-directories/routes
 import { sshKeyRoutes } from './modules/ssh-keys/routes.js';
 import { sftpUserRoutes } from './modules/sftp-users/routes.js';
 import { sftpInternalRoutes } from './modules/sftp-users/internal-routes.js';
+import { privateWorkerRoutes } from './modules/private-workers/routes.js';
+import { privateWorkerInternalRoutes } from './modules/private-workers/internal-routes.js';
 import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
@@ -338,6 +340,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(sshKeyRoutes, { prefix: '/api/v1' });
   await app.register(sftpUserRoutes, { prefix: '/api/v1' });
   await app.register(sftpInternalRoutes, { prefix: '/api/v1' });
+  await app.register(privateWorkerRoutes, { prefix: '/api/v1' });
+  await app.register(privateWorkerInternalRoutes, { prefix: '/api/v1' });
   await app.register(resourceQuotaRoutes, { prefix: '/api/v1' });
   await app.register(storageLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });

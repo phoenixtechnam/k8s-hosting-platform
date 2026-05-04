@@ -14,6 +14,12 @@ data:
   cors-origins: "https://admin.${DOMAIN},https://client.${DOMAIN}"
   # Per-client sidecar image — pull from GHCR on real clusters.
   file-manager-image: "ghcr.io/phoenixtechnam/hosting-platform/file-manager-sidecar:latest"
+  # Private Worker — clients dial in to this WSS host with their token.
+  # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
+  # ingress (set up at install time, no per-client DNS work needed).
+  tunnel-base-url: "wss://tunnels.${DOMAIN}"
+  private-worker-frps-image: "fatedier/frps:v0.62.1"
+  private-worker-agent-image: "ghcr.io/phoenixtechnam/hosting-platform/private-worker-agent:latest"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   longhorn-url: "https://longhorn.${DOMAIN}/"
   # platform_session cookie Domain attribute. Shares the cookie across

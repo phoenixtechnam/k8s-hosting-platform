@@ -1,0 +1,26 @@
+# Cluster-wide singleton resources for the Private Worker tunnel
+# feature. Per-client resources (per-client Ingress, ExternalName
+# Service, frps Deployment + ConfigMap + Secret + per-worker Services
+# + NetworkPolicy in the client namespace) are NOT base manifests —
+# they are materialised at runtime by the backend reconciler
+# (backend/src/modules/private-workers/reconciler.ts).
+#
+# What lives here:
+#   - certificate.yaml      cert-manager Certificate for tunnels.${DOMAIN}
+#   - anchor-ingress.yaml   The single anchor Ingress that holds the TLS
+#                           cert for tunnels.${DOMAIN} plus a default
+#                           catch-all backend. Per-client tunnel-{slug}
+#                           Ingresses on the same host add their /c/{slug}/
+#                           path rules at runtime; NGINX-ingress merges
+#                           path rules across multiple Ingress objects on
+#                           the same host so the anchor's catch-all does
+#                           not conflict with per-client paths.
+#
+# See docs/04-deployment/PRIVATE_WORKER.md for the full design.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - certificate.yaml
+  - anchor-ingress.yaml
+  - backend-netpol.yaml
