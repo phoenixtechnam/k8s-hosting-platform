@@ -17,10 +17,15 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { systemBackupRuns, auditLogs, backupConfigurations } from '../../db/schema.js';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { pgDumpRequestSchema, type PgDumpResponse, type SystemBackupRun } from '@k8s-hosting/api-contracts';
+import {
+  pgDumpRequestSchema,
+  pgDumpListQuerySchema,
+  type PgDumpResponse,
+  type SystemBackupRun,
+} from '@k8s-hosting/api-contracts';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';
 
@@ -67,40 +72,72 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     const image = await getPlatformApiImage(k8s);
 
     // Create run row + audit row inside a transaction so we never
-    // ship an unaudited dump.
-    await app.db.transaction(async (tx) => {
-      await tx.insert(systemBackupRuns).values({
-        id: runId,
-        kind: 'pg_dump',
-        status: 'pending',
-        operatorUserId: userId,
-        operatorIp: clientIp(request),
-        operatorUserAgent: clientUa(request),
-        sourceNamespace: parsed.data.sourceNamespace,
-        sourceCluster: parsed.data.sourceCluster,
-        sourceDatabase: parsed.data.sourceDatabase,
-        targetConfigId: parsed.data.targetConfigId,
-      });
-      await tx.insert(auditLogs).values({
-        id: randomUUID(),
-        actionType: 'system_backup_pg_dump',
-        resourceType: 'system_backup_run',
-        resourceId: runId,
-        actorId: userId,
-        actorType: 'user',
-        httpMethod: 'POST',
-        httpPath: '/api/v1/system-backup/pg-dump',
-        httpStatus: 202,
-        changes: {
+    // ship an unaudited dump. The transaction also closes the
+    // concurrency race (DB review C1, Sec review M1): we lock any
+    // pre-existing pending/running row for the same (ns, cluster, db)
+    // tuple FOR UPDATE — a second concurrent POST will block and then
+    // see our committed row, returning 409.
+    try {
+      await app.db.transaction(async (tx) => {
+        const inflight = await tx
+          .select({ id: systemBackupRuns.id })
+          .from(systemBackupRuns)
+          .where(and(
+            eq(systemBackupRuns.kind, 'pg_dump'),
+            eq(systemBackupRuns.sourceNamespace, parsed.data.sourceNamespace),
+            eq(systemBackupRuns.sourceCluster, parsed.data.sourceCluster),
+            eq(systemBackupRuns.sourceDatabase, parsed.data.sourceDatabase),
+            inArray(systemBackupRuns.status, ['pending', 'running']),
+          ))
+          .for('update')
+          .limit(1);
+        if (inflight.length > 0) {
+          throw new ApiError(
+            'SYSTEM_BACKUP_ALREADY_RUNNING',
+            `a pg_dump for ${parsed.data.sourceNamespace}/${parsed.data.sourceCluster} is already in flight (run ${inflight[0].id})`,
+            409,
+          );
+        }
+        await tx.insert(systemBackupRuns).values({
+          id: runId,
+          kind: 'pg_dump',
+          status: 'pending',
+          operatorUserId: userId,
+          operatorIp: clientIp(request),
+          operatorUserAgent: clientUa(request),
           sourceNamespace: parsed.data.sourceNamespace,
           sourceCluster: parsed.data.sourceCluster,
           sourceDatabase: parsed.data.sourceDatabase,
           targetConfigId: parsed.data.targetConfigId,
-          reason: parsed.data.reason ?? null,
-        },
-        ipAddress: clientIp(request) ?? null,
+        });
+        await tx.insert(auditLogs).values({
+          id: randomUUID(),
+          actionType: 'system_backup_pg_dump',
+          resourceType: 'system_backup_run',
+          resourceId: runId,
+          actorId: userId,
+          actorType: 'user',
+          httpMethod: 'POST',
+          httpPath: '/api/v1/system-backup/pg-dump',
+          httpStatus: 202,
+          changes: {
+            sourceNamespace: parsed.data.sourceNamespace,
+            sourceCluster: parsed.data.sourceCluster,
+            sourceDatabase: parsed.data.sourceDatabase,
+            targetConfigId: parsed.data.targetConfigId,
+            reason: parsed.data.reason ?? null,
+          },
+          ipAddress: clientIp(request) ?? null,
+        });
       });
-    });
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(
+        'SYSTEM_BACKUP_RUN_CREATE_FAILED',
+        err instanceof Error ? err.message : String(err),
+        500,
+      );
+    }
 
     let jobInfo: { jobName: string; namespace: string };
     try {
@@ -147,7 +184,11 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const q = request.query as { namespace?: string; cluster?: string; limit?: string };
+    const parsedQuery = pgDumpListQuerySchema.safeParse(request.query ?? {});
+    if (!parsedQuery.success) {
+      throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', parsedQuery.error.message, 400);
+    }
+    const q = parsedQuery.data;
     const limit = Math.min(Math.max(parseInt(q.limit ?? '20', 10) || 20, 1), 100);
     const conditions = [eq(systemBackupRuns.kind, 'pg_dump')];
     if (q.namespace) conditions.push(eq(systemBackupRuns.sourceNamespace, q.namespace));

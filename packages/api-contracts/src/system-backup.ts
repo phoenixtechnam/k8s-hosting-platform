@@ -54,14 +54,33 @@ export const systemBackupRunSchema = z.object({
 });
 export type SystemBackupRun = z.infer<typeof systemBackupRunSchema>;
 
+// RFC 1123 DNS label: lowercase alnum with hyphens, 1-63 chars, no
+// leading/trailing hyphen. Matches what k8s accepts for namespace,
+// CNPG cluster name, and Postgres database name (DNS-label is a safe
+// over-approximation for SQL identifiers and avoids surprising
+// quoting in pg_dump args).
+const dnsLabelSchema = z
+  .string()
+  .min(1)
+  .max(63)
+  .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'must be a lowercase DNS label (a-z, 0-9, hyphens)');
+
 export const pgDumpRequestSchema = z.object({
-  sourceNamespace: z.string().min(1).max(63),
-  sourceCluster: z.string().min(1).max(63),
-  sourceDatabase: z.string().min(1).max(63),
+  sourceNamespace: dnsLabelSchema,
+  sourceCluster: dnsLabelSchema,
+  sourceDatabase: dnsLabelSchema,
   targetConfigId: z.string().uuid(),
   reason: z.string().max(500).optional(),
 });
 export type PgDumpRequest = z.infer<typeof pgDumpRequestSchema>;
+
+// Query params for GET /pg-dump/runs.
+export const pgDumpListQuerySchema = z.object({
+  namespace: dnsLabelSchema.optional(),
+  cluster: dnsLabelSchema.optional(),
+  limit: z.string().regex(/^\d+$/, 'must be a positive integer').optional(),
+});
+export type PgDumpListQuery = z.infer<typeof pgDumpListQuerySchema>;
 
 export const pgDumpResponseSchema = z.object({
   runId: z.string().uuid(),

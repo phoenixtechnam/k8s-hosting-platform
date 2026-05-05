@@ -3,18 +3,29 @@
  *
  * Pipeline:
  *   1. Resolve target backup_configurations row (S3 / SSH).
- *   2. Reserve a BackupStore bundle under synthetic clientId='__system__'
+ *   2. Resolve CNPG cluster credentials by reading the Cluster CR's
+ *      `.spec.bootstrap.initdb.secret.name` and fetching that Secret
+ *      from the source namespace (with a `<cluster>-app` fallback).
+ *      We do NOT use Pod env secretKeyRef — it's namespace-local and
+ *      breaks for cross-namespace clusters like mail/mail-pg.
+ *   3. Reserve a BackupStore bundle under synthetic clientId='__system__'
  *      so system artifacts live in a dedicated subtree.
- *   3. Spawn `pg_dump --format=custom --compress=9 --no-owner
+ *   4. Spawn `pg_dump --format=custom --compress=9 --no-owner
  *      --no-privileges` against the CNPG `<cluster>-ro` read-replica
- *      service so the dump doesn't load the primary.
- *   4. Tee stdout: count bytes + sha256 while passing through to
- *      BackupStore.writeComponent (component='config').
- *   5. Persist bundleId + artifactName + sha256 + size_bytes on the
+ *      service so the dump doesn't load the primary. PGUSER/PGPASSWORD
+ *      are passed via the spawn env (NOT pod env, NOT command-line
+ *      args — never visible in `ps`).
+ *   5. Pipe stdout through a hash/size accounting transform into the
+ *      BackupStore.writeComponent stream. `stream/promises.pipeline`
+ *      wires backpressure end-to-end so a slow store can't OOM the
+ *      Job pod by buffering an unbounded multi-GB dump.
+ *   6. Persist bundleId + artifactName + sha256 + size_bytes on the
  *      system_backup_runs row; status='succeeded'.
  *
- * Errors update status='failed' + an OperatorError-shaped error_envelope
- * so the UI can render <ErrorPanel>.
+ * On any failure: the partial bundle is `delete()`d so we don't leak
+ * orphan artifacts, the run row is updated to status='failed', and a
+ * scrubbed (no PG creds, no connection URIs) error envelope is stored
+ * for the operator UI.
  *
  * Reuses backups-v2's BackupStore interface + S3/SshBackupStore — does
  * NOT modify backups-v2 module code.
@@ -22,18 +33,20 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { PassThrough } from 'node:stream';
-import type { Readable } from 'node:stream';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { systemBackupRuns, backupConfigurations } from '../../db/schema.js';
 import { S3BackupStore } from '../backups-v2/s3-backup-store.js';
 import { SshBackupStore } from '../backups-v2/ssh-backup-store.js';
-import type { BackupStore } from '../backups-v2/bundle-store.js';
+import type { BackupStore, BundleHandle } from '../backups-v2/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export interface PgDumpInputs {
   readonly db: Database;
+  readonly k8s: K8sClients;
   readonly runId: string;
   readonly namespace: string;
   readonly cluster: string;
@@ -50,14 +63,103 @@ export interface PgDumpResult {
 }
 
 const SYSTEM_CLIENT_ID = '__system__';
+const CNPG_GROUP = 'postgresql.cnpg.io';
+const CNPG_VERSION = 'v1';
+const MAX_STDERR_BYTES = 2000;
+
+interface ResolvedCreds {
+  readonly username: string;
+  readonly password: string;
+}
+
+interface ResolvedStore {
+  readonly store: BackupStore;
+  readonly targetType: 's3' | 'ssh';
+}
+
+/**
+ * Read the CNPG Cluster CR + its bootstrap Secret to recover the
+ * application user creds. Falls back to `<cluster>-app` (CNPG's
+ * default managed Secret) if the CR has no explicit bootstrap.secret.
+ *
+ * Throws with a scrubbed error if neither path resolves.
+ */
+async function resolveCnpgCredentials(
+  k8s: K8sClients,
+  namespace: string,
+  cluster: string,
+): Promise<ResolvedCreds> {
+  const candidates: string[] = [];
+
+  // Path 1: read .spec.bootstrap.initdb.secret.name from the Cluster CR.
+  try {
+    const custom = k8s.custom as unknown as {
+      getNamespacedCustomObject: (a: {
+        group: string; version: string; namespace: string; plural: string; name: string;
+      }) => Promise<{ spec?: { bootstrap?: { initdb?: { secret?: { name?: string } } } } }>;
+    };
+    const cr = await custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'clusters', name: cluster,
+    });
+    const bootstrapSecret = cr?.spec?.bootstrap?.initdb?.secret?.name;
+    if (bootstrapSecret) candidates.push(bootstrapSecret);
+  } catch {
+    // CR missing or RBAC denied — fall through to the default.
+  }
+
+  // Path 2: CNPG default managed Secret name.
+  candidates.push(`${cluster}-app`);
+
+  const core = k8s.core as unknown as {
+    readNamespacedSecret: (a: { namespace: string; name: string })
+      => Promise<{ data?: Record<string, string> }>;
+  };
+
+  for (const secretName of candidates) {
+    try {
+      const sec = await core.readNamespacedSecret({ namespace, name: secretName });
+      const data = sec.data ?? {};
+      const usernameB64 = data.username ?? data.PGUSER;
+      const passwordB64 = data.password ?? data.PGPASSWORD;
+      if (!usernameB64 || !passwordB64) continue;
+      return {
+        username: Buffer.from(usernameB64, 'base64').toString('utf8'),
+        password: Buffer.from(passwordB64, 'base64').toString('utf8'),
+      };
+    } catch {
+      // try next candidate
+    }
+  }
+
+  throw new Error(
+    `unable to resolve CNPG credentials for cluster ${namespace}/${cluster}: tried ${candidates.join(', ')}`,
+  );
+}
 
 async function resolveSystemStore(
   db: Database,
   targetConfigId: string,
   oidcEncryptionKey: string | null,
-): Promise<{ store: BackupStore; targetType: 's3' | 'ssh' }> {
+): Promise<ResolvedStore> {
+  // Explicit projection — NEVER `SELECT *` on a table that holds
+  // encrypted credentials (DB review H3).
   const rows = await db
-    .select()
+    .select({
+      id: backupConfigurations.id,
+      active: backupConfigurations.active,
+      storageType: backupConfigurations.storageType,
+      s3Endpoint: backupConfigurations.s3Endpoint,
+      s3Region: backupConfigurations.s3Region,
+      s3Bucket: backupConfigurations.s3Bucket,
+      s3Prefix: backupConfigurations.s3Prefix,
+      s3AccessKeyEncrypted: backupConfigurations.s3AccessKeyEncrypted,
+      s3SecretKeyEncrypted: backupConfigurations.s3SecretKeyEncrypted,
+      sshHost: backupConfigurations.sshHost,
+      sshPort: backupConfigurations.sshPort,
+      sshUser: backupConfigurations.sshUser,
+      sshPath: backupConfigurations.sshPath,
+      sshKeyEncrypted: backupConfigurations.sshKeyEncrypted,
+    })
     .from(backupConfigurations)
     .where(eq(backupConfigurations.id, targetConfigId))
     .limit(1);
@@ -95,11 +197,35 @@ async function resolveSystemStore(
   throw new Error(`backup_configurations.storage_type=${cfg.storageType} not supported`);
 }
 
+/**
+ * Strip credentials and connection URIs from pg_dump stderr before
+ * embedding it in an operator-visible error envelope. pg_dump is
+ * conservative about logging passwords directly, but a connection
+ * string in the error can leak PGUSER. Belt-and-braces.
+ */
+function scrubStderr(raw: string): string {
+  return raw
+    // Mask postgres URIs (postgres://user:pass@host/db).
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, 'postgres://[REDACTED]')
+    // Mask explicit password=... clauses.
+    .replace(/password\s*=\s*\S+/gi, 'password=[REDACTED]')
+    // Mask user=… in stderr (avoid leaking app username).
+    .replace(/\buser\s*=\s*\S+/gi, 'user=[REDACTED]')
+    .slice(0, MAX_STDERR_BYTES);
+}
+
+interface SpawnedDump {
+  readonly stdout: NodeJS.ReadableStream;
+  readonly stderrText: () => string;
+  readonly done: Promise<void>;
+}
+
 function spawnPgDump(
   namespace: string,
   cluster: string,
   database: string,
-): { stdout: Readable; stderr: Readable; done: Promise<void> } {
+  creds: ResolvedCreds,
+): SpawnedDump {
   const host = `${cluster}-ro.${namespace}.svc`;
   const args = [
     '-h', host,
@@ -110,7 +236,25 @@ function spawnPgDump(
     '--no-owner',
     '--no-privileges',
   ];
-  const proc = spawn('pg_dump', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Pass creds via env (not args). spawn uses execve so env is private
+  // to the child process — never appears in /proc/<pid>/cmdline. Inherit
+  // PATH from the parent process so `pg_dump` can be found.
+  const proc = spawn('pg_dump', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      PGUSER: creds.username,
+      PGPASSWORD: creds.password,
+    },
+  });
+  const stderrChunks: Buffer[] = [];
+  let stderrBytes = 0;
+  proc.stderr.on('data', (c: Buffer) => {
+    if (stderrBytes < MAX_STDERR_BYTES * 2) {
+      stderrChunks.push(c);
+      stderrBytes += c.length;
+    }
+  });
   const done = new Promise<void>((resolve, reject) => {
     proc.on('error', reject);
     proc.on('close', (code) => {
@@ -118,46 +262,66 @@ function spawnPgDump(
       else reject(new Error(`pg_dump exit ${code}`));
     });
   });
-  return { stdout: proc.stdout, stderr: proc.stderr, done };
+  return {
+    stdout: proc.stdout,
+    stderrText: () => Buffer.concat(stderrChunks).toString('utf8'),
+    done,
+  };
 }
 
 export async function runPgDump(inputs: PgDumpInputs): Promise<PgDumpResult> {
-  const { db, runId, namespace, cluster, database, targetConfigId, oidcEncryptionKey } = inputs;
+  const { db, k8s, runId, namespace, cluster, database, targetConfigId, oidcEncryptionKey } = inputs;
 
   await db.update(systemBackupRuns)
     .set({ status: 'running', jobName: process.env.HOSTNAME ?? null })
     .where(eq(systemBackupRuns.id, runId));
 
+  let handle: BundleHandle | null = null;
+  let store: BackupStore | null = null;
+  let stderrSnapshot = '';
   try {
-    const { store } = await resolveSystemStore(db, targetConfigId, oidcEncryptionKey);
-    const handle = await store.reserveBundle({ backupId: runId, clientId: SYSTEM_CLIENT_ID });
+    const resolved = await resolveSystemStore(db, targetConfigId, oidcEncryptionKey);
+    store = resolved.store;
+    const creds = await resolveCnpgCredentials(k8s, namespace, cluster);
+    handle = await store.reserveBundle({ backupId: runId, clientId: SYSTEM_CLIENT_ID });
 
-    const { stdout, stderr, done } = spawnPgDump(namespace, cluster, database);
-    const stderrChunks: Buffer[] = [];
-    stderr.on('data', (c: Buffer) => stderrChunks.push(c));
+    const dump = spawnPgDump(namespace, cluster, database, creds);
 
     const hasher = createHash('sha256');
     let sizeBytes = 0;
-    const passthrough = new PassThrough();
-    stdout.on('data', (c: Buffer) => {
-      hasher.update(c);
-      sizeBytes += c.length;
-      passthrough.write(c);
+    // Inline hash/size transform so the stream/promises.pipeline below
+    // wires backpressure across the whole chain (TS review H1). A
+    // manual `data` event handler with `.write()` would not respect
+    // the destination's HWM and could OOM the Job on slow upload.
+    const hashTransform = new Transform({
+      highWaterMark: 8 * 1024 * 1024,
+      transform(chunk: Buffer, _enc, cb) {
+        hasher.update(chunk);
+        sizeBytes += chunk.length;
+        cb(null, chunk);
+      },
     });
-    stdout.on('end', () => passthrough.end());
-    stdout.on('error', (err) => passthrough.destroy(err));
 
     const artifactName = `${cluster}.${database}.pgdump`;
-    const writePromise = store.writeComponent(handle, 'config', artifactName, passthrough, {
+
+    // We need to feed the `body: Readable` argument of writeComponent.
+    // The hashTransform IS that Readable (after we pipe pg_dump stdout
+    // into it). To keep the dump-exit and upload promises distinct,
+    // pipe stdout → hashTransform inside a pipeline, then hand the
+    // hashTransform to writeComponent which consumes it.
+    const stdoutToHash = pipeline(dump.stdout, hashTransform).catch((e: unknown) => {
+      throw e instanceof Error ? e : new Error(String(e));
+    });
+    const writePromise = store.writeComponent(handle, 'config', artifactName, hashTransform, {
       contentType: 'application/octet-stream',
     });
 
     try {
-      await Promise.all([done, writePromise]);
+      await Promise.all([dump.done, stdoutToHash, writePromise]);
     } catch (err) {
-      const stderrText = Buffer.concat(stderrChunks).toString('utf8').slice(0, 2000);
+      stderrSnapshot = scrubStderr(dump.stderrText());
       const e = err as Error;
-      throw new Error(`pg_dump pipeline failed: ${e.message}; stderr: ${stderrText}`);
+      throw new Error(`pg_dump pipeline failed: ${e.message}; stderr: ${stderrSnapshot}`);
     }
 
     const sha256 = hasher.digest('hex');
@@ -176,11 +340,20 @@ export async function runPgDump(inputs: PgDumpInputs): Promise<PgDumpResult> {
     return { sizeBytes, sha256, bundleId: handle.bundleId, artifactName };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Cleanup orphan partial bundle (TS review H2). Best-effort —
+    // failing here doesn't change the operator-visible state.
+    if (handle && store) {
+      await store.delete(handle).catch(() => undefined);
+    }
     await db.update(systemBackupRuns)
       .set({
         status: 'failed',
         finishedAt: new Date(),
-        errorEnvelope: { code: 'SYSTEM_BACKUP_PG_DUMP_FAILED', message: msg } as unknown as Record<string, unknown>,
+        errorEnvelope: {
+          code: 'SYSTEM_BACKUP_PG_DUMP_FAILED',
+          message: msg.slice(0, 500),
+          stderr: stderrSnapshot || null,
+        } as unknown as Record<string, unknown>,
       })
       .where(eq(systemBackupRuns.id, runId));
     throw err;
