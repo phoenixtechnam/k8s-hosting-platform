@@ -49,6 +49,8 @@ import { SshBackupStore } from '../backups-v2/ssh-backup-store.js';
 import type { BackupStore } from '../backups-v2/bundle-store.js';
 import { gunzipSync } from 'node:zlib';
 import { execConfigTablesItem } from './executors/config-tables.js';
+import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
+import { execDomainsByIdItem } from './executors/domains-by-id.js';
 
 export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -488,15 +490,23 @@ async function dispatchExecutor(app: FastifyInstance, item: RestoreItem, store: 
     case 'config-tables':
       await execConfigTablesItem({ app, item, store });
       return;
-    case 'files-paths':
-    case 'mailboxes-by-address':
     case 'deployments-by-id':
-    case 'domains-by-id': {
+      await execDeploymentsByIdItem({ app, item, store });
+      return;
+    case 'domains-by-id':
+      await execDomainsByIdItem({ app, item, store });
+      return;
+    case 'files-paths':
+    case 'mailboxes-by-address': {
+      // Phase 4.x — these executors spawn tenant/mail-namespace Jobs
+      // that download the corresponding artefacts via the internal
+      // download route and apply them. Wired in a follow-up commit.
       const err = new Error(
-        `Restore executor for type '${item.type}' is deferred to Phase 4.x. ` +
-        `Only 'config-tables' is wired in Phase 4.0.`,
+        `Restore executor for type '${item.type}' is not yet implemented. ` +
+        `In-process executors (config-tables, deployments-by-id, domains-by-id) ` +
+        `are wired today; Job-based executors land in the next chunk.`,
       );
-      (err as Error & { code?: string }).code = 'EXECUTOR_PHASE_4_PENDING';
+      (err as Error & { code?: string }).code = 'EXECUTOR_NOT_YET_WIRED';
       throw err;
     }
     default: {
