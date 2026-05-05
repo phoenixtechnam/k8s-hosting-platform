@@ -864,6 +864,11 @@ for c in (items if isinstance(items, list) else []):
     local fcart_status; fcart_status=$(echo "$fexec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
     if [[ "$fcart_status" != "done" ]]; then
       fail "restore/files: cart execute returned status=$fcart_status — resp: $(echo "$fexec_resp" | head -c 600)"
+      # Capture Job logs from the cluster before tenant ns is deleted
+      # — without this we have no diagnostic for the executor failure.
+      log "restore/files: tenant Job pods + logs ↓"
+      ssh_cp "kubectl -n $fns get pods -l platform.io/component=restore-files 2>&1 | head" 2>&1 | sed 's/^/    /'
+      ssh_cp "kubectl -n $fns logs -l platform.io/component=restore-files --tail=80 2>&1" 2>&1 | sed 's/^/    /' | head -40
       api DELETE "/admin/restores/carts/$fcart_id" >/dev/null 2>&1 || true
       api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
       api DELETE "/clients/$cid" >/dev/null 2>&1 || true
