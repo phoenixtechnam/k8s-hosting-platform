@@ -130,7 +130,11 @@ function renderWithProviders(ui: React.ReactElement) {
   );
 }
 
-describe('Backups', () => {
+// Backups page rewritten to read from /api/v1/client/backups/* (the
+// new tenant-backup self-service API). The legacy `useBackups` mocks
+// here would no longer match the page's data shape — the surface tests
+// live in backups-page.test.tsx now. Skipping describe.
+describe.skip('Backups (legacy mocks — superseded by backups-page.test.tsx)', () => {
   it('renders the heading', () => {
     mockedUseBackups.mockReturnValue({
       data: undefined,
