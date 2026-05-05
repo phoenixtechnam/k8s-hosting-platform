@@ -12,6 +12,7 @@ import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useClient, useDeleteClient, useUpdateClient } from '@/hooks/use-clients';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
+import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
 import { useDeployments, useRestartDeployment, useBulkRestartDeployments } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
@@ -510,7 +511,12 @@ export default function ClientDetail() {
             </div>
           )}
           {activeTab === 'email' && <EmailTab clientId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
-          {activeTab === 'backups' && <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />}
+          {activeTab === 'backups' && (
+            <div className="space-y-4">
+              {id && <BackupScheduleEditor clientId={id} />}
+              <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />
+            </div>
+          )}
           {activeTab === 'users' && id && <ClientUsersTab clientId={id} />}
         </div>
       </div>
