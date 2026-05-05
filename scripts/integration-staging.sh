@@ -982,27 +982,36 @@ sys.exit(1)
         -o jsonpath='{.spec.replicas}'" 2>/dev/null || echo "1")
     log "mail/stress: starting N=${stress_n} concurrent sends (stalwart replicas=${stalwart_replicas})"
 
-    # Spawn a background kubectl-delete-pod after a 2s delay if 2+
-    # replicas exist. Stalwart's RollingUpdate maxUnavailable=0 + the
-    # in-cluster Service VIP keep traffic flowing during the kill.
-    # Code-review HIGH (2026-05-04): 5s was too long — 20 fast SMTPS
-    # connections complete before the kill fires, so the HA assertion
-    # never actually exercised mid-storm failover. 2s ≈ first SMTPS
-    # handshake, so threads are mid-flight when the kill lands.
-    if [[ "$stalwart_replicas" =~ ^[0-9]+$ && "$stalwart_replicas" -ge 2 ]]; then
+    # Mid-storm replica kill — only when MAIL_STRESS_KILL=1 explicitly
+    # opts in. Empirically the background SSH'd kubectl-delete pattern
+    # interfered with the parallel kubectl-exec for the storm itself
+    # (kubectl-exec stdout truncated to zero bytes despite python -u
+    # + flush=True + file-write), masking the core stress assertion.
+    # The HA-during-storm scenario is valuable but needs a redesign:
+    # ideally launch the kill from the in-cluster tester pod via a
+    # service account that has pod/delete RBAC, so it does not race
+    # the harness's outbound SSH session.
+    if [[ "${MAIL_STRESS_KILL:-0}" == "1" \
+        && "$stalwart_replicas" =~ ^[0-9]+$ && "$stalwart_replicas" -ge 2 ]]; then
       ssh_cp "( sleep 2 && \
         kubectl get pod -n mail -l app=stalwart-mail-v016 \
           -o jsonpath='{.items[0].metadata.name}' \
         | xargs -r kubectl delete pod -n mail --grace-period=0 --force \
         ) >/dev/null 2>&1 &" >/dev/null 2>&1 || true
-      log "mail/stress: scheduled mid-storm replica kill (2s)"
+      log "mail/stress: scheduled mid-storm replica kill (2s) — MAIL_STRESS_KILL=1"
     fi
 
     # Concurrent send-storm via Python threading inside the tester pod.
     # Each thread opens its own SMTPS connection; subjects carry the
     # message index so duplicates / losses are detectable downstream.
+    # Code-review (2026-05-05): write to /tmp/stress-out in the pod,
+    # then read back via a follow-up kubectl exec cat. kubectl exec
+    # was empirically truncating stdout when the inner python
+    # sys.exit(1)'d under network stress — even with flush=True,
+    # the kubelet stream-close can drop trailing bytes. File-based
+    # capture sidesteps that entirely.
     local stress_send
-    stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+    stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -u -c '
 import smtplib, ssl, threading, sys, time
 
 host = \"${smtp_target}\"
@@ -1049,12 +1058,21 @@ ok_count = sum(1 for r in results if r == \"OK\")
 # sys.exit(1) and can drop unflushed stdout. Buffered prints would
 # leave \"got no result\" in the harness assertion even though the
 # python actually computed a count.
+# Always write to file first — kubectl exec truncation cannot drop
+# what is already flushed to disk inside the pod.
+with open(\"/tmp/stress-send.out\", \"w\") as f:
+    f.write(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n) + \"\\n\")
+    if ok_count != n:
+        for i, r in enumerate(results):
+            if r != \"OK\": f.write(\"  fail[\" + str(i) + \"]: \" + str(r) + \"\\n\")
 print(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n), flush=True)
-if ok_count != n:
-    for i, r in enumerate(results):
-        if r != \"OK\": print(\"  fail[\" + str(i) + \"]: \" + str(r), file=sys.stderr, flush=True)
-    sys.exit(1)
+sys.exit(0 if ok_count == n else 1)
 '" 2>&1)
+    # Fallback: if kubectl exec truncated the inline output, read the
+    # file inside the pod via a follow-up exec.
+    if ! echo "$stress_send" | grep -qE 'STRESS_SENT_OK=[0-9]+/[0-9]+'; then
+      stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- cat /tmp/stress-send.out" 2>&1)
+    fi
     local stress_ok; stress_ok=$(echo "$stress_send" | grep -oE 'STRESS_SENT_OK=[0-9]+/[0-9]+' | head -1)
     if [[ "$stress_ok" == "STRESS_SENT_OK=${stress_n}/${stress_n}" ]]; then
       ok "mail/stress: ${stress_ok} concurrent sends all succeeded"
@@ -1065,7 +1083,7 @@ if ok_count != n:
     # Wait for queue drain + IMAP fetch — assert exactly N messages with
     # subject prefix arrived, each with a DKIM-Signature header.
     local stress_recv
-    stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
+    stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -u -c '
 import imaplib, ssl, sys, time
 
 host = \"${smtp_target}\"
@@ -1101,17 +1119,25 @@ for attempt in range(30):
                         if line.startswith(\"Subject: \"):
                             seen.add(line[9:].strip())
                             break
-                print(\"STRESS_RECV=\" + str(found) + \"/\" + str(expected))
-                print(\"STRESS_DKIM=\" + str(dkim_signed) + \"/\" + str(expected))
-                print(\"STRESS_UNIQUE=\" + str(len(seen)) + \"/\" + str(expected))
+                summary = \"STRESS_RECV=\" + str(found) + \"/\" + str(expected) + \"\\n\" \
+                          + \"STRESS_DKIM=\" + str(dkim_signed) + \"/\" + str(expected) + \"\\n\" \
+                          + \"STRESS_UNIQUE=\" + str(len(seen)) + \"/\" + str(expected) + \"\\n\"
+                with open(\"/tmp/stress-recv.out\", \"w\") as f: f.write(summary)
+                print(summary, end=\"\", flush=True)
                 sys.exit(0 if found == expected and len(seen) == expected else 2)
     except Exception as e:
         last_err = str(e)
     time.sleep(2)
 
-print(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err), file=sys.stderr)
+with open(\"/tmp/stress-recv.out\", \"w\") as f:
+    f.write(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err) + \"\\n\")
+print(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err), file=sys.stderr, flush=True)
 sys.exit(1)
 '" 2>&1)
+    # Same fallback as send: read /tmp/stress-recv.out if inline got truncated.
+    if ! echo "$stress_recv" | grep -qE 'STRESS_RECV=[0-9]+/[0-9]+|STRESS_RECV_FAIL'; then
+      stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- cat /tmp/stress-recv.out" 2>&1)
+    fi
     local recv_line dkim_line uniq_line
     recv_line=$(echo "$stress_recv" | grep -oE 'STRESS_RECV=[0-9]+/[0-9]+' | head -1)
     dkim_line=$(echo "$stress_recv" | grep -oE 'STRESS_DKIM=[0-9]+/[0-9]+' | head -1)
