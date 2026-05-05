@@ -255,16 +255,23 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
 
   const [newHostname, setNewHostname] = useState('');
+  const [newDeploymentId, setNewDeploymentId] = useState('');
 
   const routes = routesData?.data ?? [];
   const deployments = deploymentsData?.data ?? [];
 
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
-    if (!newHostname) return;
-    createRoute.mutate({ hostname: newHostname }, {
-      onSuccess: () => setNewHostname(''),
-    });
+    if (!newHostname || !newDeploymentId) return;
+    createRoute.mutate(
+      { hostname: newHostname, deployment_id: newDeploymentId },
+      {
+        onSuccess: () => {
+          setNewHostname('');
+          setNewDeploymentId('');
+        },
+      },
+    );
   };
 
   const handleAssignDeployment = (routeId: string, deploymentId: string | null) => {
@@ -376,8 +383,8 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       )}
 
       {/* Add Route Form */}
-      <form onSubmit={handleAddRoute} className="flex items-end gap-3" data-testid="add-route-form">
-        <div className="flex-1">
+      <form onSubmit={handleAddRoute} className="flex items-end gap-3 flex-wrap" data-testid="add-route-form">
+        <div className="flex-1 min-w-[220px]">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Add Hostname
           </label>
@@ -396,9 +403,35 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
             }
           </p>
         </div>
+        <div className="flex-1 min-w-[220px]">
+          {/* Deployment is required at creation time — the DB constraint
+              ingress_routes_target_xor (migration 0076) forbids a route
+              row without a target. The previous form submitted hostname-only
+              and produced a generic 500 from the constraint violation. */}
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Deployment
+          </label>
+          <select
+            value={newDeploymentId}
+            onChange={(e) => setNewDeploymentId(e.target.value)}
+            className={INPUT_CLASS}
+            data-testid="new-route-deployment-input"
+            required
+          >
+            <option value="">— select a deployment —</option>
+            {deployments.map((d) => (
+              <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
+            ))}
+          </select>
+          {deployments.length === 0 && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              No deployments yet — create one for this client first, then add the route.
+            </p>
+          )}
+        </div>
         <button
           type="submit"
-          disabled={!newHostname || createRoute.isPending}
+          disabled={!newHostname || !newDeploymentId || createRoute.isPending}
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
           data-testid="add-route-button"
         >
@@ -408,10 +441,12 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
       </form>
 
       {createRoute.error && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-          <AlertCircle size={16} />
-          <span>{createRoute.error instanceof Error ? createRoute.error.message : 'Failed to create route'}</span>
-        </div>
+        <ErrorPanel
+          error={extractOperatorError(createRoute.error)}
+          severity="error"
+          compact
+          testId="add-route-error"
+        />
       )}
     </div>
   );
