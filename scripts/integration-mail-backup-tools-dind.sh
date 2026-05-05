@@ -200,12 +200,14 @@ phase_restore_modes() {
 
   # ── 4a: merge-skip pass1 — empty INBOX → 3 appended
   imap_purge_inbox
-  local before=$(imap_count_inbox)
+  local before
+  before=$(imap_count_inbox)
   echo "INBOX before: $before"
   local out
   out=$(run_restore merge-skip-duplicates "$fixture")
   echo "$out"
-  local after=$(imap_count_inbox)
+  local after
+  after=$(imap_count_inbox)
   if [ "$after" -ne 3 ]; then
     echo "FAIL: merge-skip pass1 expected 3 messages, got $after" >&2
     return 1
@@ -219,7 +221,8 @@ phase_restore_modes() {
     echo "FAIL: merge-skip pass2 did not report appended=0 skipped=3" >&2
     return 1
   }
-  local after2=$(imap_count_inbox)
+  local after2
+  after2=$(imap_count_inbox)
   if [ "$after2" -ne 3 ]; then
     echo "FAIL: merge-skip pass2 inflated INBOX to $after2 (expected 3)" >&2
     return 1
@@ -235,7 +238,8 @@ phase_restore_modes() {
     echo "FAIL: merge-overwrite did not report appended=3 skipped=0" >&2
     return 1
   }
-  local after3=$(imap_count_inbox)
+  local after3
+  after3=$(imap_count_inbox)
   if [ "$after3" -ne 6 ]; then
     echo "FAIL: merge-overwrite expected 6 messages, got $after3" >&2
     return 1
@@ -249,7 +253,8 @@ phase_restore_modes() {
     echo "FAIL: replace did not report appended=3" >&2
     return 1
   }
-  local after4=$(imap_count_inbox)
+  local after4
+  after4=$(imap_count_inbox)
   if [ "$after4" -ne 3 ]; then
     echo "FAIL: replace expected 3 messages, got $after4" >&2
     return 1

@@ -15,7 +15,7 @@
 # python3 + isync + curl + ca-certificates + tar). Trivy CRITICAL
 # must pass; HIGH currently advisory.
 
-FROM alpine:3.19
+FROM alpine:3.20
 
 RUN apk add --no-cache \
       isync \
