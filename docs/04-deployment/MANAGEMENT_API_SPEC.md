@@ -2914,6 +2914,181 @@ PATCH /api/v1/clients/client_001/subscription
 
 ---
 
+## Mail Administration
+
+Operator-only endpoints for managing the platform mail server. All routes
+under `/api/v1/admin/mail/...` require `super_admin`. Deeper background
+in `docs/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md`.
+
+### Mail PVC Storage
+
+Online-resize the `mail-pg-1` PVC backing the platform mail database.
+Single-tenant — operator-driven; the per-client storage policy is
+unrelated.
+
+#### GET `/api/v1/admin/mail/pvc/storage`
+
+Returns live PVC state including the StorageClass `allowVolumeExpansion`
+flag. `usedBytes` / `freeBytes` are best-effort — null when the kubelet
+exec df probe fails.
+
+```json
+{
+  "data": {
+    "pvcName": "mail-pg-1",
+    "namespace": "mail",
+    "requestedBytes": 5368709120,
+    "capacityBytes": 5368709120,
+    "usedBytes": 1610612736,
+    "freeBytes": 3758096384,
+    "storageClass": "longhorn-system-local",
+    "expansionAllowed": true,
+    "lastResizedAt": null
+  }
+}
+```
+
+#### PATCH `/api/v1/admin/mail/pvc/storage`
+
+```json
+{ "newGiB": 10 }
+```
+
+Patches `pvc.spec.resources.requests.storage` via MERGE_PATCH. Online —
+no Stalwart/PG restart. Returns immediately; capacity convergence
+(Longhorn extend + kubelet `xfs_growfs`/`resize2fs`) takes 30-120s and
+the operator UI polls GET to observe.
+
+**Reject codes (400):**
+- `MAIL_PVC_SHRINK_NOT_SUPPORTED` — `newGiB < currentGiB`
+- `MAIL_PVC_SAME_SIZE` — `newGiB == currentGiB`
+- `STORAGE_CLASS_NO_EXPANSION` — `SC.allowVolumeExpansion === false`
+- `MAIL_PVC_GROW_REJECTED` — kubelet returned 422
+- `MAIL_PVC_INVALID_SIZE` — non-integer or out-of-range `newGiB`
+
+### Stalwart BlobStore
+
+Switch the BlobStore singleton between `Default` (mail-pg PG), `S3`
+(external bucket), and `FileSystem` (per-replica disk). See
+`docs/06-features/STALWART_BLOB_STORE_MIGRATION.md` for the migration
+implications — switching does NOT move existing blobs.
+
+#### GET `/api/v1/admin/mail/blob-store`
+
+Spawns a short-lived `stalwart-cli get BlobStore` Pod, parses JSON
+output. Never returns S3 access/secret keys.
+
+```json
+{
+  "data": {
+    "id": "singleton",
+    "type": "Default",
+    "lastUpdatedAt": null
+  }
+}
+```
+
+For `type: "S3"` the response also includes a `s3` object with
+`bucket`, `region`, `endpoint` (no keys). For `type: "FileSystem"`
+includes `fileSystem.path` + `fileSystem.depth`.
+
+#### PATCH `/api/v1/admin/mail/blob-store`
+
+Discriminated body on `type`:
+
+```json
+// Default
+{ "type": "Default" }
+
+// FileSystem
+{
+  "type": "FileSystem",
+  "fileSystem": { "path": "/var/lib/stalwart/blobs", "depth": 2 }
+}
+
+// S3
+{
+  "type": "S3",
+  "s3": {
+    "bucket": "my-bucket",
+    "region": "eu-central-1",
+    "endpoint": "https://s3.example.com",
+    "accessKey": "AKIA...",
+    "secretKey": "..."
+  }
+}
+```
+
+For S3, the access/secret keys are written to a `stalwart-blob-credentials`
+Secret (mail ns) BEFORE the cli Job is spawned. The cli reads
+`$S3_ACCESS_KEY` / `$S3_SECRET_KEY` from env via `envFrom` —
+**plaintext keys NEVER appear in container argv**.
+
+Returns the spawned Job name + initial status:
+
+```json
+{
+  "data": {
+    "id": "singleton",
+    "type": "S3",
+    "jobName": "stalwart-blob-store-update-abc12345",
+    "status": "queued",
+    "startedAt": "2026-05-05T17:30:00.000Z"
+  }
+}
+```
+
+#### GET `/api/v1/admin/mail/blob-store/jobs/:name`
+
+Polls Job + Pod status. Returns the cli BEFORE/AFTER output via
+`podLogTail`. The Job self-verifies — non-matching `@type` after the
+update exits non-zero so K8s marks the Job `Failed`.
+
+```json
+{
+  "data": {
+    "jobName": "stalwart-blob-store-update-abc12345",
+    "status": "succeeded",
+    "startedAt": "2026-05-05T17:30:00.000Z",
+    "completedAt": "2026-05-05T17:30:18.000Z",
+    "podLogTail": "=== AFTER ===\n{\"@type\":\"S3\",\"id\":\"singleton\"}\nself-verify ok",
+    "failureReason": null
+  }
+}
+```
+
+`status` ∈ `queued | running | succeeded | failed | unknown`.
+
+### Stalwart Password Rotation
+
+Two routes — both `super_admin` only. See
+`backend/src/modules/mail-admin/rotate-jmap.ts` for the wire-level
+JMAP `x:Account/set` shape and the in-flight Secret-mirror flow.
+
+- `POST /api/v1/admin/mail/rotate-admin-password` — rotates the
+  Stalwart recovery admin (`stalwart-admin-creds` Secret + cross-ns
+  mirror to `platform-stalwart-creds`). Alias kept for back-compat:
+  `/admin/mail/rotate-stalwart-password`.
+- `POST /api/v1/admin/mail/rotate-webmail-master-password` — rotates
+  the Stalwart `master@master.local` Account password (Roundcube SSO
+  impersonation). Patches `roundcube-secrets/STALWART_MASTER_PASSWORD`
+  + rolls the Roundcube Deployment so its env-var-loaded value picks
+  up the new password.
+
+Both return:
+
+```json
+{
+  "data": {
+    "username": "admin",
+    "password": "<cleartext, shown ONCE>",
+    "rotatedAt": "2026-05-05T17:30:00.000Z"
+  }
+}
+```
+
+---
+
 ## Implementation Checklist
 
 - [ ] Set up Fastify app with middleware (logging, auth, error handling) — see ADR-011
