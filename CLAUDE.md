@@ -194,3 +194,4 @@ These services are managed by **separate projects** — this platform consumes t
 - Phase 1 roadmap: `docs/04-deployment/PHASE_1_ROADMAP.md`
 - ADRs: `docs/07-reference/ARCHITECTURE_DECISION_RECORDS.md`
 - Client lifecycle hook registry: `docs/07-reference/ADR-033-client-lifecycle-hook-registry.md`
+- **Tenant Backup operator runbook**: `docs/02-operations/TENANT_BACKUP.md` — bundle architecture, Plesk-style restore cart, schedule, retention, GDPR data export, rollback, list-recent-carts. Authoritative; supersedes the legacy `BACKUP_STRATEGY.md` + `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` which describe the deprecated SSHFS architecture.
