@@ -19,6 +19,26 @@ import type {
 interface CartDetailResponse { readonly data: RestoreJobDetail }
 interface CartSummaryResponse { readonly data: RestoreJobSummary }
 interface CartItemResponse { readonly data: RestoreItemInfo }
+interface CartListResponse { readonly data: ReadonlyArray<RestoreJobSummary> }
+
+/**
+ * List recent restore carts. Auto-refreshes every 30s so an
+ * operator watching a long-running cart sees status flips without
+ * a manual refresh.
+ */
+export function useRestoreCarts(filters: { clientId?: string; status?: string } = {}) {
+  return useQuery({
+    queryKey: ['restore-carts', filters],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (filters.clientId) qs.set('clientId', filters.clientId);
+      if (filters.status) qs.set('status', filters.status);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      return apiFetch<CartListResponse>(`/api/v1/admin/restores/carts${suffix}`);
+    },
+    refetchInterval: 30_000,
+  });
+}
 
 export function useRestoreCart(cartId: string | null) {
   return useQuery({

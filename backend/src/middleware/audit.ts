@@ -27,6 +27,19 @@ export function extractResourceInfo(path: string): {
 
   if (segments.length === 0) return { resourceType: 'unknown' };
 
+  // Special case: tenant-backup-restore cart paths look like
+  //   /admin/restores/carts/:cartId(/items|/execute|/rollback)?
+  // The default segment-based heuristic mis-attributes "restores" as
+  // the clientId. Map cleanly to resourceType='restore_cart' so the
+  // audit log row's resourceId is the cart id.
+  if (segments[0] === 'admin' && segments[1] === 'restores' && segments[2] === 'carts') {
+    return {
+      resourceType: 'restore_cart',
+      resourceId: segments[3]?.slice(0, 36),
+      // clientId resolved by the cart row, not derivable from the URL
+    };
+  }
+
   // /clients
   if (segments.length === 1) {
     return { resourceType: segments[0].replace(/s$/, '') };

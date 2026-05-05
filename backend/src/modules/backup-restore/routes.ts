@@ -62,6 +62,27 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', requirePanel('admin'));
   app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
+  // ── GET /api/v1/admin/restores/carts ───────────────────────────────
+  // List recent carts so operators can see + resume failed ones
+  // without remembering cart IDs. Filterable by clientId + status,
+  // ordered newest first.
+  app.get('/admin/restores/carts', {
+    schema: { tags: ['Restore'], summary: 'List recent restore carts', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const q = request.query as { clientId?: string; status?: string; limit?: string };
+    const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 200);
+    const conditions = [];
+    if (q.clientId) conditions.push(eq(restoreJobs.clientId, q.clientId));
+    if (q.status) conditions.push(eq(restoreJobs.status, q.status as RestoreJob['status']));
+    const where = conditions.length === 0
+      ? undefined
+      : conditions.length === 1 ? conditions[0] : and(...conditions);
+    const rows = where
+      ? await app.db.select().from(restoreJobs).where(where).orderBy(sql`${restoreJobs.createdAt} DESC`).limit(limit)
+      : await app.db.select().from(restoreJobs).orderBy(sql`${restoreJobs.createdAt} DESC`).limit(limit);
+    return success({ data: rows.map(toJobSummary) });
+  });
+
   // ── POST /api/v1/admin/restores/carts ──────────────────────────────
   app.post('/admin/restores/carts', {
     schema: { tags: ['Restore'], summary: 'Create an empty restore cart', security: [{ bearerAuth: [] }] },
