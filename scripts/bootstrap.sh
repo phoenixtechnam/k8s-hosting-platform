@@ -3393,6 +3393,228 @@ EOF
 # includes it, or via a separate `kubectl apply -k`) before calling this
 # function. For env=production this happens in apply_platform_manifests;
 # for local dev use `./scripts/local.sh mail16-up` instead.
+# reconcile_stalwart_listeners — idempotent retrofit for clusters that
+# bootstrapped before NetworkListener for 587 (SMTP submission/STARTTLS)
+# and 143 (IMAP/STARTTLS) was added to the bootstrap plan.
+#
+# Stalwart 0.16's bootstrap-mode auto-creates listeners ONLY for the
+# initial set: 25, 465, 993, 995, 4190, 8080, 443. Operators relying on
+# legacy submission (587) and plaintext+STARTTLS IMAP (143) had no
+# server-side listener and got TCP RST.
+#
+# This function:
+#   1. Queries existing listener names via stalwart-cli inside a
+#      one-shot Pod (no need to bake stalwart-cli into platform-api).
+#   2. Issues a `create` for each missing listener.
+#   3. Triggers a Deployment roll so Stalwart re-binds at process start
+#      (ReloadSettings does NOT re-bind sockets).
+#
+# Idempotent: skips creates when the listener name already exists.
+# Safe to run on every bootstrap.sh invocation — no state mutation when
+# already correct.
+reconcile_stalwart_listeners() {
+  local stalwart_pod="$1"
+  # Note: $admin_pw is unused here; the password is sourced via envFrom
+  # Secret reference inside the spawned pod (see CRITICAL fix below).
+  # Kept in the signature for backwards-compatibility with the call site.
+  local _unused_admin_pw="$2"
+  : "${_unused_admin_pw:=}"  # silence shellcheck SC2034 about unused var
+  local stalwart_pod_ip
+  stalwart_pod_ip=$(kctl get pod -n mail "$stalwart_pod" \
+    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
+  if [[ -z "$stalwart_pod_ip" ]]; then
+    warn "  reconcile_stalwart_listeners: no pod IP for $stalwart_pod"
+    return 1
+  fi
+
+  # CRITICAL fix (code-reviewer 2026-05-05): the admin password MUST NOT
+  # appear in the spawned pod's spec.containers[].env field, because
+  # `kubectl get pod -o yaml` and the apiserver audit log surface env
+  # values to anyone with `get pods` RBAC. Use an EnvFrom secretRef
+  # against the existing `stalwart-admin-creds` Secret instead, which
+  # keeps the cleartext entirely inside the Secret object.
+  #
+  # `kubectl run` does not have a flag for envFrom, so we render a Pod
+  # manifest via heredoc and `kubectl apply -f -`. Lifecycle is managed
+  # by `restartPolicy: Never` + an explicit final `kubectl delete pod`.
+
+  # Unique pod-name suffix — `$$ + $RANDOM + $(date +%s%N)` so concurrent
+  # invocations from two operators don't collide on the K8s name.
+  # HIGH fix from code review.
+  local suffix
+  suffix="$$-${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
+  local probe_pod="listener-probe-${suffix}"
+  local apply_pod="listener-apply-${suffix}"
+
+  # Shared boot script run inside the spawned pods. Downloads stalwart-cli
+  # v1.0.4 with a FATAL sha256 check (HIGH fix). Reads $STALWART_PASSWORD
+  # from envFrom Secret. The script body is identical between probe and
+  # apply except for the final cli verb.
+  local cli_url='https://github.com/stalwartlabs/cli/releases/download/v1.0.4/stalwart-cli-x86_64-unknown-linux-musl.tar.xz'
+  local cli_sha256='01c734752cc44b9e24f753cbacfc2d489dadaaccf72cd229ecb7269e85e0eefa'
+
+  # ─── Step 1: probe existing NetworkListener names ─────────────────────
+  cat <<POD_YAML | kctl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${probe_pod}
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-listener-reconcile
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cli
+      image: alpine:3.20
+      env:
+        - name: STALWART_URL
+          value: http://${stalwart_pod_ip}:8080
+        - name: STALWART_USER
+          value: admin
+      envFrom:
+        - secretRef:
+            name: stalwart-admin-creds
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          # CRITICAL: the Secret key for the recovery cred is
+          # 'recoveryPassword'; envFrom maps that to env-var
+          # \$recoveryPassword. The cli reads STALWART_PASSWORD,
+          # so re-export.
+          export STALWART_PASSWORD="\$recoveryPassword"
+          apk add --no-cache wget tar xz >/dev/null 2>&1
+          cd /tmp
+          wget -q -O cli.tar.xz "${cli_url}"
+          actual=\$(sha256sum cli.tar.xz | awk '{print \$1}')
+          if [ "\$actual" != "${cli_sha256}" ]; then
+            echo "FATAL: stalwart-cli sha256 mismatch (expected ${cli_sha256}, actual \$actual)" >&2
+            exit 1
+          fi
+          tar -xJf cli.tar.xz
+          /tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli query NetworkListener --json 2>/dev/null \
+            | grep -oE '"name":"[^"]+"' | cut -d'"' -f4 | tr '\n' ',' ; echo ""
+POD_YAML
+
+  # Wait for terminal phase — succeed-or-fail; tail logs.
+  if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
+       -n mail "pod/${probe_pod}" --timeout=120s 2>/dev/null; then
+    warn "  listener probe pod did not Succeed within 120s — aborting reconcile."
+    kctl logs -n mail "${probe_pod}" 2>&1 | tail -20 | sed 's/^/      /' || true
+    kctl delete pod -n mail "${probe_pod}" --grace-period=10 --wait=false 2>/dev/null || true
+    return 1
+  fi
+
+  local existing
+  existing=$(kctl logs -n mail "${probe_pod}" 2>/dev/null | tail -1 | tr -d '[:space:]')
+  kctl delete pod -n mail "${probe_pod}" --grace-period=10 --wait=false 2>/dev/null || true
+
+  # HIGH fix: fail-closed on probe failure. An empty result IS NOT the
+  # same as "no listeners exist" — the probe pod always emits a trailing
+  # `,` even when zero are present. Empty string here means the cli
+  # exited non-zero or the regex matched nothing AT ALL, both of which
+  # are bugs we should refuse to paper over with duplicate-create errors.
+  if [[ -z "$existing" ]]; then
+    warn "  listener probe returned empty output — refusing to reconcile (cli failure or schema drift)."
+    return 1
+  fi
+  log "  Existing NetworkListener names: ${existing}"
+
+  local plan_lines=""
+  if ! echo ",${existing}," | grep -q ',submission,'; then
+    plan_lines+='{"@type":"create","object":"NetworkListener","value":{"submission":{"name":"submission","bind":{"[::]:587":true},"protocol":"smtp","tlsImplicit":false}}}'$'\n'
+    log "  Will add: submission listener (587/smtp/STARTTLS)"
+  fi
+  if ! echo ",${existing}," | grep -q ',imap,'; then
+    plan_lines+='{"@type":"create","object":"NetworkListener","value":{"imap":{"name":"imap","bind":{"[::]:143":true},"protocol":"imap","tlsImplicit":false}}}'$'\n'
+    log "  Will add: imap listener (143/imap/STARTTLS)"
+  fi
+
+  if [[ -z "$plan_lines" ]]; then
+    log "  All NetworkListeners already present — nothing to do."
+    return 0
+  fi
+
+  # ─── Step 2: write rendered plan into a Secret + spawn apply pod ─────
+  # Plan is hardcoded so no shell-injection risk, but keeping the whole
+  # thing out of pod argv keeps it consistent with the credentials path.
+  kctl create secret generic "${apply_pod}-plan" \
+    --namespace=mail \
+    --from-literal=plan.json="${plan_lines}" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+
+  log "  Applying listener-reconcile plan..."
+  cat <<POD_YAML | kctl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${apply_pod}
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-listener-reconcile
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cli
+      image: alpine:3.20
+      env:
+        - name: STALWART_URL
+          value: http://${stalwart_pod_ip}:8080
+        - name: STALWART_USER
+          value: admin
+      envFrom:
+        - secretRef:
+            name: stalwart-admin-creds
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          export STALWART_PASSWORD="\$recoveryPassword"
+          apk add --no-cache wget tar xz >/dev/null 2>&1
+          cd /tmp
+          wget -q -O cli.tar.xz "${cli_url}"
+          actual=\$(sha256sum cli.tar.xz | awk '{print \$1}')
+          if [ "\$actual" != "${cli_sha256}" ]; then
+            echo "FATAL: stalwart-cli sha256 mismatch" >&2
+            exit 1
+          fi
+          tar -xJf cli.tar.xz
+          /tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli apply --file /plan/plan.json
+      volumeMounts:
+        - name: plan
+          mountPath: /plan
+          readOnly: true
+  volumes:
+    - name: plan
+      secret:
+        secretName: ${apply_pod}-plan
+        items:
+          - key: plan.json
+            path: plan.json
+POD_YAML
+
+  if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
+       -n mail "pod/${apply_pod}" --timeout=120s 2>/dev/null; then
+    warn "  listener apply pod did not Succeed within 120s."
+    kctl logs -n mail "${apply_pod}" 2>&1 | tail -30 | sed 's/^/      /' || true
+    kctl delete pod    -n mail "${apply_pod}"        --grace-period=10 --wait=false 2>/dev/null || true
+    kctl delete secret -n mail "${apply_pod}-plan"   --wait=false 2>/dev/null || true
+    return 1
+  fi
+  kctl logs -n mail "${apply_pod}" 2>&1 | sed 's/^/    /'
+  kctl delete pod    -n mail "${apply_pod}"        --grace-period=10 --wait=false 2>/dev/null || true
+  kctl delete secret -n mail "${apply_pod}-plan"   --wait=false 2>/dev/null || true
+
+  # Listeners take effect at process restart only. Roll the Deployment.
+  log "  Rolling Stalwart Deployment so new listeners bind..."
+  kctl rollout restart deployment -n mail stalwart-mail-v016 2>&1 | sed 's/^/    /'
+  kctl rollout status deployment -n mail stalwart-mail-v016 --timeout=180s 2>&1 | sed 's/^/    /' || \
+    warn "  Stalwart rollout did not complete in 180s — verify manually."
+
+  log "  NetworkListener reconcile complete."
+}
+
 bootstrap_stalwart_v016() {
   log ""
   log "── Stalwart 0.16 bootstrap ──"
@@ -3460,7 +3682,9 @@ bootstrap_stalwart_v016() {
   # bootstrapped Stalwart and overwrite the admin account / DKIM keys.
   case "$auth_code" in
     200)
-      log "  Stalwart 0.16 fully bootstrapped (admin auth 200). Skipping."
+      log "  Stalwart 0.16 fully bootstrapped (admin auth 200)."
+      log "  Reconciling NetworkListener config (idempotent — adds 587/143 if missing)..."
+      reconcile_stalwart_listeners "$stalwart_pod" "$stalwart_admin_pw" || true
       return 0
       ;;
     401)
