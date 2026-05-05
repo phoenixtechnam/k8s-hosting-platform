@@ -297,17 +297,46 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
 spec:
+  # Allow tenant + mail-namespace Jobs to reach platform-api for the
+  # internal upload (capture) and download (restore) endpoints. The
+  # endpoints are HMAC-token-protected; this NP is the L3/L4 boundary
+  # so a malicious-but-authenticated pod cannot reach platform-api at
+  # all unless it's running in a namespace the platform manages AND
+  # carries a backup-files / restore-files component label.
+  #
+  # Without the namespaceSelector scope, ANY pod cluster-wide could
+  # set those labels and reach the unauthenticated endpoints (the
+  # HMAC defends each request, but defense-in-depth is cheap).
   podSelector:
     matchLabels:
       app: platform-api
   policyTypes:
     - Ingress
   ingress:
+    # Tenant namespaces (provisioned by k8s-provisioner with
+    # `platform: k8s-hosting` label) running backup or restore Jobs.
     - from:
-        - namespaceSelector: {}
-          podSelector:
+        - namespaceSelector:
             matchLabels:
-              platform.io/component: backup-files
+              platform: k8s-hosting
+          podSelector:
+            matchExpressions:
+              - key: platform.io/component
+                operator: In
+                values: [backup-files, restore-files]
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Mail namespace (Stalwart) running mailbox backup or restore Jobs.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+          podSelector:
+            matchExpressions:
+              - key: platform.io/component
+                operator: In
+                values: [backup-files, restore-files]
       ports:
         - protocol: TCP
           port: 3000

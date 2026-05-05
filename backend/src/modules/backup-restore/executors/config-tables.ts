@@ -28,11 +28,11 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
 import { ApiError } from '../../../shared/errors.js';
 import type { BackupStore } from '../../backups-v2/bundle-store.js';
-import type { RestoreItem } from '../../../db/schema.js';
+import { restoreJobs, type RestoreItem } from '../../../db/schema.js';
 
 /**
  * Tables this executor is allowed to write to. We only accept
@@ -91,6 +91,19 @@ export async function execConfigTablesItem(args: {
   };
   if (dump.schemaVersion !== 1) {
     throw new Error(`config dump has unknown schemaVersion ${dump.schemaVersion}`);
+  }
+  // Cross-tenant guard: refuse to apply a bundle that was captured
+  // for a different client than the cart's client. Defence-in-depth
+  // against a manually-tampered backup_jobs row that re-points
+  // bundleId to a foreign client's bundle.
+  const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
+  if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
+  if (dump.clientId && dump.clientId !== job.clientId) {
+    throw new ApiError(
+      'VALIDATION_ERROR',
+      `Bundle's clientId (${dump.clientId}) does not match cart's clientId (${job.clientId}); refusing cross-tenant restore`,
+      400,
+    );
   }
 
   // Pick the table list per the selector.

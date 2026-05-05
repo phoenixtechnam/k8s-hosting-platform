@@ -212,11 +212,19 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
           .set({ status: 'done', finishedAt: new Date() })
           .where(eq(restoreItems.id, item.id));
       } catch (err) {
-        const msg = (err as Error).message ?? 'unknown error';
+        // Sanitise the executor error before persisting + returning.
+        // Raw errors from S3/SSH/Drizzle can include hostnames, IPs,
+        // bucket paths, or partial credential context. Only the
+        // ApiError code (or a generic class label) goes into
+        // last_error; the raw error stays in the server log.
+        const apiErr = err as ApiError & { code?: string };
+        const safeCode = (typeof apiErr.code === 'string' && apiErr.code.length <= 64) ? apiErr.code : 'EXECUTOR_FAILED';
+        const safeMsg = `${safeCode}: restore item failed (see server logs)`;
+        app.log.error({ err, itemId: item.id, type: item.type, cartId }, 'tenant-backup-restore: executor threw');
         await app.db.update(restoreItems)
-          .set({ status: 'failed', finishedAt: new Date(), lastError: msg })
+          .set({ status: 'failed', finishedAt: new Date(), lastError: safeMsg })
           .where(eq(restoreItems.id, item.id));
-        firstFailureMsg = `item ${item.id} (${item.type}): ${msg}`;
+        firstFailureMsg = `item ${item.id} (${item.type}): ${safeMsg}`;
         break;
       }
     }

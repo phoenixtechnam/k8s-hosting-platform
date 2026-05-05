@@ -91,7 +91,7 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
       throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
     }
 
-    const store = await resolveStoreForDownload(app, job.targetConfigId);
+    const store = await resolveStoreForDownload(app, job.targetConfigId, secretsKeyHex);
     const handle = await store.open(bundleId);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
 
@@ -132,17 +132,12 @@ function guessContentType(name: string): string {
  * the activation gate applies to NEW bundle creates, not reads of
  * existing bundles.
  */
-async function resolveStoreForDownload(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+async function resolveStoreForDownload(app: FastifyInstance, targetConfigId: string, encKey: string): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
-
-  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY;
-  if (!configuredKey && process.env.NODE_ENV === 'production') {
-    app.log.error('backups-v2 download: OIDC_ENCRYPTION_KEY is not set in production — refusing to decrypt target credentials with zero-key fallback');
-    throw new ApiError('CONFIG_INVALID', 'OIDC_ENCRYPTION_KEY is not configured; cannot decrypt backup target credentials', 500);
-  }
-  const encKey = configuredKey ?? '0'.repeat(64);
+  // encKey is the same hex captured at route registration time —
+  // keeps HMAC verification and store decryption keys in lock-step
+  // for one request, even if process.env mutates at runtime.
 
   if (cfg.storageType === 's3') {
     let accessKey = '';
