@@ -7,8 +7,12 @@ describe('buildMailboxesComponentJobSpec', () => {
     mailNamespace: 'mail',
     clientId: 'abc',
     backupId: 'bkp-test',
-    jobImage: 'alpine:3.20',
-    stalwartMgmtUrl: 'http://stalwart-mail-v016.mail.svc:8080',
+    toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
+    imapServiceHost: 'stalwart-mail-v016.mail.svc.cluster.local',
+    imapServicePort: 143,
+    stalwartMasterUser: 'master',
+    masterSecretName: 'roundcube-secrets',
+    masterSecretKey: 'STALWART_MASTER_PASSWORD',
     uploadBase: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-test/components/mailboxes',
     uploads: [
       { address: 'user1@example.com', token: '1.deadbeef' },
@@ -37,38 +41,44 @@ describe('buildMailboxesComponentJobSpec', () => {
     expect(envNames).toContain('MAILBOX_TOKEN_1');
     expect(envNames).toContain('MAILBOX_ADDR_0');
     expect(envNames).toContain('MAILBOX_ADDR_1');
-    expect(envNames).toContain('STALWART_RECOVERY_ADMIN');
+    expect(envNames).toContain('STALWART_MASTER_PASSWORD');
     // Tokens are NOT in the rendered script body (only the env var name reference).
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
     expect(cmd).not.toContain('1.deadbeef');
     expect(cmd).not.toContain('2.cafebabe');
   });
 
-  it('mounts STALWART_RECOVERY_ADMIN from the stalwart-admin-creds Secret', () => {
+  it('mounts STALWART_MASTER_PASSWORD from the roundcube-secrets Secret (master-user proxy auth)', () => {
     const spec = buildMailboxesComponentJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }> }> } } };
     };
-    const cred = spec.spec.template.spec.containers[0]!.env.find((e) => e.name === 'STALWART_RECOVERY_ADMIN');
-    expect(cred?.valueFrom?.secretKeyRef?.name).toBe('stalwart-admin-creds');
-    expect(cred?.valueFrom?.secretKeyRef?.key).toBe('recoveryAdmin');
+    const cred = spec.spec.template.spec.containers[0]!.env.find((e) => e.name === 'STALWART_MASTER_PASSWORD');
+    expect(cred?.valueFrom?.secretKeyRef?.name).toBe('roundcube-secrets');
+    expect(cred?.valueFrom?.secretKeyRef?.key).toBe('STALWART_MASTER_PASSWORD');
   });
 
-  it('uses stalwart-cli account export (upstream-documented path) + curl --upload-file to platform-api', () => {
+  it('runs capture-mailbox.sh per address and streams to platform-api uploadBase (no stalwart-cli)', () => {
     const spec = buildMailboxesComponentJobSpec(baseInput) as {
-      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+      spec: { template: { spec: { containers: Array<{ command: string[]; image: string }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    // stalwart-cli is on PATH in the Stalwart base image and is the
-    // forward-compatible export path (it adapts to whatever HTTP API
-    // shape the server speaks).
-    expect(cmd).toContain('stalwart-cli');
-    expect(cmd).toContain('account export');
-    // Streaming upload from disk — same OOM-defence pattern as files.
-    expect(cmd).toContain('--upload-file');
+    // mail-backup-tools image (alpine + mbsync + python3 + curl).
+    expect(spec.spec.template.spec.containers[0]!.image).toMatch(/mail-backup-tools/);
+    // Per-address loop calls capture-mailbox.sh — never stalwart-cli.
+    expect(cmd).toContain('/usr/local/bin/capture-mailbox.sh');
+    expect(cmd).not.toContain('stalwart-cli');
     expect(cmd).toContain(baseInput.uploadBase);
-    // The stalwart-cli step writes a per-address tarball; we then
-    // upload + immediately rm to keep emptyDir bounded.
-    expect(cmd).toContain('rm -f "/tmp/mboxes/$ADDR.tar.gz"');
+  });
+
+  it('passes IMAP host/port/master via env vars', () => {
+    const spec = buildMailboxesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value?: string }> }> } } };
+    };
+    const env = spec.spec.template.spec.containers[0]!.env;
+    const find = (n: string) => env.find((e) => e.name === n)?.value;
+    expect(find('IMAP_HOST')).toBe('stalwart-mail-v016.mail.svc.cluster.local');
+    expect(find('IMAP_PORT')).toBe('143');
+    expect(find('STALWART_MASTER_USER')).toBe('master');
   });
 
   it('rejects unsafe addresses (defence against shell injection from forged DB rows)', () => {

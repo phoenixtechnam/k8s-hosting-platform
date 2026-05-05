@@ -171,13 +171,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           // default to true. Callers can opt out per-bundle to keep
           // a capture light.
           files: input.components?.files ?? true,
-          // Default OFF as of 2026-05-05: Stalwart 0.16.3 dropped
-          // `stalwart-cli` from the official image, breaking the
-          // per-account export path the mailboxes component relies
-          // on. Re-enable explicitly per-bundle until the JMAP/HTTP
-          // rewrite ships. See docs/02-operations/TENANT_BACKUP.md
-          // — "Known limitations".
-          mailboxes: input.components?.mailboxes ?? false,
+          // Re-enabled 2026-05-05: capture now uses the
+          // mail-backup-tools image (mbsync over IMAP master-user
+          // proxy) instead of the dropped `stalwart-cli`. See
+          // backend/src/modules/backups-v2/components/mailboxes.ts
+          // and docs/02-operations/TENANT_BACKUP.md.
+          mailboxes: input.components?.mailboxes ?? true,
           config: input.components?.config ?? true,
           secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
         },

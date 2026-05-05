@@ -1,18 +1,34 @@
 /**
- * Restore executor: `mailboxes-by-address`.
+ * Restore executor: `mailboxes-by-address` (Phase 4 rewrite, 2026-05-05).
  *
- * Mirror of the Phase-3 mailboxes capture: spawns a Job in the `mail`
- * namespace using the Stalwart image (which ships stalwart-cli),
- * downloads each per-mailbox tarball from platform-api's internal-
- * download endpoint, and runs `stalwart-cli account import` per
- * address.
+ * Stalwart 0.16.3 dropped per-account `stalwart-cli` import. Restore
+ * now goes through IMAP master-user proxy auth (the same path the
+ * capture executor uses):
  *
- * Selector shapes (per api-contracts/restore.ts):
- *   { kind: 'all' }                                      — restore every mailbox in bundle
- *   { kind: 'addresses', addresses: ['a@x.com', …] }
+ *   1. For 'addresses' selector: validate addresses + sanitise.
+ *      For 'all' selector: enumerate the bundle's mailboxes
+ *      component (same artefact-name → address mapping as capture).
+ *   2. Sign one HMAC download token per address.
+ *   3. Spawn a Job in the `mail` namespace using mail-backup-tools.
+ *      For each address the Job:
+ *        a. curl downloads `<addr>.mbox.tar.gz` to /tmp.
+ *        b. tar -xzf into /tmp/maildir/<addr>/.
+ *        c. python3 /usr/local/bin/restore-mailbox.py
+ *             $IMAP_HOST $IMAP_PORT "<addr>%<master>" $MASTER_PW $MODE /tmp/maildir/<addr>
+ *        d. rm -rf the maildir before the next address.
  *
- * Per-mailbox HMAC tokens (one per artefact name) are passed via env
- * vars not script body, matching the capture pattern.
+ * Mode plumbing:
+ *   The restore mode lives in the selector (mailboxRestoreModeSchema):
+ *     - merge-skip-duplicates (default)
+ *     - merge-overwrite
+ *     - replace                        (requires confirmDestructive: true)
+ *   The schema's superRefine enforces the typed-confirmation pattern;
+ *   the executor reads selector.mode (defaulting to merge-skip).
+ *
+ * Idempotency contract (per ADR-034 §3):
+ *   merge-skip-duplicates is fully idempotent — re-running is safe.
+ *   merge-overwrite is monotonic (each run appends without dedup).
+ *   replace is destructive but crash-safe (RENAME-then-APPEND).
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -23,20 +39,44 @@ import { ApiError } from '../../../shared/errors.js';
 import { signUploadToken } from '../../backups-v2/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
+import {
+  type MailboxRestoreMode,
+  MAILBOX_RESTORE_MODE_DEFAULT,
+} from '@k8s-hosting/api-contracts';
 
 interface Selector {
   kind: 'all' | 'addresses';
   addresses?: readonly string[];
+  mode?: MailboxRestoreMode;
+  confirmDestructive?: boolean;
 }
 
 const MAIL_NAMESPACE = 'mail';
-const STALWART_MGMT_URL_DEFAULT = 'http://stalwart-mail-v016.mail.svc.cluster.local:8080';
-const STALWART_IMAGE_DEFAULT = 'docker.io/stalwartlabs/stalwart:v0.16.3';
-const DOWNLOAD_TOKEN_TTL_SEC = 30 * 60;
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const IMAP_HOST_DEFAULT = 'stalwart-mail-v016.mail.svc.cluster.local';
+const IMAP_PORT_DEFAULT = 143;
+const MASTER_USER_DEFAULT = 'master';
+const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
+const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
+const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
+
+const VALID_MODES: ReadonlySet<MailboxRestoreMode> = new Set([
+  'merge-skip-duplicates',
+  'merge-overwrite',
+  'replace',
+]);
 
 function isSafeAddress(address: string): boolean {
   return /^[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+$/.test(address);
+}
+
+function isSafeImapHost(host: string): boolean {
+  return /^[A-Za-z0-9.\-]+$/.test(host);
+}
+
+function isSafeMasterUser(user: string): boolean {
+  return /^[A-Za-z0-9._\-]+$/.test(user);
 }
 
 export async function execMailboxesByAddressItem(args: {
@@ -47,12 +87,25 @@ export async function execMailboxesByAddressItem(args: {
   const { app, item, store } = args;
   const selector = item.selector as unknown as Selector;
 
-  // Resolve the cart's client (cross-tenant guard via restoreJobs).
+  // Mode: default merge-skip-duplicates. Replace requires explicit
+  // confirmDestructive flag (defence-in-depth — the contract
+  // superRefine enforces this at API boundary too).
+  const mode: MailboxRestoreMode = selector.mode ?? MAILBOX_RESTORE_MODE_DEFAULT;
+  if (!VALID_MODES.has(mode)) {
+    throw new ApiError('VALIDATION_ERROR', `mailboxes-by-address: invalid mode '${mode}'`, 400);
+  }
+  if (mode === 'replace' && selector.confirmDestructive !== true) {
+    throw new ApiError(
+      'CONFIRMATION_REQUIRED',
+      `mailbox restore mode 'replace' is destructive — set confirmDestructive: true to proceed`,
+      400,
+    );
+  }
+
   const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
   if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
 
-  // Determine which addresses to restore. For 'all', we list the
-  // bundle's mailboxes component to discover what was captured.
+  // Resolve target addresses.
   let addresses: readonly string[];
   if (selector.kind === 'all') {
     const handle = await store.open(item.bundleId);
@@ -60,8 +113,6 @@ export async function execMailboxesByAddressItem(args: {
     const refs = await store.listArtifacts(handle, 'mailboxes');
     addresses = refs.map((r) => r.name.replace(/\.mbox\.tar\.gz$/, '')).filter((s) => s.length > 0);
     if (addresses.length === 0) {
-      // Bundle has no mailboxes component or it's empty — nothing
-      // to do. Treat as success.
       await app.db.update(restoreItems)
         .set({ progressMessage: 'mailboxes-by-address: bundle contains no mailboxes' })
         .where(eq(restoreItems.id, item.id));
@@ -81,9 +132,15 @@ export async function execMailboxesByAddressItem(args: {
   const platformApiUrl = (app.config as Record<string, unknown>).PLATFORM_API_INTERNAL_URL as string | undefined
     ?? process.env.PLATFORM_API_INTERNAL_URL
     ?? 'http://platform-api.platform.svc:3000';
-  const secretsKeyHex = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
-    ?? process.env.OIDC_ENCRYPTION_KEY
-    ?? '0'.repeat(64);
+  const configuredKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined
+    ?? process.env.OIDC_ENCRYPTION_KEY;
+  if (!configuredKey) {
+    app.log.error(
+      { module: 'mailboxes-by-address-restore' },
+      'OIDC_ENCRYPTION_KEY missing — falling back to a zero-key. HMAC tokens for download URLs will be predictable; restore will only succeed if capture-side ran with the same fallback.',
+    );
+  }
+  const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
   const downloads = addresses.map((address) => ({
     address,
@@ -101,14 +158,17 @@ export async function execMailboxesByAddressItem(args: {
     clientId: job.clientId,
     cartId: item.restoreJobId,
     itemId: item.id,
-    jobImage: STALWART_IMAGE_DEFAULT,
-    stalwartMgmtUrl: STALWART_MGMT_URL_DEFAULT,
+    toolsImage: TOOLS_IMAGE_DEFAULT,
+    imapServiceHost: IMAP_HOST_DEFAULT,
+    imapServicePort: IMAP_PORT_DEFAULT,
+    stalwartMasterUser: MASTER_USER_DEFAULT,
+    masterSecretName: MASTER_SECRET_NAME_DEFAULT,
+    masterSecretKey: MASTER_SECRET_KEY_DEFAULT,
+    mode,
     downloadBase,
     downloads,
   });
 
-  // Fastify doesn't decorate k8s — construct on demand from the
-  // configured kubeconfig. Mirror of the files-paths executor.
   const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kc);
@@ -123,10 +183,19 @@ export async function execMailboxesByAddressItem(args: {
   });
 
   let log = '';
-  try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 30, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-  const restored = (log.match(/MAILBOXES_RESTORED total=(\d+)/) ?? [])[1] ?? `${addresses.length}`;
+  try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 80, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
+  // Aggregate per-mailbox `RESULT mode=… folders=… appended=N skipped=M` lines.
+  let appended = 0, skipped = 0, folders = 0;
+  for (const m of log.matchAll(/RESULT mode=\S+ folders=(\d+) appended=(\d+) skipped=(\d+)/g)) {
+    folders += Number(m[1]);
+    appended += Number(m[2]);
+    skipped += Number(m[3]);
+  }
   await app.db.update(restoreItems)
-    .set({ progressMessage: `restored ${restored}/${addresses.length} mailbox(es)` })
+    .set({
+      progressMessage:
+        `restored ${addresses.length} mailbox(es) (mode=${mode}, folders=${folders}, appended=${appended}, skipped=${skipped})`,
+    })
     .where(eq(restoreItems.id, item.id));
 }
 
@@ -136,8 +205,13 @@ export function buildMailboxesByAddressJobSpec(input: {
   clientId: string;
   cartId: string;
   itemId: string;
-  jobImage: string;
-  stalwartMgmtUrl: string;
+  toolsImage: string;
+  imapServiceHost: string;
+  imapServicePort: number;
+  stalwartMasterUser: string;
+  masterSecretName: string;
+  masterSecretKey: string;
+  mode: MailboxRestoreMode;
   downloadBase: string;
   downloads: ReadonlyArray<{ address: string; token: string }>;
 }): Record<string, unknown> {
@@ -145,6 +219,18 @@ export function buildMailboxesByAddressJobSpec(input: {
     if (!isSafeAddress(d.address)) {
       throw new Error(`buildMailboxesByAddressJobSpec: invalid address '${d.address}'`);
     }
+  }
+  if (!isSafeImapHost(input.imapServiceHost)) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid imapServiceHost '${input.imapServiceHost}'`);
+  }
+  if (!Number.isInteger(input.imapServicePort) || input.imapServicePort < 1 || input.imapServicePort > 65535) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid imapServicePort '${input.imapServicePort}'`);
+  }
+  if (!isSafeMasterUser(input.stalwartMasterUser)) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid stalwartMasterUser '${input.stalwartMasterUser}'`);
+  }
+  if (!VALID_MODES.has(input.mode)) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid mode '${input.mode}'`);
   }
   const tokenEnvVars = input.downloads.map((d, i) => ({
     name: `MAILBOX_TOKEN_${i}`,
@@ -154,47 +240,69 @@ export function buildMailboxesByAddressJobSpec(input: {
     name: `MAILBOX_ADDR_${i}`,
     value: d.address,
   }));
-  const stalwartCredsEnv = [
-    {
-      name: 'STALWART_RECOVERY_ADMIN',
-      valueFrom: {
-        secretKeyRef: {
-          name: 'stalwart-admin-creds',
-          key: 'recoveryAdmin',
-          optional: false,
-        },
+  const masterPasswordEnv = {
+    name: 'STALWART_MASTER_PASSWORD',
+    valueFrom: {
+      secretKeyRef: {
+        name: input.masterSecretName,
+        key: input.masterSecretKey,
+        optional: false,
       },
     },
-  ];
+  };
+
+  // Per-address loop. Each iteration:
+  //   1. curl download .mbox.tar.gz → /tmp/maildir/<addr>.tar.gz
+  //   2. mkdir + tar -xzf (the tarball is a streamed `tar -cf - .` over
+  //      a Maildir root, so its top-level entries are `./cur`, `./new`,
+  //      `./.Sent/`, …)
+  //   3. python3 restore-mailbox.py with the chosen mode.
+  //   4. rm -rf the maildir to free emptyDir for the next address.
+  //
+  // The IMAP master-user proxy username is `<addr>%<master>`; the
+  // password comes from the env-injected Secret. We pass it on the
+  // CLI for restore-mailbox.py — it's only visible inside the Job's
+  // own pod (kubectl get pod -o yaml redacts container env values
+  // sourced from secretKeyRef, but command/args are visible to anyone
+  // with `pods` get-perms in the mail namespace; that audience is
+  // already trusted). Acceptable trade-off; revisit if/when we ship
+  // a multi-tenant audit role.
   const script = [
     'set -e',
-    'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl) >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
-    'command -v stalwart-cli >/dev/null 2>&1 || { echo "ERROR: stalwart-cli not on PATH"; exit 1; }',
-    'COUNT=' + input.downloads.length,
-    'mkdir -p /tmp/mboxes',
-    'RESTORED=0',
+    `COUNT=${input.downloads.length}`,
+    `MODE=${input.mode}`,
+    'mkdir -p /tmp/maildir',
     'for i in $(seq 0 $((COUNT - 1))); do',
     '  ADDR_VAR="MAILBOX_ADDR_$i"',
     '  TOKEN_VAR="MAILBOX_TOKEN_$i"',
     '  ADDR=$(eval echo \\$$ADDR_VAR)',
     '  TOKEN=$(eval echo \\$$TOKEN_VAR)',
-    '  echo "Downloading $ADDR.mbox.tar.gz..."',
-    `  curl --fail-with-body -sS -o "/tmp/mboxes/$ADDR.tar.gz" \\
+    '  echo "Downloading $ADDR.mbox.tar.gz (#$i of $COUNT)..." >&2',
+    `  curl --fail-with-body -sS -o "/tmp/maildir/$ADDR.tar.gz" \\
        "${input.downloadBase}/$ADDR.mbox.tar.gz?token=$TOKEN"`,
-    '  echo "Importing $ADDR via stalwart-cli..."',
-    `  stalwart-cli -u "${input.stalwartMgmtUrl}" -c "$STALWART_RECOVERY_ADMIN" \\
-       account import "$ADDR" "/tmp/mboxes/$ADDR.tar.gz"`,
-    '  rm -f "/tmp/mboxes/$ADDR.tar.gz"',
-    '  RESTORED=$((RESTORED + 1))',
-    '  echo "MAILBOX_RESTORED addr=$ADDR (#$RESTORED of $COUNT)"',
+    '  rm -rf "/tmp/maildir/$ADDR"',
+    '  mkdir -p "/tmp/maildir/$ADDR"',
+    '  tar -xzf "/tmp/maildir/$ADDR.tar.gz" -C "/tmp/maildir/$ADDR"',
+    '  rm -f "/tmp/maildir/$ADDR.tar.gz"',
+    '  echo "Restoring $ADDR via IMAP master-user proxy (mode=$MODE)..." >&2',
+    `  python3 /usr/local/bin/restore-mailbox.py \\
+       "${input.imapServiceHost}" "${input.imapServicePort}" \\
+       "$ADDR%${input.stalwartMasterUser}" "$STALWART_MASTER_PASSWORD" \\
+       "$MODE" "/tmp/maildir/$ADDR"`,
+    '  rm -rf "/tmp/maildir/$ADDR"',
+    '  echo "MAILBOX_RESTORED addr=$ADDR mode=$MODE"',
     'done',
-    'echo "MAILBOXES_RESTORED total=$RESTORED"',
+    'echo "MAILBOXES_RESTORED total=$COUNT"',
   ].join('\n');
+
   return {
     metadata: {
       name: input.jobName,
       namespace: input.mailNamespace,
       labels: {
+        // Reuse restore-files label so the existing NetworkPolicy
+        // covers this Job too (it allows Job → platform-api +
+        // Job → in-cluster Stalwart svc).
         'platform.io/component': 'restore-files',
         'platform.io/client-id': input.clientId,
         'platform.io/restore-cart': input.cartId,
@@ -219,15 +327,26 @@ export function buildMailboxesByAddressJobSpec(input: {
           restartPolicy: 'Never',
           containers: [{
             name: 'mailboxes-restore',
-            image: input.jobImage,
+            image: input.toolsImage,
             imagePullPolicy: 'IfNotPresent',
             command: ['sh', '-c', script],
-            env: [...stalwartCredsEnv, ...addressEnvVars, ...tokenEnvVars],
+            env: [
+              { name: 'MBSYNC_TLS_VERIFY', value: 'no' },
+              masterPasswordEnv,
+              ...addressEnvVars,
+              ...tokenEnvVars,
+            ],
             resources: {
-              requests: { cpu: '100m', memory: '128Mi' },
-              limits: { cpu: '500m', memory: '512Mi' },
+              requests: { cpu: '100m', memory: '256Mi' },
+              limits: { cpu: '1000m', memory: '1Gi' },
             },
+            volumeMounts: [
+              { name: 'scratch', mountPath: '/tmp' },
+            ],
           }],
+          volumes: [
+            { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
+          ],
         },
       },
     },

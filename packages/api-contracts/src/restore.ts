@@ -36,10 +36,53 @@ export const filesPathsSelectorSchema = z.union([
 ]);
 export type FilesPathsSelector = z.infer<typeof filesPathsSelectorSchema>;
 
-export const mailboxesSelectorSchema = z.union([
-  z.object({ kind: z.literal('all') }),
-  z.object({ kind: z.literal('addresses'), addresses: z.array(z.string().email()).min(1).max(1000) }),
+/**
+ * Mailbox restore mode.
+ *
+ * - merge-skip-duplicates  (default): APPEND only messages whose Message-ID
+ *                                     is not already present. Idempotent.
+ * - merge-overwrite                 : APPEND every message; server keeps
+ *                                     duplicates.
+ * - replace                         : Wipe existing folder contents (via
+ *                                     atomic IMAP RENAME-to-staging then
+ *                                     APPEND), then DELETE staging on
+ *                                     success. Mid-run crash leaves staging
+ *                                     for operator inspection.
+ *
+ * `replace` is destructive — clients MUST set `confirmDestructive: true`
+ * to opt in (matches the `confirm_destructive_shrink` typed-confirmation
+ * pattern used elsewhere in the platform).
+ */
+export const mailboxRestoreModeSchema = z.enum([
+  'merge-skip-duplicates',
+  'merge-overwrite',
+  'replace',
 ]);
+export type MailboxRestoreMode = z.infer<typeof mailboxRestoreModeSchema>;
+
+export const MAILBOX_RESTORE_MODE_DEFAULT: MailboxRestoreMode = 'merge-skip-duplicates';
+
+export const mailboxesSelectorSchema = z.union([
+  z.object({
+    kind: z.literal('all'),
+    mode: mailboxRestoreModeSchema.optional(),
+    confirmDestructive: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal('addresses'),
+    addresses: z.array(z.string().email()).min(1).max(1000),
+    mode: mailboxRestoreModeSchema.optional(),
+    confirmDestructive: z.boolean().optional(),
+  }),
+]).superRefine((sel, ctx) => {
+  if (sel.mode === 'replace' && sel.confirmDestructive !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'mailbox restore mode "replace" requires confirmDestructive: true',
+      path: ['confirmDestructive'],
+    });
+  }
+});
 export type MailboxesSelector = z.infer<typeof mailboxesSelectorSchema>;
 
 export const deploymentsSelectorSchema = z.union([

@@ -1,41 +1,48 @@
 /**
- * `mailboxes` component capture (Phase 3 closer).
+ * `mailboxes` component capture (Phase 4 rewrite, 2026-05-05).
  *
- * Per BACKUP_COMPONENT_MODEL.md:
- *   components/mailboxes/<address>.mbox.tar.gz   — per-mailbox export
- *
- * Pattern (mirrors files-component):
+ * Stalwart 0.16.3 dropped the per-account `stalwart-cli account export`
+ * helper, so per-mailbox capture now goes through IMAP master-user
+ * proxy auth (the same path Roundcube uses):
  *
  *   1. Resolve every mailbox address belonging to the client from
- *      the platform DB (mailboxes.client_id direct FK).
+ *      the platform DB (mailboxes.full_address).
  *   2. Sign a per-mailbox HMAC upload token bound to
  *      (bundleId, 'mailboxes', '<address>.mbox.tar.gz').
- *   3. Spawn a single Job in the `mail` namespace using the Stalwart
- *      image (which ships `stalwart-cli`). The Job script loops
- *      every address, runs `stalwart-cli account export` against the
- *      Stalwart management API on http://stalwart-mail-v016.mail:8080
- *      (HTTP-Basic with the recoveryAdmin Secret), gzips, then
- *      `curl --upload-file` to platform-api's internal upload route.
- *   4. Each upload is authorised by its own short-lived HMAC token —
- *      a leaked token can only overwrite that one address's artifact.
- *   5. Tokens are passed via env vars (one per address) so they do
- *      NOT appear in the script body that's visible in pod spec.
+ *   3. Spawn one Job in the `mail` namespace using the
+ *      `mail-backup-tools` image (alpine + isync/mbsync + python3 +
+ *      curl). The Job loops every address, calls
+ *      `capture-mailbox.sh <addr> <upload-url>`, which:
+ *         a. Writes a per-mailbox mbsync config that authenticates as
+ *            `<addr>%<master>` with the master password (Stalwart
+ *            master-user proxy mode — exactly the same syntax
+ *            roundcube/jwt_auth.php uses).
+ *         b. mbsync pulls the IMAP folders → /tmp/maildir (Maildir++).
+ *         c. tar | gzip | tee >(sha256sum) | curl --upload-file streams
+ *            the tarball straight to the platform-api internal upload
+ *            endpoint — no intermediate file (Option F).
+ *         d. rm -rf /tmp/maildir before the next address.
  *
- * Why a Job (not in-process from platform-api):
- *   - stalwart-cli does the heavy lifting (mbox tarball assembly).
- *   - The Stalwart admin creds stay in the `mail` namespace —
- *     platform-api never sees them.
- *   - Same NetworkPolicy rule (`platform.io/component: backup-files`)
- *     covers this Job too if we use the same label, OR we can split
- *     to `backup-mailboxes` for finer auditing. Going with the same
- *     label for Phase 3 — one rule, less churn.
+ * Why master-user proxy and not per-mailbox auth:
+ *   - Tenants don't share their per-mailbox passwords with the platform.
+ *   - The webmail master account already holds `impersonate` rights on
+ *     every mailbox in the cluster; the rotation flow is documented and
+ *     audited (mail-admin/rotate-webmail-master.ts).
+ *   - One Secret to manage instead of N tenant credentials.
  *
  * Failure modes:
- *   - If a single mailbox export fails the whole Job fails (set -e).
- *     Phase 3.x can split this into per-address sub-Jobs for better
- *     partial-success reporting; for now, fail loudly.
- *   - If a mailbox is empty, stalwart-cli still produces a tarball
- *     (just with no .eml files). That's a valid artefact.
+ *   - mbsync exit ≠ 0 (one address) → set -e fails the Job; orchestrator
+ *     marks component=failed. Phase 4.x can split per-address.
+ *   - curl upload fails → same (loud failure).
+ *   - Empty mailbox → mbsync writes an empty Maildir; tarball is small
+ *     but valid; restore APPENDs zero messages.
+ *
+ * Ephemeral storage (Option F):
+ *   The tarball never lands on disk — peak `/tmp` ≈ Maildir size only.
+ *   For mailboxes >10 GiB the orchestrator can switch to per-folder
+ *   streaming (a future helper script in mail-backup-tools); not
+ *   required for v1 since `emptyDir.sizeLimit: 50Gi` covers the
+ *   common case.
  */
 
 import { sql } from 'drizzle-orm';
@@ -61,72 +68,88 @@ export interface CaptureMailboxesComponentOpts {
   readonly handle: BundleHandle;
   readonly platformApiUrl: string;
   readonly secretsKeyHex: string;
-  readonly mailNamespace?: string; // defaults to 'mail'
-  readonly stalwartImage?: string;  // defaults to docker.io/stalwartlabs/stalwart:v0.16.3
-  readonly jobImage?: string;        // image used for the wrapper Job (alpine + curl)
-  readonly stalwartMgmtUrl?: string; // defaults to http://stalwart-mail-v016.mail.svc.cluster.local:8080
+  readonly mailNamespace?: string;       // defaults to 'mail'
+  readonly imapServiceHost?: string;     // defaults to stalwart-mail-v016.mail.svc.cluster.local
+  readonly imapServicePort?: number;     // defaults to 143 (STARTTLS)
+  readonly stalwartMasterUser?: string;  // defaults to 'master'
+  readonly masterSecretName?: string;    // defaults to 'roundcube-secrets'
+  readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
+  readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
   readonly timeoutMs?: number;
   readonly onProgress?: (msg: string) => Promise<void> | void;
 }
 
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-const UPLOAD_TOKEN_TTL_SEC = 30 * 60;
-const MAIL_NAMESPACE = 'mail';
-const STALWART_MGMT_URL_DEFAULT = 'http://stalwart-mail-v016.mail.svc.cluster.local:8080';
-const STALWART_IMAGE_DEFAULT = 'docker.io/stalwartlabs/stalwart:v0.16.3';
+const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
+const UPLOAD_TOKEN_TTL_SEC = 60 * 60;
+const MAIL_NAMESPACE_DEFAULT = 'mail';
+const IMAP_HOST_DEFAULT = 'stalwart-mail-v016.mail.svc.cluster.local';
+const IMAP_PORT_DEFAULT = 143;
+const MASTER_USER_DEFAULT = 'master';
+const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
+const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest';
 
-/**
- * Resolve the addresses of every mailbox owned by the client.
- *
- * Mailboxes table has a direct client_id column (audited 2026-05-02
- * in CONFIG_DUMP_TABLES). Returns sorted-by-address for stable
- * iteration order across runs.
- */
 export async function listClientMailboxAddresses(db: Database, clientId: string): Promise<string[]> {
   // The mailboxes table column is `full_address`, NOT `address`
-  // (audited 2026-05-05 against staging DB schema). Earlier code
-  // selected `address` which silently failed at execute time;
-  // caught by the integration-staging restore/mbox scenario.
+  // (audited 2026-05-05 against staging DB schema).
   const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { full_address: string }[] }> };
   const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE client_id = ${clientId} ORDER BY full_address`);
   return r.rows.map((row) => row.full_address);
 }
 
-/** Validate an address before letting it into a shell command. */
 function isSafeAddress(address: string): boolean {
-  // RFC-style local + domain. Forbid shell metacharacters;
-  // allow `+` for sub-addressing.
   return /^[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+$/.test(address);
+}
+
+// IMAP service host: DNS-name or in-cluster service name. No shell
+// metacharacters allowed because the host is interpolated into the
+// Job script body.
+function isSafeImapHost(host: string): boolean {
+  return /^[A-Za-z0-9.\-]+$/.test(host);
+}
+
+// Master user: alphanumeric + dot + underscore. Same justification
+// as isSafeImapHost — value is interpolated into the script.
+function isSafeMasterUser(user: string): boolean {
+  return /^[A-Za-z0-9._\-]+$/.test(user);
 }
 
 /**
  * Build the K8s Job spec for the mailboxes-component capture.
- *
- * Pure function — exposed so unit tests can assert on the spec
- * without a kube client.
+ * Pure function — exposed for unit-testing the spec without a kube client.
  */
 export function buildMailboxesComponentJobSpec(input: {
   jobName: string;
   mailNamespace: string;
   clientId: string;
   backupId: string;
-  jobImage: string;
-  stalwartMgmtUrl: string;
+  toolsImage: string;
+  imapServiceHost: string;
+  imapServicePort: number;
+  stalwartMasterUser: string;
+  masterSecretName: string;
+  masterSecretKey: string;
   uploadBase: string;
-  /** [{ address, token }] — one per mailbox. */
   uploads: ReadonlyArray<{ address: string; token: string }>;
 }): Record<string, unknown> {
-  // Reject any unsafe address before composing the script — prevents
-  // a malformed address from breaking out of the for-loop into a
-  // shell injection. Addresses come from the platform DB, but
-  // defence-in-depth is cheap.
+  // Defence-in-depth: addresses come from the platform DB, but we
+  // re-validate before composing the for-loop so a malformed address
+  // can never break out of the script body.
   for (const u of input.uploads) {
     if (!isSafeAddress(u.address)) {
       throw new Error(`buildMailboxesComponentJobSpec: invalid address '${u.address}'`);
     }
   }
-  // Env vars carry the tokens (one per address) so they don't sit in
-  // the script body that's visible via `kubectl get pod -o yaml`.
+  if (!isSafeImapHost(input.imapServiceHost)) {
+    throw new Error(`buildMailboxesComponentJobSpec: invalid imapServiceHost '${input.imapServiceHost}'`);
+  }
+  if (!Number.isInteger(input.imapServicePort) || input.imapServicePort < 1 || input.imapServicePort > 65535) {
+    throw new Error(`buildMailboxesComponentJobSpec: invalid imapServicePort '${input.imapServicePort}'`);
+  }
+  if (!isSafeMasterUser(input.stalwartMasterUser)) {
+    throw new Error(`buildMailboxesComponentJobSpec: invalid stalwartMasterUser '${input.stalwartMasterUser}'`);
+  }
+
   const tokenEnvVars = input.uploads.map((u, i) => ({
     name: `MAILBOX_TOKEN_${i}`,
     value: u.token,
@@ -135,65 +158,33 @@ export function buildMailboxesComponentJobSpec(input: {
     name: `MAILBOX_ADDR_${i}`,
     value: u.address,
   }));
-  const stalwartCredsEnv = [
-    {
-      name: 'STALWART_RECOVERY_ADMIN',
-      valueFrom: {
-        secretKeyRef: {
-          name: 'stalwart-admin-creds',
-          key: 'recoveryAdmin',
-          optional: false,
-        },
+
+  // Master password from the Roundcube Secret. Same key used by
+  // jwt_auth.php; rotation goes through rotateWebmailMasterPassword().
+  const masterPasswordEnv = {
+    name: 'STALWART_MASTER_PASSWORD',
+    valueFrom: {
+      secretKeyRef: {
+        name: input.masterSecretName,
+        key: input.masterSecretKey,
+        optional: false,
       },
     },
-  ];
+  };
 
-  // We use the Stalwart image itself as the Job container — it ships
-  // `stalwart-cli`, the upstream-documented path for mailbox export.
-  // (An earlier draft tried to call the HTTP management API directly,
-  // but the exact endpoint shape varies between Stalwart minor
-  // versions; using stalwart-cli is forward-compatible since the CLI
-  // adapts to whichever API the running server speaks.)
-  //
-  // Stalwart's image is Debian-based — install curl via apt-get for
-  // the upload step. Two-stage per address: cli writes a tarball to
-  // /tmp/$ADDR.tar.gz, then curl --upload-file streams it to the
-  // platform-api internal upload endpoint.
-  //
-  // The `STALWART_RECOVERY_ADMIN` Secret already holds the value
-  // `admin:<password>` (see k8s/base/stalwart-v016/stalwart/deployment.yaml
-  // line 144) — we pass it directly to `stalwart-cli -c`.
-  //
-  // KNOWN GAP (matches files.ts): if this Job already exists from a
-  // prior orchestrator run that crashed mid-bundle, createNamespacedJob
-  // will 409. We don't tolerate 409 here; the Job's
-  // ttlSecondsAfterFinished=600 means the dead Job is GC'd within
-  // 10 min and a fresh bundle attempt succeeds. Phase 4.x will
-  // factor a 409-tolerant Job-spawn helper.
+  // Loop body: capture-mailbox.sh handles mbsync + streaming upload.
+  // We pass each address in via the env vars so the actual command
+  // line stays generic and tokens never appear in `kubectl get pod`.
   const script = [
     'set -e',
-    'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl) >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
-    'command -v stalwart-cli >/dev/null 2>&1 || { echo "ERROR: stalwart-cli not on PATH (wrong base image?)"; exit 1; }',
-    'COUNT=' + input.uploads.length,
-    'mkdir -p /tmp/mboxes',
+    `COUNT=${input.uploads.length}`,
     'for i in $(seq 0 $((COUNT - 1))); do',
     '  ADDR_VAR="MAILBOX_ADDR_$i"',
     '  TOKEN_VAR="MAILBOX_TOKEN_$i"',
     '  ADDR=$(eval echo \\$$ADDR_VAR)',
     '  TOKEN=$(eval echo \\$$TOKEN_VAR)',
-    '  echo "Exporting mailbox $ADDR (#$i)..."',
-    // stalwart-cli account export <addr> writes a tarball at the
-    // given path (one tarball per account, gzipped). The CLI uses
-    // the management API internally and adapts to whatever endpoint
-    // shape the server speaks.
-    `  stalwart-cli -u "${input.stalwartMgmtUrl}" -c "$STALWART_RECOVERY_ADMIN" \\
-       account export "$ADDR" "/tmp/mboxes/$ADDR.tar.gz"`,
-    '  echo "Uploading $ADDR.tar.gz..."',
-    `  curl --fail-with-body -sS --upload-file "/tmp/mboxes/$ADDR.tar.gz" \\
-       -H "Content-Type: application/gzip" \\
-       "${input.uploadBase}/$ADDR.mbox.tar.gz?token=$TOKEN"`,
-    '  rm -f "/tmp/mboxes/$ADDR.tar.gz"', // free disk before next mailbox
-    '  echo "MAILBOX_DONE addr=$ADDR"',
+    '  echo "Capturing mailbox $ADDR (#$i) of $COUNT..." >&2',
+    `  /usr/local/bin/capture-mailbox.sh "$ADDR" "${input.uploadBase}/$ADDR.mbox.tar.gz?token=$TOKEN"`,
     'done',
     'echo "MAILBOXES_TOTAL=$COUNT"',
   ].join('\n');
@@ -203,9 +194,8 @@ export function buildMailboxesComponentJobSpec(input: {
       name: input.jobName,
       namespace: input.mailNamespace,
       labels: {
-        // Reuse the backup-files label so the existing NetworkPolicy
-        // (allow-backup-files-jobs-to-platform-api) covers this Job
-        // too. Phase 3.x can split if per-component auditing matters.
+        // Reuse backup-files label so the existing NetworkPolicy that
+        // allows Job→platform-api traffic also covers this Job.
         'platform.io/component': 'backup-files',
         'platform.io/client-id': input.clientId,
         'platform.io/backup-id': input.backupId,
@@ -226,38 +216,45 @@ export function buildMailboxesComponentJobSpec(input: {
         },
         spec: {
           restartPolicy: 'Never',
-          // Mail namespace doesn't have the platform-tenant-overhead
-          // priority class registered. Use the system default.
           containers: [{
             name: 'mailboxes',
-            image: input.jobImage,
+            image: input.toolsImage,
             imagePullPolicy: 'IfNotPresent',
             command: ['sh', '-c', script],
-            env: [...stalwartCredsEnv, ...addressEnvVars, ...tokenEnvVars],
+            env: [
+              { name: 'IMAP_HOST', value: input.imapServiceHost },
+              { name: 'IMAP_PORT', value: String(input.imapServicePort) },
+              { name: 'STALWART_MASTER_USER', value: input.stalwartMasterUser },
+              // The image's STARTTLS path will fail closed unless we
+              // explicitly opt out of cert verification (in-cluster
+              // service certificate is self-signed). MBSYNC_TLS_VERIFY=no
+              // is the convention; production overlays can flip via
+              // mail-backup-tools image config.
+              { name: 'MBSYNC_TLS_VERIFY', value: 'no' },
+              masterPasswordEnv,
+              ...addressEnvVars,
+              ...tokenEnvVars,
+            ],
             resources: {
-              requests: { cpu: '100m', memory: '128Mi' },
-              limits: { cpu: '500m', memory: '512Mi' },
+              requests: { cpu: '100m', memory: '256Mi' },
+              limits: { cpu: '1000m', memory: '1Gi' },
             },
+            volumeMounts: [
+              { name: 'scratch', mountPath: '/tmp' },
+            ],
           }],
+          volumes: [
+            // emptyDir holds Maildir for the in-flight mailbox.
+            // sizeLimit covers Maildir-only (Option F: tarball never
+            // lands on disk).
+            { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
+          ],
         },
       },
     },
   };
 }
 
-/**
- * Capture the `mailboxes` component.
- *
- * Resolves the client's mailboxes from the DB, signs one HMAC token
- * per mailbox, spawns the Job, polls until done. After the Job
- * returns we sum sizes via BackupStore.listArtifacts (the Job emitted
- * each artefact and the store reports their canonical sizes).
- *
- * Returns sizeBytes=0 + addresses=[] if the client has no mailboxes
- * (no Job spawned). The orchestrator marks the component `completed`
- * with mailboxCount=0 in that case — meaningful "we checked and there
- * was nothing to back up" rather than "we forgot to do this".
- */
 export async function captureMailboxesComponent(
   opts: CaptureMailboxesComponentOpts,
 ): Promise<MailboxesComponentResult> {
@@ -274,22 +271,21 @@ export async function captureMailboxesComponent(
     ),
   }));
 
-  const mailNamespace = opts.mailNamespace ?? MAIL_NAMESPACE;
-  const stalwartMgmtUrl = opts.stalwartMgmtUrl ?? STALWART_MGMT_URL_DEFAULT;
+  const mailNamespace = opts.mailNamespace ?? MAIL_NAMESPACE_DEFAULT;
   const uploadBase = `${opts.platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${opts.backupId}/components/mailboxes`;
   const jobName = `bk-mbox-${opts.backupId}`.slice(0, 63);
 
-  // Use the Stalwart image (which ships stalwart-cli) as the Job
-  // container. Operators can override via opts.jobImage but the
-  // default is the same v0.16.3 image the cluster's Stalwart pod
-  // runs — keeps the cli/server versions aligned automatically.
   const spec = buildMailboxesComponentJobSpec({
     jobName,
     mailNamespace,
     clientId: opts.clientId,
     backupId: opts.backupId,
-    jobImage: opts.jobImage ?? opts.stalwartImage ?? STALWART_IMAGE_DEFAULT,
-    stalwartMgmtUrl,
+    toolsImage: opts.toolsImage ?? TOOLS_IMAGE_DEFAULT,
+    imapServiceHost: opts.imapServiceHost ?? IMAP_HOST_DEFAULT,
+    imapServicePort: opts.imapServicePort ?? IMAP_PORT_DEFAULT,
+    stalwartMasterUser: opts.stalwartMasterUser ?? MASTER_USER_DEFAULT,
+    masterSecretName: opts.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
+    masterSecretKey: opts.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
     uploadBase,
     uploads,
   });
@@ -300,7 +296,6 @@ export async function captureMailboxesComponent(
 
   await waitForJob(opts.k8s, mailNamespace, jobName, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.onProgress);
 
-  // Sum sizes via BackupStore.listArtifacts.
   const refs = await opts.store.listArtifacts(opts.handle, 'mailboxes');
   const sizeBytes = refs.reduce((s, r) => s + r.sizeBytes, 0);
 

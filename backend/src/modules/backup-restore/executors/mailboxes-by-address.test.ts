@@ -8,8 +8,13 @@ describe('buildMailboxesByAddressJobSpec', () => {
     clientId: 'client-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
-    jobImage: 'docker.io/stalwartlabs/stalwart:v0.16.3',
-    stalwartMgmtUrl: 'http://stalwart-mail-v016.mail.svc:8080',
+    toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
+    imapServiceHost: 'stalwart-mail-v016.mail.svc.cluster.local',
+    imapServicePort: 143,
+    stalwartMasterUser: 'master',
+    masterSecretName: 'roundcube-secrets',
+    masterSecretKey: 'STALWART_MASTER_PASSWORD',
+    mode: 'merge-skip-duplicates' as const,
     downloadBase: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-1/components/mailboxes',
     downloads: [
       { address: 'a@example.com', token: '1.deadbeef' },
@@ -54,22 +59,43 @@ describe('buildMailboxesByAddressJobSpec', () => {
     expect(cmd).not.toContain('2.cafebabe');
   });
 
-  it('mounts STALWART_RECOVERY_ADMIN from the stalwart-admin-creds Secret', () => {
+  it('mounts STALWART_MASTER_PASSWORD from the roundcube-secrets Secret (master-user proxy auth)', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }> }> } } };
     };
-    const adminEnv = spec.spec.template.spec.containers[0]!.env.find((e) => e.name === 'STALWART_RECOVERY_ADMIN');
-    expect(adminEnv?.valueFrom?.secretKeyRef?.name).toBe('stalwart-admin-creds');
-    expect(adminEnv?.valueFrom?.secretKeyRef?.key).toBe('recoveryAdmin');
+    const adminEnv = spec.spec.template.spec.containers[0]!.env.find((e) => e.name === 'STALWART_MASTER_PASSWORD');
+    expect(adminEnv?.valueFrom?.secretKeyRef?.name).toBe('roundcube-secrets');
+    expect(adminEnv?.valueFrom?.secretKeyRef?.key).toBe('STALWART_MASTER_PASSWORD');
   });
 
-  it('script invokes both `curl` (download) and `stalwart-cli account import` per address', () => {
+  it('script invokes curl (download), tar (extract), and restore-mailbox.py per address', () => {
     const spec = buildMailboxesByAddressJobSpec(baseInput) as {
-      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+      spec: { template: { spec: { containers: Array<{ command: string[]; image: string }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(spec.spec.template.spec.containers[0]!.image).toMatch(/mail-backup-tools/);
     expect(cmd).toContain('curl --fail-with-body');
-    expect(cmd).toContain('stalwart-cli');
-    expect(cmd).toContain('account import');
+    expect(cmd).toContain('tar -xzf');
+    expect(cmd).toContain('/usr/local/bin/restore-mailbox.py');
+    expect(cmd).not.toContain('stalwart-cli');
+    // Authenticates via IMAP master-user proxy.
+    expect(cmd).toContain('%master');
+  });
+
+  it('embeds the chosen mode in the script', () => {
+    const spec1 = buildMailboxesByAddressJobSpec({ ...baseInput, mode: 'merge-skip-duplicates' }) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    expect(spec1.spec.template.spec.containers[0]!.command.join(' ')).toContain('MODE=merge-skip-duplicates');
+
+    const spec2 = buildMailboxesByAddressJobSpec({ ...baseInput, mode: 'merge-overwrite' }) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    expect(spec2.spec.template.spec.containers[0]!.command.join(' ')).toContain('MODE=merge-overwrite');
+
+    const spec3 = buildMailboxesByAddressJobSpec({ ...baseInput, mode: 'replace' }) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    expect(spec3.spec.template.spec.containers[0]!.command.join(' ')).toContain('MODE=replace');
   });
 });

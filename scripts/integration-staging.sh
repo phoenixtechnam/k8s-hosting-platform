@@ -905,16 +905,17 @@ for c in (items if isinstance(items, list) else []):
   fi
 
   # ─── mailboxes-by-address sub-test (RESTORE_INCLUDE_MAILBOXES=1) ───
-  # Provisions a mailbox under the existing client's domain, captures
-  # a bundle with mailboxes=true, then exercises the cart with a
-  # mailboxes-by-address item. We don't drop+recreate the Stalwart
-  # account here (that's covered by scenario_mail) — this test
-  # proves the new executor end-to-end:
-  #   - bundle browse /mailboxes returns the address
-  #   - cart accepts the item
-  #   - executor spawns the Job in `mail` ns, downloads tarball via
-  #     internal-download endpoint, runs stalwart-cli import
-  #   - cart status reaches 'done'
+  # Provisions a mailbox, seeds a unique IMAP message via master-user
+  # proxy, captures the bundle, deletes the message, then restores via
+  # the cart with three asserts:
+  #   1. Cart reaches status=done (mbsync capture + APPEND restore Jobs
+  #      both exit 0).
+  #   2. The seeded Message-ID is present in INBOX after restore
+  #      (content round-trip — capture really captured + restore really
+  #      appended; not just "Job exited 0").
+  #   3. Re-running the same cart with merge-skip-duplicates leaves
+  #      INBOX size unchanged (Message-ID dedup actually works in the
+  #      cluster against Stalwart, not just against greenmail).
   if [[ "${RESTORE_INCLUDE_MAILBOXES:-}" == "1" ]]; then
     # Promote the existing domain to email-enabled.
     local ed_resp; ed_resp=$(api POST "/clients/$cid/email/domains/$domain_id/enable" "{\"selector\":\"e2e-${stamp}\"}")
@@ -931,6 +932,100 @@ for c in (items if isinstance(items, list) else []):
     ok "restore/mbox: mailbox $mb_addr created"
     wait_for 60 "restore/mbox: status=active" '"status":"active"' \
       "api GET '/clients/$cid/mailboxes/$mbid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+    # ── Seed: APPEND a unique message via IMAP master-user proxy ─
+    # Spawns a one-shot pod in mail ns using mail-backup-tools image
+    # so we hit Stalwart through the same auth path the Job uses.
+    # The seeded Message-ID is the canonical assertion target for
+    # round-trip + idempotency.
+    local probe_image="ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest"
+    local probe_msgid_local="harness-${stamp}-$RANDOM"
+    local probe_msgid="<${probe_msgid_local}@phoenix-host.net>"
+
+    # Run an IMAP op on the cluster's Stalwart via a one-shot pod.
+    #
+    # Args:  $1 = op (seed|count|wipe)  $2 = probe-pod name suffix
+    #
+    # `seed` APPENDs the unique message to INBOX.
+    # `count` returns "<n>" lines containing the Message-ID hits.
+    # `wipe` EXPUNGEs everything in INBOX.
+    mb_imap_op() {
+      local op="$1" suffix="$2"
+      local pod="rs-mbox-probe-${suffix}"
+      # Pull master password from cluster secret (extracted on the
+      # control host; we pipe it into the run command via env).
+      local master_pw
+      master_pw=$(ssh_cp "kubectl -n mail get secret roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
+      [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }
+
+      local pyblock
+      case "$op" in
+        seed)
+          pyblock='
+import imaplib,os,sys
+m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
+m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+m.select("INBOX")
+msg = (
+    b"From: harness@phoenix-host.net\r\n"
+    b"To: '"$mb_addr"'\r\n"
+    b"Subject: harness-seed\r\n"
+    b"Message-ID: '"$probe_msgid"'\r\n\r\n"
+    b"harness body\r\n"
+)
+typ,_=m.append("INBOX","",None,msg)
+print("APPEND",typ)
+m.logout()
+'
+          ;;
+        count)
+          pyblock='
+import imaplib,os,sys,re
+m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
+m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+typ,_=m.select("INBOX",readonly=True)
+typ,d=m.uid("FETCH","1:*","(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+hits = 0
+for it in (d or []):
+    if isinstance(it,tuple) and len(it)>=2 and isinstance(it[1],(bytes,bytearray)):
+        if b"'"$probe_msgid_local"'" in it[1]: hits += 1
+print("HITS",hits)
+m.logout()
+'
+          ;;
+        wipe)
+          pyblock='
+import imaplib,os
+m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
+m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+m.select("INBOX")
+typ,d=m.search(None,"ALL")
+if typ=="OK" and d and d[0]:
+    for u in d[0].split(): m.store(u,"+FLAGS","\\\\Deleted")
+    m.expunge()
+print("WIPED")
+m.logout()
+'
+          ;;
+        *) echo "ERROR: unknown op $op" >&2; return 1;;
+      esac
+
+      # Pod env vars used by the python script.
+      local IMAP_HOST="stalwart-mail-v016.mail.svc.cluster.local"
+      local IMAP_PORT="143"
+      # IMAP master-user proxy username: <addr>%<master>
+      local IMAP_USER="${mb_addr}%master"
+      # Pipe via stdin to avoid quoting hell on long python blocks.
+      ssh_cp "kubectl -n mail run \"$pod\" --rm -i --restart=Never \
+        --image=\"$probe_image\" --image-pull-policy=IfNotPresent \
+        --env=\"MASTER_PW=$master_pw\" --env=\"ALLOW_PLAINTEXT_IMAP=yes\" \
+        --command -- python3 -c '${pyblock//\'/\'\\\'\'}'" 2>&1
+    }
+
+    log "restore/mbox: seeding message id=${probe_msgid} via IMAP master-user proxy..."
+    local seed_out; seed_out=$(mb_imap_op seed "seed-${stamp}")
+    echo "$seed_out" | grep -q "APPEND OK" || { fail "restore/mbox: seed APPEND failed: $(echo "$seed_out" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: seed APPEND ok"
 
     # Capture bundle with mailboxes=true.
     local mbody; mbody="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-mbox-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":true,\"config\":false,\"secrets\":false}}"
@@ -973,19 +1068,63 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
       || { fail "restore/mbox: add-item failed"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
     ok "restore/mbox: cart item added (mailboxes-by-address)"
 
-    # Execute. The Job spawns in `mail` ns, downloads tarball via
-    # internal-download, runs stalwart-cli import. status=done means
-    # the Job exited 0 — the executor wired correctly.
+    # ── Wipe INBOX before restore so we can prove restore re-populated it.
+    log "restore/mbox: wiping INBOX so restore is observable..."
+    local wipe_out; wipe_out=$(mb_imap_op wipe "wipe-${stamp}")
+    echo "$wipe_out" | grep -q "WIPED" || { fail "restore/mbox: wipe failed: $(echo "$wipe_out" | head -c 400)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+    # Sanity: confirm INBOX no longer contains the seeded Message-ID.
+    local pre_count_out; pre_count_out=$(mb_imap_op count "pre-${stamp}")
+    local pre_count; pre_count=$(echo "$pre_count_out" | sed -n 's/.*HITS \([0-9]*\).*/\1/p' | tail -1)
+    [[ "$pre_count" == "0" ]] || { fail "restore/mbox: pre-restore HITS=${pre_count}, expected 0 (wipe failed?)"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: pre-restore Message-ID hits=0 (wipe confirmed)"
+
+    # Execute. The Job spawns in `mail` ns with mail-backup-tools
+    # image, downloads tarball, untars Maildir, runs restore-mailbox.py
+    # with mode=merge-skip-duplicates (the default).
     local mexec_resp; mexec_resp=$(api POST "/admin/restores/carts/$mcart_id/execute" "{}")
     local mcart_status; mcart_status=$(echo "$mexec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
     if [[ "$mcart_status" != "done" ]]; then
       fail "restore/mbox: cart execute returned status=$mcart_status — resp: $(echo "$mexec_resp" | head -c 600)"
+      log "restore/mbox: restore Job logs ↓"
+      ssh_cp "kubectl -n mail logs -l platform.io/component=restore-files --tail=80 2>&1" 2>&1 | sed 's/^/    /' | head -50
       api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
       api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
       api DELETE "/clients/$cid" >/dev/null 2>&1 || true
       return 1
     fi
-    ok "restore/mbox: cart executed status=done — Stalwart import via mailboxes-by-address Job ✓"
+    ok "restore/mbox: cart executed status=done — restore-mailbox.py via Job ✓"
+
+    # ── Content round-trip: seeded Message-ID must be back in INBOX.
+    local post_count_out; post_count_out=$(mb_imap_op count "post-${stamp}")
+    local post_count; post_count=$(echo "$post_count_out" | sed -n 's/.*HITS \([0-9]*\).*/\1/p' | tail -1)
+    if [[ "$post_count" != "1" ]]; then
+      fail "restore/mbox: post-restore HITS=${post_count}, expected 1 (Message-ID round-trip broken)"
+      log "restore/mbox: probe output ↓"; echo "$post_count_out" | sed 's/^/    /' | head -20
+      api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
+      api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    ok "restore/mbox: Message-ID round-trip ✓ (seeded → captured → wiped → restored)"
+
+    # ── Idempotency: a second cart with merge-skip-duplicates must
+    # leave the INBOX size unchanged (Message-ID dedup actually works
+    # against Stalwart).
+    local idem_cart_resp; idem_cart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E mbox idem $stamp\"}")
+    local idem_cart_id; idem_cart_id=$(echo "$idem_cart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+    if [[ -n "$idem_cart_id" ]]; then
+      api POST "/admin/restores/carts/$idem_cart_id/items" "$mitem" >/dev/null
+      api POST "/admin/restores/carts/$idem_cart_id/execute" "{}" >/dev/null
+      local idem_count_out; idem_count_out=$(mb_imap_op count "idem-${stamp}")
+      local idem_count; idem_count=$(echo "$idem_count_out" | sed -n 's/.*HITS \([0-9]*\).*/\1/p' | tail -1)
+      if [[ "$idem_count" == "1" ]]; then
+        ok "restore/mbox: idempotency ✓ (re-execute kept HITS=1; merge-skip-duplicates dedup worked)"
+      else
+        fail "restore/mbox: idempotency FAIL — HITS=${idem_count} (expected 1)"
+      fi
+      api DELETE "/admin/restores/carts/$idem_cart_id" >/dev/null 2>&1 || true
+    fi
 
     api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
     api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
