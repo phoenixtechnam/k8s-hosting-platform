@@ -23,6 +23,7 @@ RUN apk add --no-cache \
       curl \
       tar \
       ca-certificates \
+      openssl \
  && rm -rf /var/cache/apk/* /usr/lib/python3.*/test /usr/lib/python3.*/idlelib \
            /usr/lib/python3.*/lib2to3 /usr/lib/python3.*/ensurepip \
            /usr/lib/python3.*/__pycache__

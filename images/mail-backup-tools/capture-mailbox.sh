@@ -39,7 +39,11 @@ if [ -z "$ADDR" ] || [ -z "$UPLOAD_URL" ]; then
 fi
 
 : "${IMAP_HOST:?IMAP_HOST not set}"
-: "${IMAP_PORT:=143}"
+# Default to 993 (IMAPS). Stalwart 0.16 disables LOGIN on the
+# cleartext port (143) by default, so master-user proxy auth fails
+# there regardless of STARTTLS. Operators can override IMAP_PORT=143
+# only when targeting a server that allows cleartext LOGIN.
+: "${IMAP_PORT:=993}"
 : "${STALWART_MASTER_USER:=master}"
 : "${STALWART_MASTER_PASSWORD:?STALWART_MASTER_PASSWORD not set}"
 
@@ -58,29 +62,37 @@ SSO_USER="${ADDR}%${STALWART_MASTER_USER}"
 # AuthMechs LOGIN — Stalwart accepts both LOGIN and PLAIN; PLAIN
 # works over STARTTLS or implicit TLS.
 #
-# Cert verification: mbsync verifies the server cert against
-# CertificateFile (the alpine ca-bundle) when set. To opt OUT of
-# verification (in-cluster self-signed cert), set MBSYNC_TLS_VERIFY=no
-# (default) — we then write `CertificateFile ""` which disables
-# the trust store check. `SystemCertificates yes` is NOT a valid
-# isync directive and was previously written but ignored — fixed
-# 2026-05-05 after CRITICAL reviewer finding.
-TLS_TYPE="STARTTLS"
-if [ "$IMAP_PORT" = "993" ]; then TLS_TYPE="IMAPS"; fi
+# TLS handling. The isync 1.4 directive is `SSLType` (not `TLSType`).
+# To opt OUT of cert verification (in-cluster self-signed cert),
+# we use the Tunnel approach: pipe the IMAP traffic through an
+# `openssl s_client` invocation that doesn't require chain validation.
+# mbsync sees a plaintext stream over the tunnel, openssl handles TLS.
+# Operators wanting strict verification set MBSYNC_TLS_VERIFY=yes,
+# which switches to native SSLType + CertificateFile against the alpine
+# ca-bundle.
 if [ "${MBSYNC_TLS_VERIFY:-no}" = "yes" ]; then
-  CERT_LINE='CertificateFile /etc/ssl/certs/ca-certificates.crt'
+  TLS_BLOCK="SSLType IMAPS
+CertificateFile /etc/ssl/certs/ca-certificates.crt"
+  if [ "$IMAP_PORT" != "993" ]; then
+    TLS_BLOCK="SSLType STARTTLS
+CertificateFile /etc/ssl/certs/ca-certificates.crt"
+  fi
+  HOST_PORT_BLOCK="Host $IMAP_HOST
+Port $IMAP_PORT"
 else
-  CERT_LINE='CertificateFile ""'
+  # `Tunnel` replaces Host/Port/SSLType. openssl s_client wraps the
+  # TLS layer and skips chain validation (the in-cluster cert is
+  # self-signed; auth_request still gates the public ingress).
+  HOST_PORT_BLOCK=""
+  TLS_BLOCK="Tunnel \"openssl s_client -quiet -verify 0 -connect ${IMAP_HOST}:${IMAP_PORT} -servername ${IMAP_HOST} 2>/dev/null\""
 fi
 
 cat > /tmp/mbsync.cfg <<EOF
 IMAPAccount stalwart
-Host $IMAP_HOST
-Port $IMAP_PORT
+${HOST_PORT_BLOCK}
 User $SSO_USER
 PassCmd "printenv STALWART_MASTER_PASSWORD"
-TLSType $TLS_TYPE
-$CERT_LINE
+${TLS_BLOCK}
 AuthMechs LOGIN
 PipelineDepth 50
 
