@@ -14,7 +14,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { eq, sql } from 'drizzle-orm';
-import { authenticate } from '../../middleware/auth.js';
+import { authenticate, requireRole } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { platformSettings, privateWorkers } from '../../db/schema.js';
@@ -49,10 +49,6 @@ interface TunnelStatus {
   readonly availableIssuers: ReadonlyArray<ClusterIssuerSummary>;
   readonly currentIssuer: string;
   readonly currentIssuerReady: boolean;
-}
-
-function isAdmin(request: { user?: { role?: string } }): boolean {
-  return request.user?.role === 'admin';
 }
 
 function classifyIssuerKind(spec: unknown): 'http01' | 'dns01' | 'unknown' {
@@ -161,14 +157,12 @@ async function getPerWorkerCertCounts(): Promise<{ issued: number; pending: numb
 }
 
 export async function privateWorkerAdminRoutes(app: FastifyInstance): Promise<void> {
+  // Same chain as backend/src/modules/admin-users/routes.ts: authenticate
+  // first, then gate by staff roles. The platform's role enum is
+  // ['super_admin','admin','support','read_only','client_admin','client_user']
+  // — we accept the two staff roles that have admin-panel write access.
   app.addHook('onRequest', authenticate);
-  app.addHook('onRequest', async (request, reply) => {
-    if (!isAdmin(request)) {
-      return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Admin role required', status: 403 },
-      });
-    }
-  });
+  app.addHook('onRequest', requireRole('super_admin', 'admin'));
 
   app.get('/admin/private-workers/tunnel-settings', async () => {
     const issuer = await loadTunnelIssuer(app.db);
