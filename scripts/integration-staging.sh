@@ -23,7 +23,8 @@
 #
 # USAGE
 #   ADMIN_PASSWORD=<...> ./scripts/integration-staging.sh [scenario]
-#   scenario: lifecycle | fm | https | reprovision | drain | all (default)
+#   scenario: lifecycle | fm | https | reprovision | drain | reaper |
+#             bundle | restore | mail | all (default)
 #
 # DNS PREREQ
 #   *.staging.success.com.na CNAMEs to staging.phoenix-host.net (which
@@ -633,6 +634,119 @@ print(json.dumps({
   # Final cleanup
   api DELETE "/clients/$cid" >/dev/null 2>&1 || true
   ok "bundle: all $target_count target(s) round-trip verified end-to-end"
+}
+
+# ─── scenario: restore (Plesk-style cart) ─────────────────────────
+#
+# Round-trip the tenant-backup-restore cart flow against the FIRST
+# active backup target:
+#   1. Provision a client + a domain row.
+#   2. Create a tenant bundle that captures the config component (so
+#      domains is in the dump).
+#   3. DELETE the domain row from the live DB via DELETE /domains/:id.
+#   4. Browse the bundle: assert domain id is present in the dump.
+#   5. Create a restore cart, add a domains-by-id item with the
+#      domain id, execute.
+#   6. Poll the cart until status='done'.
+#   7. Verify the domain row is BACK in the live DB.
+#   8. Cleanup (cart, bundle, client).
+#
+# Why this scenario:
+#   It exercises bundle-browse + cart CRUD + the dispatch executor +
+#   identifier-safe upsert against a real Postgres + the cross-tenant
+#   guard (the bundle's clientId === cart's clientId path). The five
+#   pieces had passing unit tests, but only the harness proves they
+#   talk to each other across HTTP + the off-site target.
+scenario_restore() {
+  if [[ "${SKIP_RESTORE_SCENARIO:-}" == "1" ]]; then
+    log "scenario restore skipped — SKIP_RESTORE_SCENARIO=1"
+    return 0
+  fi
+
+  # Resolve the first active backup target.
+  local cfg_resp; cfg_resp=$(api GET "/admin/backup-configs")
+  local target_id; target_id=$(echo "$cfg_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+items = d.get('data', d) if isinstance(d, dict) else d
+if isinstance(items, dict): items = items.get('items', items.get('data', []))
+for c in (items if isinstance(items, list) else []):
+    if c.get('active'):
+        print(c.get('id'))
+        break
+")
+  [[ -n "$target_id" ]] || { fail "restore: no active backup target — activate one first"; return 1; }
+  ok "restore: using target $target_id"
+
+  local plan_id region_id
+  plan_id=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d['data'] if p['name']=='Starter'),''))")
+  region_id=$(api GET "/regions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['data'][0]['id'])")
+  [[ -n "$plan_id" && -n "$region_id" ]] || { fail "restore: could not resolve plan/region"; return 1; }
+
+  local stamp; stamp=$(date +%s)
+  local resp; resp=$(api POST "/clients" \
+    "{\"company_name\":\"Restore Test $stamp\",\"company_email\":\"restore-$stamp@phoenix-host.net\",\"plan_id\":\"$plan_id\",\"region_id\":\"$region_id\",\"storage_tier\":\"local\"}")
+  local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$cid" ]] || { fail "restore: client create failed"; return 1; }
+  ok "restore: client created cid=$cid"
+  wait_for 120 "restore: client provisioned" '"provisioningStatus":"provisioned"' \
+    "api GET '/clients/$cid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+  # Create a domain we can later delete + restore.
+  local hostname="restore-${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
+  local d_resp; d_resp=$(api POST "/clients/$cid/domains" "{\"hostname\":\"$hostname\"}")
+  local domain_id; domain_id=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$domain_id" ]] || { fail "restore: domain create failed: $(echo "$d_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: domain created id=$domain_id hostname=$hostname"
+
+  # Create a bundle (config component captures the domains row).
+  local body="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":false,\"config\":true,\"secrets\":true}}"
+  local b_resp; b_resp=$(api POST "/admin/backups/bundles" "$body")
+  local bundle_id; bundle_id=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
+  local b_status; b_status=$(echo "$b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+  [[ "$b_status" == "completed" && -n "$bundle_id" ]] || { fail "restore: bundle create failed: $(echo "$b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: bundle created $bundle_id"
+
+  # Browse the bundle — domain id must be present.
+  local browse; browse=$(api GET "/admin/backups/bundles/$bundle_id/browse/domains")
+  echo "$browse" | grep -q "$domain_id" || { fail "restore: bundle browse missing domain $domain_id: $(echo "$browse" | head -c 300)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: bundle browse confirms domain in dump"
+
+  # Delete the live domain row.
+  api DELETE "/clients/$cid/domains/$domain_id" >/dev/null 2>&1 || true
+  local d_check; d_check=$(api GET "/clients/$cid/domains" 2>/dev/null)
+  ! echo "$d_check" | grep -q "$domain_id" || { fail "restore: domain still present after DELETE"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: domain deleted from live DB"
+
+  # Create cart + add domains-by-id item.
+  local cart_resp; cart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E restore test $stamp\"}")
+  local cart_id; cart_id=$(echo "$cart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+  [[ -n "$cart_id" ]] || { fail "restore: cart create failed: $(echo "$cart_resp" | head -c 300)"; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: cart created $cart_id"
+
+  local item_body="{\"bundleId\":\"$bundle_id\",\"type\":\"domains-by-id\",\"selector\":{\"kind\":\"ids\",\"domainIds\":[\"$domain_id\"]},\"label\":\"restore-domain\"}"
+  local item_resp; item_resp=$(api POST "/admin/restores/carts/$cart_id/items" "$item_body")
+  echo "$item_resp" | grep -q '"id"' || { fail "restore: cart add-item failed: $(echo "$item_resp" | head -c 400)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: cart item added (domains-by-id)"
+
+  # Execute. The cart endpoint runs the items synchronously; on the
+  # happy path the response already shows status=done. (No polling
+  # needed for in-process executors today.)
+  local exec_resp; exec_resp=$(api POST "/admin/restores/carts/$cart_id/execute" "{}")
+  local cart_status; cart_status=$(echo "$exec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+  [[ "$cart_status" == "done" ]] || { fail "restore: cart execute returned status=$cart_status (expected done): $(echo "$exec_resp" | head -c 600)"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: cart executed status=done"
+
+  # Verify the domain row is BACK.
+  local d_back; d_back=$(api GET "/clients/$cid/domains" 2>/dev/null)
+  echo "$d_back" | grep -q "$domain_id" || { fail "restore: domain $domain_id NOT restored after cart execute"; api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+  ok "restore: domain id=$domain_id restored to live DB ✓"
+
+  # Cleanup.
+  api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true
+  api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true
+  api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+  ok "restore: full round-trip OK ✓"
 }
 
 # ─── scenario: mail ───────────────────────────────────────────────
@@ -1400,6 +1514,7 @@ case "$SCENARIO" in
     run_scenario drain
     run_scenario reaper
     run_scenario bundle
+    run_scenario restore
     run_scenario mail
     ;;
   *)
