@@ -90,7 +90,15 @@ echo "  Admin password resolved from stalwart-admin-creds."
 # ── Step 2: Find Stalwart pod ─────────────────────────────────────────────
 echo "Step 2: Stalwart 0.16 pod readiness"
 STALWART_POD=$(kctl get pod -n ${NS} -l app=${STALWART_DEPLOY} \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  --field-selector=status.phase=Running \
+  -o jsonpath='{range .items[?(@.status.containerStatuses[0].ready==true)]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+  | head -n1 || true)
+if [[ -z "$STALWART_POD" ]]; then
+  # Fallback for older clusters where field-selector + jsonpath combo fails
+  STALWART_POD=$(kctl get pod -n ${NS} -l app=${STALWART_DEPLOY} \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+fi
 if [[ -z "$STALWART_POD" ]]; then
   echo "  FATAL: No stalwart-mail-v016 pod found. Deploy the overlay first:"
   echo "    kubectl apply -k k8s/overlays/dev/stalwart-v016/"
@@ -238,53 +246,60 @@ echo "        In staging/production, dns-sync polls Stalwart and publishes"
 echo "        MX/SPF/DKIM records to PowerDNS within 5 minutes of domain creation."
 echo "        Check platform-api logs: kubectl logs -n platform -l app=platform-api | grep stalwart-dns-sync"
 
-# ── Step 8b: Mail PVC online resize (MAIL_STORAGE_E2E=1) ──────────────────
-# Drives the full PVC-resize chain through platform-api:
-#   GET /api/v1/admin/mail/pvc/storage   → reads current spec.resources.requests.storage
-#   PATCH /api/v1/admin/mail/pvc/storage → +1 GiB MERGE_PATCH on PVC + last-resized-at annotation
-#   GET   poll until spec.resources.requests.storage reflects new size
+# ── Step 8b/8c probe helper ───────────────────────────────────────────────
+# stalwart pod has no curl AND can't reach platform-api Service (NetworkPolicy
+# allows only localhost-loopback). Drive the platform-api routes from the
+# admin-panel pod instead — same namespace as platform-api, busybox `wget`.
 #
-# Reject paths covered by unit tests (mail-pvc.test.ts) — this step only
-# exercises the happy +1 GiB grow on the running cluster.
+# Returns body on stdout; logs HTTP code on stderr. Caller parses JSON.
+pa_call() {
+  local method="$1" path="$2" body="${3:-}"
+  local pa_pod
+  pa_pod=$(kctl get pod -n platform -l app=admin-panel \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -z "$pa_pod" ]]; then return 1; fi
+  if [[ "$method" == "GET" ]]; then
+    kctl exec -n platform "$pa_pod" -- curl -sS --max-time 15 \
+      -H "Authorization: Bearer ${PA_TOKEN}" \
+      "http://platform-api.platform.svc.cluster.local:3000${path}" 2>/dev/null || true
+  else
+    kctl exec -n platform "$pa_pod" -- curl -sS --max-time 15 \
+      -X "${method}" \
+      -H "Authorization: Bearer ${PA_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "${body}" \
+      "http://platform-api.platform.svc.cluster.local:3000${path}" 2>/dev/null || true
+  fi
+}
+
+# ── Step 8b: Mail PVC online resize (MAIL_STORAGE_E2E=1) ──────────────────
+# GET → record current size; PATCH +1 GiB; poll PVC spec until propagated.
 if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
   echo ""
   echo "Step 8b: Mail PVC online resize (+1 GiB)"
 
-  if [[ -z "${PLATFORM_SVC_IP:-}" ]]; then
-    PLATFORM_SVC_IP=$(kctl get svc -n platform platform-api \
-      -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-  fi
   PA_TOKEN="${PLATFORM_API_ADMIN_TOKEN:-}"
   if [[ -z "$PA_TOKEN" ]]; then
     echo "  SKIP: PLATFORM_API_ADMIN_TOKEN not set; cannot drive admin route"
-  elif [[ -z "$PLATFORM_SVC_IP" ]]; then
-    echo "  SKIP: platform-api Service IP not resolved"
   else
-    # GET current size
-    BEFORE=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-      curl -s -H "Authorization: Bearer ${PA_TOKEN}" \
-      "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/pvc/storage" 2>/dev/null || echo "")
+    BEFORE=$(pa_call GET /api/v1/admin/mail/pvc/storage)
     BEFORE_GIB=$(echo "$BEFORE" | python3 -c \
-      "import sys,json,re;d=json.load(sys.stdin);s=d.get('data',{}).get('requestedSize','');m=re.match(r'(\d+)Gi',s);print(m.group(1) if m else '')" 2>/dev/null || echo "")
+      "import sys,json,re;d=json.load(sys.stdin);b=d.get('data',{}).get('requestedBytes',0);print(b//(1024**3) if b else '')" 2>/dev/null || echo "")
     if [[ -z "$BEFORE_GIB" ]]; then
-      fail "GET /admin/mail/pvc/storage → cannot parse requestedSize: $(echo "$BEFORE" | head -c 200)"
+      fail "GET /admin/mail/pvc/storage → cannot parse requestedBytes: $(echo "$BEFORE" | head -c 250)"
     else
-      pass "GET /admin/mail/pvc/storage → currently ${BEFORE_GIB}Gi"
+      pass "GET /admin/mail/pvc/storage → currently ${BEFORE_GIB}GiB"
       NEW_GIB=$((BEFORE_GIB + 1))
 
-      # PATCH +1 GiB
-      PATCH_RESP=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-        curl -s -X PATCH -H "Authorization: Bearer ${PA_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "{\"newGiB\":${NEW_GIB}}" \
-        "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/pvc/storage" 2>/dev/null || echo "")
-      if echo "$PATCH_RESP" | grep -q "\"requestedSize\":\"${NEW_GIB}Gi\""; then
+      PATCH_RESP=$(pa_call PATCH /api/v1/admin/mail/pvc/storage "{\"newGiB\":${NEW_GIB}}")
+      if echo "$PATCH_RESP" | python3 -c \
+        "import sys,json,re;d=json.load(sys.stdin);s=d.get('data',{}).get('newSize','');assert s=='${NEW_GIB}Gi'" 2>/dev/null; then
         pass "PATCH /admin/mail/pvc/storage → ${NEW_GIB}Gi"
       else
         fail "PATCH /admin/mail/pvc/storage → unexpected: $(echo "$PATCH_RESP" | head -c 300)"
       fi
 
-      # Poll until PVC spec reflects new size (Longhorn online resize is fast: 5-30s)
+      # Poll PVC until spec reflects new size (Longhorn online expansion: 5-30s)
       OBSERVED=""
       for _ in $(seq 1 30); do
         OBSERVED=$(kctl get pvc -n ${NS} mail-pg-1 \
@@ -305,34 +320,27 @@ else
 fi
 
 # ── Step 8c: Stalwart BlobStore reversible flip (MAIL_STORAGE_E2E=1) ──────
-# Reads current blob-store, flips to FileSystem, polls Job to terminal,
-# flips back to Default. Destructive on shared dev — gated behind env.
+# Default → FileSystem → Default round-trip via cli-update Job. Destructive
+# on shared cluster — gated behind env. Each PATCH spawns a Job; we poll
+# /jobs/:name until terminal status.
 if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
   echo ""
   echo "Step 8c: Stalwart BlobStore reversible flip (Default → FileSystem → Default)"
 
-  if [[ -z "${PA_TOKEN:-}" ]] || [[ -z "${PLATFORM_SVC_IP:-}" ]]; then
-    echo "  SKIP: prerequisites missing (PA_TOKEN or PLATFORM_SVC_IP)"
+  if [[ -z "${PA_TOKEN:-}" ]]; then
+    echo "  SKIP: PA_TOKEN missing"
   else
-    BS_BEFORE=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-      curl -s -H "Authorization: Bearer ${PA_TOKEN}" \
-      "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/blob-store" 2>/dev/null || echo "")
-    BS_TYPE=$(echo "$BS_BEFORE" | python3 -c \
-      "import sys,json;d=json.load(sys.stdin);print(d.get('data',{}).get('type',''))" 2>/dev/null || echo "")
+    BS_TYPE=$(pa_call GET /api/v1/admin/mail/blob-store \
+      | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('data',{}).get('type',''))" 2>/dev/null || echo "")
     if [[ -z "$BS_TYPE" ]]; then
-      fail "GET /admin/mail/blob-store → cannot parse type: $(echo "$BS_BEFORE" | head -c 200)"
+      fail "GET /admin/mail/blob-store → cannot parse type"
     else
       pass "GET /admin/mail/blob-store → ${BS_TYPE}"
 
-      # Helper: flip to a target type and poll the Job to terminal status
       flip_blob_store() {
-        local target="$1"; local body="$2"
-        local resp
-        resp=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-          curl -s -X PATCH -H "Authorization: Bearer ${PA_TOKEN}" \
-          -H "Content-Type: application/json" -d "$body" \
-          "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/blob-store" 2>/dev/null || echo "")
-        local job_name
+        local target="$1" body="$2"
+        local resp job_name status
+        resp=$(pa_call PATCH /api/v1/admin/mail/blob-store "$body")
         job_name=$(echo "$resp" | python3 -c \
           "import sys,json;d=json.load(sys.stdin);print(d.get('data',{}).get('jobName',''))" 2>/dev/null || echo "")
         if [[ -z "$job_name" ]]; then
@@ -341,12 +349,9 @@ if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
         fi
         echo "  Job: ${job_name}"
 
-        # Poll Job (90s ceiling — cli-update completes in 5-15s usually)
-        local status=""
+        status=""
         for _ in $(seq 1 45); do
-          status=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-            curl -s -H "Authorization: Bearer ${PA_TOKEN}" \
-            "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/blob-store/jobs/${job_name}" 2>/dev/null \
+          status=$(pa_call GET "/api/v1/admin/mail/blob-store/jobs/${job_name}" \
             | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null || echo "")
           [[ "$status" == "succeeded" ]] && break
           [[ "$status" == "failed" ]] && break
@@ -364,13 +369,9 @@ if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
       flip_blob_store "FileSystem" \
         '{"type":"FileSystem","fileSystem":{"path":"/var/lib/stalwart/blobs","depth":2}}' || true
       sleep 3
-      flip_blob_store "Default" \
-        '{"type":"Default"}' || true
+      flip_blob_store "Default" '{"type":"Default"}' || true
 
-      # Verify final state matches starting type (Default)
-      BS_AFTER=$(kctl exec -n ${NS} "${STALWART_POD}" -- \
-        curl -s -H "Authorization: Bearer ${PA_TOKEN}" \
-        "http://${PLATFORM_SVC_IP}:3000/api/v1/admin/mail/blob-store" 2>/dev/null \
+      BS_AFTER=$(pa_call GET /api/v1/admin/mail/blob-store \
         | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('data',{}).get('type',''))" 2>/dev/null || echo "")
       if [[ "$BS_AFTER" == "Default" ]]; then
         pass "Final blob-store state = Default (round-trip clean)"
