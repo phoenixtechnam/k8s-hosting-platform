@@ -1346,6 +1346,14 @@ export const systemBackupRuns = pgTable('system_backup_runs', {
   operatorUserAgent: varchar('operator_user_agent', { length: 500 }),
   manifest: jsonb('manifest'),
   payload: bytea('payload'),
+  // Phase 2 — pg_dump support (migration 0083). NULL for kind='secrets'.
+  sourceNamespace: varchar('source_namespace', { length: 63 }),
+  sourceCluster: varchar('source_cluster', { length: 63 }),
+  sourceDatabase: varchar('source_database', { length: 63 }),
+  targetConfigId: varchar('target_config_id', { length: 36 }),
+  bundleId: varchar('bundle_id', { length: 64 }),
+  artifactName: varchar('artifact_name', { length: 255 }),
+  jobName: varchar('job_name', { length: 63 }),
   downloadTokenHash: varchar('download_token_hash', { length: 64 }),
   // The unhashed token is persisted alongside the payload (and wiped
   // in the same atomic UPDATE on first download) so any of the 3

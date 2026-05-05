@@ -8,7 +8,7 @@ import { z } from 'zod';
 //
 // Phase 1 ships only the secrets-bundle subsystem.
 
-export const systemBackupKindSchema = z.enum(['secrets']);
+export const systemBackupKindSchema = z.enum(['secrets', 'pg_dump']);
 export type SystemBackupKind = z.infer<typeof systemBackupKindSchema>;
 
 export const systemBackupRunStatusSchema = z.enum(['pending', 'running', 'succeeded', 'failed']);
@@ -43,8 +43,33 @@ export const systemBackupRunSchema = z.object({
   downloadUrlExpiresAt: z.string().datetime().nullable(),
   downloadedAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
+  // Phase 2 — pg_dump source identity (NULL for kind='secrets').
+  sourceNamespace: z.string().nullable(),
+  sourceCluster: z.string().nullable(),
+  sourceDatabase: z.string().nullable(),
+  targetConfigId: z.string().nullable(),
+  bundleId: z.string().nullable(),
+  artifactName: z.string().nullable(),
+  jobName: z.string().nullable(),
 });
 export type SystemBackupRun = z.infer<typeof systemBackupRunSchema>;
+
+export const pgDumpRequestSchema = z.object({
+  sourceNamespace: z.string().min(1).max(63),
+  sourceCluster: z.string().min(1).max(63),
+  sourceDatabase: z.string().min(1).max(63),
+  targetConfigId: z.string().uuid(),
+  reason: z.string().max(500).optional(),
+});
+export type PgDumpRequest = z.infer<typeof pgDumpRequestSchema>;
+
+export const pgDumpResponseSchema = z.object({
+  runId: z.string().uuid(),
+  status: systemBackupRunStatusSchema,
+  jobName: z.string(),
+  pollUrl: z.string(),
+});
+export type PgDumpResponse = z.infer<typeof pgDumpResponseSchema>;
 
 // POST /api/v1/system-backup/secrets/export — kicks off a fresh export.
 // Returns 202 + the run id. Client polls GET /runs/:id until terminal.

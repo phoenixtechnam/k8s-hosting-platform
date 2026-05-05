@@ -170,6 +170,13 @@ interface SystemBackupRunRow {
   downloadUrlExpiresAt: Date | null;
   downloadedAt: Date | null;
   createdAt: Date;
+  sourceNamespace?: string | null;
+  sourceCluster?: string | null;
+  sourceDatabase?: string | null;
+  targetConfigId?: string | null;
+  bundleId?: string | null;
+  artifactName?: string | null;
+  jobName?: string | null;
 }
 
 function toApiRun(row: SystemBackupRunRow, includeDownloadUrl: boolean): SystemBackupRun {
@@ -186,7 +193,7 @@ function toApiRun(row: SystemBackupRunRow, includeDownloadUrl: boolean): SystemB
   }
   return {
     id: row.id,
-    kind: row.kind as 'secrets',
+    kind: row.kind as SystemBackupRun['kind'],
     status: row.status as SystemBackupRun['status'],
     startedAt: row.startedAt.toISOString(),
     finishedAt: row.finishedAt?.toISOString() ?? null,
@@ -201,6 +208,13 @@ function toApiRun(row: SystemBackupRunRow, includeDownloadUrl: boolean): SystemB
     downloadUrlExpiresAt: row.downloadUrlExpiresAt?.toISOString() ?? null,
     downloadedAt: row.downloadedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    sourceNamespace: row.sourceNamespace ?? null,
+    sourceCluster: row.sourceCluster ?? null,
+    sourceDatabase: row.sourceDatabase ?? null,
+    targetConfigId: row.targetConfigId ?? null,
+    bundleId: row.bundleId ?? null,
+    artifactName: row.artifactName ?? null,
+    jobName: row.jobName ?? null,
   };
 }
 
