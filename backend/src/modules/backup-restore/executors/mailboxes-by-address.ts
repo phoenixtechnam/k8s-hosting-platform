@@ -53,7 +53,7 @@ interface Selector {
 
 const MAIL_NAMESPACE = 'mail';
 const IMAP_HOST_DEFAULT = 'stalwart-mail-v016.mail.svc.cluster.local';
-const IMAP_PORT_DEFAULT = 143;
+const IMAP_PORT_DEFAULT = 993;
 const MASTER_USER_DEFAULT = 'master';
 const MASTER_SECRET_NAME_DEFAULT = 'roundcube-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';

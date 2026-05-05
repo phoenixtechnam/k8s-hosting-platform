@@ -9,7 +9,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     backupId: 'bkp-test',
     toolsImage: 'ghcr.io/phoenixtechnam/hosting-platform/mail-backup-tools:latest',
     imapServiceHost: 'stalwart-mail-v016.mail.svc.cluster.local',
-    imapServicePort: 143,
+    imapServicePort: 993,
     stalwartMasterUser: 'master',
     masterSecretName: 'roundcube-secrets',
     masterSecretKey: 'STALWART_MASTER_PASSWORD',
@@ -77,7 +77,7 @@ describe('buildMailboxesComponentJobSpec', () => {
     const env = spec.spec.template.spec.containers[0]!.env;
     const find = (n: string) => env.find((e) => e.name === n)?.value;
     expect(find('IMAP_HOST')).toBe('stalwart-mail-v016.mail.svc.cluster.local');
-    expect(find('IMAP_PORT')).toBe('143');
+    expect(find('IMAP_PORT')).toBe('993');
     expect(find('STALWART_MASTER_USER')).toBe('master');
   });
 

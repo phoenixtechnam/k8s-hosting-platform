@@ -70,31 +70,32 @@ SSO_USER="${ADDR}%${STALWART_MASTER_USER}"
 # Operators wanting strict verification set MBSYNC_TLS_VERIFY=yes,
 # which switches to native SSLType + CertificateFile against the alpine
 # ca-bundle.
-if [ "${MBSYNC_TLS_VERIFY:-no}" = "yes" ]; then
-  TLS_BLOCK="SSLType IMAPS
-CertificateFile /etc/ssl/certs/ca-certificates.crt"
-  if [ "$IMAP_PORT" != "993" ]; then
-    TLS_BLOCK="SSLType STARTTLS
-CertificateFile /etc/ssl/certs/ca-certificates.crt"
+# Build the IMAPAccount stanza line-by-line to avoid blank lines
+# inside the section (mbsync treats a blank line as section-end).
+{
+  echo "IMAPAccount stalwart"
+  if [ "${MBSYNC_TLS_VERIFY:-no}" = "yes" ]; then
+    echo "Host $IMAP_HOST"
+    echo "Port $IMAP_PORT"
+    if [ "$IMAP_PORT" = "993" ]; then
+      echo "SSLType IMAPS"
+    else
+      echo "SSLType STARTTLS"
+    fi
+    echo "CertificateFile /etc/ssl/certs/ca-certificates.crt"
+  else
+    # Tunnel replaces Host/Port/SSLType. openssl s_client wraps the
+    # TLS layer and skips chain validation (the in-cluster cert is
+    # self-signed; auth_request still gates the public ingress).
+    echo "Tunnel \"openssl s_client -quiet -verify 0 -connect ${IMAP_HOST}:${IMAP_PORT} -servername ${IMAP_HOST} 2>/dev/null\""
   fi
-  HOST_PORT_BLOCK="Host $IMAP_HOST
-Port $IMAP_PORT"
-else
-  # `Tunnel` replaces Host/Port/SSLType. openssl s_client wraps the
-  # TLS layer and skips chain validation (the in-cluster cert is
-  # self-signed; auth_request still gates the public ingress).
-  HOST_PORT_BLOCK=""
-  TLS_BLOCK="Tunnel \"openssl s_client -quiet -verify 0 -connect ${IMAP_HOST}:${IMAP_PORT} -servername ${IMAP_HOST} 2>/dev/null\""
-fi
+  echo "User $SSO_USER"
+  echo "PassCmd \"printenv STALWART_MASTER_PASSWORD\""
+  echo "AuthMechs LOGIN"
+  echo "PipelineDepth 50"
+} > /tmp/mbsync.cfg
 
-cat > /tmp/mbsync.cfg <<EOF
-IMAPAccount stalwart
-${HOST_PORT_BLOCK}
-User $SSO_USER
-PassCmd "printenv STALWART_MASTER_PASSWORD"
-${TLS_BLOCK}
-AuthMechs LOGIN
-PipelineDepth 50
+cat >> /tmp/mbsync.cfg <<EOF
 
 IMAPStore stalwart-remote
 Account stalwart
