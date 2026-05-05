@@ -17,7 +17,7 @@ import { useBackupConfigs } from '@/hooks/use-backup-config';
 
 const SYSTEM_CLUSTERS = [
   { namespace: 'platform', cluster: 'postgres', database: 'hosting_platform', label: 'Platform DB' },
-  { namespace: 'mail', cluster: 'mail-pg', database: 'app', label: 'Mail DB (Stalwart)' },
+  { namespace: 'mail', cluster: 'mail-pg', database: 'stalwart_app', label: 'Mail DB (Stalwart)' },
 ] as const;
 
 export default function SystemDatabasesTab() {
