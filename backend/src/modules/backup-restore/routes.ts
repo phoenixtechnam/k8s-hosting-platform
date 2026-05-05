@@ -53,6 +53,9 @@ import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
 import { execFilesPathsItem } from './executors/files-paths.js';
 import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
+import { snapshotClient } from '../storage-lifecycle/service.js';
+import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -201,6 +204,43 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     const items = await app.db.select().from(restoreItems)
       .where(eq(restoreItems.restoreJobId, cartId))
       .orderBy(asc(restoreItems.seq));
+
+    // Pre-restore snapshot (ADR-034 §2). Only relevant when at least
+    // one item touches the tenant PVC (files-paths). For DB-only
+    // restores (config-tables, deployments-by-id, domains-by-id) and
+    // mail-namespace restores (mailboxes-by-address), there is no
+    // convenient rollback target today; the operator's safety net is
+    // a fresh capture bundle taken before the restore.
+    //
+    // Idempotent: skip if the cart already recorded a snapshot id
+    // (operator retried /execute after a partial failure).
+    if (!job.preRestoreSnapshotId && items.some((it) => it.status !== 'done' && it.type === 'files-paths')) {
+      try {
+        const k8s = (app as unknown as { k8s?: ReturnType<typeof createK8sClients> }).k8s
+          ?? createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+        const store = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
+        const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
+        const snap = await snapshotClient(
+          { db: app.db, k8s, store, platformNamespace },
+          job.clientId,
+          { kind: 'pre-restore', label: `restore-cart ${cartId}`, retentionDays: 7 },
+        );
+        await app.db.update(restoreJobs)
+          .set({ preRestoreSnapshotId: snap.id })
+          .where(eq(restoreJobs.id, cartId));
+        app.log.info({ cartId, snapshotId: snap.id, clientId: job.clientId }, 'tenant-backup-restore: pre-restore snapshot created');
+      } catch (err) {
+        // Snapshot failure is fatal for the cart — proceeding without
+        // a rollback target on a files-paths item would violate the
+        // ADR's safety guarantee. Mark the cart failed and surface a
+        // clear error.
+        app.log.error({ err, cartId, clientId: job.clientId }, 'tenant-backup-restore: pre-restore snapshot failed');
+        await app.db.update(restoreJobs)
+          .set({ status: 'failed', finishedAt: new Date(), lastError: 'PRE_RESTORE_SNAPSHOT_FAILED: see server logs' })
+          .where(eq(restoreJobs.id, cartId));
+        throw new ApiError('SNAPSHOT_FAILED', 'Pre-restore snapshot failed; cart aborted to preserve current state', 500);
+      }
+    }
 
     let firstFailureMsg: string | null = null;
     for (const item of items) {

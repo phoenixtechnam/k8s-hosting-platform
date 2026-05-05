@@ -104,7 +104,7 @@ async function updateOp(
 export async function snapshotClient(
   ctx: ServiceCtx,
   clientId: string,
-  params: { label?: string; kind?: 'manual' | 'scheduled'; retentionDays?: number; triggeredByUserId?: string | null } = {},
+  params: { label?: string; kind?: 'manual' | 'scheduled' | 'pre-restore'; retentionDays?: number; triggeredByUserId?: string | null } = {},
 ): Promise<typeof storageSnapshots.$inferSelect> {
   const client = await mustGetClient(ctx.db, clientId);
   await mustBeIdle(ctx.db, clientId);
