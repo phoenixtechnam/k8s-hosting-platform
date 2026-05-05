@@ -72,6 +72,7 @@ import { clientLifecycleRoutes } from './modules/client-lifecycle/routes.js';
 import { systemSnapshotsRoutes } from './modules/system-snapshots/routes.js';
 import { postgresRestoreRoutes } from './modules/postgres-restore/routes.js';
 import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide } from './modules/postgres-restore/service.js';
+import { systemBackupRoutes } from './modules/system-backup/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { notificationRoutes } from './modules/notifications/routes.js';
@@ -113,6 +114,8 @@ import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
+import { startRetentionScheduler } from './modules/backups-v2/retention.js';
+import { startBackupScheduleTick } from './modules/backups-v2/schedule.js';
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
@@ -146,6 +149,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const app = Fastify({
     logger: deps.config.NODE_ENV !== 'test' && {
       level: deps.config.LOG_LEVEL,
+      // Redact sensitive segments from request URLs in access logs.
+      // The system-backup secrets-bundle download URL contains the
+      // one-shot HMAC token as a path parameter; without redaction it
+      // would land in pino's default `{ req: { url } }` line and any
+      // operator with log-read access could harvest tokens before
+      // their single-use mark fires. The redact path uses pino's
+      // bracket notation; censor with a literal placeholder.
+      redact: {
+        paths: ['req.url'],
+        censor: (value: unknown): unknown => {
+          if (typeof value !== 'string') return value;
+          return value.replace(
+            /\/api\/v1\/system-backup\/secrets\/download\/[^/?#]+/,
+            '/api/v1/system-backup/secrets/download/[REDACTED]',
+          );
+        },
+      },
     },
     genReqId: () => crypto.randomUUID(),
     bodyLimit: 50 * 1024 * 1024, // 50MB for SQL imports
@@ -369,6 +389,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(clientLifecycleRoutes, { prefix: '/api/v1' });
   await app.register(systemSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(postgresRestoreRoutes, { prefix: '/api/v1' });
+  await app.register(systemBackupRoutes, { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(backupConfigRoutes, { prefix: '/api/v1' });
@@ -544,6 +565,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => lifecycleRetryStop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
+      }
+
+      // Tenant Backup retention sweeper — deletes expired bundles
+      // on the off-site target + GCs stuck `running` bundles older
+      // than 24h. 5-min tick; first sweep fires immediately.
+      try {
+        const retentionTimer = startRetentionScheduler(app);
+        app.addHook('onClose', () => clearInterval(retentionTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'tenant-backup retention: scheduler startup skipped');
+      }
+
+      // Tenant Backup Tier-1 scheduler — fans out scheduled bundles
+      // for clients whose client_backup_schedules.last_run_at is
+      // older than the configured frequency (daily/weekly/monthly).
+      // Cross-replica CAS via UPDATE ... RETURNING serialises ticks.
+      try {
+        const scheduleTimer = startBackupScheduleTick(app);
+        app.addHook('onClose', () => clearInterval(scheduleTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'tenant-backup schedule: scheduler startup skipped');
       }
 
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM

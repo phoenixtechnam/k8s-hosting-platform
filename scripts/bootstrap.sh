@@ -115,6 +115,8 @@ REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI
 SMOKE_WAIT_SECONDS=300         # max wait for Flux Kustomizations to reach Ready
 OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
 FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
+SECRETS_BUNDLE_PATH=""         # --secrets-bundle <path|http(s) URL> — pre-Flux import
+SECRETS_BUNDLE_KEY=""          # --age-key <path> to operator-private.key for decrypt
 MARKER_DIR="/var/lib/hosting-platform"
 KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 REPO_URL="https://github.com/phoenixtechnam/k8s-hosting-platform.git"
@@ -187,6 +189,24 @@ OPTIONS:
   --force-rotate-operator-key
                          Regenerate the operator keypair even if the
                          ConfigMap already exists (rotation drill).
+  --secrets-bundle <path|URL>
+                         Tier-1 secrets bundle to import BEFORE Flux
+                         reconciles. Decrypted with --age-key, then
+                         every kubernetes Secret YAML inside is applied
+                         so platform-api / Stalwart / mail-pg come up
+                         with their pre-existing identities (TLS, JWT
+                         signing keys, OIDC client secrets, etc.). Used
+                         on a fresh cluster to recover from a previous
+                         install's secrets without rotating every
+                         dependent service. Path or http(s) URL — URLs
+                         are curl-downloaded to a tmp file. The bundle
+                         is the artifact downloaded from the System
+                         Backup admin UI or the on-host
+                         /var/lib/hosting-platform/bundles/ directory.
+  --age-key <path>       Operator's age private key for --secrets-bundle.
+                         Required if --secrets-bundle is set. The key
+                         is read once at import time and never copied
+                         to the cluster.
 
 JOINING (server #2+ or worker):
   --server <ip>          Existing control-plane IP. When --cluster-network-
@@ -337,6 +357,8 @@ parse_args() {
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
+      --secrets-bundle)  SECRETS_BUNDLE_PATH="$2"; shift 2 ;;
+      --age-key)         SECRETS_BUNDLE_KEY="$2"; shift 2 ;;
       --help|-h)         usage ;;
       *)                 error "Unknown option: $1" ;;
     esac
@@ -2375,6 +2397,139 @@ KUSTYAML
   log "Flux v2 installed and configured for ${PLATFORM_ENV} (branch=${flux_branch})."
 }
 
+# Tier-1 secrets-bundle import path. Runs BEFORE generate_platform_secrets
+# on first install when the operator passes --secrets-bundle + --age-key.
+# The bundle is age-encrypted; we decrypt + tar -x to /dev/shm, then
+# kubectl apply each Secret manifest. generate_platform_secrets sees the
+# pre-existing Secrets and skips re-generation.
+#
+# Inputs:
+#   $SECRETS_BUNDLE_PATH — local path OR http(s) URL
+#   $SECRETS_BUNDLE_KEY  — local path to operator-private.key
+#
+# No-op when SECRETS_BUNDLE_PATH is empty.
+#
+# Failure modes (each is fatal — better to halt than to half-import):
+#   - bundle download fails (URL case)
+#   - age binary missing
+#   - age decrypt fails (wrong key, corrupt bundle)
+#   - tar extraction fails
+#   - any individual `kubectl apply` returns non-zero
+import_secrets_bundle() {
+  if [[ -z "$SECRETS_BUNDLE_PATH" ]]; then
+    return 0
+  fi
+  if [[ -z "$SECRETS_BUNDLE_KEY" ]]; then
+    error "--secrets-bundle requires --age-key (path to operator-private.key)"
+  fi
+  if ! command -v age >/dev/null 2>&1; then
+    error "age binary not found — required for --secrets-bundle. Run install_packages."
+  fi
+  if [[ ! -r "$SECRETS_BUNDLE_KEY" ]]; then
+    error "Cannot read --age-key file: $SECRETS_BUNDLE_KEY"
+  fi
+
+  log "Importing Tier-1 secrets bundle from: $SECRETS_BUNDLE_PATH"
+
+  local bundle_local
+  if [[ "$SECRETS_BUNDLE_PATH" =~ ^https?:// ]]; then
+    bundle_local=$(mktemp --tmpdir=/dev/shm bundle.XXXXXX.tar.age 2>/dev/null \
+      || mktemp -t bundle.XXXXXX.tar.age)
+    if ! curl -sSf -L --max-time 120 -o "$bundle_local" "$SECRETS_BUNDLE_PATH"; then
+      rm -f "$bundle_local"
+      error "Failed to download secrets bundle from $SECRETS_BUNDLE_PATH"
+    fi
+  else
+    if [[ ! -r "$SECRETS_BUNDLE_PATH" ]]; then
+      error "Cannot read --secrets-bundle file: $SECRETS_BUNDLE_PATH"
+    fi
+    bundle_local="$SECRETS_BUNDLE_PATH"
+  fi
+
+  # Stage decrypted contents to /dev/shm so plaintext Secret YAML never
+  # hits the root filesystem. Trap-based wipe on RETURN/EXIT.
+  local stage
+  stage=$(mktemp -d --tmpdir=/dev/shm bundle-import.XXXXXX 2>/dev/null \
+    || mktemp -d)
+  chmod 700 "$stage"
+  _bundle_import_cleanup() {
+    local s="${stage:-}"
+    if [[ -n "$s" && -d "$s" ]]; then
+      find "$s" -type f -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true
+      rm -rf "$s"
+      stage=""
+    fi
+    # Only wipe the curl-downloaded copy, NEVER an operator-supplied file.
+    if [[ "$SECRETS_BUNDLE_PATH" =~ ^https?:// && -n "${bundle_local:-}" && -f "$bundle_local" ]]; then
+      : > "$bundle_local"
+      rm -f "$bundle_local"
+    fi
+  }
+  trap _bundle_import_cleanup RETURN EXIT
+
+  # Decrypt + extract in a single pipeline. Format is `tar | age` —
+  # both the in-cluster export (modules/system-backup/secrets-bundle.ts)
+  # and the on-host `bundle_bootstrap_secrets` produce the SAME bytes.
+  if ! ( set -o pipefail; age -d -i "$SECRETS_BUNDLE_KEY" "$bundle_local" \
+           | tar -C "$stage" -xf - ); then
+    error "Bundle decrypt/extract failed. Wrong --age-key? Corrupt bundle?"
+  fi
+
+  # Sanity: the bundle must contain a MANIFEST.txt and at least one .yaml.
+  if [[ ! -s "${stage}/MANIFEST.txt" ]]; then
+    error "Bundle missing MANIFEST.txt — refusing to apply (provenance unknown)."
+  fi
+  log "Bundle MANIFEST.txt:"
+  while IFS= read -r line; do log "  $line"; done < "${stage}/MANIFEST.txt"
+
+  # Ensure the destination namespaces exist before kubectl apply.
+  for ns in platform mail; do
+    kctl create namespace "$ns" --dry-run=client -o yaml | kctl apply -f -
+  done
+
+  local applied=0
+  for f in "$stage"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    # Defence in depth: refuse to apply anything that isn't a Secret.
+    # The bundle is age-encrypted so external tampering is mitigated,
+    # but a future operator-key compromise must not let an attacker
+    # smuggle ClusterRoleBindings or Deployments through this path.
+    if ! grep -qE '^kind: Secret[[:space:]]*$' "$f"; then
+      error "Refusing to apply non-Secret manifest from bundle: $f"
+    fi
+    if ! kctl apply -f "$f" >/dev/null; then
+      error "Failed to apply secret manifest: $f"
+    fi
+    applied=$((applied+1))
+  done
+
+  log "Imported $applied secret(s) from bundle."
+
+  # If the bundle includes operator-private.key, stash it under
+  # /var/lib/hosting-platform/operator-key/ so generate_operator_recipient
+  # picks it up for ConfigMap reconciliation. The age private key is
+  # then under MARKER_DIR with chmod 0400 — same shape as fresh install.
+  if [[ -f "${stage}/operator-private.key" ]]; then
+    local key_dir="${MARKER_DIR}/operator-key"
+    mkdir -p "$key_dir"
+    chmod 700 "$key_dir"
+    cp -p "${stage}/operator-private.key" "${key_dir}/operator-private.key"
+    chmod 0400 "${key_dir}/operator-private.key"
+    log "Restored operator-private.key from bundle to ${key_dir}/"
+  fi
+  if [[ -f "${stage}/operator-recipient.pub" ]]; then
+    local key_dir="${MARKER_DIR}/operator-key"
+    mkdir -p "$key_dir"
+    cp -p "${stage}/operator-recipient.pub" "${key_dir}/operator-recipient.pub"
+    chmod 0444 "${key_dir}/operator-recipient.pub"
+  fi
+
+  # Fire trap; explicit so the import path is auditable.
+  _bundle_import_cleanup
+  trap - RETURN EXIT
+  marker_set "secrets-bundle-imported"
+}
+
 generate_platform_secrets() {
   log "Generating platform secrets..."
 
@@ -3861,6 +4016,11 @@ main() {
     # generate_platform_secrets is fully self-contained — it only needs
     # the kube-API + namespaces/Secrets RBAC, which are available right
     # after install_cnpg.
+    #
+    # System Backup Phase 1.4: --secrets-bundle import runs FIRST so
+    # generate_platform_secrets sees the imported Secrets and skips
+    # regeneration. No-op when --secrets-bundle is not passed.
+    import_secrets_bundle
     generate_platform_secrets
     install_flux
     # M1 C5: pin Helm-managed Deployments to server nodes + add

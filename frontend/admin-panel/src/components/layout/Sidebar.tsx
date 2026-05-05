@@ -11,6 +11,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  KeyRound,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -46,6 +47,7 @@ const navItems = [
   { to: '/monitoring', icon: Activity, label: 'Monitoring' },
   { to: '/monitoring/audit-logs', icon: ScrollText, label: 'Audit Logs' },
   { to: '/nodes-and-storage', icon: Server, label: 'Nodes & Storage' },
+  { to: '/system-backup', icon: KeyRound, label: 'System Backup' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ] as const;
 

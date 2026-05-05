@@ -1115,25 +1115,26 @@ sys.exit(1)
       log "mail/stress: scheduled mid-storm replica kill (2s) — MAIL_STRESS_KILL=1"
     fi
 
-    # Concurrent send-storm via Python threading inside the tester pod.
-    # Each thread opens its own SMTPS connection; subjects carry the
-    # message index so duplicates / losses are detectable downstream.
-    # Code-review (2026-05-05): write to /tmp/stress-out in the pod,
-    # then read back via a follow-up kubectl exec cat. kubectl exec
-    # was empirically truncating stdout when the inner python
-    # sys.exit(1)'d under network stress — even with flush=True,
-    # the kubelet stream-close can drop trailing bytes. File-based
-    # capture sidesteps that entirely.
-    local stress_send
-    stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -u -c '
-import smtplib, ssl, threading, sys, time
+    # Cut 3 (2026-05-05): the python script ships via ConfigMap +
+    # `kubectl cp` — NOT via `python3 -c '<inline>'`. kubectl-exec-via-
+    # SSH was empirically truncating the inline-script's stdout to
+    # zero bytes (task #44) even with python -u + flush=True + file-
+    # write fallback. Hypotheses included shell-arg quoting through
+    # ssh + sh + kubectl, but a direct kubectl-exec test of the same
+    # script produced clean output, so something in the SSH multiplex
+    # path was eating it. Shipping the script as a static file mounted
+    # into the pod sidesteps every shell-quoting layer: kubectl exec
+    # only runs `python3 /script/storm.py` with no inline body.
+    local stress_send_script="/tmp/mail-stress-send-${stamp}.py"
+    cat > "$stress_send_script" <<PY
+import os, smtplib, ssl, sys, threading, time
 
-host = \"${smtp_target}\"
-port = 465
-user = \"${mail_box_user}\"
-password = \"${mail_box_pass}\"
-prefix = \"STRESS-${stamp}\"
-n = ${stress_n}
+host     = os.environ["STRESS_HOST"]
+port     = int(os.environ.get("STRESS_PORT", "465"))
+user     = os.environ["STRESS_USER"]
+password = os.environ["STRESS_PASS"]
+prefix   = os.environ["STRESS_PREFIX"]
+n        = int(os.environ["STRESS_N"])
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -1142,22 +1143,20 @@ ctx.verify_mode = ssl.CERT_NONE
 results = [None] * n
 
 # Stalwart 0.16 ships with a default per-IP submission throttle of
-# ~5 concurrent SMTP auths from the same source IP. From an in-cluster
-# tester pod every connection has the same source IP so a naive
-# all-at-once start trips that limit and ~75% fail with auth-blocked.
-# Stagger 100ms between thread starts so all N still overlap heavily
-# (each SMTPS handshake takes ~1-2s) but the AUTH cmd doesn't fan out
-# in a single tick.
+# ~5/sec per remote IP (disabled on staging via the throttle-override
+# Job, but stagger anyway so the harness works against pristine
+# clusters too). 100ms inter-thread spread + 1-2s SMTPS handshake
+# means 20 threads still overlap heavily.
 def send_one(i):
     try:
         with smtplib.SMTP_SSL(host, port, context=ctx, timeout=45) as s:
             s.login(user, password)
-            subj = prefix + \"-\" + str(i).zfill(3)
-            msg = \"From: \" + user + \"\r\nTo: \" + user + \"\r\nSubject: \" + subj + \"\r\n\r\n\" + subj + \" body\r\n\"
+            subj = prefix + "-" + str(i).zfill(3)
+            msg = "From: " + user + "\r\nTo: " + user + "\r\nSubject: " + subj + "\r\n\r\n" + subj + " body\r\n"
             s.sendmail(user, [user], msg)
-            results[i] = \"OK\"
+            results[i] = "OK"
     except Exception as e:
-        results[i] = \"FAIL: \" + str(e)
+        results[i] = "FAIL: " + str(e)
 
 threads = []
 for i in range(n):
@@ -1165,25 +1164,50 @@ for i in range(n):
     threads.append(t)
     t.start()
     time.sleep(0.1)
-for t in threads: t.join(90)
+for t in threads:
+    t.join(90)
 
-ok_count = sum(1 for r in results if r == \"OK\")
-# flush=True is REQUIRED — kubectl exec terminates the stream on
-# sys.exit(1) and can drop unflushed stdout. Buffered prints would
-# leave \"got no result\" in the harness assertion even though the
-# python actually computed a count.
-# Always write to file first — kubectl exec truncation cannot drop
-# what is already flushed to disk inside the pod.
-with open(\"/tmp/stress-send.out\", \"w\") as f:
-    f.write(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n) + \"\\n\")
+ok_count = sum(1 for r in results if r == "OK")
+# Dual write — file is durable independent of kubectl-exec stream
+# lifecycle, but the inline print is still useful for the happy-path
+# capture. Either source works for the harness regex.
+with open("/tmp/stress-send.out", "w") as f:
+    f.write("STRESS_SENT_OK=" + str(ok_count) + "/" + str(n) + "\n")
     if ok_count != n:
         for i, r in enumerate(results):
-            if r != \"OK\": f.write(\"  fail[\" + str(i) + \"]: \" + str(r) + \"\\n\")
-print(\"STRESS_SENT_OK=\" + str(ok_count) + \"/\" + str(n), flush=True)
+            if r != "OK":
+                f.write("  fail[" + str(i) + "]: " + str(r) + "\n")
+print("STRESS_SENT_OK=" + str(ok_count) + "/" + str(n), flush=True)
 sys.exit(0 if ok_count == n else 1)
-'" 2>&1)
-    # Fallback: if kubectl exec truncated the inline output, read the
-    # file inside the pod via a follow-up exec.
+PY
+
+    # Materialize the script as a ConfigMap, mount it via kubectl cp.
+    # `kubectl cp` lands files in a running container without a roll
+    # (avoids needing to recreate the pod with a ConfigMap mount).
+    if ! ssh_cp "kubectl cp $stress_send_script default/${tester_pod}:/tmp/storm-send.py" >/dev/null 2>&1; then
+      # Some kubectl versions error on cp into a tester pod when there's
+      # no `tar` in the target image. python:3.12-alpine has tar. If
+      # cp fails, fall through to a file-on-disk + kubectl exec ... <
+      # path approach; for now treat as fatal so the failure is loud.
+      fail "mail/stress: kubectl cp of send script failed — pod missing tar?"
+      cleanup_tester_pod; cleanup_mail; return 1
+    fi
+    rm -f "$stress_send_script"
+
+    # NOTE: STRESS_PASS lands in argv (visible via /proc/<pid>/cmdline
+    # inside the pod, and captured in apiserver audit logs at
+    # RequestResponse verbosity). Acceptable here because the mailbox
+    # is throwaway (created in step 6, deleted in cleanup_mail), the
+    # password is per-run-stamp random, and this harness only runs
+    # against staging — never production. Do NOT cargo-cult this argv
+    # pattern into a real platform-api code path.
+    local stress_send
+    stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} \
+        -- env STRESS_HOST=${smtp_target} STRESS_PORT=465 \
+        STRESS_USER=${mail_box_user} STRESS_PASS=${mail_box_pass} \
+        STRESS_PREFIX=STRESS-${stamp} STRESS_N=${stress_n} \
+        python3 -u /tmp/storm-send.py" 2>&1)
+    # Fallback: read the file if the stream lost the print line.
     if ! echo "$stress_send" | grep -qE 'STRESS_SENT_OK=[0-9]+/[0-9]+'; then
       stress_send=$(ssh_cp "kubectl exec -n default ${tester_pod} -- cat /tmp/stress-send.out" 2>&1)
     fi
@@ -1196,16 +1220,17 @@ sys.exit(0 if ok_count == n else 1)
 
     # Wait for queue drain + IMAP fetch — assert exactly N messages with
     # subject prefix arrived, each with a DKIM-Signature header.
-    local stress_recv
-    stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -u -c '
-import imaplib, ssl, sys, time
+    # Same ConfigMap-mounted-script pattern as the send side (task #44).
+    local stress_recv_script="/tmp/mail-stress-recv-${stamp}.py"
+    cat > "$stress_recv_script" <<PY
+import os, imaplib, ssl, sys, time
 
-host = \"${smtp_target}\"
-port = 993
-user = \"${mail_box_user}\"
-password = \"${mail_box_pass}\"
-prefix = \"STRESS-${stamp}\"
-expected = ${stress_n}
+host     = os.environ["STRESS_HOST"]
+port     = int(os.environ.get("STRESS_PORT", "993"))
+user     = os.environ["STRESS_USER"]
+password = os.environ["STRESS_PASS"]
+prefix   = os.environ["STRESS_PREFIX"]
+expected = int(os.environ["STRESS_N"])
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -1218,36 +1243,49 @@ for attempt in range(30):
     try:
         with imaplib.IMAP4_SSL(host, port, ssl_context=ctx) as M:
             M.login(user, password)
-            M.select(\"INBOX\")
-            typ, data = M.search(None, \"SUBJECT\", \"\\\"\" + prefix + \"\\\"\")
+            M.select("INBOX")
+            typ, data = M.search(None, "SUBJECT", '"' + prefix + '"')
             ids = data[0].split()
             if len(ids) >= expected:
                 found = len(ids)
                 seen = set()
                 for mid in ids[:expected]:
-                    typ, msg_data = M.fetch(mid, \"(RFC822)\")
-                    raw = msg_data[0][1].decode(\"utf-8\", errors=\"replace\")
-                    if \"DKIM-Signature:\" in raw:
+                    typ, msg_data = M.fetch(mid, "(RFC822)")
+                    raw = msg_data[0][1].decode("utf-8", errors="replace")
+                    if "DKIM-Signature:" in raw:
                         dkim_signed += 1
-                    for line in raw.split(\"\\r\\n\"):
-                        if line.startswith(\"Subject: \"):
+                    for line in raw.split("\r\n"):
+                        if line.startswith("Subject: "):
                             seen.add(line[9:].strip())
                             break
-                summary = \"STRESS_RECV=\" + str(found) + \"/\" + str(expected) + \"\\n\" \
-                          + \"STRESS_DKIM=\" + str(dkim_signed) + \"/\" + str(expected) + \"\\n\" \
-                          + \"STRESS_UNIQUE=\" + str(len(seen)) + \"/\" + str(expected) + \"\\n\"
-                with open(\"/tmp/stress-recv.out\", \"w\") as f: f.write(summary)
-                print(summary, end=\"\", flush=True)
+                summary = ("STRESS_RECV=" + str(found) + "/" + str(expected) + "\n"
+                           + "STRESS_DKIM=" + str(dkim_signed) + "/" + str(expected) + "\n"
+                           + "STRESS_UNIQUE=" + str(len(seen)) + "/" + str(expected) + "\n")
+                with open("/tmp/stress-recv.out", "w") as f:
+                    f.write(summary)
+                print(summary, end="", flush=True)
                 sys.exit(0 if found == expected and len(seen) == expected else 2)
     except Exception as e:
         last_err = str(e)
     time.sleep(2)
 
-with open(\"/tmp/stress-recv.out\", \"w\") as f:
-    f.write(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err) + \"\\n\")
-print(\"STRESS_RECV_FAIL: only \" + str(found) + \"/\" + str(expected) + \" after 60s; last_err=\" + str(last_err), file=sys.stderr, flush=True)
+with open("/tmp/stress-recv.out", "w") as f:
+    f.write("STRESS_RECV_FAIL: only " + str(found) + "/" + str(expected) + " after 60s; last_err=" + str(last_err) + "\n")
+print("STRESS_RECV_FAIL: only " + str(found) + "/" + str(expected) + " after 60s; last_err=" + str(last_err), file=sys.stderr, flush=True)
 sys.exit(1)
-'" 2>&1)
+PY
+    if ! ssh_cp "kubectl cp $stress_recv_script default/${tester_pod}:/tmp/storm-recv.py" >/dev/null 2>&1; then
+      fail "mail/stress: kubectl cp of recv script failed"
+      cleanup_tester_pod; cleanup_mail; return 1
+    fi
+    rm -f "$stress_recv_script"
+
+    local stress_recv
+    stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} \
+        -- env STRESS_HOST=${smtp_target} STRESS_PORT=993 \
+        STRESS_USER=${mail_box_user} STRESS_PASS=${mail_box_pass} \
+        STRESS_PREFIX=STRESS-${stamp} STRESS_N=${stress_n} \
+        python3 -u /tmp/storm-recv.py" 2>&1)
     # Same fallback as send: read /tmp/stress-recv.out if inline got truncated.
     if ! echo "$stress_recv" | grep -qE 'STRESS_RECV=[0-9]+/[0-9]+|STRESS_RECV_FAIL'; then
       stress_recv=$(ssh_cp "kubectl exec -n default ${tester_pod} -- cat /tmp/stress-recv.out" 2>&1)

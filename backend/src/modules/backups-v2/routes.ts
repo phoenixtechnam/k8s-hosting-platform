@@ -4,7 +4,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { backupJobs, backupComponents, backupConfigurations, clients } from '../../db/schema.js';
+import { backupJobs, backupComponents, backupConfigurations, clients, hostingPlans } from '../../db/schema.js';
 import {
   createBundleSchema,
   type BundleSummary,
@@ -113,7 +113,26 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     const [client] = await app.db.select().from(clients).where(eq(clients.id, input.clientId)).limit(1);
     if (!client) throw new ApiError('NOT_FOUND', 'Client not found', 404);
 
-    const retentionDays = input.retentionDays ?? 30;
+    // Plan-bound retention. hosting_plans.max_backup_retention_days
+    // is the upper bound the operator may request for a client on
+    // this plan; default is hosting_plans.default_backup_retention_days.
+    // Applies to ALL initiators so a Tier-3 client-initiated bundle
+    // can't bypass the plan cap.
+    const [plan] = await app.db.select({
+      defaultDays: hostingPlans.defaultBackupRetentionDays,
+      maxDays: hostingPlans.maxBackupRetentionDays,
+    }).from(hostingPlans).where(eq(hostingPlans.id, client.planId)).limit(1);
+    if (!plan) throw new ApiError('CONFIG_INVALID', `Client ${input.clientId} has no resolvable plan`, 400);
+
+    const requested = input.retentionDays ?? plan.defaultDays;
+    if (requested > plan.maxDays) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        `retentionDays ${requested} exceeds the plan's max_backup_retention_days (${plan.maxDays})`,
+        400,
+      );
+    }
+    const retentionDays = requested;
 
     // Build kube clients best-effort — orchestrator handles undefined.
     let k8s;

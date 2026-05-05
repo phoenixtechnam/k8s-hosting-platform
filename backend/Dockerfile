@@ -24,7 +24,13 @@ FROM node:22-alpine
 # CAs and sign user certs (cert-ops.ts). Alpine's node image doesn't
 # include it by default. Pin nothing — track the alpine track so we
 # get security fixes.
-RUN apk add --no-cache openssl
+#
+# age is used by modules/system-backup for the secrets-bundle export
+# pipeline (tar + age -r <recipient>). Matches the on-host bundle
+# format created by scripts/bootstrap.sh and decoded by `make
+# secrets-restore`. age is a tiny static Go binary shipped in the
+# alpine community repo.
+RUN apk add --no-cache openssl age
 
 WORKDIR /app
 
