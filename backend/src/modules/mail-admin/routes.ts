@@ -30,6 +30,7 @@ import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
+import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -115,6 +116,38 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // Legacy alias — keeps the frontend hook working without a breaking change
   // until we rename the UI label in a follow-up.
   app.post('/admin/mail/rotate-stalwart-password', { preHandler: requireRole('super_admin') }, handleRotateAdminPassword);
+
+  // Cut 3 (2026-05-05): rotate the Stalwart `master@master.local` Account
+  // password (consumed by Roundcube's jwt_auth plugin for IMAP master-
+  // user impersonation). Same JMAP+Secret mechanics as the admin route
+  // but targets `roundcube-secrets/STALWART_MASTER_PASSWORD` and rolls
+  // the Roundcube Deployment afterwards (Roundcube reads the env var
+  // at process start, not via volume-mount refresh).
+  const handleRotateWebmailMasterPassword = async (req: { user?: { sub?: string } }) => {
+    const cfg = app.config as Record<string, unknown>;
+    const userId = req.user?.sub ?? 'unknown';
+    app.log.warn({ userId }, 'mail-admin: rotate-webmail-master-password requested');
+    try {
+      const result = await rotateWebmailMasterPassword({
+        kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+      });
+      app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: webmail master rotation succeeded');
+      return success(result);
+    } catch (err) {
+      app.log.error({ err, userId }, 'mail-admin: webmail master rotation failed');
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(
+        'WEBMAIL_MASTER_ROTATION_FAILED',
+        'Webmail master password rotation failed. See server logs.',
+        500,
+      );
+    }
+  };
+  app.post(
+    '/admin/mail/rotate-webmail-master-password',
+    { preHandler: requireRole('super_admin') },
+    handleRotateWebmailMasterPassword,
+  );
 
   app.get('/admin/mail/queue', async () => {
     try {

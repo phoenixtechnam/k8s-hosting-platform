@@ -10,9 +10,14 @@ import {
   Loader2,
   AlertTriangle,
   Info,
+  Mail,
   X,
 } from 'lucide-react';
-import { useStalwartCredentials, useRotateStalwartPassword } from '@/hooks/use-stalwart';
+import {
+  useStalwartCredentials,
+  useRotateStalwartPassword,
+  useRotateWebmailMasterPassword,
+} from '@/hooks/use-stalwart';
 import { config } from '@/lib/runtime-config';
 import { usePlatformUrls, resolveStalwartAdminUrl } from '@/hooks/use-platform-urls';
 
@@ -37,9 +42,19 @@ export default function StalwartAdminPanel() {
   const [revealed, setRevealed] = useState(false);
   const [showIframe, setShowIframe] = useState(false);
   const [confirmRotate, setConfirmRotate] = useState(false);
+  const [confirmWebmailRotate, setConfirmWebmailRotate] = useState(false);
+  // After webmail rotation succeeds the cleartext is shown ONCE in a
+  // copy-able panel — Roundcube reads it from a Secret-mounted env var
+  // so this is the only chance the operator has to capture it before
+  // it's only readable via `kubectl get secret`. Clears on dismiss.
+  const [revealedWebmailMaster, setRevealedWebmailMaster] = useState<{
+    username: string;
+    password: string;
+  } | null>(null);
 
   const creds = useStalwartCredentials(revealed);
   const rotate = useRotateStalwartPassword();
+  const rotateWebmail = useRotateWebmailMasterPassword();
   const { data: urls, isLoading: urlsLoading } = usePlatformUrls();
   const stalwartUrl = resolveStalwartAdminUrl(urls) || config.STALWART_ADMIN_URL || '';
   const canOpen = !urlsLoading && stalwartUrl !== '';
@@ -117,7 +132,17 @@ export default function StalwartAdminPanel() {
           data-testid="stalwart-rotate"
           className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/30 dark:border-amber-700 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 shadow-sm hover:bg-amber-100 dark:hover:bg-amber-900/50"
         >
-          <RefreshCw size={14} /> Rotate password
+          <RefreshCw size={14} /> Rotate admin password
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setConfirmWebmailRotate(true)}
+          data-testid="stalwart-rotate-webmail-master"
+          title="Rotate the master IMAP credential Roundcube uses for SSO"
+          className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/30 dark:border-amber-700 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 shadow-sm hover:bg-amber-100 dark:hover:bg-amber-900/50"
+        >
+          <Mail size={14} /> Rotate webmail master password
         </button>
       </div>
 
@@ -158,6 +183,40 @@ export default function StalwartAdminPanel() {
               // error state is surfaced via rotate.error
             }
           }}
+        />
+      )}
+
+      {confirmWebmailRotate && (
+        <RotateWebmailMasterConfirmModal
+          pending={rotateWebmail.isPending}
+          error={rotateWebmail.error}
+          onClose={() => {
+            if (!rotateWebmail.isPending) {
+              setConfirmWebmailRotate(false);
+              rotateWebmail.reset();
+            }
+          }}
+          onConfirm={async () => {
+            try {
+              const result = await rotateWebmail.mutateAsync();
+              setRevealedWebmailMaster({
+                username: result.data.username,
+                password: result.data.password,
+              });
+              setConfirmWebmailRotate(false);
+              rotateWebmail.reset();
+            } catch {
+              // surfaced via rotateWebmail.error
+            }
+          }}
+        />
+      )}
+
+      {revealedWebmailMaster && (
+        <WebmailMasterRevealCard
+          username={revealedWebmailMaster.username}
+          password={revealedWebmailMaster.password}
+          onDismiss={() => setRevealedWebmailMaster(null)}
         />
       )}
     </div>
@@ -344,6 +403,145 @@ function RotateConfirmModal({ pending, error, onClose, onConfirm }: RotateConfir
             {pending ? 'Rotating…' : 'Rotate password'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface RotateWebmailMasterConfirmModalProps {
+  readonly pending: boolean;
+  readonly error: unknown;
+  readonly onClose: () => void;
+  readonly onConfirm: () => Promise<void>;
+}
+
+function RotateWebmailMasterConfirmModal({
+  pending,
+  error,
+  onClose,
+  onConfirm,
+}: RotateWebmailMasterConfirmModalProps) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      data-testid="stalwart-rotate-webmail-master-modal"
+    >
+      <div className="relative w-full max-w-md bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 rounded-full bg-amber-100 dark:bg-amber-900/30 p-2">
+            <Mail size={20} className="text-amber-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Rotate webmail master password?
+            </h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              The <strong>master IMAP credential</strong> Roundcube uses to log into
+              tenant mailboxes on the operator&apos;s behalf is rotated in three
+              steps:
+            </p>
+            <ul className="mt-2 ml-5 list-disc text-sm text-gray-600 dark:text-gray-400 space-y-1">
+              <li>
+                JMAP <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">x:Account/set</code> updates the
+                master Account&apos;s secret in-flight (no Stalwart restart).
+              </li>
+              <li>
+                <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">roundcube-secrets/STALWART_MASTER_PASSWORD</code>{' '}
+                is patched.
+              </li>
+              <li>
+                Roundcube is rolling-restarted (~30 s) so its env var picks up the
+                new value. <strong>Active webmail sessions stay live.</strong>
+              </li>
+            </ul>
+            <p className="mt-3 text-sm text-amber-700 dark:text-amber-300">
+              The new password will be shown <strong>once</strong> after the
+              rotation completes — capture it then. You won&apos;t be able to read
+              it from the UI again afterwards.
+            </p>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+            {error instanceof Error ? error.message : 'Rotation failed — see server logs.'}
+          </div>
+        ) : null}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            data-testid="stalwart-rotate-webmail-master-confirm"
+            className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700 disabled:opacity-50"
+          >
+            {pending && <Loader2 size={14} className="animate-spin" />}
+            {pending ? 'Rotating…' : 'Rotate master password'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface WebmailMasterRevealCardProps {
+  readonly username: string;
+  readonly password: string;
+  readonly onDismiss: () => void;
+}
+
+/**
+ * One-shot copy panel shown right after a successful master-password
+ * rotation. Roundcube reads the value from a Secret-mounted env var so
+ * the admin panel cannot retrieve it again — there is no equivalent
+ * GET /admin/mail/webmail-master-credentials endpoint by design (the
+ * value is plaintext-stored in the Secret, an operator with kubectl
+ * access can read it from there).
+ */
+function WebmailMasterRevealCard({ username, password, onDismiss }: WebmailMasterRevealCardProps) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="webmail-master-reveal"
+      className="rounded-lg border-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Mail size={16} className="text-amber-600" />
+          <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            Webmail master password rotated — capture now
+          </h3>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          data-testid="webmail-master-reveal-dismiss"
+          className="rounded-md p-1 text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/40"
+          aria-label="Dismiss"
+        >
+          <X size={16} />
+        </button>
+      </div>
+      <p className="text-xs text-amber-800 dark:text-amber-200">
+        The cleartext is not stored anywhere reachable from this UI. Copy it now
+        if you need it for an external password vault. Roundcube already has the
+        new value (env var injected; pod is rolling).
+      </p>
+      <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-900 p-3 space-y-2">
+        <CopyableField label="Username" value={username} testId="webmail-master-username" />
+        <CopyableField label="Password" value={password} testId="webmail-master-password" mono />
       </div>
     </div>
   );

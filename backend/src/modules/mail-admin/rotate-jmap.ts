@@ -53,6 +53,30 @@ export interface RotateJmapOptions {
   readonly mirrorSecretName?: string;
   /** Timeout for credential verification in ms. Default: 30s. */
   readonly verifyTimeoutMs?: number;
+  /**
+   * Cut 3 (2026-05-05): when set, override which Secret keys receive
+   * the rotated password. Default is the admin/recovery shape:
+   *   { adminPassword, ADMIN_SECRET_PLAIN, recoveryPassword, recoveryAdmin }
+   * Webmail master rotation passes `[ 'STALWART_MASTER_PASSWORD' ]` so
+   * only Roundcube's env var key is touched in `roundcube-secrets`.
+   */
+  readonly secretKeys?: readonly string[];
+  /**
+   * Optional principal-resolver override. Defaults to looking up by the
+   * `name` field in the JMAP principals account. The webmail master
+   * Account lives at `master@master.local` (a synthetic domain) so its
+   * `name` is plain `master`; the existing find-by-name path works as-is.
+   * Provided for tests + future flexibility.
+   */
+  readonly principalLookupName?: string;
+  /**
+   * Skip the post-rotation verifyNewPassword(jmap-session) check. Used
+   * for the webmail master account, which is NOT a JMAP-admin principal
+   * — `/jmap/session` would 401 with master credentials regardless of
+   * whether the rotation succeeded. The rotation is verified instead
+   * by the integration harness's IMAP master-auth probe.
+   */
+  readonly skipJmapSessionVerify?: boolean;
 }
 
 export async function rotateAdminPasswordViaJmap(
@@ -117,16 +141,26 @@ export async function rotateAdminPasswordViaJmapImpl(
   //    env-vars, only consumed when no Account exists). Reloader rolls
   //    the Stalwart pod on Secret change so the recovery-admin path
   //    picks up the new password automatically.
+  // Cut 3 (2026-05-05): default key set is the admin/recovery shape;
+  // overridable via opts.secretKeys for webmail master rotation which
+  // only touches `roundcube-secrets/STALWART_MASTER_PASSWORD`. The
+  // recoveryAdmin format is `<user>:<password>` and only relevant when
+  // the secret holds Stalwart's recovery-admin env value.
+  const defaultStringData: Record<string, string> = {
+    adminPassword: plain,
+    ADMIN_SECRET_PLAIN: plain,
+    recoveryPassword: plain,
+    recoveryAdmin: `${opts.username}:${plain}`,
+  };
+  const stringData: Record<string, string> = opts.secretKeys
+    ? Object.fromEntries(opts.secretKeys.map((k) => [k, plain]))
+    : defaultStringData;
+
   try {
     await deps.patchK8sSecret({
       namespace: opts.stalwartNamespace,
       name: opts.secretName,
-      stringData: {
-        adminPassword: plain,
-        ADMIN_SECRET_PLAIN: plain,
-        recoveryPassword: plain,
-        recoveryAdmin: `${opts.username}:${plain}`,
-      },
+      stringData,
     });
     // 4b. Mirror to the cross-namespace platform Secret if configured.
     // platform-api reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN from a
@@ -173,25 +207,32 @@ export async function rotateAdminPasswordViaJmapImpl(
     );
   }
 
-  // 5. Verify new credentials work.
+  // 5. Verify new credentials work — but only when the rotated principal
+  //    can authenticate to JMAP /session. The webmail master account is
+  //    NOT a JMAP-admin (it has `impersonate` for IMAP master-auth, not
+  //    JMAP admin scope), so /jmap/session 401s for it regardless of
+  //    correct password. Callers that rotate non-admin accounts pass
+  //    `skipJmapSessionVerify: true`; the integration harness then
+  //    verifies via the actual user-visible flow (Roundcube IMAP-login
+  //    after pod roll).
   // Code-review M-3 fix (2026-05-03, second pass): use do/while so we
   // ALWAYS attempt at least one verification, even if `verifyTimeoutMs`
   // is zero or the clock advanced past the deadline before we got here.
-  // The previous while-pre-check could throw before ever calling
-  // verifyNewPassword for very-tight timeouts (especially in tests).
-  const deadline = deps.now().getTime() + verifyTimeoutMs;
-  let ok = false;
-  do {
-    ok = await deps.verifyNewPassword(plain);
-    if (ok) break;
-    if (deps.now().getTime() >= deadline) break;
-    await deps.sleep(2_000);
-  } while (deps.now().getTime() < deadline);
-  if (!ok) {
-    throw new Error(
-      'JMAP rotation and k8s Secret patch succeeded but credential verification timed out. ' +
-        'The new password is active — verify manually that Stalwart is healthy.',
-    );
+  if (!opts.skipJmapSessionVerify) {
+    const deadline = deps.now().getTime() + verifyTimeoutMs;
+    let ok = false;
+    do {
+      ok = await deps.verifyNewPassword(plain);
+      if (ok) break;
+      if (deps.now().getTime() >= deadline) break;
+      await deps.sleep(2_000);
+    } while (deps.now().getTime() < deadline);
+    if (!ok) {
+      throw new Error(
+        'JMAP rotation and k8s Secret patch succeeded but credential verification timed out. ' +
+          'The new password is active — verify manually that Stalwart is healthy.',
+      );
+    }
   }
 
   return rotateStalwartPasswordResponseSchema.parse({
