@@ -1792,6 +1792,52 @@ except Exception:
   fi
 fi
 
+scenario_system_backup() {
+  # Phase 2 — pg_dump for both system CNPG clusters. Skips
+  # automatically when no active backup target exists on staging
+  # (we don't want `all` runs to fail in a fresh cluster — the
+  # operator chooses the target via the admin UI).
+  local target_id
+  target_id="${TARGET_CONFIG_ID:-}"
+  if [[ -z "$target_id" ]]; then
+    target_id=$(api GET "/admin/backup-configs" 2>/dev/null \
+      | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin).get("data") or []
+    print(next((r["id"] for r in rows if r.get("active")), ""))
+except Exception:
+    print("")
+' 2>/dev/null || echo "")
+  fi
+  if [[ -z "$target_id" ]]; then
+    log "scenario system_backup skipped — no active backup_configurations row (set TARGET_CONFIG_ID or activate one in admin UI)"
+    return 0
+  fi
+
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  log "── scenario system_backup: pg_dump platform/postgres ──"
+  if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+     TARGET_CONFIG_ID="$target_id" \
+     bash "$script_dir/integration-system-backup-pg-dump.sh"; then
+    ok "system_backup: platform/postgres pg_dump"
+  else
+    fail "system_backup: platform/postgres pg_dump"
+  fi
+
+  log "── scenario system_backup: pg_dump mail/mail-pg ──"
+  if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+     TARGET_CONFIG_ID="$target_id" \
+     SOURCE_NS=mail SOURCE_CLUSTER=mail-pg SOURCE_DB=stalwart_app \
+     bash "$script_dir/integration-system-backup-pg-dump.sh"; then
+    ok "system_backup: mail/mail-pg pg_dump"
+  else
+    fail "system_backup: mail/mail-pg pg_dump"
+  fi
+}
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
@@ -1804,6 +1850,7 @@ case "$SCENARIO" in
     run_scenario bundle
     run_scenario restore
     run_scenario mail
+    run_scenario system_backup
     ;;
   *)
     if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then

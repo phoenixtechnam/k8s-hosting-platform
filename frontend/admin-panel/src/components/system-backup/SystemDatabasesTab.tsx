@@ -7,13 +7,15 @@
  * Tenant-Backup configurations (active=true required).
  */
 
-import { useState } from 'react';
-import { Database, Play, RefreshCw, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
+import { Fragment, useState } from 'react';
+import { Database, Play, RefreshCw, AlertCircle, CheckCircle2, XCircle, Copy, ChevronDown, ChevronRight } from 'lucide-react';
 import {
   usePgDumpRuns,
   useTriggerPgDump,
 } from '@/hooks/use-system-pg-dump';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
+import ErrorPanel from '@/components/ErrorPanel';
+import type { OperatorError } from '@k8s-hosting/api-contracts';
 
 const SYSTEM_CLUSTERS = [
   { namespace: 'platform', cluster: 'postgres', database: 'hosting_platform', label: 'Platform DB' },
@@ -55,6 +57,12 @@ function ClusterPanel({ namespace, cluster, database, label }: ClusterPanelProps
   const configs = (configsResp as { data?: Array<{ id: string; name: string; active: boolean; storageType: 's3' | 'ssh' }> } | undefined)?.data ?? [];
   const activeConfigs = configs.filter((c) => c.active);
   const [targetId, setTargetId] = useState<string>('');
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const targetById = (id: string | null): string => {
+    if (!id) return '—';
+    const c = configs.find((x) => x.id === id);
+    return c ? `${c.name} (${c.storageType})` : id.slice(0, 8) + '…';
+  };
 
   const onRun = (): void => {
     if (!targetId) {
@@ -124,36 +132,125 @@ function ClusterPanel({ namespace, cluster, database, label }: ClusterPanelProps
           <table className="min-w-full text-sm">
             <thead className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/40">
               <tr>
+                <th className="w-6 px-2"></th>
                 <th className="text-left px-3 py-2">Started</th>
                 <th className="text-left px-3 py-2">Status</th>
                 <th className="text-left px-3 py-2">Size</th>
+                <th className="text-left px-3 py-2 hidden md:table-cell">Target</th>
                 <th className="text-left px-3 py-2 hidden md:table-cell">SHA256</th>
-                <th className="text-left px-3 py-2 hidden md:table-cell">Artifact</th>
+                <th className="text-left px-3 py-2 hidden lg:table-cell">Bundle</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {runsQ.data!.map((r) => (
-                <tr key={r.id} data-testid={`pgdump-row-${r.id}`}>
-                  <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{new Date(r.startedAt).toLocaleString()}</td>
-                  <td className="px-3 py-2">
-                    <StatusBadge status={r.status} />
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
-                    {r.sizeBytes !== null ? `${r.sizeBytes.toLocaleString()} B` : '—'}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 hidden md:table-cell">
-                    {r.sha256 ? `${r.sha256.slice(0, 12)}…` : '—'}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 hidden md:table-cell">
-                    {r.artifactName ?? '—'}
-                  </td>
-                </tr>
-              ))}
+              {runsQ.data!.map((r) => {
+                const isExpanded = expandedRunId === r.id;
+                const isFailed = r.status === 'failed';
+                return (
+                  <Fragment key={r.id}>
+                    <tr data-testid={`pgdump-row-${r.id}`}
+                        className={isFailed ? 'cursor-pointer hover:bg-red-50/50 dark:hover:bg-red-900/10' : ''}
+                        onClick={isFailed ? () => setExpandedRunId(isExpanded ? null : r.id) : undefined}>
+                      <td className="px-2 py-2 text-gray-400">
+                        {isFailed ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : null}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{new Date(r.startedAt).toLocaleString()}</td>
+                      <td className="px-3 py-2">
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-300">
+                        {r.sizeBytes !== null ? formatBytes(r.sizeBytes) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-400 hidden md:table-cell">
+                        {targetById(r.targetConfigId)}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 hidden md:table-cell">
+                        {r.sha256 ? <CopyableHex value={r.sha256} /> : '—'}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 hidden lg:table-cell">
+                        {r.bundleId ? <CopyableHex value={r.bundleId} /> : '—'}
+                      </td>
+                    </tr>
+                    {isFailed && isExpanded && (
+                      <tr className="bg-red-50/40 dark:bg-red-900/10">
+                        <td colSpan={7} className="px-4 py-3">
+                          <ErrorPanel
+                            error={toOperatorError(r.errorEnvelope, namespace, cluster)}
+                            severity="error"
+                            compact
+                            testId={`pgdump-error-${r.id}`}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </section>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
+/**
+ * Map the orchestrator's compact `{code, message, stderr?}` envelope
+ * into the OperatorError shape ErrorPanel expects. We can't change the
+ * shape stored in the DB without a migration; this synth lets the
+ * standard ErrorPanel render today's runs cleanly while keeping the
+ * door open for a richer envelope later.
+ */
+function toOperatorError(envelope: unknown, namespace: string, cluster: string): OperatorError {
+  const e = (envelope ?? {}) as { code?: string; message?: string; stderr?: string | null };
+  const code = e.code ?? 'SYSTEM_BACKUP_PG_DUMP_FAILED';
+  const detail = e.message ?? 'pg_dump failed without a captured message.';
+  const remediation: string[] = [];
+  if (code === 'SYSTEM_BACKUP_JOB_ORPHANED') {
+    remediation.push('Re-run the dump — the previous Job pod was killed before it could finish.');
+  } else if (/database\s*".+"\s*does not exist/i.test(detail)) {
+    remediation.push('Pick the correct database name in the request body.');
+  } else if (/connection.*failed|connection refused|timeout/i.test(detail)) {
+    remediation.push(`Verify the CNPG read-replica service ${cluster}-ro.${namespace}.svc:5432 is reachable.`);
+    remediation.push(`Check NetworkPolicy in the ${namespace} namespace allows ingress from app=platform-api in platform ns.`);
+  } else {
+    remediation.push('Inspect the Job pod logs: `kubectl -n platform logs job/<jobName>`.');
+    remediation.push('Re-run after fixing the underlying cause; the run row stays as audit history.');
+  }
+  return {
+    code,
+    title: 'pg_dump failed',
+    detail,
+    remediation,
+    retryable: true,
+    diagnostics: e.stderr ? { stderr: e.stderr } : undefined,
+  };
+}
+
+function CopyableHex({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        void navigator.clipboard.writeText(value).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200"
+      title={value}
+    >
+      <span>{value.slice(0, 12)}…</span>
+      <Copy size={10} className={copied ? 'text-green-500' : ''} />
+    </button>
   );
 }
 

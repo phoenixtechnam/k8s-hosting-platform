@@ -184,6 +184,30 @@ DB-only restores (config-tables, deployments-by-id, domains-by-id)
 have no automatic rollback — the operator's safety net is a
 just-before-restore manual bundle.
 
+## Known limitations
+
+### Mailboxes component (capture + restore)
+**Status: disabled by default — opt-in via `components.mailboxes:true`**
+
+The Stalwart 0.16.3 image (`docker.io/stalwartlabs/stalwart:v0.16.3`)
+ships only the `stalwart` server binary, which supports `-e <path>`
+**whole-store** export and `-i <path>` whole-store import — no
+per-account export. The legacy `stalwart-cli` binary that the
+mailbox capture component invokes (`stalwart-cli account export
+<addr> <path>`) is not in the image.
+
+Whole-store export is unsafe on a multi-tenant Stalwart deployment
+because the dump contains every tenant's mail. Until the per-account
+path is rewritten (likely via JMAP `Email/query` + `Email/get` or a
+Stalwart admin HTTP endpoint), bundles default `components.mailboxes
+= false` so an operator doesn't accidentally produce a `partial`
+bundle whose mailboxes-component failed.
+
+The restore-cart `mailboxes-by-address` executor follows the same
+constraint — it'll spawn a Job that errors with "stalwart-cli not on
+PATH" until the mirror rewrite ships. Filed as a Phase-4.x
+follow-up.
+
 ## Schema reference
 
 - `backup_jobs` — one row per bundle (id, clientId, initiator, status, target, retentionDays, expiresAt, sizeBytes, exportMode, exportArtifact, …)

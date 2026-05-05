@@ -600,6 +600,20 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'tenant-backup schedule: scheduler startup skipped');
       }
 
+      // System Backup sweeper (Phase 2.4c) — orphan-pending flip
+      // (>10 min) + 90-day retention purge of failed pg_dump rows.
+      try {
+        const { startSystemBackupSweeper } = await import('./modules/system-backup/sweeper.js');
+        const sweepStop = startSystemBackupSweeper(app.db, app.log as unknown as {
+          info: (...a: unknown[]) => void;
+          warn: (...a: unknown[]) => void;
+          error: (...a: unknown[]) => void;
+        });
+        app.addHook('onClose', () => sweepStop());
+      } catch (err) {
+        app.log.warn({ err }, 'system-backup sweeper: scheduler startup skipped');
+      }
+
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM
       // key generation and rotation natively. Platform now reads DKIM
       // status read-only from Stalwart's dnsZoneFile via JMAP.

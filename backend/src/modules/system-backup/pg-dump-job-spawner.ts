@@ -99,7 +99,10 @@ export async function createPgDumpJob(
       template: {
         metadata: { labels: podLabels },
         spec: {
-          serviceAccountName: 'platform-api',
+          // Dedicated narrow SA (Phase 2.4b, k8s/base/rbac.yaml):
+          // CNPG clusters:get + secrets:get cluster-wide. NOT
+          // platform-api which has secrets:* + pods/exec etc.
+          serviceAccountName: 'pg-dump-job',
           restartPolicy: 'Never',
           // System DBs land on system-tagged servers — keep dump
           // Job near the data to avoid cross-node bandwidth.

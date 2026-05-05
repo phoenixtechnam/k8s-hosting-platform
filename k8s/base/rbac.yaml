@@ -247,6 +247,67 @@ subjects:
     name: platform-api
     namespace: platform
 ---
+# ─── pg-dump-job SA (System Backup Phase 2.4b) ─────────────────────
+#
+# Runs the per-CNPG-cluster pg_dump Job (backend/src/cli/pg-dump-job.ts).
+# Replaces the prior `serviceAccountName: platform-api` which gave the
+# Job pod cluster-wide secrets:* + pods/exec — far more than it needs.
+#
+# This SA only needs to:
+#   - Read CNPG Cluster CRs (to find bootstrap.initdb.secret.name)
+#   - Read the resulting Secret in any source namespace (only the
+#     per-cluster -app/-app-credentials Secret in practice)
+#   - Read backup_configurations rows from platform DB (handled
+#     out-of-band via DATABASE_URL secretKeyRef on the Job pod env)
+#
+# We can't tighten secrets by name in K8s RBAC — only by namespace.
+# Cluster-wide get is the minimum that supports any source namespace
+# without per-cluster RoleBinding churn. Verbs are reduced from
+# get/list/watch/create/update/delete/patch to just `get`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pg-dump-job
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: system-backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pg-dump-job
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: system-backup
+rules:
+  # Read CNPG Cluster CR to discover bootstrap.initdb.secret.name.
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get"]
+  # Read per-cluster credentials Secret. Cluster-scoped get is wider
+  # than ideal but K8s RBAC can't constrain by Secret name across
+  # arbitrary namespaces without per-namespace RoleBinding.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pg-dump-job-binding
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: system-backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pg-dump-job
+subjects:
+  - kind: ServiceAccount
+    name: pg-dump-job
+    namespace: platform
+---
 # ClusterRole: hosting-readonly — for monitoring/support access
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
