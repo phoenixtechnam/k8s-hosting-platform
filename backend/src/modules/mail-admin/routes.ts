@@ -32,7 +32,11 @@ import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { getMailPvcStorage, resizeMailPvc } from './mail-pvc.js';
-import { mailPvcResizeRequestSchema } from '@k8s-hosting/api-contracts';
+import { getBlobStore, updateBlobStore, getBlobStoreJobStatus } from './blob-store.js';
+import {
+  mailPvcResizeRequestSchema,
+  blobStoreUpdateRequestSchema,
+} from '@k8s-hosting/api-contracts';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -205,6 +209,103 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
           'MAIL_PVC_RESIZE_FAILED',
           'mail-pg-1 PVC resize failed — see server logs',
           500,
+        );
+      }
+    },
+  );
+
+  // ─── Stalwart BlobStore (singleton) ──────────────────────────────
+  // GET reads the current backend type via short-lived Pod running
+  // `stalwart-cli get BlobStore`. PATCH spawns a Job that runs cli
+  // update + self-verify. S3 credentials flow via Secret + envFrom,
+  // never argv. Job-status poll endpoint surfaces the cli BEFORE/
+  // AFTER output via the Pod log.
+  app.get(
+    '/admin/mail/blob-store',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getBlobStore({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: blob-store read failed');
+        throw new ApiError(
+          'BLOB_STORE_READ_FAILED',
+          'Could not read Stalwart BlobStore — see server logs',
+          503,
+        );
+      }
+    },
+  );
+  app.patch(
+    '/admin/mail/blob-store',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = blobStoreUpdateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      // Audit-log the SWITCH (not the credentials). NEVER log the
+      // S3 secretKey — it would land in pod logs.
+      app.log.warn({
+        userId,
+        type: parsed.data.type,
+        ...(parsed.data.type === 'S3' && { bucket: parsed.data.s3.bucket, region: parsed.data.s3.region }),
+      }, 'mail-admin: blob-store switch requested');
+      try {
+        const result = await updateBlobStore(parsed.data, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: blob-store switch failed');
+        throw new ApiError(
+          'BLOB_STORE_UPDATE_FAILED',
+          'BlobStore switch failed — see server logs',
+          500,
+        );
+      }
+    },
+  );
+  app.get(
+    '/admin/mail/blob-store/jobs/:name',
+    { preHandler: requireRole('super_admin') },
+    async (req: { params: unknown }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const params = req.params as { name?: string };
+      const name = params.name ?? '';
+      // Whitelist on shape — guards against listing arbitrary Jobs
+      // through this route by malformed name input.
+      if (!/^stalwart-blob-store-update-[a-z0-9-]+$/.test(name)) {
+        throw new ApiError(
+          'BLOB_STORE_JOB_INVALID_NAME',
+          'job name must match the stalwart-blob-store-update-<id> shape',
+          400,
+        );
+      }
+      try {
+        const result = await getBlobStoreJobStatus(name, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err, name }, 'mail-admin: blob-store job status failed');
+        throw new ApiError(
+          'BLOB_STORE_JOB_STATUS_FAILED',
+          'Could not read blob-store Job status — see server logs',
+          503,
         );
       }
     },

@@ -1,21 +1,27 @@
 import { z } from 'zod';
 
 /**
- * Stalwart 0.16 BlobStore — singleton that holds tenant message bodies.
+ * Stalwart 0.16 BlobStore — singleton (id `singleton`) that holds
+ * tenant message bodies.
  *
- * Three backend types:
- *   - PG: blobs in mail-pg PG (default; blows up on disk at scale).
- *   - S3: blobs in an external S3 bucket (required for HA stateless).
- *   - Disk: blobs on the Pod's local emptyDir (INCOMPATIBLE with
+ * Stalwart 0.16's actual schema variants (per `cli describe BlobStore`):
+ * Default / Sharded / S3 / Azure / FileSystem / FoundationDb / PostgreSql / MySql.
+ *
+ * The platform UI exposes the three variants operators care about:
+ *   - Default — blobs in the configured DataStore (mail-pg PG by default;
+ *     blows up on disk at scale but works without external infra).
+ *   - S3 — blobs in an external S3 bucket (required for HA stateless
+ *     since each replica's emptyDir would split blobs otherwise).
+ *   - FileSystem — blobs on the Pod's local disk (INCOMPATIBLE with
  *     multi-replica Stalwart — each replica sees only its own blobs).
  *
- * Switching is online (Stalwart applies the change in-flight via
- * JMAP / cli) but DOES NOT migrate existing blobs. Old blobs stay in
- * the previous store; new mail lands in the new store. Operators
- * needing to move existing blobs run an external migrator —
+ * Switching is online (Stalwart applies the change in-flight via the
+ * cli) but DOES NOT migrate existing blobs. Old blobs stay in the
+ * previous store; new mail lands in the new store. Operators needing
+ * to move existing blobs run an external migrator —
  * docs/03-mail/STALWART_BLOB_STORE_MIGRATION.md covers it.
  */
-export const blobStoreType = z.enum(['PG', 'S3', 'Disk']);
+export const blobStoreType = z.enum(['Default', 'S3', 'FileSystem']);
 export type BlobStoreType = z.infer<typeof blobStoreType>;
 
 /**
@@ -32,8 +38,14 @@ export const blobStoreResponseSchema = z.object({
   s3: z
     .object({
       bucket: z.string().min(1),
-      region: z.string().min(1),
-      endpoint: z.string().min(1),
+      region: z.string().min(1).optional(),
+      endpoint: z.string().min(1).optional(),
+    })
+    .optional(),
+  fileSystem: z
+    .object({
+      path: z.string().min(1),
+      depth: z.number().int().min(0).optional(),
     })
     .optional(),
   lastUpdatedAt: z.string().datetime().nullable(),
@@ -53,14 +65,22 @@ export type BlobStoreResponse = z.infer<typeof blobStoreResponseSchema>;
  * For `PG`, no extra config (uses mail-pg).
  */
 export const blobStoreUpdateRequestSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('PG') }),
-  z.object({ type: z.literal('Disk') }),
+  z.object({ type: z.literal('Default') }),
+  z.object({
+    type: z.literal('FileSystem'),
+    fileSystem: z
+      .object({
+        path: z.string().min(1).default('/var/lib/stalwart/blobs'),
+        depth: z.number().int().min(0).max(8).default(2),
+      })
+      .default({ path: '/var/lib/stalwart/blobs', depth: 2 }),
+  }),
   z.object({
     type: z.literal('S3'),
     s3: z.object({
       bucket: z.string().min(1).max(63),
       region: z.string().min(1).max(64),
-      endpoint: z.string().url(),
+      endpoint: z.string().url().optional(),
       accessKey: z.string().min(1).max(256),
       secretKey: z.string().min(1).max(512),
     }),
