@@ -21,7 +21,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2, Plus, Trash2, Play, AlertCircle, CheckCircle2, FileText, Mail, Globe, Box, Database } from 'lucide-react';
+import { Loader2, Plus, Trash2, Play, AlertCircle, CheckCircle2, FileText, Mail, Globe, Box, Database, RotateCcw } from 'lucide-react';
 import {
   useBrowseConfigTables,
   useBrowseDeployments,
@@ -33,6 +33,7 @@ import {
   useAddRestoreItem,
   useRemoveRestoreItem,
   useExecuteRestoreCart,
+  useRollbackRestoreCart,
   type RestoreItemInfo,
 } from '@/hooks/use-restore-carts';
 
@@ -50,6 +51,8 @@ export default function RestoreCartPage() {
   const addItem = useAddRestoreItem(cartId ?? '');
   const removeItem = useRemoveRestoreItem(cartId ?? '');
   const execCart = useExecuteRestoreCart(cartId ?? '');
+  const rollbackCart = useRollbackRestoreCart(cartId ?? '');
+  const [rollbackConfirm, setRollbackConfirm] = useState(false);
 
   // Auto-create the cart on first add if the operator hasn't done so.
   useEffect(() => {
@@ -146,9 +149,53 @@ export default function RestoreCartPage() {
               )}
             </button>
             {cartQ.data?.data?.preRestoreSnapshotId && (
-              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                Pre-restore snapshot: <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">{cartQ.data.data.preRestoreSnapshotId}</code>
-              </p>
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs dark:border-amber-700 dark:bg-amber-950">
+                <p className="font-medium text-amber-900 dark:text-amber-100">Safety net</p>
+                <p className="mt-0.5 text-amber-800 dark:text-amber-200">
+                  Snapshot: <code className="rounded bg-amber-100 px-1 dark:bg-amber-900">{cartQ.data.data.preRestoreSnapshotId.slice(0, 12)}…</code>
+                </p>
+                {cartQ.data.data.status !== 'executing' && !rollbackConfirm && (
+                  <button
+                    type="button"
+                    onClick={() => setRollbackConfirm(true)}
+                    className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-amber-400 bg-white px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900 dark:text-amber-100 dark:hover:bg-amber-800"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Roll back to snapshot
+                  </button>
+                )}
+                {rollbackConfirm && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-amber-900 dark:text-amber-100">
+                      This quiesces all workloads, replaces tenant PVC contents from the snapshot, and unquiesces. The change is hard to reverse.
+                    </p>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => { rollbackCart.mutate(undefined, { onSuccess: () => setRollbackConfirm(false) }); }}
+                        disabled={rollbackCart.isPending}
+                        className="flex-1 rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {rollbackCart.isPending ? 'Dispatching…' : 'Confirm rollback'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRollbackConfirm(false)}
+                        className="flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {rollbackCart.data?.data?.operationId && (
+                  <p className="mt-2 text-amber-800 dark:text-amber-200">
+                    Rollback dispatched. Operation <code className="rounded bg-amber-100 px-1 dark:bg-amber-900">{rollbackCart.data.data.operationId.slice(0, 12)}…</code> is running. See Storage Lifecycle for progress.
+                  </p>
+                )}
+                {rollbackCart.error && (
+                  <p className="mt-2 text-red-700 dark:text-red-300">{(rollbackCart.error as Error).message}</p>
+                )}
+              </div>
             )}
           </div>
         </aside>

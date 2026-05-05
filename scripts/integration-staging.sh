@@ -694,7 +694,7 @@ for c in (items if isinstance(items, list) else []):
 
   # Create a domain we can later delete + restore.
   local hostname="restore-${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
-  local d_resp; d_resp=$(api POST "/clients/$cid/domains" "{\"hostname\":\"$hostname\"}")
+  local d_resp; d_resp=$(api POST "/clients/$cid/domains" "{\"domain_name\":\"$hostname\"}")
   local domain_id; domain_id=$(echo "$d_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$domain_id" ]] || { fail "restore: domain create failed: $(echo "$d_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
   ok "restore: domain created id=$domain_id hostname=$hostname"

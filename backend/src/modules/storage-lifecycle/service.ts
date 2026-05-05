@@ -1217,6 +1217,104 @@ export async function restoreArchivedClient(
   return { operationId: opId, snapshotId: snap.id };
 }
 
+/**
+ * Roll back the tenant data PVC to a specific snapshot WITHOUT
+ * requiring the client to be archived. Used by the tenant-backup-
+ * restore cart's rollback button when the operator wants to undo
+ * a destructive files-paths restore.
+ *
+ * Flow:
+ *   1. Verify the snapshot belongs to the requested client and is ready.
+ *   2. Quiesce the live workloads (scale Deployments to 0).
+ *   3. Tar-extract the snapshot archive over the existing PVC.
+ *   4. Unquiesce.
+ *
+ * No PVC recreation — the existing PVC stays bound, contents are
+ * replaced in-place. This matches the snapshotClient round-trip
+ * (capture is also a tar over the same PVC mount).
+ *
+ * Returns immediately; caller polls storage_operations for progress.
+ */
+export async function rollbackToSnapshot(
+  ctx: ServiceCtx,
+  clientId: string,
+  snapshotId: string,
+  params: { triggeredByUserId?: string | null } = {},
+): Promise<{ operationId: string; snapshotId: string }> {
+  const client = await mustGetClient(ctx.db, clientId);
+  await mustBeIdle(ctx.db, clientId);
+
+  const [snap] = await ctx.db.select().from(storageSnapshots).where(
+    and(eq(storageSnapshots.id, snapshotId), eq(storageSnapshots.clientId, clientId), eq(storageSnapshots.status, 'ready')),
+  ).limit(1);
+  if (!snap) {
+    throw new ApiError(
+      'SNAPSHOT_NOT_FOUND',
+      `Snapshot ${snapshotId} not found, not owned by client ${clientId}, or not in 'ready' status`,
+      404,
+    );
+  }
+
+  const opId = uuid();
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId,
+      clientId,
+      opType: 'restore',
+      state: 'restoring',
+      progressPct: 0,
+      progressMessage: 'Quiescing workloads',
+      snapshotId: snap.id,
+      params: { fromSnapshot: snap.id, kind: snap.kind },
+      triggeredByUserId: params.triggeredByUserId ?? null,
+    });
+    await tx.update(clients)
+      .set({ storageLifecycleState: 'restoring', activeStorageOpId: opId })
+      .where(eq(clients.id, clientId));
+  });
+
+  void runRollbackToSnapshot(ctx, opId, snap.id, snap.archivePath, client.kubernetesNamespace, clientId)
+    .catch((err) => { console.error(`[storage-lifecycle] runRollbackToSnapshot pre-orchestrator throw for op ${opId}:`, err); });
+  return { operationId: opId, snapshotId: snap.id };
+}
+
+async function runRollbackToSnapshot(
+  ctx: ServiceCtx,
+  opId: string,
+  snapId: string,
+  archivePath: string,
+  namespace: string,
+  clientId: string,
+): Promise<void> {
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  const pvcName = `${namespace}-storage`;
+  try {
+    quiesceSnap = await quiesce(ctx.k8s, namespace);
+    await waitForQuiesced(ctx.k8s, namespace);
+    await updateOp(ctx.db, opId, { progressPct: 30, progressMessage: 'Restoring data from snapshot' });
+
+    await restoreTenantPVC(ctx.k8s, {
+      namespace, pvcName, clientId, snapshotId: snapId, archivePath, store: ctx.store,
+      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+    });
+
+    await updateOp(ctx.db, opId, { progressPct: 90, progressMessage: 'Unquiescing workloads' });
+    await unquiesce(ctx.k8s, namespace, quiesceSnap);
+    await updateOp(ctx.db, opId, {
+      state: 'idle',
+      progressPct: 100,
+      progressMessage: 'Rollback complete',
+      completedAt: new Date(),
+    });
+    await markClientState(ctx.db, clientId, 'idle', null);
+  } catch (err) {
+    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+    await markClientState(ctx.db, clientId, 'failed', null);
+  }
+}
+
 async function runRestoreArchive(
   ctx: ServiceCtx,
   opId: string,

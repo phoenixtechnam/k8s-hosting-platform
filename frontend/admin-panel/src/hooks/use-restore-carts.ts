@@ -75,6 +75,18 @@ export function useExecuteRestoreCart(cartId: string) {
   });
 }
 
+export function useRollbackRestoreCart(cartId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: { cartId: string; operationId: string; snapshotId: string } }>(`/api/v1/admin/restores/carts/${cartId}/rollback`, {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['restore-cart', cartId] }),
+  });
+}
+
 export function useDeleteRestoreCart() {
   const qc = useQueryClient();
   return useMutation({

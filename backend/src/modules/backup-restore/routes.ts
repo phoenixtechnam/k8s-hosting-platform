@@ -53,7 +53,7 @@ import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
 import { execFilesPathsItem } from './executors/files-paths.js';
 import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
-import { snapshotClient } from '../storage-lifecycle/service.js';
+import { snapshotClient, rollbackToSnapshot } from '../storage-lifecycle/service.js';
 import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -304,6 +304,57 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     }
     await app.db.delete(restoreJobs).where(eq(restoreJobs.id, id));
     reply.status(204).send();
+  });
+
+  // ── POST /api/v1/admin/restores/carts/:id/rollback ─────────────────
+  // Roll the tenant data PVC back to the cart's pre-restore snapshot.
+  // Only valid when:
+  //   - cart.preRestoreSnapshotId is set (snapshot was taken)
+  //   - cart.status is 'failed' or 'done' (not still executing)
+  //   - the snapshot is still in 'ready' status (hasn't expired)
+  // Hands off to storage-lifecycle/service.rollbackToSnapshot which
+  // quiesces, restores PVC contents from the snapshot, unquiesces.
+  // Operator polls storage_operations for progress; the same
+  // Storage Operations card surfaces it.
+  app.post('/admin/restores/carts/:id/rollback', {
+    schema: { tags: ['Restore'], summary: 'Roll back the tenant PVC to the cart\'s pre-restore snapshot', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { id: cartId } = request.params as { id: string };
+    const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, cartId)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Restore cart not found', 404);
+    if (!job.preRestoreSnapshotId) {
+      throw new ApiError(
+        'NO_PRE_RESTORE_SNAPSHOT',
+        'This cart has no pre-restore snapshot to roll back to. Snapshots are only taken when a cart contains files-paths items.',
+        400,
+      );
+    }
+    if (job.status === 'executing') {
+      throw new ApiError('VALIDATION_ERROR', 'Cannot rollback while cart is executing — wait for completion or failure', 400);
+    }
+    const triggeredByUserId = (request as { user?: { sub?: string } }).user?.sub ?? null;
+    try {
+      const k8s = (app as unknown as { k8s?: ReturnType<typeof createK8sClients> }).k8s
+        ?? createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+      const store = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
+      const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
+      const result = await rollbackToSnapshot(
+        { db: app.db, k8s, store, platformNamespace },
+        job.clientId,
+        job.preRestoreSnapshotId,
+        { triggeredByUserId },
+      );
+      app.log.info({ cartId, ...result }, 'tenant-backup-restore: rollback dispatched');
+      reply.status(202).send(success({
+        cartId,
+        operationId: result.operationId,
+        snapshotId: result.snapshotId,
+      }));
+    } catch (err) {
+      app.log.error({ err, cartId, clientId: job.clientId }, 'tenant-backup-restore: rollback dispatch failed');
+      if (err instanceof ApiError) throw err;
+      throw new ApiError('ROLLBACK_FAILED', `Rollback dispatch failed: ${(err as Error).message}`, 500);
+    }
   });
 
   // ── GET /api/v1/admin/backups/bundles/:bundleId/browse/* ───────────
