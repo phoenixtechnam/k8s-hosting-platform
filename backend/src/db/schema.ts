@@ -57,7 +57,7 @@ export const storageOperationTypeEnum = pgEnum('storage_operation_type', [
   'fsck',
 ]);
 export const storageSnapshotKindEnum = pgEnum('storage_snapshot_kind', [
-  'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled',
+  'manual', 'pre-resize', 'pre-suspend', 'pre-archive', 'scheduled', 'pre-restore',
 ]);
 export const storageSnapshotStatusEnum = pgEnum('storage_snapshot_status', [
   'creating', 'ready', 'expired', 'failed',
