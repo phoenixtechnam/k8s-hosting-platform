@@ -119,7 +119,7 @@ interface ClusterCRSpec {
     readonly lastArchivedWAL?: string;
     readonly lastArchivedWALTime?: string;
     readonly lastFailedArchiveTime?: string;
-    readonly conditions?: ReadonlyArray<{ type?: string; reason?: string; message?: string }>;
+    readonly conditions?: ReadonlyArray<{ type?: string; status?: string; reason?: string; message?: string; lastTransitionTime?: string }>;
   };
 }
 
@@ -143,15 +143,24 @@ export async function readClusterCR(
 export function extractStatus(cr: ClusterCRSpec | null): ClusterStatus | null {
   if (!cr) return null;
   const s = cr.status ?? {};
-  const archiveCondition = (s.conditions ?? []).find((c) => c.type === 'ContinuousArchiving');
+  // CNPG doesn't expose `lastArchivedWAL` at the top level of .status —
+  // archiving health is surfaced exclusively via the `ContinuousArchiving`
+  // condition. Map the condition into our flat status shape so the UI
+  // and harness can reason about a single object.
+  const cond = (s.conditions ?? []).find((c) => c.type === 'ContinuousArchiving');
+  const isHealthy = cond?.status === 'True' || cond?.reason === 'ContinuousArchivingSuccess';
+  const isFailing = cond?.status === 'False' || cond?.reason === 'ContinuousArchivingFailing';
+  const transitionTime = cond?.lastTransitionTime ?? null;
   return {
     firstRecoverabilityPoint: s.firstRecoverabilityPoint ?? null,
-    lastArchivedWal: s.lastArchivedWAL ?? null,
-    lastArchivedWalTime: s.lastArchivedWALTime ?? null,
-    lastFailedArchiveTime: s.lastFailedArchiveTime ?? null,
-    lastFailedArchiveError: archiveCondition?.reason === 'ContinuousArchivingFailing'
-      ? (archiveCondition.message ?? null)
-      : null,
+    // Synthesized: `lastArchivedWal` is meaningful as a human-readable
+    // health summary, not a literal WAL filename. CNPG's barman-cloud
+    // pushes WALs in the background; the actual filename is in
+    // pg_stat_archiver inside the pod (out of scope for the operator UI).
+    lastArchivedWal: isHealthy ? (cond?.reason ?? 'ContinuousArchivingSuccess') : null,
+    lastArchivedWalTime: isHealthy ? transitionTime : null,
+    lastFailedArchiveTime: isFailing ? transitionTime : null,
+    lastFailedArchiveError: isFailing ? (cond?.message ?? cond?.reason ?? null) : null,
   };
 }
 
