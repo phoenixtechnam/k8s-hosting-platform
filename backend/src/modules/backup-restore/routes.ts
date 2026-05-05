@@ -51,6 +51,8 @@ import { gunzipSync } from 'node:zlib';
 import { execConfigTablesItem } from './executors/config-tables.js';
 import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
+import { execFilesPathsItem } from './executors/files-paths.js';
+import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
 
 export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -497,18 +499,11 @@ async function dispatchExecutor(app: FastifyInstance, item: RestoreItem, store: 
       await execDomainsByIdItem({ app, item, store });
       return;
     case 'files-paths':
-    case 'mailboxes-by-address': {
-      // Phase 4.x — these executors spawn tenant/mail-namespace Jobs
-      // that download the corresponding artefacts via the internal
-      // download route and apply them. Wired in a follow-up commit.
-      const err = new Error(
-        `Restore executor for type '${item.type}' is not yet implemented. ` +
-        `In-process executors (config-tables, deployments-by-id, domains-by-id) ` +
-        `are wired today; Job-based executors land in the next chunk.`,
-      );
-      (err as Error & { code?: string }).code = 'EXECUTOR_NOT_YET_WIRED';
-      throw err;
-    }
+      await execFilesPathsItem({ app, item, store });
+      return;
+    case 'mailboxes-by-address':
+      await execMailboxesByAddressItem({ app, item, store });
+      return;
     default: {
       const err = new Error(`Unknown restore item type '${item.type}'`);
       (err as Error & { code?: string }).code = 'UNKNOWN_TYPE';
