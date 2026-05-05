@@ -174,7 +174,7 @@ function ClusterPanel({ namespace, cluster, database, label }: ClusterPanelProps
                       <tr className="bg-red-50/40 dark:bg-red-900/10">
                         <td colSpan={7} className="px-4 py-3">
                           <ErrorPanel
-                            error={toOperatorError(r.errorEnvelope, r.id)}
+                            error={toOperatorError(r.errorEnvelope, namespace, cluster)}
                             severity="error"
                             compact
                             testId={`pgdump-error-${r.id}`}
@@ -207,18 +207,18 @@ function formatBytes(n: number): string {
  * standard ErrorPanel render today's runs cleanly while keeping the
  * door open for a richer envelope later.
  */
-function toOperatorError(envelope: unknown, runId: string): OperatorError {
+function toOperatorError(envelope: unknown, namespace: string, cluster: string): OperatorError {
   const e = (envelope ?? {}) as { code?: string; message?: string; stderr?: string | null };
   const code = e.code ?? 'SYSTEM_BACKUP_PG_DUMP_FAILED';
   const detail = e.message ?? 'pg_dump failed without a captured message.';
   const remediation: string[] = [];
   if (code === 'SYSTEM_BACKUP_JOB_ORPHANED') {
     remediation.push('Re-run the dump — the previous Job pod was killed before it could finish.');
-  } else if (/database\s+".+"\s+does not exist/i.test(detail)) {
+  } else if (/database\s*".+"\s*does not exist/i.test(detail)) {
     remediation.push('Pick the correct database name in the request body.');
   } else if (/connection.*failed|connection refused|timeout/i.test(detail)) {
-    remediation.push(`Verify the CNPG read-replica service ${runId.slice(0, 8)}… is reachable.`);
-    remediation.push('Check NetworkPolicy in the source namespace allows ingress from app=platform-api in platform ns.');
+    remediation.push(`Verify the CNPG read-replica service ${cluster}-ro.${namespace}.svc:5432 is reachable.`);
+    remediation.push(`Check NetworkPolicy in the ${namespace} namespace allows ingress from app=platform-api in platform ns.`);
   } else {
     remediation.push('Inspect the Job pod logs: `kubectl -n platform logs job/<jobName>`.');
     remediation.push('Re-run after fixing the underlying cause; the run row stays as audit history.');
