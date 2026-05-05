@@ -72,7 +72,10 @@ pass "runId=$RUN_ID jobName=$JOB_NAME"
 
 log "4) Poll /pg-dump/runs/:id until terminal (≤90 min)"
 START=$(date +%s); STATUS="?"
-for i in $(seq 1 540); do  # 540 × 10s = 90 min
+# Poll loop: 540 × 10s = 90 min cap. The for var is intentionally
+# unreferenced — we just need bounded iteration.
+# shellcheck disable=SC2034
+for poll_iter in $(seq 1 540); do
   STATUS=$(curl_admin "$ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$RUN_ID" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["status"])' 2>/dev/null || echo "?")
   if [[ "$STATUS" =~ ^(succeeded|failed)$ ]]; then break; fi
@@ -83,9 +86,11 @@ ELAPSED=$(( $(date +%s) - START ))
 
 log "5) Run carries sha256 + size + bundle handle"
 DETAIL=$(curl_admin "$ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$RUN_ID")
-echo "$DETAIL" | SOURCE_CLUSTER="$SOURCE_CLUSTER" SOURCE_DB="$SOURCE_DB" TARGET_CONFIG_ID="$TARGET_CONFIG_ID" python3 - <<'PY'
+# Pass DETAIL via env (DETAIL_JSON) so the heredoc-fed Python script
+# can read it without conflicting with stdin redirection (SC2259).
+if DETAIL_JSON="$DETAIL" SOURCE_CLUSTER="$SOURCE_CLUSTER" SOURCE_DB="$SOURCE_DB" TARGET_CONFIG_ID="$TARGET_CONFIG_ID" python3 - <<'PY'
 import json, os, sys
-d = json.load(sys.stdin)['data']
+d = json.loads(os.environ['DETAIL_JSON'])['data']
 checks = [
     ('sha256',         bool(d.get('sha256')) and len(d.get('sha256') or '')==64),
     ('sizeBytes',      isinstance(d.get('sizeBytes'), int) and d['sizeBytes'] > 0),
@@ -96,10 +101,14 @@ checks = [
     ('targetConfigId', d.get('targetConfigId') == os.environ['TARGET_CONFIG_ID']),
 ]
 for k, v in checks:
-    print(f"  {'✓' if v else '✗'} {k}: {d.get(k)}")
+    print(f"  {'OK' if v else 'XX'} {k}: {d.get(k)}")
 sys.exit(0 if all(v for _, v in checks) else 1)
 PY
-[[ $? -eq 0 ]] && pass "all run-row fields populated correctly" || fail "row missing fields"
+then
+  pass "all run-row fields populated correctly"
+else
+  fail "row missing fields"
+fi
 
 log "6) /pg-dump/runs?cluster=$SOURCE_CLUSTER includes the new run"
 LIST=$(curl_admin "$ADMIN_HOST/api/v1/system-backup/pg-dump/runs?namespace=$SOURCE_NS&cluster=$SOURCE_CLUSTER&limit=10")
