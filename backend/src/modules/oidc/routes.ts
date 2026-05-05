@@ -59,14 +59,30 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
   // integration-oidc-dex.sh: Dex's static client only allows https://
   // redirect_uris, so an http:// scheme produces "Unregistered
   // redirect_uri" and the entire auth flow breaks.
-  const resolveScheme = (request: { headers: Record<string, string | string[] | undefined>; protocol: string }): string => {
+  const resolveScheme = (request: { headers: Record<string, string | string[] | undefined>; protocol: string; log?: { info: (obj: object, msg: string) => void } }): string => {
     const xfp = request.headers['x-forwarded-proto'];
     const value = Array.isArray(xfp) ? xfp[0] : xfp;
+    let resolved: string;
     if (typeof value === 'string' && value.length > 0) {
       // X-Forwarded-Proto can be a comma-separated list across multiple proxies.
-      return value.split(',')[0].trim().toLowerCase();
+      resolved = value.split(',')[0].trim().toLowerCase();
+    } else {
+      resolved = request.protocol;
     }
-    return request.protocol;
+    // Defensive: when running behind nginx-ingress on a public host, the
+    // platform's admin/client panels always serve over HTTPS. If the
+    // header is missing AND `request.protocol` falls back to "http"
+    // (Fastify v5 quirk), force HTTPS for any non-localhost host so the
+    // OIDC redirect_uri Dex sees matches the registered staticClient.
+    if (resolved !== 'https') {
+      const host = (request.headers.host as string | undefined) ?? '';
+      const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]');
+      if (!isLocal && host.length > 0) {
+        request.log?.info({ host, xfp: value, fallback_protocol: request.protocol }, 'oidc-redirect: forcing https for non-local host');
+        resolved = 'https';
+      }
+    }
+    return resolved;
   };
 
   app.get('/auth/oidc/authorize/:providerId', async (request, reply) => {
