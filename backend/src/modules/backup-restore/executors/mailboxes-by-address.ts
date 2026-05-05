@@ -22,7 +22,7 @@ import { restoreItems, restoreJobs, type RestoreItem } from '../../../db/schema.
 import { ApiError } from '../../../shared/errors.js';
 import { signUploadToken } from '../../backups-v2/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
-import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
+import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 
 interface Selector {
   kind: 'all' | 'addresses';
@@ -107,8 +107,11 @@ export async function execMailboxesByAddressItem(args: {
     downloads,
   });
 
-  const k8s = (app as unknown as { k8s: K8sClients }).k8s;
-  if (!k8s) throw new Error('mailboxes-by-address: k8s client not available on app');
+  // Fastify doesn't decorate k8s — construct on demand from the
+  // configured kubeconfig. Mirror of the files-paths executor.
+  const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+    ?? process.env.KUBECONFIG;
+  const k8s: K8sClients = createK8sClients(kc);
   await (k8s.batch as unknown as {
     createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
   }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });
