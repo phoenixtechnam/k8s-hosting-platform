@@ -77,3 +77,4 @@ export * from './system-snapshots.js';
 export * from './lifecycle-hooks.js';
 export * from './postgres-restore.js';
 export * from './system-backup.js';
+export * from './system-wal-archive.js';

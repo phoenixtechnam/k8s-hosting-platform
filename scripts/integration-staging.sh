@@ -952,8 +952,10 @@ for c in (items if isinstance(items, list) else []):
     mb_imap_op() {
       local op="$1" suffix="$2"
       local pod="rs-mbox-probe-${suffix}"
-      # Pull master password from cluster secret (extracted on the
-      # control host; we pipe it into the run command via env).
+      # In-cluster Stalwart IMAP service + master-user proxy username.
+      local imap_host="stalwart-mail-v016.mail.svc.cluster.local"
+      local imap_port="143"
+      local imap_user="${mb_addr}%master"
       local master_pw
       master_pw=$(ssh_cp "kubectl -n mail get secret roundcube-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
       [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }
@@ -961,65 +963,75 @@ for c in (items if isinstance(items, list) else []):
       local pyblock
       case "$op" in
         seed)
-          pyblock='
-import imaplib,os,sys
-m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
-m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+          pyblock=$(cat <<EOF
+import imaplib,os
+m = imaplib.IMAP4("${imap_host}", ${imap_port})
+m.login("${imap_user}", os.environ["MASTER_PW"])
 m.select("INBOX")
 msg = (
     b"From: harness@phoenix-host.net\r\n"
-    b"To: '"$mb_addr"'\r\n"
+    b"To: ${mb_addr}\r\n"
     b"Subject: harness-seed\r\n"
-    b"Message-ID: '"$probe_msgid"'\r\n\r\n"
+    b"Message-ID: ${probe_msgid}\r\n\r\n"
     b"harness body\r\n"
 )
 typ,_=m.append("INBOX","",None,msg)
 print("APPEND",typ)
 m.logout()
-'
+EOF
+)
           ;;
         count)
-          pyblock='
-import imaplib,os,sys,re
-m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
-m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+          pyblock=$(cat <<EOF
+import imaplib,os,re
+m = imaplib.IMAP4("${imap_host}", ${imap_port})
+m.login("${imap_user}", os.environ["MASTER_PW"])
 typ,_=m.select("INBOX",readonly=True)
 typ,d=m.uid("FETCH","1:*","(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
 hits = 0
 for it in (d or []):
     if isinstance(it,tuple) and len(it)>=2 and isinstance(it[1],(bytes,bytearray)):
-        if b"'"$probe_msgid_local"'" in it[1]: hits += 1
+        if b"${probe_msgid_local}" in it[1]: hits += 1
 print("HITS",hits)
 m.logout()
-'
+EOF
+)
           ;;
         wipe)
-          pyblock='
+          pyblock=$(cat <<'EOF'
 import imaplib,os
-m = imaplib.IMAP4("'"$IMAP_HOST"'", '"$IMAP_PORT"')
-m.login("'"$IMAP_USER"'", os.environ["MASTER_PW"])
+m = imaplib.IMAP4(os.environ["IMAP_HOST"], int(os.environ["IMAP_PORT"]))
+m.login(os.environ["IMAP_USER"], os.environ["MASTER_PW"])
 m.select("INBOX")
 typ,d=m.search(None,"ALL")
 if typ=="OK" and d and d[0]:
-    for u in d[0].split(): m.store(u,"+FLAGS","\\\\Deleted")
+    for u in d[0].split(): m.store(u,"+FLAGS","\\Deleted")
     m.expunge()
 print("WIPED")
 m.logout()
-'
+EOF
+)
+          # wipe variant uses env vars (cleaner; no in-script
+          # substitution needed) — append env decls below
           ;;
         *) echo "ERROR: unknown op $op" >&2; return 1;;
       esac
 
-      # Pod env vars used by the python script.
-      local IMAP_HOST="stalwart-mail-v016.mail.svc.cluster.local"
-      local IMAP_PORT="143"
-      # IMAP master-user proxy username: <addr>%<master>
-      local IMAP_USER="${mb_addr}%master"
-      # Pipe via stdin to avoid quoting hell on long python blocks.
-      ssh_cp "kubectl -n mail run \"$pod\" --rm -i --restart=Never \
-        --image=\"$probe_image\" --image-pull-policy=IfNotPresent \
-        --env=\"MASTER_PW=$master_pw\" --env=\"ALLOW_PLAINTEXT_IMAP=yes\" \
-        --command -- python3 -c '${pyblock//\'/\'\\\'\'}'" 2>&1
+      # Base64-encode to dodge the multiple layers of quoting between
+      # local bash → ssh → control-host bash → kubectl-run --command.
+      # The pod runs `sh -c "echo $PYB64 | base64 -d | python3"`.
+      local b64
+      b64=$(printf '%s' "$pyblock" | base64 -w 0)
+
+      # Non-interactive attach: --attach makes kubectl wait for the
+      # pod and stream stdout (so --rm can fire on completion). NO -i
+      # (we don't have an interactive stdin over non-tty SSH).
+      ssh_cp "kubectl -n mail run '${pod}' --rm --restart=Never --attach --quiet \
+        --image='${probe_image}' --image-pull-policy=IfNotPresent \
+        --env='MASTER_PW=${master_pw}' --env='ALLOW_PLAINTEXT_IMAP=yes' \
+        --env='IMAP_HOST=${imap_host}' --env='IMAP_PORT=${imap_port}' \
+        --env='IMAP_USER=${imap_user}' --env='PYB64=${b64}' \
+        --command -- sh -c 'echo \$PYB64 | base64 -d | python3'" 2>&1
     }
 
     log "restore/mbox: seeding message id=${probe_msgid} via IMAP master-user proxy..."
@@ -1974,6 +1986,21 @@ except Exception:
     ok "system_backup: mail/mail-pg pg_dump"
   else
     fail "system_backup: mail/mail-pg pg_dump"
+  fi
+
+  # Phase 4 WAL archive — long-running (waits ≤6 min for CNPG to push
+  # a WAL). Skip in `all` runs unless RUN_WAL_HARNESS=1 is set; the
+  # wait dominates suite duration.
+  if [[ "${RUN_WAL_HARNESS:-0}" = "1" ]]; then
+    log "── scenario system_backup: WAL archive platform/postgres ──"
+    if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+       TARGET_CONFIG_ID="$target_id" \
+       CLUSTER_NS=platform CLUSTER_NAME=postgres \
+       bash "$script_dir/integration-system-wal-archive.sh"; then
+      ok "system_backup: platform/postgres WAL archive"
+    else
+      fail "system_backup: platform/postgres WAL archive"
+    fi
   fi
 }
 

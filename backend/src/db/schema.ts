@@ -14,6 +14,7 @@ import {
   customType,
   uniqueIndex,
   index,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql, isNotNull } from 'drizzle-orm';
 
@@ -1380,6 +1381,23 @@ export const systemBackupRuns = pgTable('system_backup_runs', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 export type SystemBackupRun = typeof systemBackupRuns.$inferSelect;
+
+// ─── System Backup Phase 4 — WAL archive runtime state ──────────────────────
+// One row per (cluster_namespace, cluster_name) when WAL streaming is ON.
+// Removed by the disable route. See migration 0085.
+export const systemWalArchiveState = pgTable('system_wal_archive_state', {
+  clusterNamespace: varchar('cluster_namespace', { length: 63 }).notNull(),
+  clusterName:      varchar('cluster_name',      { length: 63 }).notNull(),
+  targetConfigId:   varchar('target_config_id',  { length: 36 }).notNull(),
+  retentionDays:    integer('retention_days').notNull().default(30),
+  destinationPath:  varchar('destination_path',  { length: 1024 }).notNull(),
+  enabledAt:        timestamp('enabled_at', { withTimezone: true }).notNull().defaultNow(),
+  operatorUserId:   varchar('operator_user_id', { length: 36 }),
+}, (table) => [
+  primaryKey({ columns: [table.clusterNamespace, table.clusterName] }),
+  index('system_wal_archive_state_target_idx').on(table.targetConfigId),
+]);
+export type SystemWalArchiveState = typeof systemWalArchiveState.$inferSelect;
 
 // ─── Ingress access control (OIDC + claim rules) ────────────────────────────
 
