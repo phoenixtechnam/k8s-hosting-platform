@@ -6,7 +6,18 @@ metadata:
   labels:
     app: dex
 spec:
-  # M14: replicas owned by platform-storage-policy reconciler.
+  # Dex stores OAuth auth-state in a per-pod SQLite DB (emptyDir volume).
+  # The auth-state is created during /dex/auth and looked up on
+  # /dex/auth/local/login — across multiple pods, the lookup misses
+  # (caught by integration-oidc-dex.sh: "invalid 'state' parameter /
+  # not found"). sessionAffinity:ClientIP on the Service didn't help
+  # because requests via different ingress-nginx pods present
+  # different source IPs to kube-proxy. Pinning to 1 replica is the
+  # minimal correctness fix; the right long-term solution is a shared
+  # postgres storage backend (config.yaml:storage.type: postgres).
+  # Overrides M14 storage-policy reconciler — Dex is single-tenant
+  # auth state, not user data, so HA replication isn't useful here.
+  replicas: 1
   selector:
     matchLabels:
       app: dex
