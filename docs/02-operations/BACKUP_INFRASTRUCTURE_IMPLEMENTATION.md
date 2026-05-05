@@ -1,6 +1,13 @@
 # Backup Infrastructure Implementation
 
-**Status:** Specification · 2026-04-20
+> **⚠️ SUPERSEDED — 2026-05-05.** This document describes the
+> deprecated SSHFS + per-database `mysqldump` CronJob architecture.
+> The Phase-4 as-built tenant-backup stack uses HTTP-upload-from-
+> tenant-Job + S3/SSH BackupStore + Plesk-style restore cart and
+> is documented at **[TENANT_BACKUP.md](TENANT_BACKUP.md)**. Read
+> that first; this file is historical reference only.
+
+**Status:** Specification · 2026-04-20 · **SUPERSEDED 2026-05-05**
 **Owner:** Infrastructure Team
 
 > **Authoritative bundle format:** [../06-features/BACKUP_COMPONENT_MODEL.md](../06-features/BACKUP_COMPONENT_MODEL.md) (takes precedence).

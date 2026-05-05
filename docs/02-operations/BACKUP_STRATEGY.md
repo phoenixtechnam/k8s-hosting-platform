@@ -1,6 +1,15 @@
 # Backup Strategy: Component-Oriented Backups with Tiered Initiators
 
-**Status:** Specification · 2026-04-20
+> **⚠️ SUPERSEDED — 2026-05-05.** This document describes the
+> deprecated SSHFS-based architecture and Phase-1 strategy. The
+> Phase-4 as-built tenant-backup stack (Plesk-style cart, Tier-1
+> scheduler, GDPR data export, etc.) is documented at
+> **[TENANT_BACKUP.md](TENANT_BACKUP.md)** — the operator runbook
+> reflects the actual code paths under `backups-v2/` +
+> `backup-restore/`. Read TENANT_BACKUP.md first; this file is
+> kept for historical context on the design discussions only.
+
+**Status:** Specification · 2026-04-20 · **SUPERSEDED 2026-05-05**
 **Owner:** Infrastructure & Operations Team
 
 > **Authoritative docs:**
