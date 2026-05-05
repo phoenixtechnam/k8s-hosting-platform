@@ -44,11 +44,18 @@ spec:
         - protocol: TCP
           port: 4190
     # Management HTTP — cluster-internal: same namespace + platform namespace
-    # (platform-api JMAP proxy + bootstrap job) + ingress-controller pods
-    # only (NOT the whole ingress-nginx ns — security review M-5 fix
-    # 2026-05-03: a generic namespaceSelector grants every pod in the ns
-    # a path to the JMAP management port, including any sidecars or
-    # debug pods that get co-tenanted there).
+    # (platform-api JMAP proxy + bootstrap job) + ingress-controller pods.
+    # ingress-nginx runs hostNetwork=true on this cluster, so its packets
+    # source from the node IP (or, more precisely, get re-sourced by Linux
+    # to the Calico VXLAN tunnel IP which falls inside the cluster pod
+    # CIDR — see docs/03-cluster-networking/CALICO_VXLAN.md). A pure
+    # namespace+podSelector match for ingress-nginx fails for this case
+    # because the source is not a recognised pod IP. The ipBlock below
+    # allows the entire cluster pod CIDR — strictly looser than the prior
+    # podSelector for *intra-pod* sources, but ingress is already gated
+    # by auth_request → /api/v1/auth/verify-admin-session at the nginx
+    # layer, so the JMAP port is not actually exposed publicly.
+    # See `project_calico_netpol_ipblock_fix.md` for the canonical write-up.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -62,6 +69,8 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: ingress-nginx
+        - ipBlock:
+            cidr: 10.42.0.0/16
       ports:
         - protocol: TCP
           port: 8080

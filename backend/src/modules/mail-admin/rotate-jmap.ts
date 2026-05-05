@@ -138,6 +138,7 @@ export async function rotateAdminPasswordViaJmapImpl(
     }
   } catch (err) {
     const status = (err as { code?: string; details?: { status?: number } })?.details?.status;
+    const errMsg = err instanceof Error ? err.message : String(err);
     // 401: bad/stale credentials — see comment above.
     // 429: Stalwart's auth-attempt rate-limit triggered after prior
     // attempts hit 401 in succession. The Secret-patch path doesn't
@@ -146,11 +147,20 @@ export async function rotateAdminPasswordViaJmapImpl(
     // first 401 worsens the rate-limit window and ALL subsequent
     // rotations 500 until Stalwart's auth-attempt counter resets
     // (~5min on default config).
-    if (status === 401 || status === 429) {
+    // Network-level errors (`fetch failed`, `ECONNRESET`, `socket hang
+    // up`, `ECONNREFUSED`) — Stalwart pod is unhealthy / mid-restart /
+    // CrashLoopBackOff. Patching the Secret is the right move: when
+    // Stalwart eventually recovers, it'll boot with the new password.
+    // Without this clause every operator rotation attempt during a
+    // Stalwart outage 500s, leaving the operator with no path to
+    // rotate even though the Secret-only mechanism would still work.
+    const isNetworkError = /fetch failed|ECONNRESET|ECONNREFUSED|socket hang up|other side closed/i.test(errMsg);
+    if (status === 401 || status === 429 || isNetworkError) {
       log.warn({
         username: opts.username,
         status,
-      }, 'JMAP /session refused (auth) — falling back to recovery-admin Secret-patch path. Likely cause: prior rotation mid-rollout (Stalwart pod env still on previous password) OR cluster runs in recovery-admin-only mode (no Account row) OR Stalwart auth-attempt rate-limit window from prior failed attempts.');
+        errMsg,
+      }, 'JMAP /session unreachable or refused — falling back to recovery-admin Secret-patch path. Causes: prior rotation mid-rollout, recovery-admin-only mode, rate-limit window, OR Stalwart pod unhealthy. The Secret IS the source of truth; Stalwart picks up the new value on next pod restart.');
     } else {
       throw err;
     }

@@ -121,6 +121,23 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     await expect(rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps)).rejects.toThrow('JMAP unreachable');
   });
 
+  it('falls back to Secret-patch path when JMAP /session fails with a network error', async () => {
+    // Stalwart pod CrashLoopBackOff or mid-restart produces undici
+    // errors like `TypeError: fetch failed: other side closed`. There's
+    // no `details.status` because no HTTP response ever arrived. The
+    // Secret-patch path is still the right move — when Stalwart comes
+    // back, it'll boot with the new env var.
+    const netErr = new TypeError('fetch failed');
+    (netErr as Error & { cause?: { message?: string } }).cause = { message: 'other side closed' };
+    netErr.message = 'fetch failed: other side closed';
+    const deps = makeDeps({ getJmapAccountId: vi.fn().mockRejectedValue(netErr) });
+
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+    expect(result.password).toBe('new-secret-password');
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+    expect(deps.updateAdminPassword).not.toHaveBeenCalled();
+  });
+
   it('falls back to Secret-patch path when JMAP /session returns 429 (rate-limited)', async () => {
     // After several failed 401s (e.g. operator hit "rotate" repeatedly
     // during a half-finished rollout), Stalwart's auth-attempt rate
