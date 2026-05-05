@@ -21,7 +21,7 @@
 
 import type { Database } from '../../db/index.js';
 import { systemBackupRuns, auditLogs } from '../../db/schema.js';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { exportSecretsBundle, BUNDLE_SECRET_LIST, OPERATOR_KEY_SECRETS, type BundleManifestItem } from './secrets-bundle.js';
 import { signDownloadToken, verifyDownloadToken, sha256Hex } from './download-token.js';
@@ -169,45 +169,44 @@ export async function claimDownloadToken(
   if ('err' in verified) return null;
 
   const tokenHash = sha256Hex(rawToken);
-  // Stage 2: single-statement atomic claim. RETURNING gives us the
-  // payload only when the UPDATE matched all WHERE clauses.
-  const result = await db.execute<{
-    payload: Buffer;
-    sha256: string;
-    size_bytes: number;
-    manifest: unknown;
-  }>(sql`
-    UPDATE system_backup_runs
-       SET downloaded_at      = now(),
-           payload            = NULL,
-           download_token_raw = NULL,
-           updated_at         = now()
-     WHERE id                      = ${verified.ok.runId}
-       AND download_token_hash     = ${tokenHash}
-       AND downloaded_at           IS NULL
-       AND status                  = 'succeeded'
-       AND download_url_expires_at > now()
-       AND payload                 IS NOT NULL
-     RETURNING payload, sha256, size_bytes, manifest
-  `);
-  const rows = (result as unknown as { rows: Array<{
-    payload: Buffer;
-    sha256: string;
-    size_bytes: number;
-    manifest: unknown;
-  }> }).rows;
+  // Stage 2: single-statement atomic claim via Drizzle's typed update
+  // builder (NOT db.execute(sql`...`) — that path strips bytea→Buffer
+  // through Drizzle's raw-SQL result handler, leaving payload as `{}`
+  // and breaking the download. Typed update()...returning() preserves
+  // the column-aware decoding via the bytea customType in schema.ts.
+  const rows = await db
+    .update(systemBackupRuns)
+    .set({
+      downloadedAt: new Date(),
+      payload: null,
+      downloadTokenRaw: null,
+    })
+    .where(and(
+      eq(systemBackupRuns.id, verified.ok.runId),
+      eq(systemBackupRuns.downloadTokenHash, tokenHash),
+      isNull(systemBackupRuns.downloadedAt),
+      eq(systemBackupRuns.status, 'succeeded'),
+      gt(systemBackupRuns.downloadUrlExpiresAt, new Date()),
+      isNotNull(systemBackupRuns.payload),
+    ))
+    .returning({
+      payload: systemBackupRuns.payload,
+      sha256: systemBackupRuns.sha256,
+      sizeBytes: systemBackupRuns.sizeBytes,
+      manifest: systemBackupRuns.manifest,
+    });
   if (rows.length === 0) return null;
   const r = rows[0];
   // Defence-in-depth: validate Buffer at runtime in case the pg type
-  // parser was reconfigured (would arrive as a hex string with \x prefix).
-  if (!Buffer.isBuffer(r.payload)) {
+  // parser is ever reconfigured.
+  if (!r.payload || !Buffer.isBuffer(r.payload)) {
     return null;
   }
   return {
     payload: r.payload,
-    sha256: r.sha256,
-    sizeBytes: r.size_bytes,
-    manifest: (r.manifest as BundleManifestItem[]) ?? [],
+    sha256: r.sha256 ?? '',
+    sizeBytes: r.sizeBytes ?? 0,
+    manifest: (r.manifest as BundleManifestItem[] | null) ?? [],
   };
 }
 
