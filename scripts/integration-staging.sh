@@ -937,7 +937,24 @@ for c in (items if isinstance(items, list) else []):
     local mb_b_resp; mb_b_resp=$(api POST "/admin/backups/bundles" "$mbody")
     local mbundle_id; mbundle_id=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
     local mb_b_status; mb_b_status=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
-    [[ "$mb_b_status" == "completed" && -n "$mbundle_id" ]] || { fail "restore/mbox: bundle create failed: $(echo "$mb_b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    if [[ "$mb_b_status" != "completed" || -z "$mbundle_id" ]]; then
+      fail "restore/mbox: bundle create returned status=$mb_b_status — resp: $(echo "$mb_b_resp" | head -c 400)"
+      # Diagnostic: dump component breakdown + Stalwart Job logs.
+      log "restore/mbox: component breakdown ↓"
+      api GET "/admin/backups/bundles/$mbundle_id" 2>&1 | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin).get('data', {})
+    for c in d.get('components', []):
+        print(f\"  {c.get('component'):12} {c.get('status'):12} {c.get('lastError', '')}\")
+except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
+      log "restore/mbox: Stalwart Job pods + logs ↓"
+      ssh_cp "kubectl -n mail get pods -l platform.io/component=backup-files 2>&1 | head" 2>&1 | sed 's/^/    /'
+      ssh_cp "kubectl -n mail logs -l platform.io/component=backup-files --tail=80 2>&1" 2>&1 | sed 's/^/    /' | head -40
+      [[ -n "$mbundle_id" ]] && api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
     ok "restore/mbox: bundle $mbundle_id captured with mailboxes component"
 
     # Browse the mailboxes component, confirm address is present.

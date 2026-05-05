@@ -450,6 +450,29 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     await app.db.delete(clientBackupSchedules).where(eq(clientBackupSchedules.clientId, clientId));
     reply.status(204).send();
   });
+
+  // ── POST /api/v1/admin/clients/:clientId/backup-schedule/run-now ───
+  // Reset last_run_at on the client's schedule so the next Tier-1
+  // tick (within 5 min) picks it up. Operator-friendly affordance:
+  // lets you test a schedule without waiting for the natural next-due
+  // window. Requires the schedule to exist + be enabled.
+  app.post('/admin/clients/:clientId/backup-schedule/run-now', {
+    schema: { tags: ['BackupsV2'], summary: 'Force the next scheduler tick to fire this client immediately', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { clientId } = request.params as { clientId: string };
+    const [row] = await app.db.select().from(clientBackupSchedules)
+      .where(eq(clientBackupSchedules.clientId, clientId)).limit(1);
+    if (!row) throw new ApiError('NOT_FOUND', 'No schedule for this client — create one first', 404);
+    if (!row.enabled) throw new ApiError('VALIDATION_ERROR', 'Schedule is disabled — enable it before requesting a run', 400);
+    // Setting last_run_at to NULL marks the row as "never run" which
+    // matches the eligibility predicate `last_run_at IS NULL` in
+    // schedule.ts.runScheduleTick. The cross-replica CAS still
+    // serialises if multiple admins hit Run-Now simultaneously.
+    await app.db.update(clientBackupSchedules)
+      .set({ lastRunAt: null, lastRunStatus: null })
+      .where(eq(clientBackupSchedules.clientId, clientId));
+    reply.send(success({ clientId, message: 'Scheduled for next tick (within 5 minutes)' }));
+  });
 }
 
 async function resolveStore(
