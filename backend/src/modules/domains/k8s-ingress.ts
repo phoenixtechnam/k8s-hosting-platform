@@ -301,8 +301,11 @@ export async function reconcileIngress(
   const rulesWithDomain: RuleWithDomain[] = [];
   for (const route of updatedRoutes) {
     // Resolve the backend Service from whichever target the route declares.
-    // Migration 0076's CHECK constraint guarantees exactly one of
-    // (deploymentId, privateWorkerId) is non-null.
+    // Migration 0076 introduced the CHECK constraint; migration 0085
+    // relaxed it so AT MOST ONE of (deploymentId, privateWorkerId) is
+    // set. Both-null is allowed for "draft" routes — the `if (!backend)
+    // continue` below skips them so they don't generate Ingress rules
+    // until the operator binds a target via PATCH.
     const backend = route.privateWorkerId
       ? privateWorkerBackends.get(route.privateWorkerId)
       : route.deploymentId

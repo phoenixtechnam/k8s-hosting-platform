@@ -255,6 +255,10 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
   const deleteRoute = useDeleteIngressRoute(clientId, domainId);
 
   const [newHostname, setNewHostname] = useState('');
+  // Optional at create time — operator can leave the route unassigned and
+  // bind a deployment later via the Deployment dropdown in the routes
+  // table. Migration 0085 lets the row sit in a "draft" state with both
+  // target columns null; the Ingress reconciler skips it until bound.
   const [newDeploymentId, setNewDeploymentId] = useState('');
 
   const routes = routesData?.data ?? [];
@@ -262,9 +266,12 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
 
   const handleAddRoute = (e: FormEvent) => {
     e.preventDefault();
-    if (!newHostname || !newDeploymentId) return;
+    if (!newHostname) return;
     createRoute.mutate(
-      { hostname: newHostname, deployment_id: newDeploymentId },
+      {
+        hostname: newHostname,
+        deployment_id: newDeploymentId || undefined,
+      },
       {
         onSuccess: () => {
           setNewHostname('');
@@ -404,34 +411,28 @@ function RoutingTab({ clientId, domainId, domainName, dnsMode }: {
           </p>
         </div>
         <div className="flex-1 min-w-[220px]">
-          {/* Deployment is required at creation time — the DB constraint
-              ingress_routes_target_xor (migration 0076) forbids a route
-              row without a target. The previous form submitted hostname-only
-              and produced a generic 500 from the constraint violation. */}
+          {/* Optional at create — operator may want to wire up TLS / WAF
+              / rate-limit settings on a draft route before a deployment
+              exists. The Deployment column dropdown in the routes table
+              below assigns / re-assigns the target post-create. */}
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Deployment
+            Deployment <span className="text-xs font-normal text-gray-400">(optional — assign later)</span>
           </label>
           <select
             value={newDeploymentId}
             onChange={(e) => setNewDeploymentId(e.target.value)}
             className={INPUT_CLASS}
             data-testid="new-route-deployment-input"
-            required
           >
-            <option value="">— select a deployment —</option>
+            <option value="">— leave unassigned —</option>
             {deployments.map((d) => (
               <option key={d.id} value={d.id}>{d.name} ({d.status})</option>
             ))}
           </select>
-          {deployments.length === 0 && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              No deployments yet — create one for this client first, then add the route.
-            </p>
-          )}
         </div>
         <button
           type="submit"
-          disabled={!newHostname || !newDeploymentId || createRoute.isPending}
+          disabled={!newHostname || createRoute.isPending}
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
           data-testid="add-route-button"
         >

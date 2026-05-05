@@ -116,28 +116,20 @@ export async function createRoute(
   path?: string,
   privateWorkerId?: string | null,
 ) {
-  // Polymorphic target validation (migration 0076).
-  // The `ingress_routes_target_xor` check constraint requires EXACTLY ONE
-  // of (deployment_id, private_worker_id) be non-null. We enforce both
-  // halves at the API layer with explicit error codes so the operator
-  // sees a clear 400, never a generic 500 from the DB constraint blowing
-  // up the INSERT (the regression that surfaced as "An unexpected error
-  // occurred" in the admin panel — both halves were null when the
-  // route-create form had no deployment picker).
+  // Polymorphic target validation (migration 0076 + 0085).
+  //
+  // Routes may be created in a "draft" state with NEITHER target bound
+  // (operator wires up hostname / TLS / WAF first, then assigns a
+  // deployment or private worker later via PATCH). The DB constraint
+  // `ingress_routes_target_xor` (relaxed in migration 0085) enforces
+  // that AT MOST ONE of (deployment_id, private_worker_id) is set —
+  // both-null is allowed, both-set is forbidden. The Ingress reconciler
+  // skips routes whose target doesn't resolve yet (k8s-ingress.ts:306).
   if (deploymentId && privateWorkerId) {
     throw new ApiError(
       'VALIDATION_ERROR',
       'A route can target a deployment or a private_worker, not both',
       400,
-    );
-  }
-  if (!deploymentId && !privateWorkerId) {
-    throw new ApiError(
-      'TARGET_REQUIRED',
-      'A route must target a deployment or a private worker. Provide deployment_id or private_worker_id.',
-      400,
-      { hostname },
-      'Pick a deployment from the workload list (or attach a private worker first), then submit again.',
     );
   }
   // Normalize path — default to "/", ensure leading and trailing slashes
