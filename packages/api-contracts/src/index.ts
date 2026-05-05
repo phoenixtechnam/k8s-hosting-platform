@@ -40,6 +40,8 @@ export * from './email-domains.js';
 export * from './mailboxes.js';
 export * from './email-aliases.js';
 export * from './mail-admin.js';
+export * from './mail-storage.js';
+export * from './mail-blob-store.js';
 export * from './smtp-relay.js';
 export * from './webmail-settings.js';
 export * from './platform-updates.js';

@@ -31,6 +31,8 @@ import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
+import { getMailPvcStorage, resizeMailPvc } from './mail-pvc.js';
+import { mailPvcResizeRequestSchema } from '@k8s-hosting/api-contracts';
 
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -147,6 +149,65 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     '/admin/mail/rotate-webmail-master-password',
     { preHandler: requireRole('super_admin') },
     handleRotateWebmailMasterPassword,
+  );
+
+  // ─── Mail PVC storage (mail-pg-1) ─────────────────────────────────
+  // GET reads live size + capacity + StorageClass.allowVolumeExpansion
+  // + (best-effort) used/free from a df probe inside the CNPG primary.
+  // PATCH online-grows; rejects shrink + same-size + SC-no-expansion
+  // up-front with explicit error codes the UI surfaces in <ErrorPanel>.
+  app.get(
+    '/admin/mail/pvc/storage',
+    { preHandler: requireRole('super_admin') },
+    async () => {
+      const cfg = app.config as Record<string, unknown>;
+      try {
+        const result = await getMailPvcStorage({
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.warn({ err }, 'mail-admin: pvc storage read failed');
+        throw new ApiError(
+          'MAIL_PVC_READ_FAILED',
+          'Could not read mail-pg-1 PVC state — see server logs',
+          503,
+        );
+      }
+    },
+  );
+  app.patch(
+    '/admin/mail/pvc/storage',
+    { preHandler: requireRole('super_admin') },
+    async (req: { body: unknown; user?: { sub?: string } }) => {
+      const cfg = app.config as Record<string, unknown>;
+      const userId = req.user?.sub ?? 'unknown';
+      const parsed = mailPvcResizeRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ApiError(
+          'VALIDATION_ERROR',
+          parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', '),
+          400,
+        );
+      }
+      app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize requested');
+      try {
+        const result = await resizeMailPvc(parsed.data.newGiB, {
+          kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        });
+        app.log.warn({ userId, newGiB: parsed.data.newGiB }, 'mail-admin: pvc resize patched');
+        return success(result);
+      } catch (err) {
+        if (err instanceof ApiError) throw err;
+        app.log.error({ err, userId }, 'mail-admin: pvc resize failed');
+        throw new ApiError(
+          'MAIL_PVC_RESIZE_FAILED',
+          'mail-pg-1 PVC resize failed — see server logs',
+          500,
+        );
+      }
+    },
   );
 
   app.get('/admin/mail/queue', async () => {
