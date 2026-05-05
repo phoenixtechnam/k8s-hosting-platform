@@ -74,6 +74,16 @@ export interface RunBundleInput {
   readonly targetConfigId?: string | null;
   readonly targetUri: string;
   readonly components: { files: boolean; mailboxes: boolean; config: boolean; secrets: boolean };
+  /**
+   * GDPR data-export wrapper. When set, after meta.json is committed
+   * the orchestrator builds a single AES-256-CBC tarball of every
+   * component artifact + meta.json, encrypted with `exportPassphrase`
+   * (the platform never stores the passphrase). The artifact is
+   * written to components/config/data-export-<bundleId>.tar.gz.enc
+   * and its name is recorded in backup_jobs.export_artifact.
+   */
+  readonly exportMode?: 'data_export' | null;
+  readonly exportPassphrase?: string | null;
 }
 
 export interface RunBundleResult {
@@ -307,6 +317,39 @@ export async function runBundle(
     await deps.store.putMeta(handle, meta);
   }
 
+  // GDPR data-export wrapper. Only on a fully-completed bundle —
+  // partials would produce a half-tarball that can't be safely
+  // restored from. The wrapper streams every artifact + meta.json
+  // through tar → gzip → AES-256-CBC and writes the result to the
+  // off-site target. We record the resulting artifact name on
+  // backup_jobs.export_artifact for the download endpoint.
+  let exportArtifact: string | null = null;
+  if (status === 'completed' && input.exportMode === 'data_export' && input.exportPassphrase) {
+    try {
+      const componentsToWrap: ReadonlyArray<{ component: BackupComponentName; name: string }> = (
+        await deps.db.select().from(backupComponents).where(eq(backupComponents.backupJobId, bundleId))
+      )
+        .filter((c) => c.status === 'completed' && c.artifactName)
+        .map((c) => ({ component: c.component as BackupComponentName, name: c.artifactName! }));
+      const { wrapBundleAsDataExport } = await import('./data-export.js');
+      const wrapped = await wrapBundleAsDataExport({
+        store: deps.store,
+        handle,
+        backupId: bundleId,
+        passphrase: input.exportPassphrase,
+        components: componentsToWrap as ReadonlyArray<{ component: 'files' | 'mailboxes' | 'config' | 'secrets'; name: string }>,
+      });
+      exportArtifact = wrapped.artifactPath;
+    } catch (err) {
+      // Wrap failure is recorded as an error on the bundle but
+      // does NOT downgrade status from 'completed' — the underlying
+      // bundle is still good and the operator can re-trigger the
+      // export wrap separately. Surface the error so the UI can
+      // present a "wrap failed; retry" affordance.
+      errors.push(`data_export: ${(err as Error).message}`);
+    }
+  }
+
   await deps.db
     .update(backupJobs)
     .set({
@@ -314,6 +357,8 @@ export async function runBundle(
       sizeBytes: totalSize,
       finishedAt: new Date(),
       lastError: errors.length === 0 ? null : errors.join('; '),
+      exportMode: input.exportMode ?? null,
+      exportArtifact,
     })
     .where(eq(backupJobs.id, bundleId));
 

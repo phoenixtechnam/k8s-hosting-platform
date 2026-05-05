@@ -125,6 +125,7 @@ export const bundleSummarySchema = z.object({
   retentionDays: z.number().int().positive(),
   expiresAt: z.string().nullable(),
   exportMode: z.string().nullable(),
+  exportArtifact: z.string().nullable(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
   lastError: z.string().nullable(),

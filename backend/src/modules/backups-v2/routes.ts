@@ -174,10 +174,60 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           config: input.components?.config ?? true,
           secrets: input.components?.secrets ?? (input.exportMode !== 'data_export'),
         },
+        exportMode: input.exportMode ?? null,
+        exportPassphrase: input.exportPassphrase ?? null,
       },
     );
 
     reply.status(201).send(success({ bundleId: result.bundleId, status: result.status, meta: result.meta }));
+  });
+
+  // ── GET /api/v1/admin/backups/bundles/:id/data-export ──────────────
+  // Streams the AES-256-CBC-encrypted tarball produced by the
+  // data_export wrapper to the caller. The body is opaque ciphertext;
+  // the client decrypts locally with the passphrase they provided at
+  // create time:
+  //
+  //   openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+  //     -in data-export-<bundleId>.tar.gz.enc -out bundle.tar.gz \
+  //     -pass stdin <<< "$PASSPHRASE"
+  //
+  // Auth is admin-gated — for client-panel download, the client-panel
+  // re-uses this same endpoint via its admin proxy + the existing
+  // tenant-context check on the bundle.
+  app.get('/admin/backups/bundles/:id/data-export', {
+    schema: { tags: ['BackupsV2'], summary: 'Download the GDPR data-export ciphertext for a bundle', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+    if (job.exportMode !== 'data_export' || !job.exportArtifact) {
+      throw new ApiError(
+        'NO_DATA_EXPORT',
+        'This bundle has no data_export artifact. Re-create the bundle with exportMode=data_export + exportPassphrase to enable.',
+        400,
+      );
+    }
+    if (!job.targetConfigId) {
+      throw new ApiError('CONFIG_INVALID', 'Bundle has no target_config_id', 400);
+    }
+    const store = await resolveStore(app, job.targetConfigId);
+    const handle = await store.open(id);
+    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
+    // exportArtifact is `components/<comp>/<name>` — split.
+    const m = job.exportArtifact.match(/^components\/(files|mailboxes|config|secrets)\/(.+)$/);
+    if (!m) throw new ApiError('CONFIG_INVALID', `Malformed export_artifact path '${job.exportArtifact}'`, 400);
+    const [, component, artifactName] = m as unknown as [string, 'files' | 'mailboxes' | 'config' | 'secrets', string];
+    const stat = await store.stat(handle, component, artifactName);
+    if (!stat) throw new ApiError('NOT_FOUND', `Export artifact missing on remote target: ${job.exportArtifact}`, 404);
+    const body = await store.readComponent(handle, component, artifactName);
+    reply.header('Content-Type', 'application/octet-stream');
+    if (Number.isFinite(stat.sizeBytes) && stat.sizeBytes >= 0) {
+      reply.header('Content-Length', String(stat.sizeBytes));
+    }
+    reply.header('Content-Disposition', `attachment; filename="data-export-${id}.tar.gz.enc"`);
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(body);
   });
 
   // ── POST /api/v1/admin/backups/bundles/:id/verify ──────────────────
@@ -405,6 +455,7 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     retentionDays: j.retentionDays,
     expiresAt: j.expiresAt ? j.expiresAt.toISOString() : null,
     exportMode: j.exportMode,
+    exportArtifact: j.exportArtifact,
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
     lastError: j.lastError,

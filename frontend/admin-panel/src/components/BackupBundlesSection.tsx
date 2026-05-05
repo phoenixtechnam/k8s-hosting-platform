@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw } from 'lucide-react';
+import { Package, Plus, Trash2, ShieldCheck, Loader2, AlertCircle, CheckCircle, X, Database, KeyRound, FolderOpen, RotateCcw, Download, Lock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
@@ -7,6 +7,7 @@ import {
   useCreateBundle,
   useDeleteBundle,
   useVerifyBundle,
+  downloadDataExport,
 } from '@/hooks/use-backup-bundles';
 import { useClients } from '@/hooks/use-clients';
 import type {
@@ -214,6 +215,20 @@ function BundleRow({
               <RotateCcw size={14} /> Restore
             </Link>
           )}
+          {bundle.exportArtifact && bundle.status === 'completed' && (
+            <button
+              type="button"
+              onClick={async () => {
+                try { await downloadDataExport(bundle.id); }
+                catch (e) { window.alert(`Download failed: ${(e as Error).message}`); }
+              }}
+              className="cursor-pointer flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/30"
+              title="Download the encrypted GDPR data-export tarball. Decrypt locally with the passphrase you provided at create time."
+            >
+              <Download size={14} /> Export
+              <Lock size={12} />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onDelete(bundle.id)}
@@ -248,6 +263,8 @@ function CreateBundleModal({
   const [retentionDays, setRetentionDays] = useState(30);
   const [includeConfig, setIncludeConfig] = useState(true);
   const [includeSecrets, setIncludeSecrets] = useState(true);
+  const [enableDataExport, setEnableDataExport] = useState(false);
+  const [exportPassphrase, setExportPassphrase] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ bundleId: string; status: string } | null>(null);
@@ -260,20 +277,32 @@ function CreateBundleModal({
       setError('Pick a client and a backup target.');
       return;
     }
+    if (enableDataExport && exportPassphrase.length < 12) {
+      setError('GDPR data-export passphrase must be at least 12 characters.');
+      return;
+    }
     setSubmitting(true);
     try {
       const r = await create.mutateAsync({
         clientId,
         targetConfigId: targetId,
-        initiator: 'admin',
+        // GDPR exportMode requires initiator='client' per the schema
+        // refinement (the client owns the request + passphrase). The
+        // admin endpoint accepts client-initiated bundles when
+        // exportMode is set.
+        initiator: enableDataExport ? 'client' : 'admin',
         label: label || undefined,
         retentionDays,
         components: {
           files: false, // Phase 3
           mailboxes: false, // Phase 3
           config: includeConfig,
-          secrets: includeSecrets,
+          secrets: enableDataExport ? false : includeSecrets,
         },
+        ...(enableDataExport ? {
+          exportMode: 'data_export' as const,
+          exportPassphrase,
+        } : {}),
       });
       setResult(r.data);
     } catch (err) {
@@ -354,6 +383,36 @@ function CreateBundleModal({
                 <FolderOpen size={12} />
                 <span>Files + mailboxes deferred to Phase 3</span>
               </div>
+            </fieldset>
+
+            <fieldset className="space-y-1.5 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+              <legend className="px-2 text-sm text-gray-700 dark:text-gray-300 font-medium flex items-center gap-1">
+                <Lock size={14} className="text-purple-600" /> GDPR data export
+              </legend>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={enableDataExport} onChange={(e) => setEnableDataExport(e.target.checked)} />
+                <span>Wrap bundle as encrypted single download</span>
+              </label>
+              {enableDataExport && (
+                <>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    The platform never stores this passphrase. Save it now — without it the export cannot be decrypted.
+                  </p>
+                  <input
+                    type="password"
+                    minLength={12}
+                    maxLength={256}
+                    autoComplete="new-password"
+                    placeholder="Passphrase (≥12 chars)"
+                    className={`${INPUT_CLASS} mt-1`}
+                    value={exportPassphrase}
+                    onChange={(e) => setExportPassphrase(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Decrypt with: <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000</code>
+                  </p>
+                </>
+              )}
             </fieldset>
 
             {error && (

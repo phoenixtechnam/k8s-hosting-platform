@@ -60,6 +60,38 @@ export function useCreateBundle() {
   });
 }
 
+/**
+ * Trigger a browser download of the encrypted GDPR data-export
+ * tarball. Uses fetch + Blob + URL.createObjectURL because <a
+ * href> cannot carry the Authorization Bearer header. The blob
+ * stays opaque ciphertext — the client decrypts locally with their
+ * passphrase.
+ */
+export async function downloadDataExport(bundleId: string): Promise<void> {
+  const token = localStorage.getItem('auth_token');
+  const r = await fetch(`/api/v1/admin/backups/bundles/${bundleId}/data-export`, {
+    method: 'GET',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`download failed (${r.status}): ${detail.slice(0, 200)}`);
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `data-export-${bundleId}.tar.gz.enc`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Hold onto the blob URL just long enough for the click to take
+  // effect, then revoke. Some browsers cancel the download if the
+  // URL is revoked synchronously after click().
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export function useDeleteBundle() {
   const qc = useQueryClient();
   return useMutation({
