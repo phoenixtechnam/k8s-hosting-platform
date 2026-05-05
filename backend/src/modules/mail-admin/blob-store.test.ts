@@ -140,6 +140,20 @@ describe('blob-store.buildCliCommands — secret-handling guard', () => {
     expect(buildCliCommands({ type: 'FileSystem', fileSystem: { path: '/p', depth: 2 } }).join('\n')).toContain('expected="FileSystem"');
   });
 
+  // Regression guard for a shell-escape bug found during staging E2E:
+  // an earlier version used a JS template-literal `\\$CLI` to escape
+  // `$` from JS interpolation. That rendered `\$CLI` to the shell, and
+  // bash treats `\$` inside `$(...)` as literal — so the shell tried
+  // to execute a command named `$CLI` and emitted `sh: $CLI: not found`.
+  // Every BlobStore flip then failed self-verify even though the
+  // underlying update succeeded.
+  it('self-verify uses unescaped "$CLI" so shell expands the variable', () => {
+    const flat = buildCliCommands({ type: 'Default' }).join('\n');
+    // The variable reference must be `"$CLI"` — no backslash before $.
+    expect(flat).not.toMatch(/\\\$CLI/);
+    expect(flat).toMatch(/"\$CLI"\s+get\s+BlobStore\s+--json/);
+  });
+
   // Regression guard for the bug found during the staging E2E:
   // stalwart-cli `get BlobStore` (no flag) emits human-readable text
   // ("Type: Filesystem"), while `get BlobStore --json` emits the JSON

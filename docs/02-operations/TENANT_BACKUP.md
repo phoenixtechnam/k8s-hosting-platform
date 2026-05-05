@@ -208,6 +208,43 @@ constraint — it'll spawn a Job that errors with "stalwart-cli not on
 PATH" until the mirror rewrite ships. Filed as a Phase-4.x
 follow-up.
 
+**Research notes (2026-05-05) — what's been tried, what didn't work:**
+
+1. *Stalwart admin HTTP `/api/principal/{name}/export`* — returns
+   `404 Not Found` on Stalwart 0.16.3 management endpoint. The
+   per-principal export route present in older versions appears to
+   have been removed in the 0.16 admin API rework.
+
+2. *Whole-store `stalwart -e <path>`* — works but exports EVERY
+   tenant's mail in a single tarball. Unsafe to ship as a per-client
+   bundle; would leak cross-tenant data.
+
+3. *IMAP master-user impersonation `<addr>%master` + master password*
+   — Roundcube's `jwt_auth.php` documents this syntax and uses it
+   successfully. A direct probe from a one-off pod returned
+   `[AUTHENTICATIONFAILED] localhost.local`. The likely cause is
+   the master Account being scoped to `master.local` (a synthetic
+   domain) with allow-list rules we haven't inspected, OR a
+   network-policy gate. Worth re-validating with the same exact
+   IMAP login string Roundcube uses (`<addr>%<masterUser>`, master
+   password from `roundcube-secrets/STALWART_MASTER_PASSWORD`).
+
+4. *JMAP per-account export* — `/jmap/session` succeeds for the
+   recovery admin (account `d333333`). Standard JMAP requires
+   authenticating AS the target user to fetch their `Email/query`
+   + `Email/get`. Cross-account fetch as admin requires either
+   Stalwart-specific extension methods (the session shows
+   `urn:stalwart:jmap` capability) or shared/delegated mailbox
+   ACLs which we don't currently configure.
+
+**Recommended next step:** an IMAP-based capture Job using
+`<addr>%master` proxy-auth (path #3) once we verify the master
+Account is provisioned in the staging Stalwart's data store
+(check `Account/query` via JMAP for an account with `name=master`
+in the `master.local` domain). Roundcube proves this auth path
+works in production; the discrepancy with our probe is most likely
+a Stalwart-side config detail, not a fundamental block.
+
 ## Schema reference
 
 - `backup_jobs` — one row per bundle (id, clientId, initiator, status, target, retentionDays, expiresAt, sizeBytes, exportMode, exportArtifact, …)

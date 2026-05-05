@@ -292,9 +292,10 @@ if [[ "${MAIL_STORAGE_E2E:-0}" == "1" ]]; then
       NEW_GIB=$((BEFORE_GIB + 1))
 
       PATCH_RESP=$(pa_call PATCH /api/v1/admin/mail/pvc/storage "{\"newGiB\":${NEW_GIB}}")
+      EXPECTED_BYTES=$((NEW_GIB * 1024 * 1024 * 1024))
       if echo "$PATCH_RESP" | python3 -c \
-        "import sys,json,re;d=json.load(sys.stdin);s=d.get('data',{}).get('newSize','');assert s=='${NEW_GIB}Gi'" 2>/dev/null; then
-        pass "PATCH /admin/mail/pvc/storage → ${NEW_GIB}Gi"
+        "import sys,json;d=json.load(sys.stdin);assert d.get('data',{}).get('requestedBytes')==${EXPECTED_BYTES}" 2>/dev/null; then
+        pass "PATCH /admin/mail/pvc/storage → requestedBytes=${EXPECTED_BYTES} (${NEW_GIB}GiB)"
       else
         fail "PATCH /admin/mail/pvc/storage → unexpected: $(echo "$PATCH_RESP" | head -c 300)"
       fi

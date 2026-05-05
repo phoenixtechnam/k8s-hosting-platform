@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { eq, lt } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import * as service from './service.js';
 import type { SaveProviderInput, SaveGlobalSettingsInput } from './service.js';
@@ -7,28 +8,58 @@ import { ApiError } from '../../shared/errors.js';
 import { syncProxyIngressAnnotations, syncOAuth2ProxySecret } from './ingress-proxy-manager.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { oidcPkceState } from '../../db/schema.js';
+import type { Database } from '../../db/index.js';
 
-// In-memory PKCE state store (Phase 1). Replace with Redis in production.
-const pkceStore = new Map<string, { codeVerifier: string; frontendRedirect: string; providerId: string; expiresAt: number }>();
-const MAX_PKCE_ENTRIES = 1000;
+interface PkceEntry {
+  codeVerifier: string;
+  frontendRedirect: string;
+  providerId: string;
+  expiresAt: number;
+}
+
+// Postgres-backed PKCE state store. Previously this was an in-memory
+// per-replica Map, which broke the OIDC flow whenever /authorize and
+// /callback landed on different platform-api pods (the second pod had
+// no record of the state). See migration 0086_oidc_pkce_state.sql.
+const pkceStore = {
+  async set(db: Database, state: string, entry: PkceEntry): Promise<void> {
+    await db.insert(oidcPkceState).values({
+      state,
+      codeVerifier: entry.codeVerifier,
+      frontendRedirect: entry.frontendRedirect,
+      providerId: entry.providerId,
+      expiresAt: new Date(entry.expiresAt),
+    });
+  },
+  async get(db: Database, state: string): Promise<PkceEntry | undefined> {
+    const [row] = await db.select().from(oidcPkceState).where(eq(oidcPkceState.state, state)).limit(1);
+    if (!row) return undefined;
+    if (row.expiresAt.getTime() < Date.now()) return undefined;
+    return {
+      codeVerifier: row.codeVerifier,
+      frontendRedirect: row.frontendRedirect,
+      providerId: row.providerId,
+      expiresAt: row.expiresAt.getTime(),
+    };
+  },
+  async delete(db: Database, state: string): Promise<void> {
+    await db.delete(oidcPkceState).where(eq(oidcPkceState.state, state));
+  },
+  async pruneExpired(db: Database): Promise<void> {
+    await db.delete(oidcPkceState).where(lt(oidcPkceState.expiresAt, new Date()));
+  },
+};
 
 export async function oidcRoutes(app: FastifyInstance): Promise<void> {
-  // Prune expired entries every 5 minutes; cap size to prevent DoS.
+  // Periodically prune expired PKCE rows (DB-side TTL). Single-row
+  // entries are tiny (< 200 B), so this matters mostly for hygiene
+  // and keeping the index small. 5-minute cadence matches the
+  // previous in-memory cleanup.
   const pkceCleanupTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [key, val] of pkceStore) {
-      if (val.expiresAt < now) pkceStore.delete(key);
-    }
-    // Hard cap — if store exceeds limit, drop oldest entries
-    if (pkceStore.size > MAX_PKCE_ENTRIES) {
-      const excess = pkceStore.size - MAX_PKCE_ENTRIES;
-      let deleted = 0;
-      for (const key of pkceStore.keys()) {
-        if (deleted >= excess) break;
-        pkceStore.delete(key);
-        deleted++;
-      }
-    }
+    void pkceStore.pruneExpired(app.db).catch((err) => {
+      app.log.warn({ err }, 'oidc-pkce: prune failed');
+    });
   }, 300_000);
   app.addHook('onClose', () => clearInterval(pkceCleanupTimer));
   const resolveEncryptionKey = (): string => {
@@ -94,7 +125,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     const state = crypto.randomUUID();
     const { codeVerifier, codeChallenge } = service.generatePkce();
 
-    pkceStore.set(state, { codeVerifier, frontendRedirect: frontendCallback, providerId, expiresAt: Date.now() + 600_000 });
+    await pkceStore.set(app.db, state, { codeVerifier, frontendRedirect: frontendCallback, providerId, expiresAt: Date.now() + 600_000 });
 
     const host = request.headers.host ?? request.hostname;
     const backendCallback = `${resolveScheme(request)}://${host}/api/v1/auth/oidc/callback`;
@@ -109,17 +140,17 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as { code?: string; state?: string; error?: string; error_description?: string };
 
     if (query.error) {
-      const pkce = query.state ? pkceStore.get(query.state) : undefined;
-      if (pkce) pkceStore.delete(query.state!);
+      const pkce = query.state ? await pkceStore.get(app.db, query.state) : undefined;
+      if (pkce) await pkceStore.delete(app.db, query.state!);
       const redirect = pkce?.frontendRedirect ?? '/login';
       return reply.redirect(`${redirect}?error=${encodeURIComponent(query.error_description ?? query.error)}`);
     }
 
     if (!query.code || !query.state) throw new ApiError('OIDC_CALLBACK_INVALID', 'Missing code or state', 400);
 
-    const pkce = pkceStore.get(query.state);
+    const pkce = await pkceStore.get(app.db, query.state);
     if (!pkce) throw new ApiError('OIDC_STATE_INVALID', 'Invalid or expired state', 400);
-    pkceStore.delete(query.state);
+    await pkceStore.delete(app.db, query.state);
 
     const host = request.headers.host ?? request.hostname;
     const callbackUrl = `${resolveScheme(request)}://${host}/api/v1/auth/oidc/callback`;

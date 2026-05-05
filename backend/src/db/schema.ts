@@ -178,6 +178,19 @@ export const oidcGlobalSettings = pgTable('oidc_global_settings', {
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// Postgres-backed PKCE state for the OIDC authorization-code flow.
+// Replaces the prior in-memory Map which lost state across the
+// /authorize → /callback hop when the two requests landed on
+// different platform-api replicas. See migration 0086.
+export const oidcPkceState = pgTable('oidc_pkce_state', {
+  state: text('state').primaryKey(),
+  codeVerifier: text('code_verifier').notNull(),
+  frontendRedirect: text('frontend_redirect').notNull(),
+  providerId: text('provider_id').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const rbacRoles = pgTable('rbac_roles', {
   id: varchar('id', { length: 36 }).primaryKey(),
   name: varchar('name', { length: 50 }).notNull(),

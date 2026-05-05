@@ -481,7 +481,12 @@ export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
   // ("Type: Filesystem") and the regex returns empty, marking
   // genuinely-successful flips as failed.
   cmds.push(`expected="${request.type}"`);
-  cmds.push(`actual=$("\\$CLI" get BlobStore --json | grep -oE '"@type":"[A-Za-z]+"' | head -1 | cut -d'"' -f4)`);
+  // Plain single-quoted string so JS doesn't interfere with the embedded
+  // shell command substitution. `$CLI` must reach the shell verbatim —
+  // an earlier version used a backtick template with `\\$CLI`, which
+  // rendered `\$CLI` and made the shell treat it as a literal command
+  // name (sh: $CLI: not found), silently failing every self-verify.
+  cmds.push('actual=$("$CLI" get BlobStore --json | grep -oE \'"@type":"[A-Za-z]+"\' | head -1 | cut -d\'"\' -f4)');
   cmds.push(
     `if [ "$actual" != "$expected" ]; then echo "self-verify FAILED — expected=$expected actual=$actual" >&2; exit 1; fi`,
   );
