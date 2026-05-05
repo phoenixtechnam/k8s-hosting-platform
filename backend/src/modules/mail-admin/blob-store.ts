@@ -373,7 +373,7 @@ function renderReadPodManifest(podName: string): unknown {
             },
           ],
           command: ['sh', '-c'],
-          args: [renderCliBootScript(['"$CLI" get BlobStore'])],
+          args: [renderCliBootScript(['"$CLI" get BlobStore --json'])],
         },
       ],
     },
@@ -443,7 +443,7 @@ function renderUpdateJobManifest(jobName: string, request: BlobStoreUpdateReques
 export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
   const cmds: string[] = [];
   cmds.push('echo === BEFORE ===');
-  cmds.push('"$CLI" get BlobStore || true');
+  cmds.push('"$CLI" get BlobStore --json || true');
 
   if (request.type === 'Default') {
     cmds.push('"$CLI" update BlobStore --field \'@type=Default\'');
@@ -471,14 +471,17 @@ export function buildCliCommands(request: BlobStoreUpdateRequest): string[] {
   }
 
   cmds.push('echo === AFTER ===');
-  cmds.push('"$CLI" get BlobStore');
+  cmds.push('"$CLI" get BlobStore --json');
 
-  // Self-verify — extract the @type from cli output and compare to
-  // the requested. Non-match exits non-zero and K8s marks the Job
+  // Self-verify — extract the @type from cli JSON output and compare
+  // to the requested. Non-match exits non-zero and K8s marks the Job
   // Failed, so the operator UI sees a hard failure rather than a
-  // silently-succeeded no-op.
+  // silently-succeeded no-op. The --json flag MUST stay paired with
+  // this grep — without it the cli emits human-readable text
+  // ("Type: Filesystem") and the regex returns empty, marking
+  // genuinely-successful flips as failed.
   cmds.push(`expected="${request.type}"`);
-  cmds.push(`actual=$("\\$CLI" get BlobStore | grep -oE '"@type":"[A-Za-z]+"' | head -1 | cut -d'"' -f4)`);
+  cmds.push(`actual=$("\\$CLI" get BlobStore --json | grep -oE '"@type":"[A-Za-z]+"' | head -1 | cut -d'"' -f4)`);
   cmds.push(
     `if [ "$actual" != "$expected" ]; then echo "self-verify FAILED — expected=$expected actual=$actual" >&2; exit 1; fi`,
   );

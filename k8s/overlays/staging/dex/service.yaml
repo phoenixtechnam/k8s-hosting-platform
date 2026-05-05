@@ -8,6 +8,21 @@ metadata:
 spec:
   selector:
     app: dex
+  # Dex stores its OAuth auth-state (PKCE state, code, etc.) in a
+  # per-pod SQLite DB at /var/dex/dex.db (emptyDir). With multiple
+  # replicas behind round-robin Service routing, the state created
+  # in pod A during /dex/auth is invisible to pod B during the
+  # follow-up /dex/auth/local/login GET — Dex returns
+  # "invalid 'state' parameter / not found" → "Bad Request:
+  # Requested resource does not exist." sessionAffinity:ClientIP
+  # pins each client's redirect chain to one pod so the state
+  # survives the entire flow. Surfaced by integration-oidc-dex.sh
+  # scenarios 6+7. The right long-term fix is a shared storage
+  # backend (postgres) but that's an overlay-wide change.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 600
   ports:
     - port: 5556
       targetPort: 5556

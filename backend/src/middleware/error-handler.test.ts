@@ -59,4 +59,62 @@ describe('errorHandler', () => {
     expect(body.error.message).toBe('An unexpected error occurred');
     expect(request.log.error).toHaveBeenCalledWith(err);
   });
+
+  it('unwraps DrizzleQueryError check-constraint failures into a 400 with constraint name', () => {
+    const { request, reply, statusFn, sendFn } = createMockRequestReply();
+    // Mimic the live-staging error: drizzle-orm wraps the pg error in a
+    // DrizzleQueryError with the pg shape on `.cause`.
+    class DrizzleQueryError extends Error {
+      constructor(message: string, public cause: unknown) {
+        super(message);
+        this.name = 'DrizzleQueryError';
+      }
+    }
+    const pgErr = Object.assign(new Error('new row for relation "ingress_routes" violates check constraint "ingress_routes_target_xor"'), {
+      code: '23514',
+      constraint: 'ingress_routes_target_xor',
+      table: 'ingress_routes',
+    });
+    const err = new DrizzleQueryError('Failed query: insert ...', pgErr) as unknown as FastifyError;
+
+    errorHandler(err, request, reply);
+
+    expect(statusFn).toHaveBeenCalledWith(400);
+    const body = sendFn.mock.calls[0][0];
+    expect(body.error.code).toBe('CHECK_CONSTRAINT_VIOLATION');
+    expect(body.error.message).toMatch(/ingress_routes_target_xor/);
+    expect(body.error.details).toMatchObject({
+      sqlState: '23514',
+      constraint: 'ingress_routes_target_xor',
+      table: 'ingress_routes',
+    });
+    expect(body.error.remediation).toMatch(/details\.constraint/);
+  });
+
+  it('unwraps unique-constraint (23505) DrizzleQueryError as DUPLICATE_KEY 400', () => {
+    const { request, reply, statusFn, sendFn } = createMockRequestReply();
+    class DrizzleQueryError extends Error {
+      constructor(message: string, public cause: unknown) {
+        super(message);
+        this.name = 'DrizzleQueryError';
+      }
+    }
+    const pgErr = Object.assign(new Error('duplicate key value violates unique constraint "users_email_unique"'), {
+      code: '23505',
+      constraint: 'users_email_unique',
+      table: 'users',
+      detail: 'Key (email)=(foo@bar.com) already exists.',
+    });
+    const err = new DrizzleQueryError('Failed query: insert ...', pgErr) as unknown as FastifyError;
+
+    errorHandler(err, request, reply);
+
+    expect(statusFn).toHaveBeenCalledWith(400);
+    const body = sendFn.mock.calls[0][0];
+    expect(body.error.code).toBe('DUPLICATE_KEY');
+    expect(body.error.details).toMatchObject({
+      constraint: 'users_email_unique',
+      detail: 'Key (email)=(foo@bar.com) already exists.',
+    });
+  });
 });

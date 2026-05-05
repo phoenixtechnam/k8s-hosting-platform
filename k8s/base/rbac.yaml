@@ -140,6 +140,12 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["csinodes"]
     verbs: ["get", "list", "watch"]
+  # storageclasses (cluster-scope): mail-admin/mail-pvc.ts reads the
+  # PVC's bound StorageClass to check allowVolumeExpansion before
+  # accepting an online resize. Read-only — no need for write verbs.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
   # Phase 2c: the backend `certificates` module creates and manages
   # cert-manager Certificate CRs in customer namespaces. Issuers and
   # ClusterIssuers are read-only (operators provision them via

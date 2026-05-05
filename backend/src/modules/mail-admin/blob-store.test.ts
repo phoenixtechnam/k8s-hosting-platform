@@ -139,4 +139,25 @@ describe('blob-store.buildCliCommands — secret-handling guard', () => {
     expect(buildCliCommands({ type: 'S3', s3: { bucket: 'b', region: 'r', accessKey: 'a', secretKey: 's' } }).join('\n')).toContain('expected="S3"');
     expect(buildCliCommands({ type: 'FileSystem', fileSystem: { path: '/p', depth: 2 } }).join('\n')).toContain('expected="FileSystem"');
   });
+
+  // Regression guard for the bug found during the staging E2E:
+  // stalwart-cli `get BlobStore` (no flag) emits human-readable text
+  // ("Type: Filesystem"), while `get BlobStore --json` emits the JSON
+  // line (`{"@type":"FileSystem", ...}`). The self-verify regex only
+  // works against the JSON form. Without `--json`, every successful
+  // flip would mark the Job as Failed and the operator UI would show
+  // a red error for a working change.
+  it('every "$CLI get BlobStore" invocation passes --json so self-verify can parse output', () => {
+    for (const req of [
+      { type: 'Default' as const },
+      { type: 'FileSystem' as const, fileSystem: { path: '/p', depth: 2 } },
+      { type: 'S3' as const, s3: { bucket: 'b', region: 'r', accessKey: 'a', secretKey: 's' } },
+    ]) {
+      const flat = buildCliCommands(req).join('\n');
+      // Must NOT contain a get without --json
+      expect(flat).not.toMatch(/"\$CLI"\s+get\s+BlobStore(?!\s+--json)/);
+      // Must contain at least one --json get
+      expect(flat).toMatch(/"\$CLI"\s+get\s+BlobStore\s+--json/);
+    }
+  });
 });

@@ -463,7 +463,7 @@ function BlobStoreConfirmModal({
                 Old messages may become unreachable until you run an external
                 migration tool — see{' '}
                 <a
-                  href="/docs/03-mail/STALWART_BLOB_STORE_MIGRATION"
+                  href="https://github.com/phoenixtechnam/k8s-hosting-platform/blob/main/docs/06-features/STALWART_BLOB_STORE_MIGRATION.md"
                   className="underline text-blue-700 dark:text-blue-300"
                   target="_blank"
                   rel="noreferrer noopener"
