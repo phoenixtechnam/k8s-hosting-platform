@@ -93,7 +93,18 @@ def imap_connect(host: str, port: int, user: str, password: str) -> imaplib.IMAP
             if os.environ.get("ALLOW_PLAINTEXT_IMAP") != "yes":
                 raise RuntimeError(f"IMAP server refused STARTTLS: {e}") from e
             log("WARN: STARTTLS refused, continuing in plaintext (ALLOW_PLAINTEXT_IMAP=yes)")
-    conn.login(user, password)
+    # Stalwart 0.16 advertises AUTH=PLAIN AUTH=OAUTHBEARER AUTH=XOAUTH2
+    # but NOT IMAP LOGIN. Other test servers (greenmail, dovecot) often
+    # support LOGIN but not AUTH=PLAIN. Try AUTH PLAIN first; fall back
+    # to LOGIN. PLAIN format: \0<user>\0<pass> (RFC 4616).
+    auth_blob = f"\0{user}\0{password}".encode("utf-8")
+    try:
+        typ, data = conn.authenticate("PLAIN", lambda _challenge: auth_blob)
+        if typ != "OK":
+            raise imaplib.IMAP4.error(f"AUTH PLAIN: {data!r}")
+    except imaplib.IMAP4.error as e:
+        log(f"AUTH PLAIN unsupported ({e}); falling back to LOGIN")
+        conn.login(user, password)
     return conn
 
 

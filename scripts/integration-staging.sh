@@ -971,7 +971,9 @@ for c in (items if isinstance(items, list) else []):
 import imaplib,os,ssl
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 m = imaplib.IMAP4_SSL("${imap_host}", ${imap_port}, ssl_context=ctx)
-m.login("${imap_user}", os.environ["MASTER_PW"])
+# Stalwart 0.16 only advertises AUTH=PLAIN (not IMAP LOGIN).
+auth_blob = ("\0" + "${imap_user}" + "\0" + os.environ["MASTER_PW"]).encode()
+m.authenticate("PLAIN", lambda _: auth_blob)
 m.select("INBOX")
 msg = (
     b"From: harness@phoenix-host.net\r\n"
@@ -991,7 +993,8 @@ EOF
 import imaplib,os,re,ssl
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 m = imaplib.IMAP4_SSL("${imap_host}", ${imap_port}, ssl_context=ctx)
-m.login("${imap_user}", os.environ["MASTER_PW"])
+auth_blob = ("\0" + "${imap_user}" + "\0" + os.environ["MASTER_PW"]).encode()
+m.authenticate("PLAIN", lambda _: auth_blob)
 typ,_=m.select("INBOX",readonly=True)
 typ,d=m.uid("FETCH","1:*","(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
 hits = 0
@@ -1008,7 +1011,8 @@ EOF
 import imaplib,os,ssl
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 m = imaplib.IMAP4_SSL(os.environ["IMAP_HOST"], int(os.environ["IMAP_PORT"]), ssl_context=ctx)
-m.login(os.environ["IMAP_USER"], os.environ["MASTER_PW"])
+auth_blob = ("\0" + os.environ["IMAP_USER"] + "\0" + os.environ["MASTER_PW"]).encode()
+m.authenticate("PLAIN", lambda _: auth_blob)
 m.select("INBOX")
 typ,d=m.search(None,"ALL")
 if typ=="OK" and d and d[0]:
