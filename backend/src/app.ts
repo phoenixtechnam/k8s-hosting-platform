@@ -114,6 +114,7 @@ import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
+import { startRetentionScheduler } from './modules/backups-v2/retention.js';
 // M12: DKIM rotation scheduler removed — Stalwart 0.16 manages DKIM natively
 import { createPrincipalsSyncScheduler } from './modules/stalwart-jmap/principals-sync.js';
 import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
@@ -546,6 +547,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => lifecycleRetryStop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
+      }
+
+      // Tenant Backup retention sweeper — deletes expired bundles
+      // on the off-site target + GCs stuck `running` bundles older
+      // than 24h. 5-min tick; first sweep fires immediately.
+      try {
+        const retentionTimer = startRetentionScheduler(app);
+        app.addHook('onClose', () => clearInterval(retentionTimer));
+      } catch (err) {
+        app.log.warn({ err }, 'tenant-backup retention: scheduler startup skipped');
       }
 
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM
