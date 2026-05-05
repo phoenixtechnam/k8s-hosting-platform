@@ -899,6 +899,76 @@ for c in (items if isinstance(items, list) else []):
     api DELETE "/admin/backups/bundles/$fbundle_id" >/dev/null 2>&1 || true
   fi
 
+  # ─── mailboxes-by-address sub-test (RESTORE_INCLUDE_MAILBOXES=1) ───
+  # Provisions a mailbox under the existing client's domain, captures
+  # a bundle with mailboxes=true, then exercises the cart with a
+  # mailboxes-by-address item. We don't drop+recreate the Stalwart
+  # account here (that's covered by scenario_mail) — this test
+  # proves the new executor end-to-end:
+  #   - bundle browse /mailboxes returns the address
+  #   - cart accepts the item
+  #   - executor spawns the Job in `mail` ns, downloads tarball via
+  #     internal-download endpoint, runs stalwart-cli import
+  #   - cart status reaches 'done'
+  if [[ "${RESTORE_INCLUDE_MAILBOXES:-}" == "1" ]]; then
+    # Promote the existing domain to email-enabled.
+    local ed_resp; ed_resp=$(api POST "/clients/$cid/email/domains/$domain_id/enable" "{\"selector\":\"e2e-${stamp}\"}")
+    local edid; edid=$(echo "$ed_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+    [[ -n "$edid" ]] || { fail "restore/mbox: email-domain enable failed: $(echo "$ed_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: email-domain enabled edid=$edid"
+
+    local mb_local="rm${stamp}"
+    local mb_pass="MailRest!${stamp}x"
+    local mb_resp; mb_resp=$(api POST "/clients/$cid/email/domains/$edid/mailboxes" "{\"local_part\":\"$mb_local\",\"password\":\"$mb_pass\",\"quota_mb\":50}")
+    local mbid; mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+    [[ -n "$mbid" ]] || { fail "restore/mbox: mailbox create failed: $(echo "$mb_resp" | head -c 300)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    local mb_addr="${mb_local}@${hostname}"
+    ok "restore/mbox: mailbox $mb_addr created"
+    wait_for 60 "restore/mbox: status=active" '"status":"active"' \
+      "api GET '/clients/$cid/mailboxes/$mbid'" || { api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+
+    # Capture bundle with mailboxes=true.
+    local mbody; mbody="{\"clientId\":\"$cid\",\"initiator\":\"admin\",\"label\":\"restore-mbox-test $stamp\",\"retentionDays\":1,\"targetConfigId\":\"$target_id\",\"components\":{\"files\":false,\"mailboxes\":true,\"config\":false,\"secrets\":false}}"
+    local mb_b_resp; mb_b_resp=$(api POST "/admin/backups/bundles" "$mbody")
+    local mbundle_id; mbundle_id=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('bundleId',''))" 2>/dev/null)
+    local mb_b_status; mb_b_status=$(echo "$mb_b_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+    [[ "$mb_b_status" == "completed" && -n "$mbundle_id" ]] || { fail "restore/mbox: bundle create failed: $(echo "$mb_b_resp" | head -c 400)"; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: bundle $mbundle_id captured with mailboxes component"
+
+    # Browse the mailboxes component, confirm address is present.
+    local browse; browse=$(api GET "/admin/backups/bundles/$mbundle_id/browse/mailboxes")
+    echo "$browse" | grep -q "$mb_addr" || { fail "restore/mbox: address $mb_addr not in bundle browse: $(echo "$browse" | head -c 300)"; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: bundle browse confirms $mb_addr in dump"
+
+    # Build a cart with mailboxes-by-address.
+    local mcart_resp; mcart_resp=$(api POST "/admin/restores/carts" "{\"clientId\":\"$cid\",\"description\":\"E2E mbox restore $stamp\"}")
+    local mcart_id; mcart_id=$(echo "$mcart_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
+    [[ -n "$mcart_id" ]] || { fail "restore/mbox: cart create failed"; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: cart $mcart_id created"
+
+    local mitem; mitem="{\"bundleId\":\"$mbundle_id\",\"type\":\"mailboxes-by-address\",\"selector\":{\"kind\":\"addresses\",\"addresses\":[\"$mb_addr\"]},\"label\":\"restore-mbox\"}"
+    api POST "/admin/restores/carts/$mcart_id/items" "$mitem" >/dev/null \
+      || { fail "restore/mbox: add-item failed"; api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true; api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true; api DELETE "/clients/$cid" >/dev/null 2>&1 || true; return 1; }
+    ok "restore/mbox: cart item added (mailboxes-by-address)"
+
+    # Execute. The Job spawns in `mail` ns, downloads tarball via
+    # internal-download, runs stalwart-cli import. status=done means
+    # the Job exited 0 — the executor wired correctly.
+    local mexec_resp; mexec_resp=$(api POST "/admin/restores/carts/$mcart_id/execute" "{}")
+    local mcart_status; mcart_status=$(echo "$mexec_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('status',''))" 2>/dev/null)
+    if [[ "$mcart_status" != "done" ]]; then
+      fail "restore/mbox: cart execute returned status=$mcart_status — resp: $(echo "$mexec_resp" | head -c 600)"
+      api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
+      api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
+      api DELETE "/clients/$cid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    ok "restore/mbox: cart executed status=done — Stalwart import via mailboxes-by-address Job ✓"
+
+    api DELETE "/admin/restores/carts/$mcart_id" >/dev/null 2>&1 || true
+    api DELETE "/admin/backups/bundles/$mbundle_id" >/dev/null 2>&1 || true
+  fi
+
   # Cleanup.
   api DELETE "/admin/restores/carts/$cart_id" >/dev/null 2>&1 || true
   api DELETE "/admin/backups/bundles/$bundle_id" >/dev/null 2>&1 || true
