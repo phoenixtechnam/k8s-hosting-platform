@@ -1324,6 +1324,36 @@ export const platformStorageApplyRuns = pgTable('platform_storage_apply_runs', {
 });
 export type PlatformStorageApplyRun = typeof platformStorageApplyRuns.$inferSelect;
 
+// ─── System Backup runs (Phase 1: secrets bundle export) ────────────────────
+//
+// One row per "Export bundle" click. The age-encrypted payload is
+// stored inline (small — typically <100 KiB) and scrubbed after a
+// successful download or once the signed-URL TTL elapses. Audit
+// metadata (operator id, ip, ua, sha256, manifest) survives.
+//
+// See migration 0081_system_backup_runs.sql + modules/system-backup/.
+export const systemBackupRuns = pgTable('system_backup_runs', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 32 }).notNull(),
+  status: varchar('status', { length: 32 }).notNull().default('pending'),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }),
+  sha256: varchar('sha256', { length: 64 }),
+  errorEnvelope: jsonb('error_envelope'),
+  operatorUserId: varchar('operator_user_id', { length: 36 }),
+  operatorIp: varchar('operator_ip', { length: 45 }),
+  operatorUserAgent: varchar('operator_user_agent', { length: 500 }),
+  manifest: jsonb('manifest'),
+  payload: bytea('payload'),
+  downloadTokenHash: varchar('download_token_hash', { length: 64 }),
+  downloadUrlExpiresAt: timestamp('download_url_expires_at', { withTimezone: true }),
+  downloadedAt: timestamp('downloaded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+export type SystemBackupRun = typeof systemBackupRuns.$inferSelect;
+
 // ─── Ingress access control (OIDC + claim rules) ────────────────────────────
 
 export interface IngressClaimRule {
