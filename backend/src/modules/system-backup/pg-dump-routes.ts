@@ -30,8 +30,9 @@ import {
 } from '@k8s-hosting/api-contracts';
 import { nextFireAt } from './pg-dump-scheduler.js';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
-import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID } from './pg-dump-orchestrator.js';
+import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID, resolveCnpgCredentials } from './pg-dump-orchestrator.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';
+import { spawn } from 'node:child_process';
 
 // Cap on simultaneous /download streams. Each download pipes the
 // entire pgdump artifact (potentially multi-GB) S3/SSH→platform-api→
@@ -215,6 +216,118 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
     return success(rows.map(toApiRun));
   });
 
+  // ── DELETE /system-backup/pg-dump/runs/:id ──────────────────────
+  // Removes the artifact at the BackupStore + the run row + writes
+  // an audit row. Idempotent: 404 if already gone. Best-effort on
+  // store delete (bundle may already be pruned by retention).
+  app.delete('/system-backup/pg-dump/runs/:id', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Delete pg_dump run + artifact at backup target',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const userId = (request.user as { sub?: string } | undefined)?.sub;
+    if (typeof userId !== 'string' || userId.length === 0) {
+      throw new ApiError('UNAUTHENTICATED', 'no user id in token', 401);
+    }
+    const rows = await app.db
+      .select({
+        id: systemBackupRuns.id,
+        kind: systemBackupRuns.kind,
+        status: systemBackupRuns.status,
+        targetConfigId: systemBackupRuns.targetConfigId,
+        bundleId: systemBackupRuns.bundleId,
+      })
+      .from(systemBackupRuns)
+      .where(and(eq(systemBackupRuns.id, id), eq(systemBackupRuns.kind, 'pg_dump')))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND', 'run not found', 404);
+
+    if (row.targetConfigId && row.bundleId && row.status === 'succeeded') {
+      try {
+        const oidcKey = (app.config as Record<string, unknown>).OIDC_ENCRYPTION_KEY as string | undefined;
+        const { store } = await resolveSystemStore(app.db, row.targetConfigId, oidcKey ?? null);
+        const handle = await store.open(row.bundleId);
+        if (handle) await store.delete(handle);
+      } catch (err) {
+        app.log.warn({ err, runId: id }, '[system-backup] artifact delete failed (continuing with row delete)');
+      }
+    }
+
+    await app.db.transaction(async (tx) => {
+      await tx.delete(systemBackupRuns).where(eq(systemBackupRuns.id, id));
+      await tx.insert(auditLogs).values({
+        id: randomUUID(),
+        actionType: 'system_backup_pg_dump_delete',
+        resourceType: 'system_backup_run',
+        resourceId: id,
+        actorId: userId,
+        actorType: 'user',
+        httpMethod: 'DELETE',
+        httpPath: `/api/v1/system-backup/pg-dump/runs/${id}`,
+        httpStatus: 200,
+        changes: { bundleId: row.bundleId, targetConfigId: row.targetConfigId },
+        ipAddress: clientIp(request) ?? null,
+      });
+    });
+    return success({ ok: true });
+  });
+
+  // ── POST /system-backup/pg-dump/runs/:id/restore-recipe ─────────
+  // Returns the manual `pg_restore` command for the operator to run
+  // against the chosen target. The run is super_admin-gated, audited.
+  // In-product orchestrated restore (spawns a Job that downloads +
+  // pipes pg_restore) lands in Phase 5 DR drill.
+  app.post('/system-backup/pg-dump/runs/:id/restore-recipe', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Get pg_restore recipe for a succeeded run',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const rows = await app.db
+      .select({
+        id: systemBackupRuns.id,
+        sourceCluster: systemBackupRuns.sourceCluster,
+        sourceDatabase: systemBackupRuns.sourceDatabase,
+        sourceNamespace: systemBackupRuns.sourceNamespace,
+        artifactName: systemBackupRuns.artifactName,
+        sha256: systemBackupRuns.sha256,
+      })
+      .from(systemBackupRuns)
+      .where(and(eq(systemBackupRuns.id, id), eq(systemBackupRuns.kind, 'pg_dump'),
+        eq(systemBackupRuns.status, 'succeeded')))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      throw new ApiError('SYSTEM_BACKUP_RUN_NOT_FOUND',
+        'run not found or not in status=succeeded', 404);
+    }
+    const file = row.artifactName ?? 'dump.pgdump';
+    return success({
+      runId: id,
+      downloadUrl: `/api/v1/system-backup/pg-dump/runs/${id}/download`,
+      sha256: row.sha256,
+      recipe: [
+        `# 1. Download (super_admin JWT required)`,
+        `curl -sSL -H 'Authorization: Bearer <jwt>' \\`,
+        `  https://<admin-host>/api/v1/system-backup/pg-dump/runs/${id}/download \\`,
+        `  -o ${file}`,
+        ...(row.sha256 ? [`# 2. Verify`, `sha256sum ${file}  # expect ${row.sha256}`] : []),
+        `# ${row.sha256 ? '3' : '2'}. Restore into the source cluster (will WIPE existing data)`,
+        `kubectl -n ${row.sourceNamespace} cp ${file} ${row.sourceCluster}-1:/tmp/`,
+        `kubectl -n ${row.sourceNamespace} exec -it ${row.sourceCluster}-1 -- \\`,
+        `  pg_restore --no-owner --no-privileges --clean --if-exists \\`,
+        `  -d ${row.sourceDatabase} /tmp/${file}`,
+      ].join('\n'),
+      note: 'In-product orchestrated restore lands in Phase 5 (DR drill).',
+    });
+  });
+
   // ── GET /system-backup/pg-dump/runs/:id ─────────────────────────
   app.get('/system-backup/pg-dump/runs/:id', {
     schema: {
@@ -356,6 +469,87 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
 
     void SYSTEM_BACKUP_CLIENT_ID;
     return reply.send(body);
+  });
+
+  // ─── Phase 4b: one-off direct download (no S3 push, no run row) ─
+  // Streams `pg_dump --format=custom` bytes directly to the HTTP
+  // response. No Job pod, no BackupStore reservation, no audit run
+  // row — the audit_logs row is the only persistent trace. Useful
+  // for ad-hoc recovery / forensics / GDPR data export.
+  app.post('/system-backup/pg-dump/stream', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'One-off pg_dump streamed directly back (super_admin)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const parsed = pgDumpRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('SYSTEM_BACKUP_BAD_REQUEST', parsed.error.message, 400);
+    }
+    const userId = (request.user as { sub?: string } | undefined)?.sub;
+    if (typeof userId !== 'string' || userId.length === 0) {
+      throw new ApiError('UNAUTHENTICATED', 'no user id in token', 401);
+    }
+    const k8s = createK8sClients();
+    const creds = await resolveCnpgCredentials(
+      k8s, parsed.data.sourceNamespace, parsed.data.sourceCluster,
+    );
+
+    // Audit BEFORE we commit the response. The streamed output never
+    // touches the DB, so this is the only persistent record.
+    await app.db.insert(auditLogs).values({
+      id: randomUUID(),
+      actionType: 'system_backup_pg_dump_stream',
+      resourceType: 'cnpg_cluster',
+      resourceId: `${parsed.data.sourceNamespace}/${parsed.data.sourceCluster}/${parsed.data.sourceDatabase}`,
+      actorId: userId,
+      actorType: 'user',
+      httpMethod: 'POST',
+      httpPath: '/api/v1/system-backup/pg-dump/stream',
+      httpStatus: 200,
+      changes: { reason: parsed.data.reason ?? null },
+      ipAddress: clientIp(request) ?? null,
+    });
+
+    const host = `${parsed.data.sourceCluster}-ro.${parsed.data.sourceNamespace}.svc`;
+    const args = [
+      '-h', host, '-p', '5432',
+      '-d', parsed.data.sourceDatabase,
+      '--format=custom', '--compress=9',
+      '--no-owner', '--no-privileges',
+    ];
+    const proc = spawn('pg_dump', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PGUSER: creds.username, PGPASSWORD: creds.password },
+    });
+    // Capture stderr so a non-zero exit produces a useful error log
+    // (operator gets a partial body in this case — that's the price
+    // of streaming; their client should fail any sha-checksum step).
+    const stderrChunks: Buffer[] = [];
+    proc.stderr.on('data', (c: Buffer) => { if (stderrChunks.length < 100) stderrChunks.push(c); });
+    proc.on('error', (err) => {
+      app.log.error({ err }, '[pg-dump-stream] spawn error');
+    });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        const err = Buffer.concat(stderrChunks).toString('utf8').slice(0, 1000);
+        app.log.warn({ code, err, ns: parsed.data.sourceNamespace, cluster: parsed.data.sourceCluster },
+          '[pg-dump-stream] pg_dump exited non-zero');
+      }
+    });
+    // Kill pg_dump if the client aborts the response — otherwise we'd
+    // leak a child process per cancelled download.
+    reply.raw.on('close', () => {
+      if (!proc.killed) proc.kill('SIGTERM');
+    });
+
+    const safeName = `${parsed.data.sourceCluster}.${parsed.data.sourceDatabase}.pgdump`
+      .replace(/[\r\n"\\]/g, '_');
+    reply.header('Content-Type', 'application/octet-stream');
+    reply.header('Content-Disposition', `attachment; filename="${safeName}"`);
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(proc.stdout);
   });
 
   // ─── Phase 4b: pg_dump scheduled exports ───────────────────────

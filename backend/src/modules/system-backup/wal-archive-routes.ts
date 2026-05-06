@@ -157,6 +157,85 @@ export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promis
     }
   });
 
+  // ── POST /system-backup/wal-archive/pitr-recipe ────────────────
+  // Returns the recipe for an operator-driven PITR. Builds a CNPG
+  // Cluster CR yaml the operator can apply to a target namespace
+  // (or send to bootstrap.sh on a fresh cluster). Phase 5 DR drill
+  // automates the full apply+wait+swap sequence.
+  app.post('/system-backup/wal-archive/pitr-recipe', {
+    schema: {
+      tags: ['SystemBackup'],
+      summary: 'Build a CNPG recovery Cluster CR yaml for PITR (super_admin)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const body = request.body as {
+      clusterNamespace?: string;
+      clusterName?: string;
+      targetTime?: string;            // ISO 8601 ("latest" if omitted)
+      recoveryClusterName?: string;
+    } | null;
+    const ns = String(body?.clusterNamespace ?? '');
+    const name = String(body?.clusterName ?? '');
+    if (!isKnownCluster(ns, name)) {
+      throw new ApiError('SYSTEM_WAL_UNKNOWN_CLUSTER',
+        `${ns}/${name} is not a known system cluster`, 400);
+    }
+    const states = await app.db.select().from(systemWalArchiveState);
+    const state = states.find((s) => s.clusterNamespace === ns && s.clusterName === name);
+    if (!state) {
+      throw new ApiError('SYSTEM_WAL_DISABLED',
+        'WAL archive not enabled for this cluster — nothing to recover from', 400);
+    }
+    const recoveryName = body?.recoveryClusterName ?? `${name}-recovery-${Date.now()}`;
+    const targetTime = body?.targetTime ?? null;
+
+    const yaml = [
+      `# Apply with: kubectl apply -f <this-file>`,
+      `# CNPG will provision a fresh cluster that replays WAL from S3`,
+      `# until ${targetTime ? `target time ${targetTime}` : 'the latest archived WAL'}.`,
+      `apiVersion: postgresql.cnpg.io/v1`,
+      `kind: Cluster`,
+      `metadata:`,
+      `  name: ${recoveryName}`,
+      `  namespace: ${ns}`,
+      `spec:`,
+      `  instances: 1`,
+      `  imageName: ghcr.io/cloudnative-pg/postgresql:17.5`,
+      `  bootstrap:`,
+      `    recovery:`,
+      `      source: ${name}`,
+      ...(targetTime ? [`      recoveryTarget:`, `        targetTime: "${targetTime}"`] : []),
+      `  externalClusters:`,
+      `    - name: ${name}`,
+      `      barmanObjectStore:`,
+      `        destinationPath: ${state.destinationPath}`,
+      `        s3Credentials:`,
+      `          accessKeyId:`,
+      `            name: backup-credentials`,
+      `            key: AWS_ACCESS_KEY_ID`,
+      `          secretAccessKey:`,
+      `            name: backup-credentials`,
+      `            key: AWS_SECRET_ACCESS_KEY`,
+      `        wal:`,
+      `          compression: gzip`,
+      `        data:`,
+      `          compression: gzip`,
+      `  storage:`,
+      `    size: 5Gi`,
+      `    storageClass: longhorn-system-local`,
+    ].join('\n');
+
+    return success({
+      recoveryClusterName: recoveryName,
+      namespace: ns,
+      targetTime,
+      destinationPath: state.destinationPath,
+      yaml,
+      note: 'Apply + watch the new Cluster come up. Phase 5 DR drill will automate this.',
+    });
+  });
+
   // ── POST /system-backup/wal-archive/disable ────────────────────
   app.post('/system-backup/wal-archive/disable', {
     schema: {

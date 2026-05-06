@@ -84,7 +84,7 @@ interface ResolvedStore {
  *
  * Throws with a scrubbed error if neither path resolves.
  */
-async function resolveCnpgCredentials(
+export async function resolveCnpgCredentials(
   k8s: K8sClients,
   namespace: string,
   cluster: string,

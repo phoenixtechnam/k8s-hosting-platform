@@ -16,6 +16,7 @@ import { Shield, AlertTriangle } from 'lucide-react';
 import SecretsBundleTab from '@/components/system-backup/SecretsBundleTab';
 import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
+import LonghornSnapshotsTab from '@/components/system-backup/LonghornSnapshotsTab';
 
 type TabId = 'secrets' | 'system-dbs' | 'stalwart-blob' | 'longhorn-snapshots' | 'wal-archive' | 'dr-drill';
 
@@ -30,7 +31,7 @@ const TABS: ReadonlyArray<TabSpec> = [
   { id: 'secrets', label: 'Secrets Bundle', available: true },
   { id: 'system-dbs', label: 'System Databases', available: true },
   { id: 'stalwart-blob', label: 'Stalwart BLOB', available: false, comingPhase: 'Phase 2' },
-  { id: 'longhorn-snapshots', label: 'Longhorn Snapshots', available: false, comingPhase: 'Phase 2' },
+  { id: 'longhorn-snapshots', label: 'Longhorn Snapshots', available: true },
   { id: 'wal-archive', label: 'WAL Archive', available: true },
   { id: 'dr-drill', label: 'DR Drill', available: false, comingPhase: 'Phase 5' },
 ];
@@ -100,7 +101,8 @@ export default function SystemBackupPage() {
         {activeTab === 'secrets' && <SecretsBundleTab />}
         {activeTab === 'system-dbs' && <SystemDatabasesTab />}
         {activeTab === 'wal-archive' && <WalArchiveTab />}
-        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'wal-archive' && (
+        {activeTab === 'longhorn-snapshots' && <LonghornSnapshotsTab />}
+        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'wal-archive' && activeTab !== 'longhorn-snapshots' && (
           <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-8 text-center">
             <AlertTriangle size={32} className="mx-auto text-gray-400 dark:text-gray-500 mb-3" />
             <p className="text-sm text-gray-600 dark:text-gray-400">
