@@ -1,0 +1,59 @@
+# Mount the cert-manager-managed `stalwart-mail-tls` Secret into the
+# Stalwart pod at /etc/stalwart/tls/ so the SMTP/IMAP listeners can
+# present a real LE certificate instead of Stalwart's embedded rcgen
+# self-signed default.
+#
+# Companion to:
+#   - mail-tls-certificate.yaml (cert-manager Certificate CR)
+#   - cert-apply-job.yaml       (one-shot Job that creates the
+#                                  Stalwart-side x:Certificate row
+#                                  pointing at these file paths)
+#
+# CONSOLIDATES the prior inline Reloader patch from
+# kustomization.yaml — both the volume mount and the Reloader
+# annotation live here so they cannot drift apart. The annotation
+# MUST list ALL four watched Secrets — strategic-merge replaces the
+# annotation value as a single string (not a list), so dropping any
+# entry silently disables Reloader's watch. Order matches base
+# (mail-pg-app-credentials, stalwart-admin-creds) → staging-existing
+# (stalwart-webadmin-prod-tls) → new (stalwart-mail-tls).
+#
+# Code-review CRITICAL note carried over from the prior patch
+# (2026-05-04): early version dropped `mail-pg-app-credentials` from
+# the list, masking CNPG password rotations. Always include all four.
+#
+# Volume `optional: true` so a fresh deploy can come up before
+# cert-manager has finished provisioning (HTTP-01 typically takes
+# 30-60s). Once the Secret materialises, Reloader rolls the pod and
+# the volume becomes populated. With `optional: false`, the
+# Deployment would block on first apply until cert-manager succeeds —
+# avoidable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stalwart-mail-v016
+  namespace: mail
+  annotations:
+    # MUST list ALL four watched Secrets — strategic-merge replaces
+    # the annotation value in full. Dropping any silently disables
+    # Reloader's watch on it. Order matches the staging overlay's
+    # baseline (kustomization.yaml reloader patch) plus the new
+    # `stalwart-mail-tls` for SMTP/IMAP cert renewals.
+    secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls,stalwart-mail-tls"
+spec:
+  template:
+    spec:
+      containers:
+        - name: stalwart
+          volumeMounts:
+            - name: stalwart-mail-tls
+              mountPath: /etc/stalwart/tls
+              readOnly: true
+      volumes:
+        - name: stalwart-mail-tls
+          secret:
+            secretName: stalwart-mail-tls
+            optional: true
+            # cert-manager populates `tls.crt` + `tls.key` directly;
+            # no key-rename needed. The Stalwart-side x:Certificate
+            # row references the same paths verbatim.

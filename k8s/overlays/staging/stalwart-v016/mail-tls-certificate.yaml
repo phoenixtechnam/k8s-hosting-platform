@@ -1,0 +1,78 @@
+# cert-manager Certificate CR for Stalwart's SMTP/IMAP TLS listeners.
+#
+# WHY: Stalwart 0.16 falls back to its embedded `rcgen` self-signed
+# certificate on every TLS handshake until a `x:Certificate` row is
+# created in its config store. The matching Secret here is mounted
+# into the Stalwart Deployment at /etc/stalwart/tls/ (see
+# deployment-cert-mount.yaml in this same overlay) and the cert-apply
+# Job (cert-apply-job.yaml) creates the Stalwart-side Certificate row
+# pointing at those file paths.
+#
+# SAN list (subdomains of staging.phoenix-host.net):
+#   mail        - canonical hostname, used as MX target & default SNI
+#   smtp        - SMTP relay clients connecting via 465/587
+#   imap        - IMAP clients connecting via 993/143
+#   mx          - alias used by some receiving MTAs
+#   autoconfig  - Thunderbird/RFC 6186 auto-config probe
+#   autodiscover- Outlook auto-discover probe (HTTPS)
+#
+# All SANs already resolve via CNAME to the staging round-robin
+# (DNS verified 2026-05-06). HTTP-01 challenge will land on the
+# nginx ingress on port 80 as it does for stalwart.${DOMAIN}.
+#
+# letsencrypt-prod-http01 is the same ClusterIssuer the existing
+# stalwart-webadmin-prod-tls cert uses, so no new ACME plumbing.
+#
+# Renewal flow:
+#   1. cert-manager renews 30d before expiry → updates Secret data
+#   2. Stakater Reloader watches the Secret (annotation on Deployment)
+#      and rolls the Stalwart pod
+#   3. New pod re-reads /etc/stalwart/tls/tls.crt at first TLS handshake
+#
+# The Stalwart-side `Certificate` row stays valid across renewals because
+# it references the file PATH, not the contents. The cert-apply Job is
+# a one-shot — does NOT re-run on renewal.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: stalwart-mail-tls
+  namespace: mail
+  labels:
+    app: stalwart-mail-v016
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  secretName: stalwart-mail-tls
+  # 90d LE cert; renew with 30d to spare so Reloader has time to
+  # propagate the new chain before the old one expires.
+  duration: 2160h
+  renewBefore: 720h
+  issuerRef:
+    name: letsencrypt-prod-http01
+    kind: ClusterIssuer
+    group: cert-manager.io
+  commonName: mail.${DOMAIN}
+  dnsNames:
+    - mail.${DOMAIN}
+    - smtp.${DOMAIN}
+    - imap.${DOMAIN}
+    - mx.${DOMAIN}
+    - autoconfig.${DOMAIN}
+    - autodiscover.${DOMAIN}
+  privateKey:
+    # ECDSA P-256 — same algorithm cert-manager picks by default for
+    # Stalwart's webadmin cert. Slightly smaller handshake footprint
+    # than RSA-2048, broadly compatible with all modern mail clients.
+    algorithm: ECDSA
+    size: 256
+    # Rotate the private key on every renewal — defence-in-depth in
+    # case of unnoticed key compromise.
+    rotationPolicy: Always
+  usages:
+    # Server-auth ECDSA TLS cert profile per RFC 5480 / RFC 8446:
+    # `digital signature` covers the ECDSA TLS handshake.
+    # `key encipherment` is RSA-only — including it on an ECDSA cert
+    # is non-conformant and can be rejected by strict SMTP peers.
+    - server auth
+    - digital signature
