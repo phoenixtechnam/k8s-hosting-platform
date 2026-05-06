@@ -64,15 +64,57 @@ describe('buildEmailDnsRecordsForDisplay', () => {
     expect(records.some((r) => r.purpose === 'webmail')).toBe(false);
   });
 
-  // Round-4 Phase 1: deterministic MTA-STS policy id (regression
-  // guard against accidentally going back to Date.now()).
-  it('produces a stable mta_sts policy id across calls for the same domain', () => {
-    const r1 = buildEmailDnsRecordsForDisplay('example.com', 'default', 'pub', 'mail.host');
-    const r2 = buildEmailDnsRecordsForDisplay('example.com', 'default', 'pub', 'mail.host');
-    const id1 = r1.find((r) => r.purpose === 'mta_sts' && r.recordType === 'TXT')?.recordValue;
-    const id2 = r2.find((r) => r.purpose === 'mta_sts' && r.recordType === 'TXT')?.recordValue;
-    expect(id1).toBeDefined();
-    expect(id1).toBe(id2);
+  // 2026-05-06 TLS-bootstrap rewrite: regression guards.
+  it('points the MX record at the platform mail-server hostname (not a per-client mail.<domain> alias)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
+    );
+    const mx = records.find((r) => r.purpose === 'mx');
+    expect(mx).toBeDefined();
+    expect(mx?.recordValue).toBe(MOCK_MAIL_HOSTNAME);
+    // Negative — must NOT use the old mail.<domain> form
+    expect(mx?.recordValue).not.toBe('mail.example.com');
+  });
+
+  it('does NOT emit a per-client mail.<domain> A record (was redundant + cert-mismatch source)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
+    );
+    const stray = records.find((r) =>
+      r.recordType === 'A' && r.recordName === 'mail.example.com',
+    );
+    expect(stray).toBeUndefined();
+  });
+
+  it('does NOT emit autoconfig.<domain> or autodiscover.<domain> CNAMEs (cert-mismatch dead path; SRV is the right layer)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
+    );
+    expect(records.some((r) => r.recordName === 'autoconfig.example.com')).toBe(false);
+    expect(records.some((r) => r.recordName === 'autodiscover.example.com')).toBe(false);
+    expect(records.some((r) => r.purpose === 'autoconfig')).toBe(false);
+  });
+
+  it('does NOT emit MTA-STS records (cert-mismatch dead path; same precondition as Outlook autodiscover)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
+    );
+    expect(records.some((r) => r.recordName === '_mta-sts.example.com')).toBe(false);
+    expect(records.some((r) => r.recordName === 'mta-sts.example.com')).toBe(false);
+    expect(records.some((r) => r.purpose === 'mta_sts')).toBe(false);
+  });
+
+  it('SRV records target the platform mail-server hostname (correct cert SAN match)', () => {
+    const records = buildEmailDnsRecordsForDisplay(
+      'example.com', MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME,
+    );
+    const srvs = records.filter((r) => r.purpose === 'srv');
+    expect(srvs.length).toBeGreaterThan(0);
+    for (const srv of srvs) {
+      // Format: "<priority> <weight> <port> <target>"
+      const target = srv.recordValue.split(/\s+/).pop();
+      expect(target).toBe(MOCK_MAIL_HOSTNAME);
+    }
   });
 });
 
