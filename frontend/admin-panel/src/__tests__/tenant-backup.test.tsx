@@ -22,6 +22,7 @@ vi.mock('../hooks/use-backup-bundles', () => ({
   useBundles: vi.fn(),
   useDeleteBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useVerifyBundle: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useCreateBundle: vi.fn(() => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { bundleId: 'bkp-new', status: 'pending' } }), isPending: false })),
   downloadDataExport: vi.fn(),
 }));
 vi.mock('../hooks/use-backup-schedule', () => ({
@@ -142,7 +143,8 @@ describe('TenantBackup', () => {
 
   it('schedules tab renders global schedule list', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
-    mockedSchedules.mockReturnValue({ data: { data: [SCHEDULE] }, isLoading: false });
+    // Outer .data = success() envelope; inner .data = list payload.
+    mockedSchedules.mockReturnValue({ data: { data: { data: [SCHEDULE] } }, isLoading: false });
     render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=schedules'] }) });
     expect(screen.getByTestId('tenant-backup-tab-schedules')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText('Acme Corp')).toBeInTheDocument();
@@ -154,7 +156,7 @@ describe('TenantBackup', () => {
   it('schedules tab flags deleted client with italic warning', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
     mockedSchedules.mockReturnValue({
-      data: { data: [{ ...SCHEDULE, businessName: null }] },
+      data: { data: { data: [{ ...SCHEDULE, businessName: null }] } },
       isLoading: false,
     });
     render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=schedules'] }) });
@@ -176,6 +178,23 @@ describe('TenantBackup', () => {
     });
     render(<TenantBackup />, { wrapper: ({ children }) => wrapper({ children, initialEntries: ['/tenant-backup?tab=carts'] }) });
     expect(screen.getByText(/Resume/)).toBeInTheDocument();
+  });
+
+  it('shows the empty-state CTA when there are no bundles', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
+    render(<TenantBackup />, { wrapper });
+    expect(screen.getByText(/No tenant bundles captured yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Create one now/)).toBeInTheDocument();
+  });
+
+  it('opens the New bundle modal when the toolbar button is clicked', () => {
+    mockedBundles.mockReturnValue({ data: { data: { data: [BUNDLE], pagination: {} } }, isLoading: false });
+    render(<TenantBackup />, { wrapper });
+    fireEvent.click(screen.getByTestId('bundle-create'));
+    expect(screen.getByRole('dialog', { name: /Create tenant bundle/i })).toBeInTheDocument();
+    // All four components default-checked.
+    expect(screen.getByLabelText(/files/i)).toBeChecked();
+    expect(screen.getByLabelText(/mailboxes/i)).toBeChecked();
   });
 
   it('targets tab nudges to add a target when none configured', () => {

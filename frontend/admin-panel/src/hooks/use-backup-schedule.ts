@@ -17,11 +17,19 @@ interface ScheduleResponse { readonly data: ClientBackupSchedule | null }
  * Global list of every client's backup schedule, joined with the
  * client's display name. Powers the Tenant Backup admin page's
  * "Schedules" tab.
+ *
+ * The API wraps the contract payload in the standard `success()`
+ * envelope, so the over-the-wire shape is
+ *   { data: { data: BackupScheduleSummary[] } }
+ * which is why the inner-payload type (ListBackupSchedulesResponse)
+ * is wrapped one more level here.
  */
+interface AllSchedulesEnvelope { readonly data: ListBackupSchedulesResponse }
+
 export function useAllBackupSchedules() {
   return useQuery({
     queryKey: ['backup-schedules', 'all'],
-    queryFn: () => apiFetch<ListBackupSchedulesResponse>('/api/v1/admin/backup-schedules'),
+    queryFn: () => apiFetch<AllSchedulesEnvelope>('/api/v1/admin/backup-schedules'),
   });
 }
 

@@ -20,12 +20,12 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   Package, Calendar, RotateCcw, Cloud, Search, X, Play, Pencil,
   Trash2, ShieldCheck, Download, Loader2, AlertCircle, CheckCircle2,
-  Pause, FileText, Server,
+  Pause, FileText, Server, Plus,
 } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import SearchableClientSelect from '@/components/ui/SearchableClientSelect';
 import { BackupScheduleEditor } from '@/components/BackupScheduleEditor';
-import { useBundles, useDeleteBundle, useVerifyBundle, downloadDataExport } from '@/hooks/use-backup-bundles';
+import { useBundles, useDeleteBundle, useVerifyBundle, useCreateBundle, downloadDataExport } from '@/hooks/use-backup-bundles';
 import { useAllBackupSchedules, useRunBackupScheduleNow } from '@/hooks/use-backup-schedule';
 import { useRestoreCarts } from '@/hooks/use-restore-carts';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
@@ -131,6 +131,7 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
   const [deletePromptId, setDeletePromptId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   // useBundles wraps as { data: { data: [...], pagination } } —
   // see hooks/use-backup-bundles.ts ListResponse type.
@@ -264,6 +265,15 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
         <span className="ml-auto text-sm text-gray-500 dark:text-gray-400">
           {filtered.length} of {bundles.length}
         </span>
+
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+          data-testid="bundle-create"
+        >
+          <Plus size={14} /> New bundle
+        </button>
       </div>
 
       {verifyResult && (
@@ -283,7 +293,17 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
-          No bundles match the current filter.
+          {bundles.length === 0 ? (
+            <>
+              No tenant bundles captured yet.{' '}
+              <button type="button" className="text-brand-600 underline" onClick={() => setShowCreate(true)}>
+                Create one now
+              </button>
+              {' '}or set up a per-client schedule on the Schedules tab.
+            </>
+          ) : (
+            'No bundles match the current filter.'
+          )}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
@@ -321,6 +341,154 @@ function BundlesTab({ onSwitchToTargets }: { onSwitchToTargets: () => void }) {
           error={deleteError}
         />
       )}
+
+      {showCreate && (
+        <CreateBundleModal
+          configs={configs}
+          onClose={() => setShowCreate(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateBundleModal({ configs, onClose }: {
+  configs: ReadonlyArray<{ readonly id: string; readonly name: string; readonly active: boolean }>;
+  onClose: () => void;
+}) {
+  const createBundle = useCreateBundle();
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [targetConfigId, setTargetConfigId] = useState<string>(
+    () => configs.find((c) => c.active)?.id ?? configs[0]?.id ?? '',
+  );
+  const [components, setComponents] = useState({ files: true, mailboxes: true, config: true, secrets: true });
+  const [label, setLabel] = useState('');
+  const [retentionDays, setRetentionDays] = useState(30);
+  const [error, setError] = useState<string | null>(null);
+  const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    setError(null);
+    if (!clientId) { setError('Pick a client.'); return; }
+    if (!targetConfigId) { setError('Pick an off-site target.'); return; }
+    try {
+      const r = await createBundle.mutateAsync({
+        clientId,
+        initiator: 'admin',
+        components,
+        label: label.trim() || null,
+        retentionDays,
+        targetConfigId,
+      });
+      setProgressBundleId(r.data.bundleId);
+      // Capture is synchronous in the orchestrator path → close on done.
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Create failed');
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-bundle-title"
+    >
+      <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 id="create-bundle-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Create tenant bundle</h3>
+          <button type="button" onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3 text-sm">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Client</label>
+            <SearchableClientSelect selectedClientId={clientId} onSelect={setClientId} placeholder="Pick a client…" />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Off-site target</label>
+            <select
+              value={targetConfigId}
+              onChange={(e) => setTargetConfigId(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            >
+              {configs.length === 0 && <option value="">(no targets — configure one first)</option>}
+              {configs.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}{c.active ? ' (active)' : ''}</option>
+              ))}
+            </select>
+          </div>
+
+          <fieldset>
+            <legend className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Components to capture</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {(['files', 'mailboxes', 'config', 'secrets'] as const).map((key) => (
+                <label key={key} className="flex items-center gap-2 rounded-md border border-gray-200 px-2 py-1 dark:border-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={components[key]}
+                    onChange={(e) => setComponents((c) => ({ ...c, [key]: e.target.checked }))}
+                  />
+                  <span className="capitalize">{key}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Label (optional)</label>
+              <input
+                type="text"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. pre-upgrade"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Retention (days)</label>
+              <input
+                type="number"
+                min={1}
+                max={3650}
+                value={retentionDays}
+                onChange={(e) => setRetentionDays(Math.max(1, Number(e.target.value) || 30))}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="rounded-md border border-red-300 bg-red-50 p-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+              <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
+            </div>
+          )}
+          {progressBundleId && createBundle.isPending && (
+            <div className="rounded-md border border-blue-300 bg-blue-50 p-2 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
+              <Loader2 className="mr-1 inline h-4 w-4 animate-spin" /> Capturing bundle {progressBundleId}…
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:text-gray-100">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!clientId || !targetConfigId || createBundle.isPending}
+            className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {createBundle.isPending ? <><Loader2 size={14} className="animate-spin" /> Capturing…</> : <><Plus size={14} /> Create bundle</>}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -436,7 +604,9 @@ function SchedulesTab() {
   const [search, setSearch] = useState('');
   const [editClientId, setEditClientId] = useState<string | null>(null);
 
-  const schedules = data?.data ?? [];
+  // API envelope: { data: { data: [...] } }. Outer .data is the
+  // success() wrapper; inner .data is our list payload.
+  const schedules: ReadonlyArray<BackupScheduleSummary> = data?.data?.data ?? [];
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return schedules;
