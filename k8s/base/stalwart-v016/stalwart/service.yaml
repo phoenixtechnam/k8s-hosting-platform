@@ -51,6 +51,16 @@ spec:
       port: 4190
       targetPort: sieve
       protocol: TCP
+    # ACME HTTP-01 challenge (Stalwart-managed cert, see
+    # bootstrap-plan-cm.yaml requestTlsCertificate=true). Cluster-
+    # internal only — exposed via the mail-acme-ingress.yaml Ingress
+    # which path-prefix-routes /.well-known/acme-challenge/* to this
+    # service. Not in externalIPs / hostPort so this does NOT bind 80
+    # on the node externally (nginx-ingress already owns that).
+    - name: http-acme
+      port: 80
+      targetPort: http-acme
+      protocol: TCP
 ---
 # Management HTTP (WebAdmin UI + REST API + JMAP session endpoint).
 # Cluster-internal only; exposed externally via ingress-mgmt.yaml.
