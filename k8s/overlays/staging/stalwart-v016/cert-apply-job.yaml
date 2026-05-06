@@ -47,6 +47,16 @@ metadata:
     # it. Once the Job completes, Flux sees `succeeded` and leaves it
     # alone.
     kustomize.toolkit.fluxcd.io/ssa: merge
+    # `force: enabled` tells Flux to delete + recreate this Job when
+    # spec.template changes (which is otherwise immutable on
+    # batch/v1 Jobs). Without this, every Job-template edit during
+    # iterative deploys leaves Flux stuck in `field is immutable`
+    # for the entire Kustomization. Discovered the hard way during
+    # the 2026-05-06 cert-mount path migration — Flux refused to
+    # converge on the new revision until the operator manually
+    # `kubectl delete job` first. With `force: enabled`, Flux does
+    # that itself.
+    kustomize.toolkit.fluxcd.io/force: enabled
 spec:
   # Keep the completed Job (and its pod logs) for 24h so the operator
   # can inspect the apply output if anything went sideways. Same TTL
