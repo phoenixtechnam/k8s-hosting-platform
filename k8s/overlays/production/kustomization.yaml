@@ -10,6 +10,11 @@ kind: Kustomization
 
 resources:
   - ../../base
+  # Longhorn manifests (StorageClasses + RecurringJobs + CSI snapshot
+  # CRDs + Longhorn UI ingress). System workloads (CNPG postgres,
+  # mail-pg) require `longhorn-system-local` SC. Without this include
+  # the postgres-1 PVC stays Pending forever on a fresh bootstrap.
+  - ../../base/longhorn
   # DR backup CronJobs (etcd/postgres/cluster-state/secrets/hostpath/audit).
   # Included in production + staging only — dev DinD has no real etcd and
   # backups-against-local-path would be noise.

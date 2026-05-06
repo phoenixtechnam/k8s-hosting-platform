@@ -137,11 +137,18 @@ pass "artifacts copied to target"
 log "7) Run bootstrap.sh on target (this takes 5-10 min)"
 # `set -e` inside the SSH command so git failure aborts; capture exit
 # code so we don't claim success when bootstrap actually failed.
+# --env staging: testing VM uses the staging overlay (which tracks
+# the staging branch with image-automation-pinned :latest images).
+# The production overlay's :0.0.0 image tags are placeholders that
+# only get replaced by release.yml at proper-release time. For DR
+# drill purposes (validate restore-from-backup mechanics, not
+# rehearse a production cut), staging overlay is the right target.
+DR_DRILL_ENV="${DR_DRILL_ENV:-staging}"
 if ! ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "set -e; cd /tmp && rm -rf k8s-hosting-platform && \
    git clone --depth 1 https://github.com/phoenixtechnam/k8s-hosting-platform.git && \
    cd k8s-hosting-platform && \
-   bash scripts/bootstrap.sh --join-as server --domain '$TARGET_VM_DOMAIN' \
+   bash scripts/bootstrap.sh --join-as server --env '$DR_DRILL_ENV' --domain '$TARGET_VM_DOMAIN' \
      --secrets-bundle /root/secrets.tar.age --age-key /root/operator-private.key 2>&1" \
   | tail -50; then
   fail "bootstrap.sh failed (see output above)"
