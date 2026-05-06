@@ -155,6 +155,26 @@ if ! ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
 fi
 pass "bootstrap.sh completed"
 
+log "8a) Tag node with role=server + Longhorn system tag (DR-prereq)"
+# On a fresh single-node bootstrap the platform-api reconciler hasn't
+# run yet, so the K8s node label `platform.phoenix-host.net/node-role`
+# and the Longhorn node `system` tag are both absent. Without the
+# Longhorn tag, `longhorn-system-local` SC refuses provisioning →
+# postgres-1 PVC stays Pending and CNPG never reaches healthy phase.
+# In a real DR this step is part of the operator runbook.
+ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
+  "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \
+   kubectl label nodes --all platform.phoenix-host.net/node-role=server --overwrite >/dev/null; \
+   for i in \$(seq 1 30); do \
+     kubectl -n longhorn-system get nodes.longhorn.io --no-headers 2>/dev/null | grep -q . && break; \
+     sleep 5; \
+   done; \
+   for n in \$(kubectl -n longhorn-system get nodes.longhorn.io -o name 2>/dev/null); do \
+     kubectl -n longhorn-system patch \$n --type=merge -p '{\"spec\":{\"tags\":[\"system\"]}}' >/dev/null; \
+   done; \
+   echo 'tagged'" 2>&1 | tail -3
+pass "node + longhorn tags applied"
+
 log "8) Wait for CNPG postgres + mail-pg clusters to be ready (≤15 min)"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \

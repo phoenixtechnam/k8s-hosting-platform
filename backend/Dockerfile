@@ -30,7 +30,14 @@ FROM node:22-alpine
 # format created by scripts/bootstrap.sh and decoded by `make
 # secrets-restore`. age is a tiny static Go binary shipped in the
 # alpine community repo.
-RUN apk add --no-cache openssl age postgresql-client
+# pg_dump must match the LOWEST CNPG cluster version we dump from —
+# mail-pg currently runs cnpg postgresql:16.9. Default
+# `postgresql-client` is v18 which produces archives with a header
+# v1.16 that older pg_restores reject ("unsupported version (1.16) in
+# file header"). pg_dump 16 is forward-compat: dumps from pg17
+# (platform) AND pg16 (mail-pg) both restore cleanly into either.
+# Pin to postgresql16-client until all CNPG clusters are bumped.
+RUN apk add --no-cache openssl age postgresql16-client
 
 WORKDIR /app
 
