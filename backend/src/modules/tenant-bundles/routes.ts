@@ -154,14 +154,13 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // success() already wraps in {data: …}; don't double-wrap.
     return success({
-      data: {
-        components: BUNDLE_COMPONENTS,
-        drift: {
-          orphanTables: orphans,
-          ownedTableCount: owned.length,
-          totalTenantTables: dbTables.length,
-        },
+      components: BUNDLE_COMPONENTS,
+      drift: {
+        orphanTables: orphans,
+        ownedTableCount: owned.length,
+        totalTenantTables: dbTables.length,
       },
     });
   });
