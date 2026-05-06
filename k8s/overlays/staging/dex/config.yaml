@@ -10,10 +10,34 @@
 
 issuer: https://dex.${DOMAIN}/dex
 
+# Postgres-backed storage: Dex auth_request / auth_code / refresh_token /
+# device_request rows live in the platform's CNPG `app` database (shared
+# with platform-api). Dex creates its own table set on first start
+# (auth_request, auth_code, refresh_token, keys, client, connector,
+# password, offline_session, device_request, device_token) — none of
+# these names collide with platform's own oidc_* / users / clients
+# tables.
+#
+# Why postgres: SQLite-on-emptyDir stored auth state per-pod, which
+# made multi-replica Dex deployments incoherent (auth_request created
+# on pod A could not be looked up by /dex/auth/local/login on pod B).
+# Surfaced by integration-oidc-dex.sh — see project memory and the
+# 0086_oidc_pkce_state.sql migration which fixed the same class of
+# bug on platform-api's own PKCE store.
+#
+# Credentials come from the dex-postgres-credentials Secret (created
+# by Dex's pre-start init container — see deployment.yaml). $ENV
+# substitution is performed by Dex itself.
 storage:
-  type: sqlite3
+  type: postgres
   config:
-    file: /var/dex/dex.db
+    host: postgres-rw.platform.svc.cluster.local
+    port: 5432
+    database: app
+    user: $DEX_DB_USER
+    password: $DEX_DB_PASSWORD
+    ssl:
+      mode: disable
 
 web:
   http: 0.0.0.0:5556
