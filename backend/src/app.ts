@@ -91,6 +91,7 @@ import { cnpgBackupHealthRoutes } from './modules/cnpg-backup-health/routes.js';
 import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
+import { emailDkimRotateRoutes } from './modules/email-dkim/rotate-routes.js';
 import { mailSubmitRoutes } from './modules/mail-submit/routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
@@ -419,6 +420,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(exportImportRoutes, { prefix: '/api/v1' });
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
+  await app.register(emailDkimRotateRoutes, { prefix: '/api/v1' }); // 2026-05-06: manual DKIM rotation endpoint
   await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });

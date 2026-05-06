@@ -1496,22 +1496,22 @@ function DkimKeysCard({
       </div>
 
       {lastRotation && (
-        <div className={clsx(
-          'rounded-lg border p-3 text-xs',
-          lastRotation.manualDnsRequired
-            ? 'border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20'
-            : 'border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20',
-        )}>
+        <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-700 dark:bg-green-900/20 p-3 text-xs">
           <p className="font-medium text-gray-900 dark:text-gray-100">
-            {lastRotation.manualDnsRequired
-              ? `New key generated (${lastRotation.mode} mode). Publish the DNS record below at your DNS provider, then click Activate.`
-              : `New key rotated and DNS published automatically (${lastRotation.mode} mode).`}
+            New key rotated. Selector <code>{lastRotation.newSelector}</code> is now
+            active. The DNS TXT record below was published automatically.
           </p>
           <div className="mt-2 grid grid-cols-[80px_1fr] gap-1 font-mono">
             <span className="text-gray-500 dark:text-gray-400">Type</span><span className="text-gray-900 dark:text-gray-100">TXT</span>
-            <span className="text-gray-500 dark:text-gray-400">Name</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.dnsRecordName}</code>
-            <span className="text-gray-500 dark:text-gray-400">Value</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.dnsRecordValue}</code>
+            <span className="text-gray-500 dark:text-gray-400">Name</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.txtRecordName}</code>
+            <span className="text-gray-500 dark:text-gray-400">Value</span><code className="break-all text-gray-900 dark:text-gray-100">{lastRotation.txtRecordValue}</code>
           </div>
+          <p className="mt-2 text-gray-600 dark:text-gray-400">
+            Old key stays active during the dual-signing window (recommended retire-old:{' '}
+            <strong>{new Date(lastRotation.recommendedRetireOldAt).toLocaleDateString()}</strong>).
+            Existing emails sitting in receivers' queues continue to verify against the
+            old DNS record until that DNS TTL expires.
+          </p>
         </div>
       )}
 

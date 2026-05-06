@@ -50,7 +50,7 @@ function mtaStsPolicyId(domainName: string): string {
   return crypto.createHash('sha256').update(domainName).digest('hex').slice(0, 16);
 }
 
-async function syncRecordToProviders(
+export async function syncRecordToProviders(
   db: Database,
   domainId: string,
   domainName: string,
