@@ -91,8 +91,17 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+// Stampede guard: stores the in-flight Promise for a hostname so
+// concurrent callers all await the SAME probe rather than each
+// firing their own 6-handshake fan-out (12 sockets if two callers
+// race). The promise is removed from this map as soon as it
+// settles, so the next post-cache-expiry caller starts a fresh
+// probe.
+const inFlight = new Map<string, Promise<readonly ListenerStatus[]>>();
+
 export function clearSslStatusCache(): void {
   cache.clear();
+  inFlight.clear();
 }
 
 export interface ProbeOptions {
@@ -116,17 +125,35 @@ export async function probeAllListeners(
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
       return cached.statuses;
     }
+    // Stampede guard: if a probe is already in-flight for this
+    // hostname, await it instead of starting a duplicate fan-out.
+    const pending = inFlight.get(cacheKey);
+    if (pending) return pending;
   }
 
   const target = options.serviceHost ?? STALWART_SERVICE;
 
-  const results = await Promise.all(
-    ALL_PORTS.map((spec) => probeListener(target, serverHostname, spec)),
-  );
+  const promise = (async (): Promise<readonly ListenerStatus[]> => {
+    const results = await Promise.all(
+      ALL_PORTS.map((spec) => probeListener(target, serverHostname, spec)),
+    );
+    const sorted = [...results].sort((a, b) => a.port - b.port);
+    cache.set(cacheKey, { statuses: sorted, fetchedAt: Date.now() });
+    return sorted;
+  })();
 
-  const sorted = [...results].sort((a, b) => a.port - b.port);
-  cache.set(cacheKey, { statuses: sorted, fetchedAt: Date.now() });
-  return sorted;
+  // Track the in-flight promise so concurrent callers reuse it.
+  // Skip this for bypassCache=true so a forced-refresh isn't shared
+  // with an unrelated cache-fill happening in parallel.
+  if (!options.bypassCache) {
+    inFlight.set(cacheKey, promise);
+    promise.finally(() => {
+      // Clear AFTER the cache is populated by the resolved promise
+      // so subsequent callers hit the cache, not the in-flight map.
+      if (inFlight.get(cacheKey) === promise) inFlight.delete(cacheKey);
+    });
+  }
+  return promise;
 }
 
 /**
@@ -139,10 +166,10 @@ export async function probeListener(
   spec: PortSpec,
 ): Promise<ListenerStatus> {
   const start = Date.now();
+  let socket: tls.TLSSocket | null = null;
   try {
-    const socket = await connectAndUpgrade(serviceHost, serverHostname, spec);
+    socket = await connectAndUpgrade(serviceHost, serverHostname, spec);
     const status = describeTlsSocket(socket, serverHostname, spec);
-    socket.end();
     return {
       ...status,
       durationMs: Date.now() - start,
@@ -160,6 +187,12 @@ export async function probeListener(
       error: err instanceof Error ? err.message : String(err),
       durationMs: Date.now() - start,
     };
+  } finally {
+    // Always release the socket — `socket.end()` is a graceful
+    // close-notify but doesn't guarantee the underlying TCP is
+    // released if describeTlsSocket() throws or the server is
+    // unresponsive. `destroy()` is the unconditional teardown.
+    socket?.destroy();
   }
 }
 
@@ -222,63 +255,91 @@ function starttlsConnect(
 ): Promise<tls.TLSSocket> {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port });
-    const buffers: Buffer[] = [];
+    const greetBuf: Buffer[] = [];
+    const ehloBuf: Buffer[] = [];
+    const replyBuf: Buffer[] = [];
     let timeoutHandle: NodeJS.Timeout | null = null;
     let upgraded = false;
 
     const fail = (msg: string): void => {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
       socket.destroy();
       reject(new Error(msg));
     };
 
-    timeoutHandle = setTimeout(() => fail(`starttls handshake timeout after ${PROBE_TIMEOUT_MS}ms`), PROBE_TIMEOUT_MS);
+    timeoutHandle = setTimeout(
+      () => fail(`starttls handshake timeout after ${PROBE_TIMEOUT_MS}ms`),
+      PROBE_TIMEOUT_MS,
+    );
 
     socket.on('error', (err) => fail(`tcp error: ${err.message}`));
 
+    // Close-before-upgrade is a hard fail (medium-fix from review):
+    // without this, a server that accepts the TCP connection then
+    // RSTs before STARTTLS completes would leave the Promise
+    // unresolved (the timeout was already cleared on the success
+    // paths). Always reject if we lose the socket without having
+    // upgraded.
+    socket.on('close', () => {
+      if (!upgraded) {
+        fail('connection closed before STARTTLS upgrade completed');
+      }
+    });
+
     socket.once('connect', () => {
       const onGreeting = (chunk: Buffer): void => {
-        buffers.push(chunk);
-        const sofar = Buffer.concat(buffers).toString('utf-8');
+        greetBuf.push(chunk);
+        const sofar = Buffer.concat(greetBuf).toString('utf-8');
 
         // Wait for the protocol-specific greeting.
         if (command === 'smtp' && /^220 /m.test(sofar)) {
           socket.removeListener('data', onGreeting);
-          buffers.length = 0;
           socket.write('EHLO platform-api.mail.svc.cluster.local\r\n');
           socket.on('data', onEhloResponse);
         } else if (command === 'imap' && /^\* OK/m.test(sofar)) {
           socket.removeListener('data', onGreeting);
           socket.write('a001 STARTTLS\r\n');
-          socket.once('data', onIssueStarttls);
+          socket.on('data', onIssueStarttls);
         } else if (command === 'managesieve' && /^OK\b/m.test(sofar)) {
           // ManageSieve: server may also send capabilities first.
           // The OK can come on the very first line OR after a few
-          // capability lines — give it a beat.
+          // capability lines — accumulate until we see the OK token.
           socket.removeListener('data', onGreeting);
           socket.write('STARTTLS\r\n');
-          socket.once('data', onIssueStarttls);
+          socket.on('data', onIssueStarttls);
         }
       };
 
       const onEhloResponse = (chunk: Buffer): void => {
-        buffers.push(chunk);
-        const sofar = Buffer.concat(buffers).toString('utf-8');
+        ehloBuf.push(chunk);
+        const sofar = Buffer.concat(ehloBuf).toString('utf-8');
         // EHLO response ends with `250 <message>\r\n` (single 250
         // line means the server is done sending capability lines).
         if (/^250 /m.test(sofar)) {
           socket.removeListener('data', onEhloResponse);
           socket.write('STARTTLS\r\n');
-          socket.once('data', onIssueStarttls);
+          socket.on('data', onIssueStarttls);
         }
       };
 
+      // STARTTLS reply chunk-accumulator (medium-fix from review):
+      // SMTP `220 Ready` / IMAP `a001 OK` / ManageSieve `OK` may
+      // arrive split across two TCP segments. We accumulate until
+      // a complete line ends with CRLF or we see one of the success
+      // markers in the joined buffer.
       const onIssueStarttls = (chunk: Buffer): void => {
-        const reply = chunk.toString('utf-8');
-        // Acceptable success markers across protocols:
-        //   SMTP:        220 ...
-        //   IMAP:        a001 OK ...
-        //   ManageSieve: OK ...
+        replyBuf.push(chunk);
+        const reply = Buffer.concat(replyBuf).toString('utf-8');
+
+        // Wait for at least one CRLF — guarantees we've seen a
+        // complete line. (For SMTP/IMAP/ManageSieve, the
+        // STARTTLS-acknowledgement is exactly one short line.)
+        if (!reply.includes('\r\n') && !reply.includes('\n')) return;
+
+        socket.removeListener('data', onIssueStarttls);
         if (/^220 |^a001 OK|^OK\b/m.test(reply)) {
           upgrade();
         } else {
@@ -293,7 +354,10 @@ function starttlsConnect(
           rejectUnauthorized: false,
           timeout: PROBE_TIMEOUT_MS,
         }, () => {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
           upgraded = true;
           resolve(tlsSocket);
         });
@@ -301,12 +365,6 @@ function starttlsConnect(
       };
 
       socket.on('data', onGreeting);
-    });
-
-    socket.on('close', () => {
-      if (!upgraded && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     });
   });
 }
