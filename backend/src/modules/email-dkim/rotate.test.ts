@@ -40,23 +40,24 @@ describe('email-dkim/rotate: generateDkimKeyPairEd25519', () => {
 });
 
 describe('email-dkim/rotate: newDkimSelector', () => {
-  it('returns a YYYYMMDDhhmm-format selector with dkim- prefix', () => {
-    const sel = newDkimSelector(new Date('2026-05-06T19:42:00Z').getTime());
-    expect(sel).toBe('dkim-202605061942');
+  it('returns a YYYYMMDDhhmmss-format selector with dkim- prefix', () => {
+    const sel = newDkimSelector(new Date('2026-05-06T19:42:33Z').getTime());
+    expect(sel).toBe('dkim-20260506194233');
   });
 
   it('zero-pads single-digit components', () => {
-    const sel = newDkimSelector(new Date('2026-01-02T03:04:00Z').getTime());
-    expect(sel).toBe('dkim-202601020304');
+    const sel = newDkimSelector(new Date('2026-01-02T03:04:05Z').getTime());
+    expect(sel).toBe('dkim-20260102030405');
   });
 
-  it('selectors are stable for the same minute, distinct across minutes', () => {
+  it('second-precision avoids minute-boundary collisions', () => {
     const t = new Date('2026-05-06T19:42:00Z').getTime();
     const a = newDkimSelector(t);
-    const b = newDkimSelector(t + 30_000); // 30s later, same minute
-    const c = newDkimSelector(t + 60_000); // 1min later
-    expect(a).toBe(b);
+    const b = newDkimSelector(t + 1_000); // 1s later, same minute — DIFFERENT
+    const c = newDkimSelector(t + 60_000); // 1min later — DIFFERENT
+    expect(a).not.toBe(b);
     expect(a).not.toBe(c);
+    expect(b).not.toBe(c);
   });
 
   it('selector contains only DNS-safe characters', () => {

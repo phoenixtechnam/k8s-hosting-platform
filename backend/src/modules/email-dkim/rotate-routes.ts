@@ -15,11 +15,18 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
+import { z } from 'zod';
+import crypto from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { emailDomains, domains } from '../../db/schema.js';
+import { emailDomains, domains, auditLogs } from '../../db/schema.js';
 import { rotateDkimKey, DkimRotationError } from './rotate.js';
+
+const paramsSchema = z.object({
+  clientId: z.string().uuid(),
+  domainId: z.string().uuid(),
+});
 
 interface RouteParams {
   readonly clientId: string;
@@ -33,7 +40,17 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin', 'support')],
     },
     async (request, reply) => {
-      const { clientId, domainId } = request.params;
+      // Defence-in-depth: validate UUID format on path params before
+      // hitting the DB, even though Drizzle parameterises queries.
+      const parsedParams = paramsSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        throw new ApiError(
+          'INVALID_PARAMS',
+          parsedParams.error.issues.map((i) => i.message).join('; '),
+          400,
+        );
+      }
+      const { clientId, domainId } = parsedParams.data;
 
       // Authorization: client_admin must own the client. The
       // requireRole middleware lets all four through; we narrow with
@@ -80,6 +97,27 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
 
       try {
         const result = await rotateDkimKey(app.db, domainId, encryptionKey);
+
+        // Explicit audit-log entry for this high-impact, irreversible
+        // operation. Don't include the private key; record the new
+        // selector + Stalwart signature ID + the actor identity so a
+        // forensic timeline of key rotations is reconstructable.
+        await app.db.insert(auditLogs).values({
+          id: crypto.randomUUID(),
+          actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+          actorType: 'user',
+          actionType: 'email_domain.dkim.rotate',
+          resourceType: 'email_domain',
+          resourceId: domainId,
+          changes: {
+            clientId,
+            domainName: row.domainName,
+            newSelector: result.newSelector,
+            stalwartDkimSignatureId: result.stalwartDkimSignatureId,
+            recommendedRetireOldAt: result.recommendedRetireOldAt,
+          } as unknown as Record<string, unknown>,
+        });
+
         return success(result);
       } catch (err) {
         if (err instanceof DkimRotationError) {

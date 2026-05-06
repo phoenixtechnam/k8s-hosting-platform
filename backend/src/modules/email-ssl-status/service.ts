@@ -133,6 +133,15 @@ export async function probeAllListeners(
 
   const target = options.serviceHost ?? STALWART_SERVICE;
 
+  // Stampede guard ALSO covers bypassCache=true (security-reviewer
+  // HIGH-fix). Without this, N concurrent admin users each clicking
+  // "Refresh" would each fan out 6 sockets — N×6 simultaneous TLS
+  // handshakes against Stalwart, fighting for the same listeners.
+  // The semantic of bypassCache=true is "give me FRESH data" — sharing
+  // a fresh in-flight probe satisfies that intent.
+  const existing = inFlight.get(cacheKey);
+  if (existing) return existing;
+
   const promise = (async (): Promise<readonly ListenerStatus[]> => {
     const results = await Promise.all(
       ALL_PORTS.map((spec) => probeListener(target, serverHostname, spec)),
@@ -142,17 +151,12 @@ export async function probeAllListeners(
     return sorted;
   })();
 
-  // Track the in-flight promise so concurrent callers reuse it.
-  // Skip this for bypassCache=true so a forced-refresh isn't shared
-  // with an unrelated cache-fill happening in parallel.
-  if (!options.bypassCache) {
-    inFlight.set(cacheKey, promise);
-    promise.finally(() => {
-      // Clear AFTER the cache is populated by the resolved promise
-      // so subsequent callers hit the cache, not the in-flight map.
-      if (inFlight.get(cacheKey) === promise) inFlight.delete(cacheKey);
-    });
-  }
+  inFlight.set(cacheKey, promise);
+  promise.finally(() => {
+    // Clear AFTER the cache is populated by the resolved promise
+    // so subsequent callers hit the cache, not the in-flight map.
+    if (inFlight.get(cacheKey) === promise) inFlight.delete(cacheKey);
+  });
   return promise;
 }
 

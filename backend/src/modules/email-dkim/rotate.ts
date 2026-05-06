@@ -81,11 +81,12 @@ export function generateDkimKeyPairEd25519(): { privateKey: string; publicKey: s
 
 export function newDkimSelector(nowMs: number = Date.now()): string {
   const d = new Date(nowMs);
-  // YYYYMMDDhhmm — minute-precision is enough; rotation is a manual
-  // op, can't fire twice in a minute. Avoids the colon/space chars
-  // that don't fit in DNS selector tokens.
+  // YYYYMMDDhhmmss — second-precision so two operator clicks in the
+  // same minute (legitimate retry) or two near-simultaneous rotations
+  // across replicas don't collide on the Stalwart-side signature ID.
+  // Selector format is DNS-safe (a-z, 0-9, hyphen).
   const pad = (n: number): string => n.toString().padStart(2, '0');
-  return `dkim-${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
+  return `dkim-${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
 }
 
 /**
@@ -139,12 +140,31 @@ async function postDkimCreatePlan(
   );
 
   if (result.status < 200 || result.status >= 300) {
+    // SECURITY (CRITICAL): the request body included the PEM-encoded
+    // private key, and Stalwart's error response can echo back the
+    // submitted plan or a portion of it. Sanitise the response body
+    // before surfacing to ensure the private key cannot leak into
+    // platform-api logs / audit-log / error messages. Never include
+    // raw response bytes that contain BEGIN PRIVATE KEY.
+    const safeBody = redactPemBlocks(result.body).slice(0, 500);
     throw new DkimRotationError(
-      `Stalwart rejected DkimSignature create (status ${result.status}): ${result.body.slice(0, 500)}`,
+      `Stalwart rejected DkimSignature create (status ${result.status}): ${safeBody}`,
       'STALWART_API_ERROR',
       result.status,
     );
   }
+}
+
+/**
+ * Strip any PEM blocks (BEGIN/END markers + body) from a string.
+ * Used to scrub Stalwart-echoed error bodies that might contain
+ * the just-submitted private key.
+ */
+function redactPemBlocks(input: string): string {
+  return input.replace(
+    /-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g,
+    '[REDACTED-PEM-BLOCK]',
+  );
 }
 
 /**
