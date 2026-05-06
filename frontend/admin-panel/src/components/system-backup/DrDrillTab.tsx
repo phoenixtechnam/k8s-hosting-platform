@@ -73,7 +73,7 @@ export default function DrDrillTab() {
         <ul className="text-sm text-amber-800 dark:text-amber-300 space-y-1 list-disc pl-5">
           <li>The fresh VM needs <code>git</code> installed before bootstrap</li>
           <li>K8s + Longhorn node tags must be applied manually before CNPG provisions PVCs (otherwise <code>longhorn-system-local</code> SC has no eligible nodes)</li>
-          <li>pg_restore from a different PG major version may fail; backend image now ships pg_dump v16 (matches mail-pg) — verify your dumps were taken with the new image</li>
+          <li>pg_dump runs from the platform-api image with pg_dump v17 (matches platform/postgres 17.5). It can EXPORT from mail-pg's 16.9 server, but the resulting archive's format isn't readable by pg_restore 16 — mail-pg in-place restore requires running <code>pg_restore</code> from inside the mail-pg pod (its own pg_restore is version-matched). The DR drill harness does this via <code>kubectl exec</code>.</li>
           <li>After pg_restore, run <code>scripts/admin-domain-rewrite.sh --domain &lt;new-apex&gt;</code> to rewrite <code>system_settings.admin_panel_url</code> et al. to your target domain (the dump carries the source's domain — without rewriting, the ingress-reconciler keeps reasserting it)</li>
         </ul>
       </section>
