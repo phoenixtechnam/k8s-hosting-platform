@@ -689,22 +689,30 @@ else
   # Step 8: cleanup via lifecycle DELETE — fires `deleted` transition
   # cascade. The platform may reject DELETE while the client is mid-
   # provisioning (HTTP 400 INVALID_TRANSITION); we retry briefly to
-  # let the active transition settle, then accept 200/202/204. Trap-
-  # cleanup is the safety net if all retries are rejected.
+  # let the active transition settle. Accept 2xx (we deleted it) OR
+  # 404 (something else already deleted it — concurrent harness, async
+  # FK cascade, orphan reaper, etc.). Trap-cleanup is the safety net.
   if [[ -n "$LIFECYCLE_CLIENT_ID" ]]; then
     DEL_CODE=000
     for i in 1 2 3 4 5; do
       DEL_CODE=$(curl -sk --max-time 30 -X DELETE -o /dev/null -w '%{http_code}' \
         "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID")
-      [[ "$DEL_CODE" =~ ^(200|202|204)$ ]] && break
+      [[ "$DEL_CODE" =~ ^(200|202|204|404)$ ]] && break
       sleep 5
     done
-    if [[ "$DEL_CODE" =~ ^(200|202|204)$ ]]; then
-      ok "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempt(s) — deleted transition fired"
-      LIFECYCLE_CLIENT_ID=""  # disarm trap-cleanup
-    else
-      fail "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempts"
-    fi
+    case "$DEL_CODE" in
+      200|202|204)
+        ok "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempt(s) — deleted transition fired"
+        LIFECYCLE_CLIENT_ID=""
+        ;;
+      404)
+        ok "lifecycle DELETE returned HTTP 404 — client already gone (idempotent)"
+        LIFECYCLE_CLIENT_ID=""
+        ;;
+      *)
+        fail "lifecycle DELETE returned HTTP $DEL_CODE after ${i} attempts"
+        ;;
+    esac
   fi
 fi
 
