@@ -29,8 +29,8 @@ interface SingleResponse<T> { data: T }
  */
 export function useBundles(clientId?: string) {
   const path = clientId
-    ? `/api/v1/admin/backups/bundles?clientId=${encodeURIComponent(clientId)}`
-    : '/api/v1/admin/backups/bundles';
+    ? `/api/v1/admin/tenant-bundles?clientId=${encodeURIComponent(clientId)}`
+    : '/api/v1/admin/tenant-bundles';
   return useQuery({
     queryKey: ['backup-bundles', clientId ?? 'all'],
     queryFn: () => apiFetch<ListResponse>(path),
@@ -41,7 +41,7 @@ export function useBundles(clientId?: string) {
 export function useBundleDetail(bundleId: string | null) {
   return useQuery({
     queryKey: ['backup-bundle', bundleId],
-    queryFn: () => apiFetch<SingleResponse<BundleDetail>>(`/api/v1/admin/backups/bundles/${bundleId}`),
+    queryFn: () => apiFetch<SingleResponse<BundleDetail>>(`/api/v1/admin/tenant-bundles/${bundleId}`),
     enabled: !!bundleId,
   });
 }
@@ -50,7 +50,7 @@ export function useCreateBundle() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateBundleInput) =>
-      apiFetch<SingleResponse<{ bundleId: string; status: string }>>('/api/v1/admin/backups/bundles', {
+      apiFetch<SingleResponse<{ bundleId: string; status: string }>>('/api/v1/admin/tenant-bundles', {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -69,7 +69,7 @@ export function useCreateBundle() {
  */
 export async function downloadDataExport(bundleId: string): Promise<void> {
   const token = localStorage.getItem('auth_token');
-  const r = await fetch(`/api/v1/admin/backups/bundles/${bundleId}/data-export`, {
+  const r = await fetch(`/api/v1/admin/tenant-bundles/${bundleId}/data-export`, {
     method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
@@ -96,7 +96,7 @@ export function useDeleteBundle() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (bundleId: string) =>
-      apiFetch<void>(`/api/v1/admin/backups/bundles/${bundleId}`, { method: 'DELETE' }),
+      apiFetch<void>(`/api/v1/admin/tenant-bundles/${bundleId}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['backup-bundles'] });
       // Also invalidate any open detail panels (different key prefix);
@@ -115,7 +115,7 @@ export function useDeleteBundle() {
 export function useVerifyBundle() {
   return useMutation({
     mutationFn: (bundleId: string) =>
-      apiFetch<SingleResponse<VerifyBundleResponse>>(`/api/v1/admin/backups/bundles/${bundleId}/verify`, {
+      apiFetch<SingleResponse<VerifyBundleResponse>>(`/api/v1/admin/tenant-bundles/${bundleId}/verify`, {
         method: 'POST',
       }),
   });

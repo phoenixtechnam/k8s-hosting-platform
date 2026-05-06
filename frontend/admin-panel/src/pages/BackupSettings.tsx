@@ -526,7 +526,7 @@ export default function BackupSettings() {
 
       <RecentBackupsPanel activeConfigId={configs.find((c) => c.active)?.id ?? null} />
 
-      {/* Tenant bundles (backups-v2 / ADR-032) — component-oriented
+      {/* Tenant bundles (tenant-bundles / ADR-032) — component-oriented
           off-site backups. Distinct from Longhorn-target Recent Backups
           above (those are PVC-level Longhorn snapshots). */}
       <BackupBundlesSection configs={configs} />

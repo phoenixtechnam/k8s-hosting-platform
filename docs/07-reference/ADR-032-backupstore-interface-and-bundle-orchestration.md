@@ -226,8 +226,8 @@ is composition, not a new component type.
 ## Implementation order
 
 1. Migration 0066 — schema + plan-quota columns.
-2. `packages/api-contracts/src/backups-v2.ts` — Zod schemas (this ADR's interfaces).
-3. `backend/src/modules/backups-v2/{bundle-store,meta}.ts` — interface + meta I/O.
+2. `packages/api-contracts/src/tenant-bundles.ts` — Zod schemas (this ADR's interfaces).
+3. `backend/src/modules/tenant-bundles/{bundle-store,meta}.ts` — interface + meta I/O.
 4. Three backend implementations (`local-hostpath`, `s3`, `ssh`).
 5. Four component emitters (`files`, `config`, `secrets`, `mailboxes`).
 6. Bundle orchestrator + admin route.

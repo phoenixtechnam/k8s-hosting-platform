@@ -265,6 +265,9 @@ export async function syncOAuth2ProxySecret(k8s: K8sClients, cookieSecret: strin
     }, MERGE_PATCH);
   } catch (err: unknown) {
     if (isK8s404(err)) {
+      // backup-coverage: excluded:cluster-infrastructure
+      // (oauth2-proxy-config in `platform` ns; reconciled from
+      // ingress_oauth2_clients DB rows captured by config-tables.)
       await k8s.core.createNamespacedSecret({
         namespace: PLATFORM_NAMESPACE,
         body: secretBody,

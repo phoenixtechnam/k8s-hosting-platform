@@ -6,7 +6,7 @@
  *   - deployments-by-id   (row-filtered apply on `deployments`)
  *   - domains-by-id       (row-filtered apply on `domains`)
  *
- * The dump shape is produced by `backups-v2/components/config.ts`
+ * The dump shape is produced by `tenant-bundles/components/config.ts`
  * via SELECT * — column names originate from Drizzle schema defs,
  * not from any external input.
  *
@@ -24,7 +24,7 @@ import { sql, eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
 import { ApiError } from '../../../shared/errors.js';
 import { restoreJobs, type RestoreItem } from '../../../db/schema.js';
-import type { BackupStore } from '../../backups-v2/bundle-store.js';
+import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 
 export interface ConfigDump {
   schemaVersion: number;

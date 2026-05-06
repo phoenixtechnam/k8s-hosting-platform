@@ -47,7 +47,7 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
   app.get('/internal/bundles/:bundleId/components/:component/:artifactName', {
-    schema: { tags: ['BackupsV2-Internal'], summary: 'Stream a component artifact download to a tenant Job' },
+    schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a component artifact download to a tenant Job' },
   }, async (request, reply) => {
     const { bundleId, component, artifactName } = request.params as {
       bundleId: string;
@@ -78,7 +78,7 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
       // EXPIRED / BAD_MAC); the client-facing 401 body is intentionally
       // indistinguishable so a probing attacker can't differentiate
       // failure modes — mirrors the upload-route policy.
-      app.log.warn({ verifyErr, bundleId, component, artifactName }, 'backups-v2 internal download: token rejected');
+      app.log.warn({ verifyErr, bundleId, component, artifactName }, 'tenant-bundles internal download: token rejected');
       throw new ApiError('UNAUTHORIZED', 'download token invalid', 401);
     }
 
@@ -146,7 +146,7 @@ async function resolveStoreForDownload(app: FastifyInstance, targetConfigId: str
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 download: S3 credential decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles download: S3 credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed', 500);
     }
     if (!accessKey || !secretKey) {
@@ -170,7 +170,7 @@ async function resolveStoreForDownload(app: FastifyInstance, targetConfigId: str
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 download: SSH key decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles download: SSH key decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed', 500);
     }
     if (!privateKey) {

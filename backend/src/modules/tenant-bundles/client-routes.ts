@@ -65,7 +65,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
   // ── GET /api/v1/client/backups/bundles ─────────────────────────────
   app.get('/client/backups/bundles', {
-    schema: { tags: ['BackupsV2-Client'], summary: 'List my bundles', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles-Client'], summary: 'List my bundles', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const clientId = clientIdFromRequest(request);
     const rows = await app.db.select().from(backupJobs)
@@ -77,7 +77,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
   // ── GET /api/v1/client/backups/bundles/:id ─────────────────────────
   app.get('/client/backups/bundles/:id', {
-    schema: { tags: ['BackupsV2-Client'], summary: 'My bundle detail', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles-Client'], summary: 'My bundle detail', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const clientId = clientIdFromRequest(request);
     const { id } = request.params as { id: string };
@@ -95,7 +95,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
   // ── GET /api/v1/client/backups/bundles/:id/data-export ─────────────
   app.get('/client/backups/bundles/:id/data-export', {
-    schema: { tags: ['BackupsV2-Client'], summary: 'Download my GDPR data-export ciphertext', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles-Client'], summary: 'Download my GDPR data-export ciphertext', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const clientId = clientIdFromRequest(request);
     const { id } = request.params as { id: string };
@@ -129,7 +129,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
   // ── GET /api/v1/client/backups/schedule ────────────────────────────
   app.get('/client/backups/schedule', {
-    schema: { tags: ['BackupsV2-Client'], summary: 'My backup schedule', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles-Client'], summary: 'My backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const clientId = clientIdFromRequest(request);
     const [row] = await app.db.select().from(clientBackupSchedules)
@@ -150,7 +150,7 @@ export async function backupsV2ClientRoutes(app: FastifyInstance): Promise<void>
 
   // ── PUT /api/v1/client/backups/schedule ────────────────────────────
   app.put('/client/backups/schedule', {
-    schema: { tags: ['BackupsV2-Client'], summary: 'Upsert my backup schedule', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles-Client'], summary: 'Upsert my backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const clientId = clientIdFromRequest(request);
     const parsed = updateClientBackupScheduleSchema.safeParse(request.body);
@@ -264,7 +264,7 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
     // fallback path on staging the same way they see it on the
     // admin route. Without this, a staging-only reproduction is
     // silent in the client-panel path.
-    app.log.warn('backups-v2 client: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Decrypted credentials are trivially recoverable in this environment.');
+    app.log.warn('tenant-bundles client: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Decrypted credentials are trivially recoverable in this environment.');
   }
   const encKey = configuredKey ?? '0'.repeat(64);
   if (cfg.storageType === 's3') {
@@ -274,7 +274,7 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 client: S3 credential decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles client: S3 credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed', 500);
     }
     if (!accessKey || !secretKey) throw new ApiError('CONFIG_INVALID', 'S3 credentials missing', 400);
@@ -295,7 +295,7 @@ async function resolveStore(app: FastifyInstance, targetConfigId: string): Promi
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 client: SSH key decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles client: SSH key decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed', 500);
     }
     return new SshBackupStore({

@@ -26,7 +26,7 @@ interface Props {
 }
 
 /**
- * Tenant Bundles (backups-v2 / ADR-032).
+ * Tenant Bundles (tenant-bundles / ADR-032).
  *
  * Operator-facing surface for the new component-oriented backup format.
  * Bundles live OFF-CLUSTER on the configured S3 / SSH target. This

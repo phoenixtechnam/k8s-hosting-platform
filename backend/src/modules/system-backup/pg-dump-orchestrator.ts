@@ -27,8 +27,8 @@
  * scrubbed (no PG creds, no connection URIs) error envelope is stored
  * for the operator UI.
  *
- * Reuses backups-v2's BackupStore interface + S3/SshBackupStore — does
- * NOT modify backups-v2 module code.
+ * Reuses tenant-bundles's BackupStore interface + S3/SshBackupStore — does
+ * NOT modify tenant-bundles module code.
  */
 
 import { spawn } from 'node:child_process';
@@ -38,9 +38,9 @@ import { pipeline } from 'node:stream/promises';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { systemBackupRuns, backupConfigurations } from '../../db/schema.js';
-import { S3BackupStore } from '../backups-v2/s3-backup-store.js';
-import { SshBackupStore } from '../backups-v2/ssh-backup-store.js';
-import type { BackupStore, BundleHandle } from '../backups-v2/bundle-store.js';
+import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
+import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
+import type { BackupStore, BundleHandle } from '../tenant-bundles/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 

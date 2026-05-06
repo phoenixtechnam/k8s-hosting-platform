@@ -14,7 +14,7 @@ vi.mock('drizzle-orm', async () => {
   };
 });
 
-vi.mock('../../backups-v2/resolve-store.js', () => ({
+vi.mock('../../tenant-bundles/resolve-store.js', () => ({
   resolveBackupStore: resolveSpy,
   ResolveStoreError: class ResolveStoreError extends Error {
     code: string;
@@ -26,7 +26,7 @@ vi.mock('../../backups-v2/resolve-store.js', () => ({
   },
 }));
 
-import { backupsV2BundleCleanupHook } from './backups-v2-cleanup.js';
+import { backupsV2BundleCleanupHook } from './tenant-bundles-cleanup.js';
 import type { HookCtx } from '../registry/index.js';
 
 function makeCtx(jobs: Array<{ id: string; targetConfigId: string | null }>): HookCtx {
@@ -47,7 +47,7 @@ function makeCtx(jobs: Array<{ id: string; targetConfigId: string | null }>): Ho
   };
 }
 
-describe('backups-v2-bundle-cleanup hook', () => {
+describe('tenant-bundles-bundle-cleanup hook', () => {
   beforeEach(() => {
     resolveSpy.mockReset();
     openSpy.mockReset().mockResolvedValue({ stub: true });

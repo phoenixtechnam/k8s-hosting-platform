@@ -5,7 +5,7 @@ import {
 } from './feature-flags.js';
 
 /**
- * Phase 6 left only the dns-zone-cleanup and backups-v2-bundle-
+ * Phase 6 left only the dns-zone-cleanup and tenant-bundles-bundle-
  * cleanup hooks behind feature flags (both default `hook`). These
  * tests exercise the same resolver logic the retired Phase 2/3 flags
  * used; the flag map shape is unchanged so the contract is stable.
@@ -20,7 +20,7 @@ describe('feature-flags', () => {
     delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
     delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
     _setHookFlagForTests('dns-zone-cleanup', undefined);
-    _setHookFlagForTests('backups-v2-bundle-cleanup', undefined);
+    _setHookFlagForTests('tenant-bundles-bundle-cleanup', undefined);
   });
   afterEach(() => {
     if (savedDns == null) delete process.env.LIFECYCLE_HOOK_DNS_ZONE_CLEANUP;
@@ -28,12 +28,12 @@ describe('feature-flags', () => {
     if (savedS3 == null) delete process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP;
     else process.env.LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP = savedS3;
     _setHookFlagForTests('dns-zone-cleanup', undefined);
-    _setHookFlagForTests('backups-v2-bundle-cleanup', undefined);
+    _setHookFlagForTests('tenant-bundles-bundle-cleanup', undefined);
   });
 
   it('returns true (default hook) when env unset', () => {
     expect(isHookAuthoritative('dns-zone-cleanup')).toBe(true);
-    expect(isHookAuthoritative('backups-v2-bundle-cleanup')).toBe(true);
+    expect(isHookAuthoritative('tenant-bundles-bundle-cleanup')).toBe(true);
   });
 
   it('returns true when env=hook', () => {

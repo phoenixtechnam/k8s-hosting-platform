@@ -4,7 +4,7 @@ import { z } from 'zod';
 //
 // Scope: cluster-state recovery artifacts (secrets, system DBs,
 // Stalwart BLOB, longhorn snapshots — NOT customer/tenant data).
-// Tenant data is owned by Tenant Backup (backups-v2).
+// Tenant data is owned by Tenant Backup (tenant-bundles).
 //
 // Phase 1 ships only the secrets-bundle subsystem.
 

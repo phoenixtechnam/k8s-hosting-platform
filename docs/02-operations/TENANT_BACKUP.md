@@ -50,7 +50,7 @@ to.
 |---|---|---|
 | `admin` | Operator clicks "Create bundle" in Backup Settings | `POST /admin/backups/bundles` |
 | `client` | Tenant requests GDPR data export from client panel | same route, `initiator='client'`, `exportMode='data_export'` |
-| `system` | Tier-1 scheduler tick fires per `client_backup_schedules` row | `runScheduleTick()` in `backups-v2/schedule.ts` |
+| `system` | Tier-1 scheduler tick fires per `client_backup_schedules` row | `runScheduleTick()` in `tenant-bundles/schedule.ts` |
 
 The Tier-1 scheduler runs every 5 min on every platform-api replica
 with a cross-replica CAS (`UPDATE ... WHERE last_run_at = $previous`)
@@ -60,7 +60,7 @@ so only one replica runs each due client. Frequencies: `daily`,
 ## Retention
 
 - `backup_jobs.expires_at` is set at create time from `retentionDays`.
-- The **retention sweeper** (`backups-v2/retention.ts`, 5-min tick)
+- The **retention sweeper** (`tenant-bundles/retention.ts`, 5-min tick)
   deletes expired bundles via `BackupStore.delete()` and flips
   `status='expired'`.
 - Stuck `running` bundles >24h are GC'd to `failed` so they don't
@@ -257,7 +257,7 @@ a Stalwart-side config detail, not a fundamental block.
 
 ## CI guards
 
-- `scripts/ci-backups-v2-schema-audit.sh` — fails if a new client-FK'd
+- `scripts/ci-tenant-bundles-schema-audit.sh` — fails if a new client-FK'd
   table lands in `schema.ts` without being added to `CONFIG_DUMP_TABLES`
   or the exclusion allowlist.
 - Backend `vitest` coverage thresholds — exercises 88+ unit tests
@@ -270,7 +270,7 @@ a Stalwart-side config detail, not a fundamental block.
 ## Where things live
 
 ```
-backend/src/modules/backups-v2/
+backend/src/modules/tenant-bundles/
   bundle-store.ts                 BackupStore interface
   s3-backup-store.ts              S3 implementation (multipart, presigned URL)
   ssh-backup-store.ts             SFTP implementation (ssh2)

@@ -411,6 +411,9 @@ export async function applyPVC(
   }
 
   try {
+    // backup-coverage: captured-by:files
+    // (canonical tenant data PVC `${namespace}-storage`; the files
+    // component tarballs every path under its mount.)
     await k8s.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {
@@ -732,7 +735,7 @@ export async function runDeprovision(
   try {
     // Phase A2 follow-up: dispatch a 'deleted' transition through the
     // lifecycle registry BEFORE we touch the namespace. This fires
-    // the orphan-prevention hooks (dns-zone-cleanup, backups-v2-bundle-
+    // the orphan-prevention hooks (dns-zone-cleanup, tenant-bundles-bundle-
     // cleanup, cluster-scoped-refs-cleanup) while domains + backup_jobs
     // rows are still readable. Decommission keeps the client row, so
     // the dispatch records the action in client_lifecycle_transitions

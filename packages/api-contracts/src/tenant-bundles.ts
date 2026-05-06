@@ -144,7 +144,7 @@ export type BundleListResponse = z.infer<typeof bundleListResponseSchema>;
 
 // ─── Verify response (round-trip integrity report) ──────────────────────────
 //
-// POST /admin/backups/bundles/{id}/verify reads every component back
+// POST /admin/tenant-bundles/{id}/verify reads every component back
 // from the off-site target, decrypts secrets, decompresses config,
 // and reports per-component health. No DB writes. Used by the admin
 // panel "Verify" button + by integration tests to assert round-trip.

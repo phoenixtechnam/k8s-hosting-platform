@@ -167,12 +167,15 @@ describe('TenantBackup', () => {
     mockedBundles.mockReturnValue({ data: { data: { data: [], pagination: {} } }, isLoading: false });
     mockedCarts.mockReturnValue({
       data: {
-        data: [{
-          id: 'rstr-1', clientId: 'c1', initiatorUserId: null, status: 'failed',
-          preRestoreSnapshotId: null, description: 'test cart',
-          startedAt: null, finishedAt: null, lastError: null,
-          createdAt: '2026-05-05T18:00:00Z', updatedAt: '2026-05-05T18:00:00Z',
-        }],
+        // Outer envelope (success() wrapper) + inner list payload.
+        data: {
+          data: [{
+            id: 'rstr-1', clientId: 'c1', initiatorUserId: null, status: 'failed',
+            preRestoreSnapshotId: null, description: 'test cart',
+            startedAt: null, finishedAt: null, lastError: null,
+            createdAt: '2026-05-05T18:00:00Z', updatedAt: '2026-05-05T18:00:00Z',
+          }],
+        },
       },
       isLoading: false, error: null,
     });

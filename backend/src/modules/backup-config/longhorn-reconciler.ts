@@ -367,6 +367,9 @@ async function upsertNamespacedSecret(
     });
   } catch (err) {
     if (isNotFound(err)) {
+      // backup-coverage: excluded:cluster-infrastructure
+      // (Longhorn S3 BackupTarget creds in longhorn-system ns; not
+      // tenant data — reconciled from backup_configurations row.)
       await core.createNamespacedSecret({ namespace: secretNamespace, body });
       return;
     }

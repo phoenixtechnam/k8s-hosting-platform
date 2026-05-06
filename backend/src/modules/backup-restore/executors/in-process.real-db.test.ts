@@ -6,7 +6,7 @@
  *   - domains-by-id          (id-filtered apply on `domains`)
  *
  * Uses `pg-mem` to boot an in-memory Postgres, mirrors the same
- * pgMemDatabase adapter as `backups-v2/components/config.real-db.test.ts`,
+ * pgMemDatabase adapter as `tenant-bundles/components/config.real-db.test.ts`,
  * and asserts on real INSERT … ON CONFLICT (id) DO UPDATE behaviour
  * (no schema-mismatch hides this time).
  *
@@ -25,7 +25,7 @@ import { gzipSync } from 'node:zlib';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import type { Database } from '../../../db/index.js';
-import type { BackupStore, BundleHandle, ArtifactRef } from '../../backups-v2/bundle-store.js';
+import type { BackupStore, BundleHandle, ArtifactRef } from '../../tenant-bundles/bundle-store.js';
 import { execConfigTablesItem } from './config-tables.js';
 import { execDeploymentsByIdItem } from './deployments-by-id.js';
 import { execDomainsByIdItem } from './domains-by-id.js';

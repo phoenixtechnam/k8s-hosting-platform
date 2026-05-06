@@ -3,7 +3,7 @@
  * page so an operator can flip a switch + pick frequency without
  * touching the DB.
  *
- * The Tier-1 scheduler tick (backups-v2/schedule.ts) reads this
+ * The Tier-1 scheduler tick (tenant-bundles/schedule.ts) reads this
  * row every 5 min; saves take effect on the next tick.
  */
 

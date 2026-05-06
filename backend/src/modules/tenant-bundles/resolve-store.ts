@@ -58,7 +58,7 @@ export async function resolveBackupStore(
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encryptionKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encryptionKey) : '';
     } catch (err) {
-      log('error', { err, configId: cfg.id }, 'backups-v2: S3 credential decryption failed');
+      log('error', { err, configId: cfg.id }, 'tenant-bundles: S3 credential decryption failed');
       throw new ResolveStoreError('CONFIG_INVALID',
         'S3 credential decryption failed (encryption key may have rotated)');
     }
@@ -85,7 +85,7 @@ export async function resolveBackupStore(
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encryptionKey);
     } catch (err) {
-      log('error', { err, configId: cfg.id }, 'backups-v2: SSH key decryption failed');
+      log('error', { err, configId: cfg.id }, 'tenant-bundles: SSH key decryption failed');
       throw new ResolveStoreError('CONFIG_INVALID',
         'SSH key decryption failed (encryption key may have rotated)');
     }

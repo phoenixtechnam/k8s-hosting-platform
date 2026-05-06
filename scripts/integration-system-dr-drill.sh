@@ -201,6 +201,26 @@ ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
    kubectl -n mail exec mail-pg-1 -- bash -c 'pg_restore --no-owner --no-privileges --clean --if-exists -U app -d stalwart_app /tmp/mail.pgdump 2>&1 | tail -10'" \
   2>&1 | tail -10
 
+log "10b) Rewrite system_settings domain (post-pg_restore DR fixup)"
+# pg_restore replays the source's admin_panel_url/client_panel_url/
+# ingress_base_domain — without rewriting them, platform-api's
+# ingress-reconciler keeps reasserting the source domain on the
+# Ingress. Run admin-domain-rewrite.sh on the target to point
+# system_settings at the operator's new domain.
+scp "${SSH_OPTS[@]}" scripts/admin-domain-rewrite.sh "${TARGET_SSH[*]}":/tmp/admin-domain-rewrite.sh 2>&1 | tail -2
+# Pipe through tail discards SSH's exit code → use `set -o pipefail`
+# inside an ssh -t-like wrapper, OR capture output then echo. We do
+# the latter so a non-zero rewrite cleanly fails the drill instead
+# of silently masking under tail.
+if ! ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
+  "bash /tmp/admin-domain-rewrite.sh --domain '$TARGET_VM_DOMAIN'" \
+  > /tmp/dr-domain-rewrite.log 2>&1; then
+  tail -20 /tmp/dr-domain-rewrite.log
+  fail "domain-rewrite failed (see /tmp/dr-domain-rewrite.log on the runner)"
+fi
+tail -10 /tmp/dr-domain-rewrite.log
+pass "domain rewritten + platform-api rolled"
+
 log "11) Verify platform-api responds + admin login works"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "KUBECONFIG=/etc/rancher/k3s/k3s.yaml; \

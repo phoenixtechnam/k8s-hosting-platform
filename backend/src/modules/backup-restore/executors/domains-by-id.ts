@@ -18,7 +18,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { BackupStore } from '../../backups-v2/bundle-store.js';
+import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import type { RestoreItem } from '../../../db/schema.js';
 import { readAndAuthorizeConfigDump, applyIdFilteredUpsert } from './_shared.js';
 

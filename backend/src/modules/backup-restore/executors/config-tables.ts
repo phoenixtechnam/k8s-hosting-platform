@@ -19,13 +19,13 @@
 
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'drizzle-orm';
-import type { BackupStore } from '../../backups-v2/bundle-store.js';
+import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import type { RestoreItem } from '../../../db/schema.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
 
 /**
  * Tables this executor is allowed to write to. Must match the set
- * dumped by `backups-v2/components/config.ts` (CONFIG_DUMP_TABLES).
+ * dumped by `tenant-bundles/components/config.ts` (CONFIG_DUMP_TABLES).
  */
 const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   clients: 'clients',

@@ -1,7 +1,7 @@
 /**
  * Public, single-use bundle download — `GET /api/v1/system-backup/secrets/download/:token`.
  *
- * Mirrors the backups-v2 internal-download-route pattern: the route
+ * Mirrors the tenant-bundles internal-download-route pattern: the route
  * lives in its OWN Fastify plugin file with NO addHook('onRequest',
  * authenticate). The HMAC-signed token in the path IS the
  * credential. We don't put it in the main system-backup routes.ts

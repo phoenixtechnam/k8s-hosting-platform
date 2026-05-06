@@ -322,6 +322,10 @@ async function ensureBlobCredentialsSecret(
   }
 
   if (!exists) {
+    // backup-coverage: excluded:cluster-infrastructure
+    // (Stalwart blob-store credentials in `mail` ns; not tenant data.
+    // Mail content lives in Stalwart's PG cluster + is captured by
+    // the mailboxes component via IMAP master-user proxy.)
     await core.createNamespacedSecret({
       namespace: MAIL_NAMESPACE,
       body: {

@@ -19,7 +19,7 @@ export * from './auth.js';
 export * from './clients.js';
 export * from './domains.js';
 export * from './backups.js';
-export * from './backups-v2.js';
+export * from './tenant-bundles.js';
 export * from './restore.js';
 export * from './backup-health.js';
 export * from './cron-jobs.js';

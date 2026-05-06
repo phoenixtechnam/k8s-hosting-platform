@@ -562,7 +562,7 @@ export default function ClientDetail() {
           The /admin/clients/:id/decommission endpoint stays for
           backwards-compat curl callers and now dispatches a
           'deleted' transition through the lifecycle registry so the
-          orphan-prevention hooks fire (DNS, backups-v2, PVs, cluster-
+          orphan-prevention hooks fire (DNS, tenant-bundles, PVs, cluster-
           scoped refs). detail.preservedClient=true in the transition
           row distinguishes decommission from a hard delete. */}
 

@@ -13,7 +13,7 @@
  * the item failed without taking down the rest of the cart.
  *
  * Auth: `authenticate + requirePanel('admin') + requireRole(...)`
- * — same pattern as backups-v2/routes.ts. The internal-download
+ * — same pattern as tenant-bundles/routes.ts. The internal-download
  * endpoint (mirror of upload, used by Phase-4.x file/mailbox
  * executors) lives separately for HMAC-token auth.
  */
@@ -44,9 +44,9 @@ import {
   type RestoreItemType,
 } from '@k8s-hosting/api-contracts';
 import { decrypt } from '../oidc/crypto.js';
-import { S3BackupStore } from '../backups-v2/s3-backup-store.js';
-import { SshBackupStore } from '../backups-v2/ssh-backup-store.js';
-import type { BackupStore } from '../backups-v2/bundle-store.js';
+import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
+import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
+import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { gunzipSync } from 'node:zlib';
 import { execConfigTablesItem } from './executors/config-tables.js';
 import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
@@ -398,13 +398,13 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // ── GET /api/v1/admin/backups/bundles/:bundleId/browse/* ───────────
+  // ── GET /api/v1/admin/tenant-bundles/:bundleId/browse/* ───────────
   // Bundle-browse routes — populate the cart UI's "what can I restore
   // from this bundle?" picker. Each call sources data from a single
   // bundle on the off-site target via BackupStore.readComponent +
   // parsing.
 
-  app.get('/admin/backups/bundles/:bundleId/browse/config-tables', async (request) => {
+  app.get('/admin/tenant-bundles/:bundleId/browse/config-tables', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
     const dump = await readConfigDump(app, bundleId);
     const tables = Object.entries(dump.tables ?? {}).map(([name, rows]) => ({
@@ -414,7 +414,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     return success({ bundleId, tables });
   });
 
-  app.get('/admin/backups/bundles/:bundleId/browse/mailboxes', async (request) => {
+  app.get('/admin/tenant-bundles/:bundleId/browse/mailboxes', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
     const job = await loadBundle(app, bundleId);
     const store = await resolveStoreForBundle(app, bundleId);
@@ -428,7 +428,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     return success({ bundleId, addresses });
   });
 
-  app.get('/admin/backups/bundles/:bundleId/browse/deployments', async (request) => {
+  app.get('/admin/tenant-bundles/:bundleId/browse/deployments', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
     const dump = await readConfigDump(app, bundleId);
     const rows = (dump.tables?.deployments ?? []) as Array<{ id: string; name: string }>;
@@ -438,7 +438,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.get('/admin/backups/bundles/:bundleId/browse/domains', async (request) => {
+  app.get('/admin/tenant-bundles/:bundleId/browse/domains', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
     const dump = await readConfigDump(app, bundleId);
     const rows = (dump.tables?.domains ?? []) as Array<{ id: string; hostname: string }>;
@@ -448,7 +448,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.get('/admin/backups/bundles/:bundleId/browse/files/tree', async (request) => {
+  app.get('/admin/tenant-bundles/:bundleId/browse/files/tree', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
     const q = request.query as { limit?: string; after?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '500', 10) || 500, 1), 2000);
@@ -560,7 +560,7 @@ async function resolveStoreForBundle(app: FastifyInstance, bundleId: string): Pr
   const encKey = configuredKey ?? '0'.repeat(64);
   if (cfg.storageType === 's3') {
     // Wrap decrypt() in try/catch — OpenSSL error strings can leak
-    // ciphertext fragments. Match backups-v2/routes.ts pattern.
+    // ciphertext fragments. Match tenant-bundles/routes.ts pattern.
     let accessKey: string;
     let secretKey: string;
     try {

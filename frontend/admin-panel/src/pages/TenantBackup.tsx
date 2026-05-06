@@ -751,7 +751,9 @@ function ScheduleRow({ schedule: s, onEdit }: { schedule: BackupScheduleSummary;
 function CartsTab() {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const { data, isLoading, error } = useRestoreCarts(statusFilter ? { status: statusFilter } : {});
-  const carts: ReadonlyArray<RestoreJobSummary> = data?.data ?? [];
+  // API envelope is {data: {data: [...]}} — see CartListResponse in
+  // hooks/use-restore-carts.ts.
+  const carts: ReadonlyArray<RestoreJobSummary> = data?.data?.data ?? [];
 
   return (
     <div className="space-y-4">

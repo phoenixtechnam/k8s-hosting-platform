@@ -93,7 +93,7 @@ should run again" — it just re-executes. Hooks should:
 
 ### Operator kill-switch
 
-Hooks with no legacy fallback (DNS, backups-v2, cluster-scoped-refs)
+Hooks with no legacy fallback (DNS, tenant-bundles, cluster-scoped-refs)
 accept an emergency disable via env:
 
 ```
@@ -179,7 +179,7 @@ not transient external outage.
     `db-email-aliases.ts`, `db-deployments.ts`, `db-clients-stamp.ts`
   * `k8s-ingress.ts` — suspend/resume/reconcile
   * `dns-zone-cleanup.ts` — provider.deleteZone() on every domain
-  * `backups-v2-cleanup.ts` — store.delete() on every backup_jobs row
+  * `tenant-bundles-cleanup.ts` — store.delete() on every backup_jobs row
   * `cluster-scoped-refs.ts` — ClusterRoleBindings + cross-ns NetworkPolicies
 * UI: `frontend/admin-panel/src/components/{TransitionProgressModal,BulkProgressModal}.tsx`,
   `frontend/admin-panel/src/pages/LifecycleHooksSettings.tsx`

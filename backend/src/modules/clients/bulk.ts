@@ -99,7 +99,7 @@ export async function bulkUpdateClientStatus(
 /**
  * Bulk hard-delete. Each per-client delete is dispatched through
  * `applyDeleted` so the orphan-prevention hooks (pv-cleanup-released,
- * dns-zone-cleanup, backups-v2-bundle-cleanup, etc.) fire.
+ * dns-zone-cleanup, tenant-bundles-bundle-cleanup, etc.) fire.
  *
  * Pre-A2 this skipped `applyDeleted` entirely and called
  * `deleteNamespace` + `db.delete(clients)` inline — every external

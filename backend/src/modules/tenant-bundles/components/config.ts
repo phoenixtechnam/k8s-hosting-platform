@@ -82,7 +82,7 @@ export const CONFIG_DUMP_TABLES = [
  * Tables with a direct FK to `clients.id` that are intentionally
  * EXCLUDED from the config dump. Each entry must carry a reason.
  *
- * The schema-audit script (`scripts/ci-backups-v2-schema-audit.sh`)
+ * The schema-audit script (`scripts/ci-tenant-bundles-schema-audit.sh`)
  * fails the build if any new client-FK'd table is added to the schema
  * without also being in `CONFIG_DUMP_TABLES` or in this exclusion
  * list — preventing the silent-drop bug where a new tenant table

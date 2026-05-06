@@ -40,14 +40,42 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     ?? process.env.OIDC_ENCRYPTION_KEY;
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
   if (!configuredKey && process.env.NODE_ENV === 'production') {
-    app.log.error('backups-v2: OIDC_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set OIDC_ENCRYPTION_KEY now.');
+    app.log.error('tenant-bundles: OIDC_ENCRYPTION_KEY is not set in production — using zero-key fallback. Secrets-component bundles encrypted today are trivially decryptable. Set OIDC_ENCRYPTION_KEY now.');
   } else if (!configuredKey) {
-    app.log.warn('backups-v2: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
+    app.log.warn('tenant-bundles: OIDC_ENCRYPTION_KEY not set — using zero-key dev fallback. Secrets bundles produced now will be unencrypted.');
   }
 
-  // ── GET /api/v1/admin/backups/bundles ──────────────────────────────
-  app.get('/admin/backups/bundles', {
-    schema: { tags: ['BackupsV2'], summary: 'List bundles', security: [{ bearerAuth: [] }] },
+  // ── Legacy path redirects (one cycle) ────────────────────────────
+  // The bundle endpoints used to live under /admin/backups/bundles*
+  // before the 2026-05-06 rename to /admin/tenant-bundles*. Keep
+  // 308-permanent redirects on the old paths for one release cycle so
+  // a panel deployed before the backend rolls doesn't 404 — TanStack
+  // Query follows redirects transparently. Remove this block after
+  // the next release cycle. (Path style: /admin/backups/bundles{,/...}
+  // → /admin/tenant-bundles{,/...} preserving query string.)
+  const legacyBundlePaths = [
+    '/admin/backups/bundles',
+    '/admin/backups/bundles/:id',
+    '/admin/backups/bundles/:id/verify',
+    '/admin/backups/bundles/:id/data-export',
+  ] as const;
+  for (const legacy of legacyBundlePaths) {
+    const target = legacy.replace('/admin/backups/bundles', '/admin/tenant-bundles');
+    for (const method of ['get', 'post', 'delete'] as const) {
+      app[method](legacy, {
+        schema: { tags: ['TenantBundles'], summary: `Legacy redirect → ${target}`, hide: true },
+      }, async (request, reply) => {
+        const params = request.params as Record<string, string>;
+        const url = `/api/v1${target.replace(/:(\w+)/g, (_, k) => params[k] ?? '')}`;
+        const qs = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
+        reply.code(308).header('Location', `${url}${qs}`).send();
+      });
+    }
+  }
+
+  // ── GET /api/v1/admin/tenant-bundles ──────────────────────────────
+  app.get('/admin/tenant-bundles', {
+    schema: { tags: ['TenantBundles'], summary: 'List bundles', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const q = request.query as { clientId?: string; limit?: string; status?: string };
     const limit = Math.min(Math.max(parseInt(q.limit ?? '50', 10) || 50, 1), 100);
@@ -75,9 +103,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── GET /api/v1/admin/backups/bundles/:id ──────────────────────────
-  app.get('/admin/backups/bundles/:id', {
-    schema: { tags: ['BackupsV2'], summary: 'Get bundle detail', security: [{ bearerAuth: [] }] },
+  // ── GET /api/v1/admin/tenant-bundles/:id ──────────────────────────
+  app.get('/admin/tenant-bundles/:id', {
+    schema: { tags: ['TenantBundles'], summary: 'Get bundle detail', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
@@ -90,9 +118,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return success(detail);
   });
 
-  // ── POST /api/v1/admin/backups/bundles ─────────────────────────────
-  app.post('/admin/backups/bundles', {
-    schema: { tags: ['BackupsV2'], summary: 'Create a new bundle', security: [{ bearerAuth: [] }] },
+  // ── POST /api/v1/admin/tenant-bundles ─────────────────────────────
+  app.post('/admin/tenant-bundles', {
+    schema: { tags: ['TenantBundles'], summary: 'Create a new bundle', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const parsed = createBundleSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -141,7 +169,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
       k8s = createK8sClients(kc);
     } catch (err) {
-      app.log.warn({ err }, 'backups-v2: k8s client unavailable');
+      app.log.warn({ err }, 'tenant-bundles: k8s client unavailable');
       k8s = undefined;
     }
 
@@ -174,7 +202,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
           // Re-enabled 2026-05-05: capture now uses the
           // mail-backup-tools image (mbsync over IMAP master-user
           // proxy) instead of the dropped `stalwart-cli`. See
-          // backend/src/modules/backups-v2/components/mailboxes.ts
+          // backend/src/modules/tenant-bundles/components/mailboxes.ts
           // and docs/02-operations/TENANT_BACKUP.md.
           mailboxes: input.components?.mailboxes ?? true,
           config: input.components?.config ?? true,
@@ -188,7 +216,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(success({ bundleId: result.bundleId, status: result.status, meta: result.meta }));
   });
 
-  // ── GET /api/v1/admin/backups/bundles/:id/data-export ──────────────
+  // ── GET /api/v1/admin/tenant-bundles/:id/data-export ──────────────
   // Streams the AES-256-CBC-encrypted tarball produced by the
   // data_export wrapper to the caller. The body is opaque ciphertext;
   // the client decrypts locally with the passphrase they provided at
@@ -201,8 +229,8 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // Auth is admin-gated — for client-panel download, the client-panel
   // re-uses this same endpoint via its admin proxy + the existing
   // tenant-context check on the bundle.
-  app.get('/admin/backups/bundles/:id/data-export', {
-    schema: { tags: ['BackupsV2'], summary: 'Download the GDPR data-export ciphertext for a bundle', security: [{ bearerAuth: [] }] },
+  app.get('/admin/tenant-bundles/:id/data-export', {
+    schema: { tags: ['TenantBundles'], summary: 'Download the GDPR data-export ciphertext for a bundle', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
@@ -236,7 +264,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return reply.send(body);
   });
 
-  // ── POST /api/v1/admin/backups/bundles/:id/verify ──────────────────
+  // ── POST /api/v1/admin/tenant-bundles/:id/verify ──────────────────
   //
   // Read every component artifact back from the off-site target,
   // decrypt secrets, decompress config, and report:
@@ -248,8 +276,8 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // Operators run this from the admin panel after a backup to confirm
   // the bytes left the pod and round-trip cleanly. No DB writes; safe
   // to run any number of times.
-  app.post('/admin/backups/bundles/:id/verify', {
-    schema: { tags: ['BackupsV2'], summary: 'Verify a bundle round-trip', security: [{ bearerAuth: [] }] },
+  app.post('/admin/tenant-bundles/:id/verify', {
+    schema: { tags: ['TenantBundles'], summary: 'Verify a bundle round-trip', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
@@ -339,9 +367,9 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── DELETE /api/v1/admin/backups/bundles/:id ───────────────────────
-  app.delete('/admin/backups/bundles/:id', {
-    schema: { tags: ['BackupsV2'], summary: 'Delete a bundle (also from store)', security: [{ bearerAuth: [] }] },
+  // ── DELETE /api/v1/admin/tenant-bundles/:id ───────────────────────
+  app.delete('/admin/tenant-bundles/:id', {
+    schema: { tags: ['TenantBundles'], summary: 'Delete a bundle (also from store)', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, id)).limit(1);
@@ -366,7 +394,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // pointing at a deleted client still surfaces (operator sees
   // businessName=null and can prune).
   app.get('/admin/backup-schedules', {
-    schema: { tags: ['BackupsV2'], summary: 'List all client backup schedules', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'List all client backup schedules', security: [{ bearerAuth: [] }] },
   }, async () => {
     const rows = await app.db
       .select({
@@ -403,7 +431,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // ── GET /api/v1/admin/clients/:clientId/backup-schedule ────────────
   // Returns the client's schedule row, or null when none exists yet.
   app.get('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['BackupsV2'], summary: 'Get the client backup schedule', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Get the client backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const [row] = await app.db.select().from(clientBackupSchedules)
@@ -425,7 +453,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // ── PUT /api/v1/admin/clients/:clientId/backup-schedule ────────────
   // Upsert the schedule row. PUT semantics — full row supplied each time.
   app.put('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['BackupsV2'], summary: 'Upsert the client backup schedule', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Upsert the client backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { clientId } = request.params as { clientId: string };
     const parsed = updateClientBackupScheduleSchema.safeParse(request.body);
@@ -490,7 +518,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
   // ── DELETE /api/v1/admin/clients/:clientId/backup-schedule ─────────
   app.delete('/admin/clients/:clientId/backup-schedule', {
-    schema: { tags: ['BackupsV2'], summary: 'Disable + remove the client backup schedule', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Disable + remove the client backup schedule', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
     await app.db.delete(clientBackupSchedules).where(eq(clientBackupSchedules.clientId, clientId));
@@ -503,7 +531,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
   // lets you test a schedule without waiting for the natural next-due
   // window. Requires the schedule to exist + be enabled.
   app.post('/admin/clients/:clientId/backup-schedule/run-now', {
-    schema: { tags: ['BackupsV2'], summary: 'Force the next scheduler tick to fire this client immediately', security: [{ bearerAuth: [] }] },
+    schema: { tags: ['TenantBundles'], summary: 'Force the next scheduler tick to fire this client immediately', security: [{ bearerAuth: [] }] },
   }, async (request, reply) => {
     const { clientId } = request.params as { clientId: string };
     const [row] = await app.db.select().from(clientBackupSchedules)
@@ -553,7 +581,7 @@ async function resolveStore(
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2: S3 credential decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles: S3 credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed (encryption key may have rotated)', 500);
     }
     if (!accessKey || !secretKey) {
@@ -578,7 +606,7 @@ async function resolveStore(
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2: SSH key decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles: SSH key decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed (encryption key may have rotated)', 500);
     }
     if (!privateKey) {

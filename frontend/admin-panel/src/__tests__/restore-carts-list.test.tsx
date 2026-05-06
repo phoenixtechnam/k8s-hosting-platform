@@ -48,14 +48,14 @@ const ROW: RestoreJobSummary = {
 
 describe('RestoreCartsList', () => {
   it('renders the heading + empty state when no carts exist', () => {
-    mocked.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false, isFetching: false });
+    mocked.mockReturnValue({ data: { data: { data: [] } }, isLoading: false, isError: false, isFetching: false });
     render(<RestoreCartsList />, { wrapper });
     expect(screen.getByText('Restore carts')).toBeInTheDocument();
     expect(screen.getByText('No carts yet')).toBeInTheDocument();
   });
 
   it('renders failed cart with Resume link', () => {
-    mocked.mockReturnValue({ data: { data: [ROW] }, isLoading: false, isError: false, isFetching: false });
+    mocked.mockReturnValue({ data: { data: { data: [ROW] } }, isLoading: false, isError: false, isFetching: false });
     render(<RestoreCartsList />, { wrapper });
     // 'failed' appears in both the filter pill and the row's status pill;
     // assert at least one match for each.
@@ -73,7 +73,7 @@ describe('RestoreCartsList', () => {
 
   it('shows done cart without Resume LINK', () => {
     mocked.mockReturnValue({
-      data: { data: [{ ...ROW, status: 'done', lastError: null } satisfies RestoreJobSummary] },
+      data: { data: { data: [{ ...ROW, status: 'done', lastError: null } satisfies RestoreJobSummary] } },
       isLoading: false,
       isError: false,
       isFetching: false,

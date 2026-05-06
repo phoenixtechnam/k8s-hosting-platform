@@ -42,7 +42,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
     // Hard-fail in production. The HMAC upload tokens are signed
     // with this key — falling back to all-zeros would let any
     // attacker who reads the source forge upload tokens. The
-    // backups-v2 admin route emits a warn-log; this internal route
+    // tenant-bundles admin route emits a warn-log; this internal route
     // refuses to register at all.
     throw new Error('backupsV2InternalUploadRoutes: OIDC_ENCRYPTION_KEY is required in production');
   }
@@ -69,7 +69,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // tried PUT and Fastify returned 404 because the registered
   // method was POST.
   app.put('/internal/bundles/:bundleId/components/:component/:artifactName', {
-    schema: { tags: ['BackupsV2-Internal'], summary: 'Stream a component artifact upload from a tenant Job' },
+    schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a component artifact upload from a tenant Job' },
   }, async (request, reply) => {
     const { bundleId, component, artifactName } = request.params as {
       bundleId: string;
@@ -102,7 +102,7 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       // attacker can't differentiate "wrong MAC" from "expired
       // token" via the response — which would narrow brute-force
       // windows.
-      app.log.warn({ verifyErr, bundleId, component, artifactName }, 'backups-v2 internal upload: token rejected');
+      app.log.warn({ verifyErr, bundleId, component, artifactName }, 'tenant-bundles internal upload: token rejected');
       throw new ApiError('UNAUTHORIZED', 'upload token invalid', 401);
     }
 
@@ -152,7 +152,7 @@ async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: strin
       accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, encKey) : '';
       secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, encKey) : '';
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 upload: S3 credential decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles upload: S3 credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'S3 credential decryption failed', 500);
     }
     if (!accessKey || !secretKey) {
@@ -176,7 +176,7 @@ async function resolveStoreForUpload(app: FastifyInstance, targetConfigId: strin
     try {
       privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'backups-v2 upload: SSH key decryption failed');
+      app.log.error({ err, configId: cfg.id }, 'tenant-bundles upload: SSH key decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed', 500);
     }
     return new SshBackupStore({

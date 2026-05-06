@@ -63,6 +63,10 @@ export async function ensureFileManagerRunning(
   } catch (err: unknown) {
     if (!isK8s404(err)) throw err;
     if (process.env.PLATFORM_INTERNAL_SECRET) {
+      // backup-coverage: excluded:reconciler-rebuilds-from-env
+      // (platform-internal HMAC secret mirrored from platform-api env
+      // into tenant ns by this reconciler; restore re-runs the
+      // reconciler so the secret repopulates without bundle capture.)
       await k8s.core.createNamespacedSecret({
         namespace,
         body: {

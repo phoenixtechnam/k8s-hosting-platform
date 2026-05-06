@@ -19,7 +19,13 @@ import type {
 interface CartDetailResponse { readonly data: RestoreJobDetail }
 interface CartSummaryResponse { readonly data: RestoreJobSummary }
 interface CartItemResponse { readonly data: RestoreItemInfo }
-interface CartListResponse { readonly data: ReadonlyArray<RestoreJobSummary> }
+// API envelope: success() wraps the handler's payload as {data: ...}.
+// The list handler returns success({data: [...]}) so the over-the-wire
+// shape is {data: {data: [...]}}. Earlier this interface declared
+// only one level of `data` — consumers that did `q.data?.data ?? []`
+// got the inner ENVELOPE OBJECT (not an array), and calling .map()
+// on it threw "s.map is not a function" once any cart existed.
+interface CartListResponse { readonly data: { readonly data: ReadonlyArray<RestoreJobSummary> } }
 
 /**
  * List recent restore carts. Auto-refreshes every 30s so an
@@ -127,7 +133,7 @@ export function useBrowseConfigTables(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'config-tables', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseConfigTablesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/config-tables`),
+    queryFn: () => apiFetch<BrowseConfigTablesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/config-tables`),
   });
 }
 
@@ -138,7 +144,7 @@ export function useBrowseMailboxes(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'mailboxes', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseMailboxesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/mailboxes`),
+    queryFn: () => apiFetch<BrowseMailboxesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/mailboxes`),
   });
 }
 
@@ -149,7 +155,7 @@ export function useBrowseDeployments(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'deployments', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseDeploymentsResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/deployments`),
+    queryFn: () => apiFetch<BrowseDeploymentsResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/deployments`),
   });
 }
 
@@ -160,7 +166,7 @@ export function useBrowseDomains(bundleId: string | null) {
   return useQuery({
     queryKey: ['restore-browse', 'domains', bundleId],
     enabled: !!bundleId,
-    queryFn: () => apiFetch<BrowseDomainsResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/domains`),
+    queryFn: () => apiFetch<BrowseDomainsResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/domains`),
   });
 }
 
@@ -179,7 +185,7 @@ export function useBrowseFiles(bundleId: string | null, after: string | null, li
     queryFn: () => {
       const qs = new URLSearchParams({ limit: String(limit) });
       if (after) qs.set('after', after);
-      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/backups/bundles/${bundleId}/browse/files/tree?${qs.toString()}`);
+      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/files/tree?${qs.toString()}`);
     },
   });
 }

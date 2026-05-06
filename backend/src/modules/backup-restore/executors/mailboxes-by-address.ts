@@ -33,10 +33,10 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
-import type { BackupStore } from '../../backups-v2/bundle-store.js';
+import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { restoreItems, restoreJobs, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
-import { signUploadToken } from '../../backups-v2/upload-token.js';
+import { signUploadToken } from '../../tenant-bundles/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import {

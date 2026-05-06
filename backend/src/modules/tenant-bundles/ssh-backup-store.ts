@@ -213,7 +213,7 @@ export class SshBackupStore implements BackupStore {
     const bundlePath = this.bundlePath(input.backupId);
     this.config.logFn?.('info',
       { bundleId: input.backupId, clientId: input.clientId, host: this.config.host, bundlePath },
-      'backups-v2: ssh reserveBundle');
+      'tenant-bundles: ssh reserveBundle');
     await this.withSftp(async (sftp) => {
       // Pre-create the four component subdirs so component writers
       // don't race on mkdir. mkdirP is idempotent.

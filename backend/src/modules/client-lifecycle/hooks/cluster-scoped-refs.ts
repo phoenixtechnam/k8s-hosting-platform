@@ -30,7 +30,7 @@ import { isHookAuthoritative } from '../registry/feature-flags.js';
  *     (Longhorn volume CRs are handled by pv-cleanup-released)
  *
  * Ordering / blocking:
- *   - order=500 — after dns-zone-cleanup (400) and backups-v2-bundle-
+ *   - order=500 — after dns-zone-cleanup (400) and tenant-bundles-bundle-
  *     cleanup (410). These cluster-scoped removals are typically
  *     fast (one LIST + N DELETEs).
  *   - blocking=continue — a cluster-scoped leftover doesn't block the
@@ -224,7 +224,7 @@ export const clusterScopedRefsCleanupHook: LifecycleHook = {
   order: 500,
   blocking: 'continue',
   maxAttempts: 3,
-  after: ['dns-zone-cleanup', 'backups-v2-bundle-cleanup'],
+  after: ['dns-zone-cleanup', 'tenant-bundles-bundle-cleanup'],
   run: runImpl,
 };
 

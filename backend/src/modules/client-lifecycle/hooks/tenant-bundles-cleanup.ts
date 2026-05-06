@@ -6,7 +6,7 @@ import {
   type HookResult,
   type LifecycleHook,
 } from '../registry/index.js';
-import { resolveBackupStore, ResolveStoreError } from '../../backups-v2/resolve-store.js';
+import { resolveBackupStore, ResolveStoreError } from '../../tenant-bundles/resolve-store.js';
 import { isHookAuthoritative } from '../registry/feature-flags.js';
 
 let _envKeyMissingLogged = false;
@@ -15,7 +15,7 @@ function resolveEncryptionKey(): string {
   if (!k) {
     if (!_envKeyMissingLogged) {
       console.warn(
-        '[backups-v2-bundle-cleanup] OIDC_ENCRYPTION_KEY not set — falling back to zero key. Backup target credentials will likely fail to decrypt; check the platform deployment.',
+        '[tenant-bundles-bundle-cleanup] OIDC_ENCRYPTION_KEY not set — falling back to zero key. Backup target credentials will likely fail to decrypt; check the platform deployment.',
       );
       _envKeyMissingLogged = true;
     }
@@ -25,13 +25,13 @@ function resolveEncryptionKey(): string {
 }
 
 /**
- * backups-v2-bundle-cleanup hook.
+ * tenant-bundles-bundle-cleanup hook.
  *
  * Deletes every off-cluster backup bundle owned by the client being
  * deleted. The `backup_jobs` table cascades on `clients.id` deletion
  * (FK ON DELETE CASCADE), but the actual bundle bytes on S3 / SSH
  * are NEVER cleaned up by anything in the existing codebase. The
- * routes.ts DELETE /admin/backups/bundles/:id endpoint is the only
+ * routes.ts DELETE /admin/tenant-bundles/:id endpoint is the only
  * caller of `store.delete()` — and the operator never invokes it on
  * client delete.
  *
@@ -45,7 +45,7 @@ function resolveEncryptionKey(): string {
  *     finish first since DNS providers are usually fast.
  *   - blocking=continue — an S3 5xx must not abort the delete; the
  *     orphan bundle is surfaced via OperatorError envelope and can
- *     be cleaned up via the existing DELETE /admin/backups/bundles/:id.
+ *     be cleaned up via the existing DELETE /admin/tenant-bundles/:id.
  *
  * Cost note: we fan out one resolveBackupStore call per distinct
  * targetConfigId. Most clients use 1-2 targets, so the cost is
@@ -59,7 +59,7 @@ interface JobLite {
   readonly targetConfigId: string | null;
 }
 
-const HOOK_NAME = 'backups-v2-bundle-cleanup';
+const HOOK_NAME = 'tenant-bundles-bundle-cleanup';
 
 async function runImpl(ctx: HookCtx): Promise<HookResult> {
   if (ctx.transition !== 'deleted') {
@@ -149,7 +149,7 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       remediation: [
         'Check Backup Targets in Settings — credentials may have rotated',
         'Verify S3/SSH reachability from the cluster',
-        'Manually delete via DELETE /api/v1/admin/backups/bundles/:id when needed',
+        'Manually delete via DELETE /api/v1/admin/tenant-bundles/:id when needed',
       ],
       raw: failures.map((f) => `${f.bundleId}: ${f.error}`).join('\n'),
     },
@@ -171,7 +171,7 @@ export const backupsV2BundleCleanupHook: LifecycleHook = {
 };
 
 let _registered = false;
-export function registerBackupsV2BundleCleanupHook(): void {
+export function registerTenantBundlesBundleCleanupHook(): void {
   if (_registered) return;
   registerLifecycleHook(backupsV2BundleCleanupHook);
   _registered = true;

@@ -333,7 +333,7 @@ else
   fi
 fi
 
-# ─── Scenario 9: dns-zone-cleanup + backups-v2-bundle-cleanup on delete ──
+# ─── Scenario 9: dns-zone-cleanup + tenant-bundles-bundle-cleanup on delete ──
 # Phase 4 hooks. We ONLY exercise the deleted transition here because
 # the rest of the test still needs the client. Create a dedicated
 # throwaway client with one domain + (optional) one backup bundle,
@@ -388,9 +388,9 @@ else
 
   # Confirm hook_runs for the deleted transition(s) include the Phase 4
   # hooks. With no domains/backup_bundles attached, dns-zone-cleanup +
-  # backups-v2-bundle-cleanup return noop — both states are acceptable.
+  # tenant-bundles-bundle-cleanup return noop — both states are acceptable.
   DEL_HOOKS=$(PSQL "SELECT h.hook_name, h.state FROM client_lifecycle_transitions t JOIN client_lifecycle_hook_runs h ON h.transition_id = t.id WHERE t.client_id='$DEL_CID' AND t.transition_kind='deleted' ORDER BY t.started_at, h.hook_order")
-  for hook in dns-zone-cleanup backups-v2-bundle-cleanup cluster-scoped-refs-cleanup; do
+  for hook in dns-zone-cleanup tenant-bundles-bundle-cleanup cluster-scoped-refs-cleanup; do
     if echo "$DEL_HOOKS" | grep -q "^$hook|"; then
       ok "hook_run row for $hook recorded"
     else

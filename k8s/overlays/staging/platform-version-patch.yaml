@@ -6,5 +6,5 @@ metadata:
   name: platform-version
   namespace: platform
 data:
-  version: "0.0.0-d69b6ec-recycle-fix-1778070012"
+  version: "0.0.0-00614dc"
   branch: "main"

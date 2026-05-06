@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci-backups-v2-schema-audit.sh — fail CI when a new client-FK'd table
+# ci-tenant-bundles-schema-audit.sh — fail CI when a new client-FK'd table
 # lands in db/schema.ts without being added to CONFIG_DUMP_TABLES or
 # the exclusion allowlist.
 #
@@ -23,14 +23,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCHEMA="$ROOT/backend/src/db/schema.ts"
-CONFIG="$ROOT/backend/src/modules/backups-v2/components/config.ts"
+CONFIG="$ROOT/backend/src/modules/tenant-bundles/components/config.ts"
 
 if [[ ! -f "$SCHEMA" ]]; then
-  echo "❌ ci-backups-v2-schema-audit: $SCHEMA not found" >&2
+  echo "❌ ci-tenant-bundles-schema-audit: $SCHEMA not found" >&2
   exit 2
 fi
 if [[ ! -f "$CONFIG" ]]; then
-  echo "❌ ci-backups-v2-schema-audit: $CONFIG not found" >&2
+  echo "❌ ci-tenant-bundles-schema-audit: $CONFIG not found" >&2
   exit 2
 fi
 
@@ -65,7 +65,7 @@ KNOWN=$(printf '%s\n%s\n' "$DUMP_TABLES" "$EXCLUDED" | sort -u)
 # 4. Tables in the schema but NOT in either list.
 MISSING=$(comm -23 <(echo "$SCHEMA_TABLES") <(echo "$KNOWN"))
 
-echo "── ci-backups-v2-schema-audit ──"
+echo "── ci-tenant-bundles-schema-audit ──"
 echo "  schema client-FK tables:   $(echo "$SCHEMA_TABLES" | wc -l)"
 echo "  CONFIG_DUMP_TABLES:        $(echo "$DUMP_TABLES" | wc -l)"
 echo "  EXCLUDED list:             $(echo "$EXCLUDED" | wc -l)"

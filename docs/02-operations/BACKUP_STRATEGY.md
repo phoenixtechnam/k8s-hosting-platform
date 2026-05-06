@@ -5,7 +5,7 @@
 > Phase-4 as-built tenant-backup stack (Plesk-style cart, Tier-1
 > scheduler, GDPR data export, etc.) is documented at
 > **[TENANT_BACKUP.md](TENANT_BACKUP.md)** — the operator runbook
-> reflects the actual code paths under `backups-v2/` +
+> reflects the actual code paths under `tenant-bundles/` +
 > `backup-restore/`. Read TENANT_BACKUP.md first; this file is
 > kept for historical context on the design discussions only.
 

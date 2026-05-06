@@ -30,14 +30,19 @@ FROM node:22-alpine
 # format created by scripts/bootstrap.sh and decoded by `make
 # secrets-restore`. age is a tiny static Go binary shipped in the
 # alpine community repo.
-# pg_dump must match the LOWEST CNPG cluster version we dump from —
-# mail-pg currently runs cnpg postgresql:16.9. Default
-# `postgresql-client` is v18 which produces archives with a header
-# v1.16 that older pg_restores reject ("unsupported version (1.16) in
-# file header"). pg_dump 16 is forward-compat: dumps from pg17
-# (platform) AND pg16 (mail-pg) both restore cleanly into either.
-# Pin to postgresql16-client until all CNPG clusters are bumped.
-RUN apk add --no-cache openssl age postgresql16-client
+# pg_dump must be >= the highest CNPG server version we dump FROM
+# (newer clients can dump from older servers; older clients refuse
+# newer servers with 'aborting because of server version mismatch').
+# Platform/postgres runs cnpg postgresql:17.5 → pin pg_dump to v17.
+#
+# Caveat for mail-pg (currently cnpg 16.9): pg_dump 17 CAN export
+# from a 16 server, but the archive format is v1.15 which mail-pg's
+# pg_restore 16 cannot read directly. For in-place mail-pg recovery,
+# operators should pg_restore from inside the mail-pg pod itself
+# (which has its own version-matched pg_restore). The DR drill
+# harness handles this via kubectl exec. Bumping mail-pg's CNPG
+# image to 17 will eliminate this caveat.
+RUN apk add --no-cache openssl age postgresql17-client
 
 WORKDIR /app
 

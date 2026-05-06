@@ -119,7 +119,7 @@ export async function applyArchived(
  * Delete cascades: hard-remove EVERYTHING owned by this client.
  * Sequence:
  *   1. Open a transitions row + run the registry's `deleted` hooks
- *      (pv-cleanup-released, dns-zone-cleanup, backups-v2-bundle-
+ *      (pv-cleanup-released, dns-zone-cleanup, tenant-bundles-bundle-
  *      cleanup, etc.). This happens BEFORE the FK cascade so the
  *      hooks can read domains/backup_jobs rows.
  *   2. Drop the k8s namespace — brings pods, PVCs, ingress, services,

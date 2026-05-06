@@ -30,7 +30,9 @@ export default function RestoreCartsList() {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [clientFilter, setClientFilter] = useState<string>('');
   const q = useRestoreCarts({ status: statusFilter || undefined, clientId: clientFilter || undefined });
-  const carts = q.data?.data ?? [];
+  // API envelope is {data: {data: [...]}} — see CartListResponse in
+  // hooks/use-restore-carts.ts.
+  const carts = q.data?.data?.data ?? [];
 
   return (
     <div className="p-4 md:p-6">

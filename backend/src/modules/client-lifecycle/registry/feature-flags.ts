@@ -10,7 +10,7 @@
  *   - dns-zone-cleanup           — disable when a DNS provider is
  *                                  flapping and every delete is
  *                                  slow-failing through retries.
- *   - backups-v2-bundle-cleanup  — disable when an S3/SSH target is
+ *   - tenant-bundles-bundle-cleanup  — disable when an S3/SSH target is
  *                                  unreachable.
  *
  * Both default to `hook` (authoritative). The kill-switch value is
@@ -20,7 +20,7 @@
  *
  * When disabled the hook short-circuits with status='noop' and the
  * operator can clean up manually (e.g. via
- * DELETE /api/v1/admin/backups/bundles/:id or PowerDNS's own UI).
+ * DELETE /api/v1/admin/tenant-bundles/:id or PowerDNS's own UI).
  *
  * Why DB-only hooks (domains-status, mailboxes-status, etc.) have no
  * kill-switch: their failure mode is local — a failed Drizzle update
@@ -38,7 +38,7 @@ interface FlagDef {
 
 const FLAGS: Record<string, FlagDef> = {
   'dns-zone-cleanup': { env: 'LIFECYCLE_HOOK_DNS_ZONE_CLEANUP', default: 'hook' },
-  'backups-v2-bundle-cleanup': { env: 'LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP', default: 'hook' },
+  'tenant-bundles-bundle-cleanup': { env: 'LIFECYCLE_HOOK_BACKUPS_V2_CLEANUP', default: 'hook' },
   'cluster-scoped-refs-cleanup': { env: 'LIFECYCLE_HOOK_CLUSTER_SCOPED_REFS', default: 'hook' },
 };
 
