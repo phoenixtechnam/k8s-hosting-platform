@@ -359,6 +359,47 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     reply.status(204).send();
   });
 
+  // ── GET /api/v1/admin/backup-schedules ─────────────────────────────
+  // Global list of every per-client schedule, joined with the client's
+  // business_name for display. Powers the "Schedules" tab on the
+  // Tenant Backup admin page. We left-join so a stale schedule row
+  // pointing at a deleted client still surfaces (operator sees
+  // businessName=null and can prune).
+  app.get('/admin/backup-schedules', {
+    schema: { tags: ['BackupsV2'], summary: 'List all client backup schedules', security: [{ bearerAuth: [] }] },
+  }, async () => {
+    const rows = await app.db
+      .select({
+        clientId: clientBackupSchedules.clientId,
+        enabled: clientBackupSchedules.enabled,
+        frequency: clientBackupSchedules.frequency,
+        hourOfDayUtc: clientBackupSchedules.hourOfDayUtc,
+        dayOfWeek: clientBackupSchedules.dayOfWeek,
+        dayOfMonth: clientBackupSchedules.dayOfMonth,
+        retentionDays: clientBackupSchedules.retentionDays,
+        lastRunAt: clientBackupSchedules.lastRunAt,
+        lastRunStatus: clientBackupSchedules.lastRunStatus,
+        businessName: clients.companyName,
+      })
+      .from(clientBackupSchedules)
+      .leftJoin(clients, eq(clientBackupSchedules.clientId, clients.id))
+      .orderBy(desc(clientBackupSchedules.lastRunAt));
+    return success({
+      data: rows.map((r) => ({
+        clientId: r.clientId,
+        enabled: r.enabled,
+        frequency: r.frequency,
+        hourOfDayUtc: r.hourOfDayUtc,
+        dayOfWeek: r.dayOfWeek,
+        dayOfMonth: r.dayOfMonth,
+        retentionDays: r.retentionDays,
+        lastRunAt: r.lastRunAt ? r.lastRunAt.toISOString() : null,
+        lastRunStatus: r.lastRunStatus,
+        businessName: r.businessName,
+      })),
+    });
+  });
+
   // ── GET /api/v1/admin/clients/:clientId/backup-schedule ────────────
   // Returns the client's schedule row, or null when none exists yet.
   app.get('/admin/clients/:clientId/backup-schedule', {

@@ -9,7 +9,11 @@ type BadgeStatus = 'active' | 'suspended' | 'pending' | 'cancelled' | 'expired' 
   // Domain verification states (migration 0069)
   | 'unverified' | 'verified'
   // Domain lifecycle
-  | 'deleted';
+  | 'deleted'
+  // Tenant Backup — bundle status (some components captured, others failed).
+  | 'partial'
+  // Tenant Backup — restore-cart lifecycle.
+  | 'draft' | 'executing' | 'paused' | 'done';
 
 const statusStyles: Record<BadgeStatus, string> = {
   active: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -47,6 +51,12 @@ const statusStyles: Record<BadgeStatus, string> = {
   restoring: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   unquiescing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   archiving: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  // Tenant Backup
+  partial: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  executing: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  paused: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
 };
 
 interface StatusBadgeProps {

@@ -12,6 +12,7 @@ import {
   Server,
   Settings,
   KeyRound,
+  Package,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -42,6 +43,7 @@ const navItems = [
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/applications', icon: AppWindow, label: 'Applications' },
   { to: '/storage', icon: Database, label: 'Backups & Snapshots' },
+  { to: '/tenant-backup', icon: Package, label: 'Tenant Backup' },
   { to: '/cron-jobs', icon: Clock, label: 'Cron Jobs' },
   { to: '/security', icon: Shield, label: 'Security' },
   { to: '/monitoring', icon: Activity, label: 'Monitoring' },

@@ -245,3 +245,22 @@ export const updateClientBackupScheduleSchema = z.object({
   retentionDays: z.number().int().positive().optional(),
 });
 export type UpdateClientBackupScheduleInput = z.infer<typeof updateClientBackupScheduleSchema>;
+
+/**
+ * Per-client schedule summary, joined with the client's display name
+ * for the global Tenant Backup admin page (operator never wants a
+ * row that says "schedule for 4f3a-…-c2"). Returned by
+ * GET /admin/backup-schedules.
+ */
+export const backupScheduleSummarySchema = clientBackupScheduleSchema.extend({
+  /** clients.business_name for display. Nullable if the client row was
+   * deleted but the schedule row hasn't been cascaded yet — operator
+   * sees "(deleted)" so they can clean up. */
+  businessName: z.string().nullable(),
+});
+export type BackupScheduleSummary = z.infer<typeof backupScheduleSummarySchema>;
+
+export const listBackupSchedulesResponseSchema = z.object({
+  data: z.array(backupScheduleSummarySchema),
+});
+export type ListBackupSchedulesResponse = z.infer<typeof listBackupSchedulesResponseSchema>;

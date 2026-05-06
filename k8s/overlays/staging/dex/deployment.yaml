@@ -6,18 +6,14 @@ metadata:
   labels:
     app: dex
 spec:
-  # Dex stores OAuth auth-state in a per-pod SQLite DB (emptyDir volume).
-  # The auth-state is created during /dex/auth and looked up on
-  # /dex/auth/local/login — across multiple pods, the lookup misses
-  # (caught by integration-oidc-dex.sh: "invalid 'state' parameter /
-  # not found"). sessionAffinity:ClientIP on the Service didn't help
-  # because requests via different ingress-nginx pods present
-  # different source IPs to kube-proxy. Pinning to 1 replica is the
-  # minimal correctness fix; the right long-term solution is a shared
-  # postgres storage backend (config.yaml:storage.type: postgres).
-  # Overrides M14 storage-policy reconciler — Dex is single-tenant
-  # auth state, not user data, so HA replication isn't useful here.
-  replicas: 1
+  # Replicas owned by the M14 storage-policy reconciler again. Earlier
+  # this overlay pinned replicas:1 because per-pod SQLite auth state
+  # made multi-replica Dex incoherent (auth_request created on pod A
+  # could not be looked up on pod B → "invalid 'state' parameter").
+  # config.yaml now uses storage.type: postgres against the platform
+  # CNPG `app` database, so every Dex pod shares state and HA is
+  # safe again. See integration-oidc-dex.sh scenarios 6+7 for
+  # regression coverage.
   selector:
     matchLabels:
       app: dex
@@ -48,6 +44,22 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-config
                   key: OAUTH2_PROXY_CLIENT_SECRET
+            # CNPG-managed credentials for the `app` database. The
+            # `postgres-app` Secret is created by the postgres Cluster
+            # CR and contains username + password keys for the same
+            # account platform-api uses. Dex creates its own table
+            # set on first start (auth_request, auth_code, …); none
+            # collide with platform-api's table names.
+            - name: DEX_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-app
+                  key: username
+            - name: DEX_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-app
+                  key: password
           ports:
             - containerPort: 5556
               protocol: TCP
@@ -55,8 +67,6 @@ spec:
             - name: config
               mountPath: /etc/dex
               readOnly: true
-            - name: data
-              mountPath: /var/dex
           resources:
             requests:
               cpu: 50m
@@ -80,5 +90,3 @@ spec:
         - name: config
           configMap:
             name: dex-config
-        - name: data
-          emptyDir: {}

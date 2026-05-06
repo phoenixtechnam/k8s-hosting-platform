@@ -421,27 +421,213 @@ drive_dex_login client "$CLIENT_PROVIDER_ID" "$DEX_CLIENT_USER" "$DEX_CLIENT_PW"
 log "Scenario 8: cross-panel token isolation"
 if [[ -n "${OIDC_ADMIN_TOKEN:-}" && -n "${OIDC_CLIENT_TOKEN:-}" ]]; then
   # Admin-only endpoint with the client JWT → must NOT return 200.
+  # The platform's admin/clients route requires panel=admin; a client-
+  # panel JWT must be rejected with 401/403/404 regardless of the
+  # OIDC-provider's default_role mapping.
   CODE=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $OIDC_CLIENT_TOKEN" "$ADMIN_HOST/api/v1/admin/clients?limit=1")
   if [[ "$CODE" == "200" ]]; then
-    fail "client JWT was accepted on /admin/clients (should be 401/403)"
+    fail "client JWT was accepted on /admin/clients (should be 401/403/404)"
   else
     ok "client JWT rejected on /admin/clients (HTTP $CODE)"
   fi
-  # Admin JWT on client-only profile route — clients endpoint should accept,
-  # but the panel claim must be admin (not client). Best-effort: hit the
-  # admin profile endpoint and expect 200, then hit a client-panel-only
-  # route if one exists. Most platform routes accept admin JWTs broadly,
-  # so this is a soft check.
+  # Admin JWT must be VALID (signature + exp + sub claim verified by
+  # the platform). It does NOT need to grant /admin/clients access —
+  # the OIDC provider's default_role decides what the auto-provisioned
+  # user can do, and on this harness the test admin is provisioned
+  # with read_only role (current platform default for OIDC-created
+  # admins). Hitting /auth/me exercises the auth middleware end-to-end
+  # without any role gate, so we get a deterministic 200 if and only
+  # if the JWT verifies.
   CODE=$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $OIDC_ADMIN_TOKEN" "$ADMIN_HOST/api/v1/admin/clients?limit=1")
+    -H "Authorization: Bearer $OIDC_ADMIN_TOKEN" "$ADMIN_HOST/api/v1/auth/me")
   if [[ "$CODE" == "200" ]]; then
-    ok "admin JWT accepted on /admin/clients (HTTP $CODE)"
+    ok "admin JWT verified by platform auth middleware (HTTP $CODE on /auth/me)"
   else
-    fail "admin JWT rejected on /admin/clients (HTTP $CODE)"
+    fail "admin JWT not accepted by /auth/me (HTTP $CODE) — JWT signing/decoding regression"
   fi
 else
   warn "skipping cross-panel test — earlier scenarios did not produce both tokens"
+fi
+
+# ─── Scenario 10: lifecycle-driven protected ingress route ──────────────────
+#
+# Drive the full client-lifecycle path that an operator would walk
+# through the admin panel to put a real tenant URL behind Dex:
+#   POST /clients                                        (active transition)
+#   POST /clients/:cid/domains                           (oidc-test.<DOMAIN>)
+#   POST /clients/:cid/domains/:did/routes               (route at /)
+#   POST /clients/:cid/oidc-providers                    (per-client Dex)
+#   PATCH /clients/:cid/ingress-routes/:rid/auth         (gate enabled)
+#
+# Then assert:
+#   - the platform persisted the auth config and reconciled the cluster
+#     Ingress with nginx-ingress auth-url annotations (proves the
+#     ingress-auth reconciler ran end-to-end);
+#   - GET / on the public hostname returns 302/401/403 (gate enforcing).
+#     Skipped with `warn` when the LE cert hasn't provisioned yet
+#     (000/502/503/504) because that's a side-channel and not the OIDC
+#     harness's scope.
+#
+# Cleanup goes through DELETE /clients/:cid which fires the `deleted`
+# transition — the cascade reaps domains, routes, the auth config row,
+# and the per-client OIDC provider via FK CASCADE.
+
+OIDC_TEST_HOST="${OIDC_TEST_HOST:-oidc-test.staging.phoenix-host.net}"
+LIFECYCLE_CLIENT_ID=""
+LIFECYCLE_DOMAIN_ID=""
+LIFECYCLE_ROUTE_ID=""
+LIFECYCLE_PROVIDER_ID=""
+
+cleanup_lifecycle_client() {
+  if [[ -n "${LIFECYCLE_CLIENT_ID:-}" ]]; then
+    curl -sk --max-time 30 -X DELETE "${AUTH_H[@]}" \
+      "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID" >/dev/null 2>&1 || true
+  fi
+}
+trap 'cleanup_providers; cleanup_lifecycle_client; rm -f "$COOKIE_JAR" /tmp/oidc-dex-*.json /tmp/oidc-dex-*.html /tmp/oidc-dex-*.headers 2>/dev/null' EXIT
+
+log "Scenario 10: lifecycle-driven protected ingress route on $OIDC_TEST_HOST"
+
+# Resolve a Plan + Region. The harness picks the first available of each
+# — staging is seeded with at least one of both.
+PLAN_ID=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/plans?limit=1" | jq -r '.data[0].id // empty')
+REGION_ID=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/regions?limit=1" | jq -r '.data[0].id // empty')
+
+if [[ -z "$PLAN_ID" || -z "$REGION_ID" ]]; then
+  warn "skipping scenario 10 — staging has no plans/regions seeded (plan=$PLAN_ID region=$REGION_ID)"
+else
+  ok "plan_id=$PLAN_ID region_id=$REGION_ID"
+
+  # Step 1: create client (fires `active` lifecycle transition)
+  RUN_TAG=$(date +%s)
+  CLIENT_BODY=$(jq -nc \
+    --arg n "oidc-harness-${RUN_TAG}" \
+    --arg e "oidc-harness-${RUN_TAG}@k8s-platform.test" \
+    --arg p "$PLAN_ID" \
+    --arg r "$REGION_ID" \
+    '{company_name:$n, company_email:$e, plan_id:$p, region_id:$r}')
+  CLIENT_RES=$(curl -sk --max-time 30 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
+    -d "$CLIENT_BODY" "$ADMIN_HOST/api/v1/clients")
+  LIFECYCLE_CLIENT_ID=$(echo "$CLIENT_RES" | jq -r '.data.id // empty')
+  if [[ -z "$LIFECYCLE_CLIENT_ID" || "$LIFECYCLE_CLIENT_ID" == "null" ]]; then
+    fail "create client failed: $CLIENT_RES"
+  else
+    ok "client created id=$LIFECYCLE_CLIENT_ID"
+
+    # Step 2: add the test domain (dns_mode=cname — won't try to migrate DNS)
+    DOMAIN_BODY=$(jq -nc --arg d "$OIDC_TEST_HOST" '{domain_name:$d, dns_mode:"cname"}')
+    DOMAIN_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
+      -d "$DOMAIN_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/domains")
+    LIFECYCLE_DOMAIN_ID=$(echo "$DOMAIN_RES" | jq -r '.data.id // empty')
+    if [[ -z "$LIFECYCLE_DOMAIN_ID" || "$LIFECYCLE_DOMAIN_ID" == "null" ]]; then
+      fail "create domain failed: $DOMAIN_RES"
+    else
+      ok "domain created id=$LIFECYCLE_DOMAIN_ID host=$OIDC_TEST_HOST"
+
+      # Step 3: create an ingress route on that domain at '/'
+      ROUTE_BODY=$(jq -nc --arg h "$OIDC_TEST_HOST" '{hostname:$h, path:"/"}')
+      ROUTE_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
+        -d "$ROUTE_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/domains/$LIFECYCLE_DOMAIN_ID/routes")
+      LIFECYCLE_ROUTE_ID=$(echo "$ROUTE_RES" | jq -r '.data.id // empty')
+      if [[ -z "$LIFECYCLE_ROUTE_ID" || "$LIFECYCLE_ROUTE_ID" == "null" ]]; then
+        fail "create ingress-route failed: $ROUTE_RES"
+      else
+        ok "ingress-route created id=$LIFECYCLE_ROUTE_ID"
+
+        # Step 4: register a per-client OIDC provider pointing at Dex.
+        #         hosting-platform-client is the static Dex client used
+        #         for tenant-side OIDC tests.
+        PROV_BODY=$(jq -nc \
+          --arg iu "$DEX_HOST/dex" \
+          --arg ci "$CLIENT_CLIENT_ID" \
+          --arg cs "$CLIENT_CLIENT_SECRET" \
+          '{name:"dex-harness", issuerUrl:$iu, oauthClientId:$ci, oauthClientSecret:$cs}')
+        PROV_RES=$(curl -sk --max-time 15 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
+          -d "$PROV_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/oidc-providers")
+        LIFECYCLE_PROVIDER_ID=$(echo "$PROV_RES" | jq -r '.data.id // empty')
+        if [[ -z "$LIFECYCLE_PROVIDER_ID" || "$LIFECYCLE_PROVIDER_ID" == "null" ]]; then
+          fail "create per-client provider failed: $PROV_RES"
+        else
+          ok "per-client provider id=$LIFECYCLE_PROVIDER_ID"
+
+          # Step 5: enable OIDC auth on the route
+          AUTH_BODY=$(jq -nc --arg pid "$LIFECYCLE_PROVIDER_ID" '{enabled:true, providerId:$pid}')
+          AUTH_RES=$(curl -sk --max-time 30 -X PATCH "${AUTH_H[@]}" -H "Content-Type: application/json" \
+            -d "$AUTH_BODY" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID/ingress-routes/$LIFECYCLE_ROUTE_ID/auth")
+          AUTH_OK=$(echo "$AUTH_RES" | jq -r '.data.enabled // empty')
+          if [[ "$AUTH_OK" != "true" ]]; then
+            fail "enable ingress-route auth failed: $AUTH_RES"
+          else
+            ok "ingress-route auth enabled"
+
+            # Step 6: verify the cluster Ingress carries the auth-url
+            #         annotation (proves the ingress-auth reconciler
+            #         ran). Best-effort over kubectl — skip with warn
+            #         if the caller doesn't have ssh access.
+            local_ssh_host="${SSH_HOST:-root@89.167.3.56}"
+            local_ssh_key="${SSH_KEY:-$HOME/hosting-platform.key}"
+            if [[ -r "$local_ssh_key" ]]; then
+              # Reconcile is async — give it a few seconds and retry once.
+              ANNOT=""
+              for attempt in 1 2 3; do
+                ANNOT=$(ssh -i "$local_ssh_key" \
+                  -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
+                  "$local_ssh_host" \
+                  "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get ingress -A -o json 2>/dev/null \
+                    | jq -r --arg h '$OIDC_TEST_HOST' '.items[] | select(.spec.rules[]?.host == \$h) | .metadata.annotations | with_entries(select(.key | contains(\"auth\")))'" \
+                  2>/dev/null || true)
+                if echo "$ANNOT" | grep -q 'auth-url\|auth-signin'; then break; fi
+                sleep 4
+              done
+              if echo "$ANNOT" | grep -q 'auth-url\|auth-signin'; then
+                ok "cluster Ingress carries nginx auth annotations (reconciled)"
+              else
+                warn "cluster Ingress missing auth annotations after 12s — reconciler still catching up"
+              fi
+            else
+              warn "skipping cluster annotation check — SSH key not readable"
+            fi
+
+            # Step 7: probe the public URL. With the gate enabled, an
+            # unauthenticated request must NOT return 200 (oauth2-proxy
+            # 302s to /oauth2/start which 302s to Dex). When the LE
+            # cert isn't provisioned yet curl reports 000/502/503/504
+            # — skip with warn instead of failing.
+            PROBE_CODE=$(curl -sk --max-time 8 -o /dev/null -w '%{http_code}' \
+              "https://$OIDC_TEST_HOST/" 2>/dev/null || echo "000")
+            case "$PROBE_CODE" in
+              302|401|403)
+                ok "anonymous GET / on $OIDC_TEST_HOST → HTTP $PROBE_CODE (gate enforcing)"
+                ;;
+              000|502|503|504)
+                warn "anonymous probe returned $PROBE_CODE — likely cert/upstream not ready (skipping live-gate assertion)"
+                ;;
+              200)
+                fail "anonymous GET on $OIDC_TEST_HOST returned 200 — gate NOT enforcing"
+                ;;
+              *)
+                warn "anonymous GET on $OIDC_TEST_HOST returned $PROBE_CODE — unexpected, manual check recommended"
+                ;;
+            esac
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  # Step 8: cleanup via lifecycle DELETE — fires `deleted` transition
+  # cascade. Verify the API accepts the delete (200/204).
+  if [[ -n "$LIFECYCLE_CLIENT_ID" ]]; then
+    DEL_CODE=$(curl -sk --max-time 30 -X DELETE -o /dev/null -w '%{http_code}' \
+      "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/clients/$LIFECYCLE_CLIENT_ID")
+    if [[ "$DEL_CODE" == "200" || "$DEL_CODE" == "204" ]]; then
+      ok "lifecycle DELETE returned HTTP $DEL_CODE — deleted transition fired"
+      LIFECYCLE_CLIENT_ID=""  # disarm trap-cleanup
+    else
+      fail "lifecycle DELETE returned HTTP $DEL_CODE"
+    fi
+  fi
 fi
 
 # ─── Scenario 9: cleanup verification ────────────────────────────────────────

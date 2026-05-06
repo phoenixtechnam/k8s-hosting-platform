@@ -8,9 +8,22 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   ClientBackupSchedule,
   UpdateClientBackupScheduleInput,
+  ListBackupSchedulesResponse,
 } from '@k8s-hosting/api-contracts';
 
 interface ScheduleResponse { readonly data: ClientBackupSchedule | null }
+
+/**
+ * Global list of every client's backup schedule, joined with the
+ * client's display name. Powers the Tenant Backup admin page's
+ * "Schedules" tab.
+ */
+export function useAllBackupSchedules() {
+  return useQuery({
+    queryKey: ['backup-schedules', 'all'],
+    queryFn: () => apiFetch<ListBackupSchedulesResponse>('/api/v1/admin/backup-schedules'),
+  });
+}
 
 export function useClientBackupSchedule(clientId: string | null) {
   return useQuery({
@@ -36,6 +49,10 @@ export function useUpdateClientBackupSchedule(clientId: string) {
  * Force the next Tier-1 scheduler tick to fire this client's
  * scheduled bundle immediately (within 5 min). Server resets
  * last_run_at to NULL on the row.
+ *
+ * Invalidates BOTH the per-client query AND the global list query
+ * so the Tenant Backup admin page reflects the cleared lastRunAt
+ * without waiting for the next refetch interval.
  */
 export function useRunBackupScheduleNow(clientId: string) {
   const qc = useQueryClient();
@@ -43,9 +60,12 @@ export function useRunBackupScheduleNow(clientId: string) {
     mutationFn: () =>
       apiFetch<{ data: { clientId: string; message: string } }>(
         `/api/v1/admin/clients/${clientId}/backup-schedule/run-now`,
-        { method: 'POST', body: '{}' },
+        { method: 'POST', body: JSON.stringify({}) },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-schedule', clientId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['backup-schedule', clientId] });
+      qc.invalidateQueries({ queryKey: ['backup-schedules', 'all'] });
+    },
   });
 }
 

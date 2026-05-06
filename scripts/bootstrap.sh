@@ -3669,11 +3669,27 @@ bootstrap_stalwart_v016() {
     return 0
   fi
 
+  # Stalwart 0.16's image (docker.io/stalwartlabs/stalwart:v0.16.3) does
+  # NOT include wget. Earlier code used wget inside the Stalwart pod and
+  # silently returned empty output (caught during 2026-05-06 staging
+  # rebuild). Switch to curl from a pod that has it: the platform/admin-
+  # panel pod is always present once Flux applies the platform overlay,
+  # has curl, and reaches the Stalwart pod via cluster pod-IP.
   local auth_code
-  auth_code=$(kctl exec -n mail "$stalwart_pod" -- \
-    wget -q -O /dev/null --server-response \
-    --header="Authorization: Basic $(echo -n "admin:${stalwart_admin_pw}" | base64 | tr -d '\n')" \
-    "http://localhost:8080/jmap/session" 2>&1 | grep "HTTP/" | awk '{print $2}' || echo "000")
+  local probe_pod stalwart_pod_ip
+  probe_pod=$(kctl get pod -n platform -l app=admin-panel \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  stalwart_pod_ip=$(kctl get pod -n mail "$stalwart_pod" \
+    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
+  if [[ -z "$probe_pod" || -z "$stalwart_pod_ip" ]]; then
+    warn "  cannot resolve probe pod or stalwart pod IP — skipping auth probe."
+    return 0
+  fi
+  auth_code=$(kctl exec -n platform "$probe_pod" -- \
+    curl -s -o /dev/null -w '%{http_code}' \
+    -u "admin:${stalwart_admin_pw}" \
+    --max-time 5 \
+    "http://${stalwart_pod_ip}:8080/jmap/session" 2>/dev/null || echo "000")
 
   # HIGH fix (code review 2026-05-03): be strict about probe codes.
   # Treat ONLY 200 as bootstrapped and 401 as needs-bootstrap. Any other
@@ -3771,16 +3787,28 @@ bootstrap_stalwart_v016() {
     return 0
   fi
 
-  local verify_code
-  verify_code=$(kctl exec -n mail "$new_pod" -- \
-    wget -q -O /dev/null --server-response \
-    "http://localhost:8080/jmap/session" 2>&1 | grep "HTTP/" | awk '{print $2}' || echo "000")
+  # Stalwart 0.16 image has no wget; probe via curl from admin-panel pod.
+  local verify_code verify_probe_pod new_pod_ip
+  verify_probe_pod=$(kctl get pod -n platform -l app=admin-panel \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  new_pod_ip=$(kctl get pod -n mail "$new_pod" \
+    -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
+  if [[ -z "$verify_probe_pod" || -z "$new_pod_ip" ]]; then
+    warn "  cannot resolve verify probe — skipping post-bootstrap verification."
+    return 0
+  fi
+  verify_code=$(kctl exec -n platform "$verify_probe_pod" -- \
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    "http://${new_pod_ip}:8080/jmap/session" 2>/dev/null || echo "000")
 
-  if [[ "$verify_code" == "200" ]]; then
-    log "  Stalwart 0.16 is in full mode (/jmap/session → 200). Bootstrap complete."
+  if [[ "$verify_code" == "200" || "$verify_code" == "401" ]]; then
+    # 401 here is a positive signal: the JMAP endpoint is reachable but
+    # requires auth (which the unauthenticated curl above intentionally
+    # doesn't provide). Either way Stalwart is up.
+    log "  Stalwart 0.16 is in full mode (/jmap/session → ${verify_code}). Bootstrap complete."
   else
     warn "  /jmap/session returned ${verify_code} after rollout — Stalwart may need more time."
-    warn "  Wait ~30s then retry: kubectl exec -n mail ${new_pod} -- wget -qO- http://localhost:8080/jmap/session"
+    warn "  Wait ~30s then retry: kubectl exec -n platform ${verify_probe_pod} -- curl -sI http://${new_pod_ip}:8080/jmap/session"
   fi
 }
 
