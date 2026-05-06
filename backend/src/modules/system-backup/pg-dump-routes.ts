@@ -518,7 +518,9 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
       ipAddress: clientIp(request) ?? null,
     });
 
-    const host = `${parsed.data.sourceCluster}-ro.${parsed.data.sourceNamespace}.svc`;
+    // `-r` (any ready instance) instead of `-ro` (replicas only) so
+    // single-instance CNPG clusters work — see orchestrator comment.
+    const host = `${parsed.data.sourceCluster}-r.${parsed.data.sourceNamespace}.svc`;
     const args = [
       '-h', host, '-p', '5432',
       '-d', parsed.data.sourceDatabase,

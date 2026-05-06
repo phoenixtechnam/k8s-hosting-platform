@@ -345,7 +345,7 @@ function toOperatorError(envelope: unknown, namespace: string, cluster: string):
   } else if (/database\s*".+"\s*does not exist/i.test(detail)) {
     remediation.push('Pick the correct database name in the request body.');
   } else if (/connection.*failed|connection refused|timeout/i.test(detail)) {
-    remediation.push(`Verify the CNPG read-replica service ${cluster}-ro.${namespace}.svc:5432 is reachable.`);
+    remediation.push(`Verify the CNPG read service ${cluster}-r.${namespace}.svc:5432 is reachable.`);
     remediation.push(`Check NetworkPolicy in the ${namespace} namespace allows ingress from app=platform-api in platform ns.`);
   } else {
     remediation.push('Inspect the Job pod logs: `kubectl -n platform logs job/<jobName>`.');

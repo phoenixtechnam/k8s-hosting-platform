@@ -228,7 +228,12 @@ function spawnPgDump(
   database: string,
   creds: ResolvedCreds,
 ): SpawnedDump {
-  const host = `${cluster}-ro.${namespace}.svc`;
+  // `-r` routes to ANY ready instance (primary or replica). `-ro`
+  // would be cleaner (offload to replicas) but selects replicas
+  // only — when a cluster is scaled to 1 instance, `-ro` has zero
+  // endpoints and pg_dump gets connection refused. `-r` always has
+  // endpoints if any pod is ready.
+  const host = `${cluster}-r.${namespace}.svc`;
   const args = [
     '-h', host,
     '-p', '5432',
