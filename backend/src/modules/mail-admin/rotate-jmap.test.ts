@@ -50,6 +50,7 @@ function makeDeps(overrides: Partial<RotateJmapDeps> = {}): RotateJmapDeps {
     updateAdminPassword: vi.fn().mockResolvedValue(undefined),
     patchK8sSecret: vi.fn().mockResolvedValue(undefined),
     verifyNewPassword: vi.fn().mockResolvedValue(true),
+    recyclePods: vi.fn().mockResolvedValue({ deletedCount: 0 }),
     sleep: vi.fn().mockResolvedValue(undefined),
     now,
     ...overrides,
@@ -190,6 +191,67 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     );
     // JMAP was still called
     expect(deps.updateAdminPassword).toHaveBeenCalled();
+  });
+
+  it('recyclePodsBeforeVerify=true calls recyclePods between Secret patch and verify', async () => {
+    // 2026-05-06 hardening: drift between mounted-Secret view and pod-env
+    // view causes verify failures. Eliminating that drift requires the
+    // pods to be recycled AFTER the Secret patch and BEFORE the verify
+    // probes them. This test asserts the call ordering.
+    const callOrder: string[] = [];
+    const deps = makeDeps({
+      patchK8sSecret: vi.fn().mockImplementation(async () => {
+        callOrder.push('patchK8sSecret');
+      }),
+      recyclePods: vi.fn().mockImplementation(async () => {
+        callOrder.push('recyclePods');
+        return { deletedCount: 3 };
+      }),
+      verifyNewPassword: vi.fn().mockImplementation(async () => {
+        callOrder.push('verifyNewPassword');
+        return true;
+      }),
+    });
+
+    await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, recyclePodsBeforeVerify: true },
+      deps,
+    );
+
+    expect(deps.recyclePods).toHaveBeenCalledOnce();
+    // Strict ordering: patch → recycle → verify
+    const patchIdx = callOrder.indexOf('patchK8sSecret');
+    const recycleIdx = callOrder.indexOf('recyclePods');
+    const verifyIdx = callOrder.indexOf('verifyNewPassword');
+    expect(patchIdx).toBeGreaterThanOrEqual(0);
+    expect(recycleIdx).toBeGreaterThan(patchIdx);
+    expect(verifyIdx).toBeGreaterThan(recycleIdx);
+  });
+
+  it('recyclePodsBeforeVerify omitted (default) → recyclePods is NOT called', async () => {
+    // Webmail-master rotation goes through this same code path with
+    // recyclePodsBeforeVerify left undefined (its target is a DB account,
+    // not an env var; Roundcube is rolled separately by the caller).
+    const deps = makeDeps();
+    await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+    expect(deps.recyclePods).not.toHaveBeenCalled();
+  });
+
+  it('recyclePodsBeforeVerify=true tolerates recyclePods failure (best-effort)', async () => {
+    // A recycle failure (e.g. RBAC denies pods/delete) MUST NOT fail the
+    // rotation. The Secret has already been patched; Reloader will
+    // eventually catch up even without our explicit delete. The verify
+    // step then probes whatever pods are alive at the time.
+    const deps = makeDeps({
+      recyclePods: vi.fn().mockRejectedValue(new Error('RBAC: cannot delete pods')),
+    });
+
+    const result = await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, recyclePodsBeforeVerify: true },
+      deps,
+    );
+    expect(result.password).toBe('new-secret-password');
+    expect(deps.verifyNewPassword).toHaveBeenCalled();
   });
 
   it('returns success on verify timeout — Secret was rotated, Stalwart pod is rolling', async () => {

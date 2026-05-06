@@ -88,10 +88,11 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   const handleRotateAdminPassword = async (req: { user?: { sub?: string } }) => {
     const cfg = app.config as Record<string, unknown>;
     const userId = req.user?.sub ?? 'unknown';
+    const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
     app.log.warn({ userId }, 'mail-admin: rotate-admin-password requested (JMAP)');
     try {
       const result = await rotateAdminPasswordViaJmap({
-        kubeconfigPath: cfg.KUBECONFIG_PATH as string | undefined,
+        kubeconfigPath,
         stalwartNamespace: 'mail',
         secretName: 'stalwart-admin-creds',
         // platform-api reads /etc/stalwart-creds/ADMIN_SECRET_PLAIN
@@ -102,8 +103,39 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         mirrorNamespace: 'platform',
         mirrorSecretName: 'platform-stalwart-creds',
         username: readStalwartCredentials(process.env).username,
+        // 2026-05-06 hardening: explicitly recycle Stalwart pods between
+        // Secret-patch and verify so the verify-loop probes pods that
+        // have the NEW env var (avoiding drift caused by Reloader's
+        // async rollout). See rotate-jmap.ts comment block + memory.
+        recyclePodsBeforeVerify: true,
       });
-      app.log.warn({ userId, rotatedAt: result.rotatedAt }, 'mail-admin: rotation succeeded (JMAP)');
+
+      // 2026-05-06 hardening: best-effort purge of cluster-internal
+      // BlockedIp entries. The rotation churn may have left platform-api
+      // pod IPs and/or hostNetwork node IPs in Stalwart's auth-rate-limit
+      // blocklist. Leaving them blocks operator iframe logins (nginx-
+      // ingress proxies from a node IP that may still be blocklisted).
+      // Failures are logged but do not fail the rotation.
+      try {
+        const { purgeClusterInternalBlockedIps } = await import('./purge-blocked-ips.js');
+        const podCidrV4 = (process.env.PLATFORM_POD_CIDR_V4?.trim() || '10.42.0.0/16');
+        const purgeResult = await purgeClusterInternalBlockedIps({
+          kubeconfigPath,
+          podCidrV4,
+        });
+        app.log.warn({
+          userId,
+          rotatedAt: result.rotatedAt,
+          purgedBlockedIps: purgeResult.purgedCount,
+          purgeRan: purgeResult.ran,
+        }, 'mail-admin: rotation succeeded (JMAP) + cluster blocklist purged');
+      } catch (purgeErr) {
+        app.log.warn({
+          userId,
+          err: purgeErr instanceof Error ? purgeErr.message : String(purgeErr),
+        }, 'mail-admin: blocklist purge failed (non-fatal — rotation already succeeded)');
+      }
+
       return success(result);
     } catch (err) {
       app.log.error({ err, userId }, 'mail-admin: rotation failed');
