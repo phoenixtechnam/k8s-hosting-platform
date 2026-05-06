@@ -44,21 +44,23 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-config
                   key: OAUTH2_PROXY_CLIENT_SECRET
-            # CNPG-managed credentials for the `app` database. The
-            # `postgres-app` Secret is created by the postgres Cluster
-            # CR and contains username + password keys for the same
-            # account platform-api uses. Dex creates its own table
-            # set on first start (auth_request, auth_code, …); none
-            # collide with platform-api's table names.
+            # Same `hosting_platform` DB + `platform` SQL user that
+            # platform-api uses (Secret platform-db-credentials,
+            # bootstrapped from the postgres init Job). Dex creates
+            # its own table set on first start; none of those names
+            # collide with platform-api's oidc_* / users / clients
+            # tables. CNPG's auto-generated `postgres-app` Secret
+            # describes a different DB (`app`) that the platform
+            # doesn't actually use.
             - name: DEX_DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-app
+                  name: platform-db-credentials
                   key: username
             - name: DEX_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-app
+                  name: platform-db-credentials
                   key: password
           ports:
             - containerPort: 5556
