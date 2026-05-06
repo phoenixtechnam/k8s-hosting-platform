@@ -77,6 +77,26 @@ export interface RotateJmapOptions {
    * by the integration harness's IMAP master-auth probe.
    */
   readonly skipJmapSessionVerify?: boolean;
+  /**
+   * 2026-05-06 hardening: recycle Stalwart pods AFTER the Secret patch
+   * and BEFORE the verify-loop. STALWART_RECOVERY_ADMIN is sourced via
+   * `valueFrom.secretKeyRef`, which K8s bakes into the pod env at pod
+   * CREATE time — changing the Secret afterward does not refresh the
+   * env of running pods. The system relies on Stakater Reloader to
+   * roll the Deployment, but that's async and can lag by minutes
+   * (or fail entirely if rollouts crash on startup).
+   *
+   * When this opt is true, the rotator deletes existing Stalwart pods
+   * after the Secret patch so kubelet recreates them fresh with the new
+   * env. The verify-loop then probes the NEW pods immediately, which
+   * matches the new Secret value — no drift, no failed verify, no
+   * BlockedIp accumulation.
+   *
+   * Webmail-master rotation does NOT set this (its target is a DB
+   * Account, not an env var; Roundcube is rolled separately by the
+   * caller).
+   */
+  readonly recyclePodsBeforeVerify?: boolean;
 }
 
 export async function rotateAdminPasswordViaJmap(
@@ -94,6 +114,14 @@ export interface RotateJmapDeps {
   updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void>;
   patchK8sSecret(req: { namespace: string; name: string; stringData: Record<string, string> }): Promise<void>;
   verifyNewPassword(password: string): Promise<boolean>;
+  /**
+   * Best-effort: delete Stalwart pods so kubelet recreates them with
+   * the freshly-patched Secret env. Returns count for logging. Only
+   * called when `opts.recyclePodsBeforeVerify === true`. Test deps
+   * supply a no-op or mock; production deps perform `kubectl delete pod
+   * -l app=stalwart-mail-v016` via the K8s client.
+   */
+  recyclePods(): Promise<{ deletedCount: number }>;
   sleep(ms: number): Promise<void>;
   now(): Date;
 }
@@ -239,6 +267,42 @@ export async function rotateAdminPasswordViaJmapImpl(
       },
       `Stalwart is now using this password. Manually patch the Secret with the value in details.password OR re-run rotation; do NOT discard this response.`,
     );
+  }
+
+  // 4c. 2026-05-06 hardening: recycle Stalwart pods explicitly so the
+  //     verify-loop probes pods that have the NEW env var, not the old
+  //     baked one. See `RotateJmapOptions.recyclePodsBeforeVerify` doc
+  //     for the full rationale (drift between mounted-Secret view and
+  //     pod-env view causes verify failures → BlockedIp pile-up).
+  //
+  //     Best-effort: a recycle failure is logged but does NOT fail the
+  //     rotation. The rotation has already succeeded at the Secret level;
+  //     Reloader will eventually roll pods even if our explicit recycle
+  //     hits an RBAC issue.
+  if (opts.recyclePodsBeforeVerify) {
+    try {
+      const recycleResult = await deps.recyclePods();
+      log.info({
+        deletedCount: recycleResult.deletedCount,
+      }, 'mail-admin: recycled Stalwart pods to refresh env after Secret patch');
+    } catch (err) {
+      // Best-effort by design — but surface enough detail so an operator
+      // who later sees drift in the cluster can correlate it back to a
+      // missing RBAC permission. Common cause: `pods/delete` not in the
+      // platform-api ClusterRole. The rotation has already succeeded at
+      // the Secret level; Reloader will eventually roll the pods even
+      // without our explicit delete (typically 30-120s), so the
+      // operator-visible UX is "rotation took longer than expected"
+      // rather than "rotation failed".
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const looksLikeRbac = /forbidden|RBAC|cannot delete|cannot list/i.test(errMsg);
+      log.error({
+        err: errMsg,
+        likelyCause: looksLikeRbac
+          ? 'platform-api ServiceAccount missing pods/delete or pods/list on namespace=mail'
+          : 'unknown — see error message',
+      }, 'mail-admin: recyclePods failed — drift between Secret and Stalwart env may persist until Reloader rollout completes (rotation continues; verify-loop will probe whatever pods are alive)');
+    }
   }
 
   // 5. Verify new credentials work — but only when the rotated principal
@@ -397,6 +461,19 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       } catch {
         return false;
       }
+    },
+
+    async recyclePods(): Promise<{ deletedCount: number }> {
+      // 2026-05-06: dynamic-import the recycler module so the heavy
+      // @kubernetes/client-node code stays out of the test path that
+      // injects fake deps.
+      const { recycleStalwartPods } = await import('./recycle-stalwart-pods.js');
+      return recycleStalwartPods({
+        kubeconfigPath,
+        namespace: 'mail',
+        labelSelector: 'app=stalwart-mail-v016',
+        gracePeriodSeconds: 15,
+      });
     },
 
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
