@@ -43,6 +43,24 @@ export default function WalArchiveTab() {
   );
 }
 
+// Preset 6-field cron strings. Custom value lets advanced operators
+// type any 6-field cron. See CNPG ScheduledBackup docs.
+const SCHEDULE_PRESETS: Array<{ value: string; label: string }> = [
+  { value: '',                  label: 'No base backup (WAL only)' },
+  { value: '0 0 */6 * * *',     label: 'Every 6 hours' },
+  { value: '0 0 3 * * *',       label: 'Daily at 03:00' },
+  { value: '0 0 3 * * 0',       label: 'Weekly Sun 03:00' },
+  { value: '0 0 3 1 * *',       label: 'Monthly 1st 03:00' },
+];
+
+const ARCHIVE_TIMEOUT_PRESETS: Array<{ value: string; label: string }> = [
+  { value: '30s',   label: '30 sec (RPO ~30s)' },
+  { value: '1min',  label: '1 min (RPO ~1m)' },
+  { value: '5min',  label: '5 min (CNPG default)' },
+  { value: '15min', label: '15 min' },
+  { value: '1h',    label: '1 hour' },
+];
+
 function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
   const enable = useEnableWalArchive();
   const disable = useDisableWalArchive();
@@ -51,6 +69,9 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
   const eligible = allConfigs.filter((c) => c.active && c.storageType === 's3');
   const [targetId, setTargetId] = useState<string>(cluster.state?.targetConfigId ?? '');
   const [retention, setRetention] = useState<number>(cluster.state?.retentionDays ?? 30);
+  const [archiveTimeout, setArchiveTimeout] = useState<string>(cluster.state?.archiveTimeout ?? '5min');
+  const [baseSchedule, setBaseSchedule] = useState<string>(cluster.state?.baseBackupSchedule ?? '0 0 3 * * *');
+  const [baseRetention, setBaseRetention] = useState<number>(cluster.state?.baseBackupRetentionDays ?? 30);
 
   const onEnable = (): void => {
     if (!targetId) return;
@@ -61,6 +82,9 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
           clusterName: cluster.clusterName,
           targetConfigId: targetId,
           retentionDays: retention,
+          archiveTimeout,
+          baseBackupSchedule: baseSchedule || null,
+          baseBackupRetentionDays: baseSchedule ? baseRetention : undefined,
         });
       } catch { /* error surfaced via mutation state */ }
     })();
@@ -97,12 +121,16 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
             {disable.isPending ? <RefreshCw size={12} className="animate-spin" /> : <PowerOff size={12} />}
             Disable
           </button>
-        ) : (
-          <div className="flex items-center gap-2">
+        ) : null}
+      </div>
+
+      {!cluster.enabled && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+          <Setting label="S3 target">
             <select
               value={targetId}
               onChange={(e) => setTargetId(e.target.value)}
-              className="text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
               data-testid={`wal-target-${cluster.clusterName}`}
             >
               <option value="">— Pick S3 target —</option>
@@ -110,28 +138,81 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
+          </Setting>
+          <Setting label="archive_timeout (RPO)">
+            <select
+              value={archiveTimeout}
+              onChange={(e) => setArchiveTimeout(e.target.value)}
+              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              data-testid={`wal-archive-timeout-${cluster.clusterName}`}
+            >
+              {ARCHIVE_TIMEOUT_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </Setting>
+          <Setting label="WAL retention (days)">
             <input
               type="number"
               min={1}
               max={3650}
               value={retention}
               onChange={(e) => setRetention(parseInt(e.target.value, 10) || 30)}
-              className="w-20 text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
               data-testid={`wal-retention-${cluster.clusterName}`}
-              title="Retention days"
             />
+          </Setting>
+          <Setting label="Base backup cadence">
+            <select
+              value={SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) ? baseSchedule : 'CUSTOM'}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v !== 'CUSTOM') setBaseSchedule(v);
+              }}
+              className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              data-testid={`wal-base-cadence-${cluster.clusterName}`}
+            >
+              {SCHEDULE_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+              <option value="CUSTOM">Custom 6-field cron…</option>
+            </select>
+            {!SCHEDULE_PRESETS.find((p) => p.value === baseSchedule) && (
+              <input
+                type="text"
+                value={baseSchedule}
+                onChange={(e) => setBaseSchedule(e.target.value)}
+                placeholder="0 0 3 * * *"
+                className="mt-1 w-full font-mono text-xs rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              />
+            )}
+          </Setting>
+          {baseSchedule && (
+            <Setting label="Base backup retention (days)">
+              <input
+                type="number"
+                min={1}
+                max={3650}
+                value={baseRetention}
+                onChange={(e) => setBaseRetention(parseInt(e.target.value, 10) || 30)}
+                className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                data-testid={`wal-base-retention-${cluster.clusterName}`}
+              />
+            </Setting>
+          )}
+          <div className="md:col-span-2 flex justify-end pt-1">
             <button
               onClick={onEnable}
               disabled={enable.isPending || !targetId}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 disabled:opacity-50"
               data-testid={`wal-enable-${cluster.clusterName}`}
             >
-              {enable.isPending ? <RefreshCw size={12} className="animate-spin" /> : <Power size={12} />}
-              Enable
+              {enable.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Power size={14} />}
+              Enable WAL archive
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
       {(enable.isError || disable.isError) && (
         <div className="text-xs text-red-700 dark:text-red-300 flex items-center gap-1">
           <AlertCircle size={12} />
@@ -141,8 +222,26 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
       {cluster.enabled && cluster.state && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-xs">
           <Field label="Target">{cluster.state.targetName ?? cluster.state.targetConfigId.slice(0, 8) + '…'}</Field>
-          <Field label="Retention">{cluster.state.retentionDays} days</Field>
+          <Field label="WAL retention">{cluster.state.retentionDays} days</Field>
           <FieldCopy label="Destination" value={cluster.state.destinationPath} />
+          <Field label="archive_timeout">{cluster.state.archiveTimeout ?? 'CNPG default (5min)'}</Field>
+          <Field label="Base backups">
+            {cluster.state.baseBackupSchedule
+              ? `every ${cluster.state.baseBackupSchedule} (${cluster.state.baseBackupRetentionDays ?? '—'}d retention)`
+              : 'not scheduled'}
+          </Field>
+          {cluster.state.baseBackupStatus && (
+            <Field label="Last base backup">
+              {cluster.state.baseBackupStatus.lastScheduleTime
+                ? new Date(cluster.state.baseBackupStatus.lastScheduleTime).toLocaleString()
+                : 'pending first run'}
+            </Field>
+          )}
+          {cluster.state.baseBackupStatus?.nextScheduleTime && (
+            <Field label="Next base backup">
+              {new Date(cluster.state.baseBackupStatus.nextScheduleTime).toLocaleString()}
+            </Field>
+          )}
           <Field label="Enabled">{new Date(cluster.state.enabledAt).toLocaleString()}</Field>
         </div>
       )}
@@ -162,6 +261,15 @@ function EnabledBadge({ enabled }: { enabled: boolean }) {
     <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300">
       <Play size={12} /> off
     </span>
+  );
+}
+
+function Setting({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-gray-600 dark:text-gray-400">{label}</span>
+      {children}
+    </label>
   );
 }
 

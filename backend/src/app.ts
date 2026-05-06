@@ -616,6 +616,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'system-backup sweeper: scheduler startup skipped');
       }
 
+      // System Backup pg_dump scheduler (Phase 4b slice 2) — runs
+      // due rows from system_pg_dump_schedules; reuses the same
+      // pg-dump-job-spawner the manual UI uses.
+      try {
+        const { startPgDumpScheduler } = await import('./modules/system-backup/pg-dump-scheduler.js');
+        const k8s = (await import('./modules/k8s-provisioner/k8s-client.js')).createK8sClients();
+        const pgDumpSchedStop = startPgDumpScheduler(app.db, k8s, app.log as unknown as {
+          info: (...a: unknown[]) => void;
+          warn: (...a: unknown[]) => void;
+          error: (...a: unknown[]) => void;
+        });
+        app.addHook('onClose', () => pgDumpSchedStop());
+      } catch (err) {
+        app.log.warn({ err }, 'system-backup pg-dump scheduler: startup skipped');
+      }
+
       // M12: DKIM rotation scheduler removed. Stalwart 0.16 manages DKIM
       // key generation and rotation natively. Platform now reads DKIM
       // status read-only from Stalwart's dnsZoneFile via JMAP.

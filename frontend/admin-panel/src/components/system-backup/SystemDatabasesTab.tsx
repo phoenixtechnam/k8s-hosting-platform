@@ -8,11 +8,16 @@
  */
 
 import { Fragment, useState } from 'react';
-import { Database, Play, RefreshCw, AlertCircle, CheckCircle2, XCircle, Copy, ChevronDown, ChevronRight } from 'lucide-react';
+import { Database, Play, RefreshCw, AlertCircle, CheckCircle2, XCircle, Copy, ChevronDown, ChevronRight, Clock, Trash2 } from 'lucide-react';
 import {
   usePgDumpRuns,
   useTriggerPgDump,
 } from '@/hooks/use-system-pg-dump';
+import {
+  usePgDumpSchedules,
+  useUpsertPgDumpSchedule,
+  useDeletePgDumpSchedule,
+} from '@/hooks/use-pg-dump-schedules';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
 import ErrorPanel from '@/components/ErrorPanel';
 import type { OperatorError } from '@k8s-hosting/api-contracts';
@@ -50,13 +55,30 @@ interface ClusterPanelProps {
   readonly label: string;
 }
 
+const PG_DUMP_CRON_PRESETS: Array<{ value: string; label: string }> = [
+  { value: '0 */6 * * *',  label: 'Every 6 hours' },
+  { value: '0 3 * * *',    label: 'Daily at 03:00' },
+  { value: '0 3 * * 0',    label: 'Weekly Sun 03:00' },
+  { value: '0 3 1 * *',    label: 'Monthly 1st 03:00' },
+];
+
 function ClusterPanel({ namespace, cluster, database, label }: ClusterPanelProps) {
   const runsQ = usePgDumpRuns({ namespace, cluster });
   const trigger = useTriggerPgDump();
+  const schedulesQ = usePgDumpSchedules();
+  const upsertSched = useUpsertPgDumpSchedule();
+  const deleteSched = useDeletePgDumpSchedule();
   const { data: configsResp } = useBackupConfigs();
   const configs = (configsResp as { data?: Array<{ id: string; name: string; active: boolean; storageType: 's3' | 'ssh' }> } | undefined)?.data ?? [];
   const activeConfigs = configs.filter((c) => c.active);
   const [targetId, setTargetId] = useState<string>('');
+  const existingSched = (schedulesQ.data ?? []).find(
+    (s) => s.sourceNamespace === namespace && s.sourceCluster === cluster && s.sourceDatabase === database,
+  );
+  const [showSched, setShowSched] = useState(false);
+  const [schedTarget, setSchedTarget] = useState<string>(existingSched?.targetConfigId ?? '');
+  const [schedCron, setSchedCron] = useState<string>(existingSched?.cronSchedule ?? '0 3 * * *');
+  const [schedRetention, setSchedRetention] = useState<number>(existingSched?.retentionDays ?? 30);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const targetById = (id: string | null): string => {
     if (!id) return '—';
@@ -120,6 +142,112 @@ function ClusterPanel({ namespace, cluster, database, label }: ClusterPanelProps
       {trigger.isError && (
         <div className="text-xs text-red-700 dark:text-red-300 flex items-center gap-1">
           <AlertCircle size={12} /> {(trigger.error as Error).message}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 text-xs">
+        <button
+          type="button"
+          onClick={() => setShowSched((v) => !v)}
+          className="inline-flex items-center gap-1 text-gray-700 dark:text-gray-300 hover:text-brand-600"
+          data-testid={`pg-dump-sched-toggle-${cluster}`}
+        >
+          <Clock size={12} />
+          {existingSched
+            ? `Scheduled: ${existingSched.cronSchedule} → ${existingSched.targetName ?? '?'} (${existingSched.retentionDays}d)`
+            : 'No schedule — click to set'}
+          {showSched ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        {existingSched && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('Delete this schedule?')) return;
+              void deleteSched.mutateAsync(existingSched.id);
+            }}
+            className="inline-flex items-center gap-1 text-red-600 dark:text-red-300 hover:text-red-700"
+            data-testid={`pg-dump-sched-delete-${cluster}`}
+          >
+            <Trash2 size={12} /> Remove
+          </button>
+        )}
+      </div>
+      {showSched && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs p-3 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700">
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-600 dark:text-gray-400">Target</span>
+            <select
+              value={schedTarget}
+              onChange={(e) => setSchedTarget(e.target.value)}
+              className="text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              data-testid={`pg-dump-sched-target-${cluster}`}
+            >
+              <option value="">— Pick target —</option>
+              {activeConfigs.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.storageType})</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-600 dark:text-gray-400">Cadence</span>
+            <select
+              value={PG_DUMP_CRON_PRESETS.find((p) => p.value === schedCron) ? schedCron : 'CUSTOM'}
+              onChange={(e) => {
+                if (e.target.value !== 'CUSTOM') setSchedCron(e.target.value);
+              }}
+              className="text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              data-testid={`pg-dump-sched-cron-${cluster}`}
+            >
+              {PG_DUMP_CRON_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+              <option value="CUSTOM">Custom 5-field cron…</option>
+            </select>
+            {!PG_DUMP_CRON_PRESETS.find((p) => p.value === schedCron) && (
+              <input
+                type="text"
+                value={schedCron}
+                onChange={(e) => setSchedCron(e.target.value)}
+                placeholder="0 3 * * *"
+                className="font-mono text-xs rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              />
+            )}
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-gray-600 dark:text-gray-400">Retention (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={schedRetention}
+              onChange={(e) => setSchedRetention(parseInt(e.target.value, 10) || 30)}
+              className="text-sm rounded-lg border border-gray-300 dark:border-gray-600 px-2 py-1.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              data-testid={`pg-dump-sched-retention-${cluster}`}
+            />
+          </label>
+          <div className="md:col-span-3 flex justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                if (!schedTarget) return;
+                void upsertSched.mutateAsync({
+                  sourceNamespace: namespace,
+                  sourceCluster: cluster,
+                  sourceDatabase: database,
+                  targetConfigId: schedTarget,
+                  cronSchedule: schedCron,
+                  retentionDays: schedRetention,
+                  enabled: true,
+                }).then(() => setShowSched(false)).catch(() => undefined);
+              }}
+              disabled={upsertSched.isPending || !schedTarget}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-xs font-medium hover:bg-brand-700 disabled:opacity-50"
+              data-testid={`pg-dump-sched-save-${cluster}`}
+            >
+              {upsertSched.isPending ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+              {existingSched ? 'Update schedule' : 'Save schedule'}
+            </button>
+          </div>
         </div>
       )}
 

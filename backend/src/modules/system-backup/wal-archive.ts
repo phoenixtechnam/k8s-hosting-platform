@@ -40,6 +40,10 @@ export interface EnableWalArchiveInput {
   readonly retentionDays: number;
   readonly operatorUserId: string;
   readonly operatorIp: string | null;
+  // Phase 4b
+  readonly archiveTimeout?: string;
+  readonly baseBackupSchedule?: string | null;
+  readonly baseBackupRetentionDays?: number;
 }
 
 export interface DisableWalArchiveInput {
@@ -185,16 +189,22 @@ async function patchClusterBackupConfig(
 }
 
 export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ destinationPath: string }> {
-  const { db, k8s, clusterNamespace, clusterName, targetConfigId, retentionDays, operatorUserId, operatorIp } = input;
+  const {
+    db, k8s, clusterNamespace, clusterName, targetConfigId,
+    retentionDays, operatorUserId, operatorIp,
+    archiveTimeout, baseBackupSchedule, baseBackupRetentionDays,
+  } = input;
 
-  // Validate the cluster exists before we touch anything else.
   const cr = await readClusterCR(k8s, clusterNamespace, clusterName);
   if (!cr) throw new Error(`CNPG cluster ${clusterNamespace}/${clusterName} not found`);
 
   const cfg = await loadActiveS3Target(db, targetConfigId);
   const destinationPath = buildDestinationPath(cfg, clusterNamespace, clusterName);
 
-  const patch = {
+  // Patch builds the spec.backup subtree + (Phase 4b) optionally
+  // patches archive_timeout. CNPG defaults archive_timeout to 5min;
+  // operator can tighten or loosen via UI.
+  const patch: { spec: Record<string, unknown> } = {
     spec: {
       backup: {
         retentionPolicy: `${retentionDays}d`,
@@ -211,15 +221,29 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
       },
     },
   };
+  if (archiveTimeout) {
+    (patch.spec as { postgresql?: Record<string, unknown> }).postgresql = {
+      parameters: { archive_timeout: archiveTimeout },
+    };
+  }
 
-  // Order: patch CR first, then write DB. If the DB tx fails after a
-  // successful CR patch, the cross-check in GET /wal-archive/clusters
-  // (`enabled = dbEnabled && crHasBackup`) will surface the resulting
-  // drift as `enabled=false, state=null` — operator sees the
-  // inconsistency and can either disable (CR cleanup) or re-enable
-  // (re-runs DB write). Reverse order would orphan a state row
-  // pointing at a CR that was never patched.
+  // Order: patch CR first, ScheduledBackup CR second, then write DB.
+  // Drift cases (CR patched but DB write fails) surface as enabled=false
+  // via the GET /clusters cross-check.
   await patchClusterBackupConfig(k8s, clusterNamespace, clusterName, patch);
+
+  // Phase 4b: ScheduledBackup CR for periodic base backups. Without
+  // this, WAL alone can't restore an off-cluster cold target. Skip
+  // when baseBackupSchedule is null/undefined — operator gets WAL-only
+  // (must lean on Longhorn snapshots as the base point).
+  if (baseBackupSchedule) {
+    await upsertScheduledBackup(k8s, clusterNamespace, clusterName, baseBackupSchedule);
+  } else {
+    // If a previous enable created an SB and the operator now
+    // un-checks it, remove the CR so we don't keep taking base
+    // backups unnecessarily.
+    await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
+  }
 
   await db.transaction(async (tx) => {
     await tx
@@ -231,6 +255,9 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
         retentionDays,
         destinationPath,
         operatorUserId,
+        archiveTimeout: archiveTimeout ?? null,
+        baseBackupSchedule: baseBackupSchedule ?? null,
+        baseBackupRetentionDays: baseBackupRetentionDays ?? null,
       })
       .onConflictDoUpdate({
         target: [systemWalArchiveState.clusterNamespace, systemWalArchiveState.clusterName],
@@ -239,6 +266,9 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
           retentionDays,
           destinationPath,
           operatorUserId,
+          archiveTimeout: archiveTimeout ?? null,
+          baseBackupSchedule: baseBackupSchedule ?? null,
+          baseBackupRetentionDays: baseBackupRetentionDays ?? null,
           enabledAt: new Date(),
         },
       });
@@ -252,12 +282,138 @@ export async function enableWalArchive(input: EnableWalArchiveInput): Promise<{ 
       httpMethod: 'POST',
       httpPath: '/api/v1/system-backup/wal-archive/enable',
       httpStatus: 200,
-      changes: { targetConfigId, retentionDays, destinationPath },
+      changes: {
+        targetConfigId, retentionDays, destinationPath,
+        archiveTimeout: archiveTimeout ?? null,
+        baseBackupSchedule: baseBackupSchedule ?? null,
+        baseBackupRetentionDays: baseBackupRetentionDays ?? null,
+      },
       ipAddress: operatorIp ?? null,
     });
   });
 
   return { destinationPath };
+}
+
+// ScheduledBackup CR name pattern. Distinct from any Flux-managed SB
+// (e.g. existing `mail-pg-daily`) so we don't fight kustomize.
+const SCHEDULED_BACKUP_NAME = (cluster: string): string => `${cluster}-system-backup`;
+
+interface ScheduledBackupCR {
+  readonly status?: {
+    readonly lastScheduleTime?: string;
+    readonly nextScheduleTime?: string;
+  };
+}
+
+export async function readScheduledBackup(
+  k8s: K8sClients, namespace: string, cluster: string,
+): Promise<ScheduledBackupCR | null> {
+  try {
+    const custom = k8s.custom as unknown as {
+      getNamespacedCustomObject: (a: {
+        group: string; version: string; namespace: string; plural: string; name: string;
+      }) => Promise<ScheduledBackupCR>;
+    };
+    return await custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+      plural: 'scheduledbackups', name: SCHEDULED_BACKUP_NAME(cluster),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function upsertScheduledBackup(
+  k8s: K8sClients, namespace: string, cluster: string, schedule: string,
+): Promise<void> {
+  const custom = k8s.custom as unknown as {
+    getNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string }) => Promise<unknown>;
+    createNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; body: unknown }) => Promise<unknown>;
+    patchNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown }, opts?: unknown) => Promise<unknown>;
+  };
+  const name = SCHEDULED_BACKUP_NAME(cluster);
+  const body = {
+    apiVersion: `${CNPG_GROUP}/${CNPG_VERSION}`,
+    kind: 'ScheduledBackup',
+    metadata: {
+      name, namespace,
+      labels: {
+        'app.kubernetes.io/part-of': 'hosting-platform',
+        'app.kubernetes.io/component': 'system-backup',
+        'app.kubernetes.io/managed-by': 'platform-api',
+      },
+    },
+    spec: {
+      cluster: { name: cluster },
+      method: 'barmanObjectStore',
+      schedule,
+      backupOwnerReference: 'self',
+      // immediate:true would trigger a base backup right after enable —
+      // useful so operators don't have to wait until the next cron tick.
+      immediate: true,
+    },
+  };
+
+  let exists = true;
+  try {
+    await custom.getNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+      plural: 'scheduledbackups', name,
+    });
+  } catch (err: unknown) {
+    const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (status !== 404) throw err;  // RBAC / network errors propagate
+    exists = false;
+  }
+  if (exists) {
+    await custom.patchNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+      plural: 'scheduledbackups', name,
+      body: { spec: { schedule } },
+    }, MERGE_PATCH);
+  } else {
+    try {
+      await custom.createNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+        plural: 'scheduledbackups', body,
+      });
+    } catch (err: unknown) {
+      // 409 = race with another concurrent enable; another operator
+      // beat us. Re-patch to ensure schedule reflects this caller's
+      // intent.
+      const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+        ?? (err as { code?: number })?.code;
+      if (status !== 409) throw err;
+      await custom.patchNamespacedCustomObject({
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace,
+        plural: 'scheduledbackups', name,
+        body: { spec: { schedule } },
+      }, MERGE_PATCH);
+    }
+  }
+}
+
+async function deleteScheduledBackupIfPresent(
+  k8s: K8sClients, namespace: string, cluster: string,
+): Promise<void> {
+  const name = SCHEDULED_BACKUP_NAME(cluster);
+  try {
+    await (k8s.custom as unknown as {
+      deleteNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string }) => Promise<unknown>;
+    }).deleteNamespacedCustomObject({
+      group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'scheduledbackups', name,
+    });
+  } catch (err: unknown) {
+    // 404 = already gone, fine. Anything else (RBAC 403, network) is
+    // a real failure and must propagate so disable returns a clean
+    // 5xx instead of falsely claiming success.
+    const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (status === 404) return;
+    throw err;
+  }
 }
 
 export async function disableWalArchive(input: DisableWalArchiveInput): Promise<void> {
@@ -267,8 +423,12 @@ export async function disableWalArchive(input: DisableWalArchiveInput): Promise<
 
   // RFC 7396 merge: setting a field to null removes it. We strip the
   // entire spec.backup so disable returns the CR to default (no backup).
+  // We don't touch spec.postgresql.parameters.archive_timeout — leaving
+  // CNPG's default in place is the safe behaviour (Postgres still
+  // archives WAL locally; barman just won't ship them anymore).
   const patch = { spec: { backup: null } };
   await patchClusterBackupConfig(k8s, clusterNamespace, clusterName, patch);
+  await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
 
   await db.transaction(async (tx) => {
     await tx

@@ -203,6 +203,16 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # Phase 4b: System Backup WAL archive enable/disable creates/patches/
+  # deletes ScheduledBackup CRs alongside the Cluster's spec.backup.
+  # Backup CRs (CNPG's record of completed base backups) are read-only
+  # for surfacing status to operators.
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["scheduledbackups"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["backups"]
+    verbs: ["get", "list"]
   # PITR uses the external-snapshotter API (snapshot.storage.k8s.io)
   # to wrap a Longhorn snapshot as a CSI VolumeSnapshot that CNPG
   # bootstrap.recovery.volumeSnapshots can consume. VolumeSnapshot is

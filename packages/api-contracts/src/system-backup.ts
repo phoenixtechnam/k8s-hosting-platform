@@ -91,6 +91,36 @@ export const pgDumpListQuerySchema = z.object({
 });
 export type PgDumpListQuery = z.infer<typeof pgDumpListQuerySchema>;
 
+// ── Phase 4b: scheduled pg_dump exports ─────────────────────────────
+// 5-field UNIX cron — matches the existing webcron module's parser
+// and the operator-facing presets in the UI.
+export const pgDumpScheduleUpsertSchema = z.object({
+  sourceNamespace: dnsLabelSchema,
+  sourceCluster: dnsLabelSchema,
+  sourceDatabase: pgIdentifierSchema,
+  targetConfigId: z.string().uuid(),
+  cronSchedule: z.string().regex(/^(\S+\s+){4}\S+$/, 'must be a 5-field cron expression'),
+  retentionDays: z.number().int().min(1).max(3650).default(30),
+  enabled: z.boolean().default(true),
+});
+export type PgDumpScheduleUpsert = z.infer<typeof pgDumpScheduleUpsertSchema>;
+
+export const pgDumpScheduleSchema = z.object({
+  id: z.string().uuid(),
+  sourceNamespace: z.string(),
+  sourceCluster: z.string(),
+  sourceDatabase: z.string(),
+  targetConfigId: z.string(),
+  targetName: z.string().nullable(),
+  cronSchedule: z.string(),
+  retentionDays: z.number().int(),
+  enabled: z.boolean(),
+  lastRunAt: z.string().datetime().nullable(),
+  lastRunId: z.string().nullable(),
+  nextRunAt: z.string().datetime().nullable(),
+});
+export type PgDumpSchedule = z.infer<typeof pgDumpScheduleSchema>;
+
 export const pgDumpResponseSchema = z.object({
   runId: z.string().uuid(),
   status: systemBackupRunStatusSchema,

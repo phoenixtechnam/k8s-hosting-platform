@@ -85,13 +85,18 @@ SSO_USER="${ADDR}%${STALWART_MASTER_USER}"
     echo "CertificateFile /etc/ssl/certs/ca-certificates.crt"
   else
     # Tunnel replaces Host/Port/SSLType. openssl s_client wraps the
-    # TLS layer and skips chain validation (the in-cluster cert is
-    # self-signed; auth_request still gates the public ingress).
-    echo "Tunnel \"openssl s_client -quiet -verify 0 -connect ${IMAP_HOST}:${IMAP_PORT} -servername ${IMAP_HOST} 2>/dev/null\""
+    # TLS layer; we don't pass `-verify 0` (openssl 3.x rejects 0 as
+    # depth) — instead openssl's default is to print "verify return:1"
+    # warnings on chain failures but proceed, which is what we want
+    # against the in-cluster self-signed cert (auth_request still
+    # gates the public ingress).
+    echo "Tunnel \"openssl s_client -quiet -connect ${IMAP_HOST}:${IMAP_PORT} -servername ${IMAP_HOST} 2>/dev/null\""
   fi
   echo "User $SSO_USER"
   echo "PassCmd \"printenv STALWART_MASTER_PASSWORD\""
-  echo "AuthMechs LOGIN"
+  # Stalwart 0.16 advertises AUTH=PLAIN AUTH=OAUTHBEARER AUTH=XOAUTH2
+  # (NOT IMAP LOGIN). isync 1.4 supports PLAIN; LOGIN would 401.
+  echo "AuthMechs PLAIN"
   echo "PipelineDepth 50"
 } > /tmp/mbsync.cfg
 

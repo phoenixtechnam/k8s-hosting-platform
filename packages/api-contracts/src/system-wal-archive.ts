@@ -14,11 +14,37 @@ const dnsLabelSchema = z
   .max(63)
   .regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'must be a lowercase DNS label');
 
+// Postgres archive_timeout accepted format: positive integer + unit
+// (s|min|h). Restricted to short presets at the UI; backend enforces
+// the regex below.
+export const archiveTimeoutSchema = z
+  .string()
+  .regex(/^[0-9]+(s|min|h)$/, 'must look like 30s / 5min / 1h')
+  .default('5min');
+
+// 6-field cron expression (CNPG ScheduledBackup uses
+// github.com/robfig/cron/v3 with seconds-precision parsing).
+// Five-field UNIX cron is *not* accepted by CNPG. We surface UI
+// presets that map to known-good 6-field strings; advanced users
+// can pass any 6-field cron.
+export const baseBackupScheduleSchema = z
+  .string()
+  .regex(
+    /^(\S+\s+){5}\S+$/,
+    'must be a 6-field cron expression (seconds minutes hours dom month dow)',
+  );
+
 export const walArchiveEnableRequestSchema = z.object({
   clusterNamespace: dnsLabelSchema,
   clusterName: dnsLabelSchema,
   targetConfigId: z.string().uuid(),
   retentionDays: z.number().int().min(1).max(3650).default(30),
+  archiveTimeout: archiveTimeoutSchema.optional(),
+  // null OR omitted means "no base backup ScheduledBackup CR" — the
+  // operator just gets WAL streaming. Setting it both creates the CR
+  // and makes pure-S3 cold restore self-sufficient.
+  baseBackupSchedule: baseBackupScheduleSchema.nullable().optional(),
+  baseBackupRetentionDays: z.number().int().min(1).max(3650).optional(),
 });
 export type WalArchiveEnableRequest = z.infer<typeof walArchiveEnableRequestSchema>;
 
@@ -42,6 +68,14 @@ export const walArchiveClusterSchema = z.object({
     retentionDays: z.number().int(),
     destinationPath: z.string(),
     enabledAt: z.string().datetime(),
+    archiveTimeout: z.string().nullable(),
+    baseBackupSchedule: z.string().nullable(),
+    baseBackupRetentionDays: z.number().int().nullable(),
+    // ScheduledBackup CR live status (null when no SB exists).
+    baseBackupStatus: z.object({
+      lastScheduleTime: z.string().nullable(),
+      nextScheduleTime: z.string().nullable(),
+    }).nullable(),
   }).nullable(),
   // Operator-visible status surfaced from CNPG CR's .status. Best-
   // effort — null when not yet populated by CNPG.

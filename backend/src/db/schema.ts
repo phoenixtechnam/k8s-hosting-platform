@@ -1393,11 +1393,38 @@ export const systemWalArchiveState = pgTable('system_wal_archive_state', {
   destinationPath:  varchar('destination_path',  { length: 1024 }).notNull(),
   enabledAt:        timestamp('enabled_at', { withTimezone: true }).notNull().defaultNow(),
   operatorUserId:   varchar('operator_user_id', { length: 36 }),
+  // Phase 4b: operator-chosen overrides. Null = use defaults.
+  archiveTimeout:   varchar('archive_timeout', { length: 16 }),
+  baseBackupSchedule:       varchar('base_backup_schedule', { length: 64 }),
+  baseBackupRetentionDays:  integer('base_backup_retention_days'),
 }, (table) => [
   primaryKey({ columns: [table.clusterNamespace, table.clusterName] }),
   index('system_wal_archive_state_target_idx').on(table.targetConfigId),
 ]);
 export type SystemWalArchiveState = typeof systemWalArchiveState.$inferSelect;
+
+// ─── System Backup Phase 4b — scheduled pg_dump exports ────────────────────
+export const systemPgDumpSchedules = pgTable('system_pg_dump_schedules', {
+  id:                varchar('id', { length: 36 }).primaryKey(),
+  sourceNamespace:   varchar('source_namespace', { length: 63 }).notNull(),
+  sourceCluster:     varchar('source_cluster',   { length: 63 }).notNull(),
+  sourceDatabase:    varchar('source_database',  { length: 63 }).notNull(),
+  targetConfigId:    varchar('target_config_id', { length: 36 }).notNull(),
+  cronSchedule:      varchar('cron_schedule',    { length: 64 }).notNull(),
+  retentionDays:     integer('retention_days').notNull().default(30),
+  enabled:           boolean('enabled').notNull().default(true),
+  lastRunAt:         timestamp('last_run_at',  { withTimezone: true }),
+  lastRunId:         varchar('last_run_id',    { length: 36 }),
+  nextRunAt:         timestamp('next_run_at',  { withTimezone: true }),
+  operatorUserId:    varchar('operator_user_id', { length: 36 }),
+  createdAt:         timestamp('created_at',  { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:         timestamp('updated_at',  { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  uniqueIndex('system_pg_dump_schedules_unique_target').on(
+    table.sourceNamespace, table.sourceCluster, table.sourceDatabase,
+  ),
+]);
+export type SystemPgDumpSchedule = typeof systemPgDumpSchedules.$inferSelect;
 
 // ─── Ingress access control (OIDC + claim rules) ────────────────────────────
 
