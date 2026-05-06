@@ -120,11 +120,12 @@ done
 curl_admin -o "$WORKDIR/mail.pgdump" "$SOURCE_ADMIN_HOST/api/v1/system-backup/pg-dump/runs/$PG_MAIL_RUN/download"
 [[ -s "$WORKDIR/mail.pgdump" ]] && pass "mail pg_dump downloaded $(stat -c%s "$WORKDIR/mail.pgdump") bytes" || fail "mail dump empty"
 
-log "5) Wipe target VM (k3s-uninstall + reset)"
+log "5) Wipe target VM + install git (bootstrap prereq)"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
   "[ -f /usr/local/bin/k3s-uninstall.sh ] && /usr/local/bin/k3s-uninstall.sh; \
    rm -rf /var/lib/rancher /etc/rancher /var/lib/hosting-platform; \
-   echo wiped" 2>&1 | tail -3
+   command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); \
+   git --version" 2>&1 | tail -3
 
 log "6) Copy bundle + age key + dumps to target"
 scp "${SSH_OPTS[@]}" "$WORKDIR/secrets.tar.age" "${TARGET_SSH[*]}":/root/secrets.tar.age 2>&1 | tail -2
@@ -134,14 +135,18 @@ scp "${SSH_OPTS[@]}" "$WORKDIR/mail.pgdump"     "${TARGET_SSH[*]}":/root/mail.pg
 pass "artifacts copied to target"
 
 log "7) Run bootstrap.sh on target (this takes 5-10 min)"
-ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
-  "cd /tmp && rm -rf k8s-hosting-platform && \
+# `set -e` inside the SSH command so git failure aborts; capture exit
+# code so we don't claim success when bootstrap actually failed.
+if ! ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
+  "set -e; cd /tmp && rm -rf k8s-hosting-platform && \
    git clone --depth 1 https://github.com/phoenixtechnam/k8s-hosting-platform.git && \
    cd k8s-hosting-platform && \
    bash scripts/bootstrap.sh --join-as server --domain '$TARGET_VM_DOMAIN' \
      --secrets-bundle /root/secrets.tar.age --age-key /root/operator-private.key 2>&1" \
-  | tail -30
-pass "bootstrap.sh completed (see output above)"
+  | tail -50; then
+  fail "bootstrap.sh failed (see output above)"
+fi
+pass "bootstrap.sh completed"
 
 log "8) Wait for CNPG postgres + mail-pg clusters to be ready (≤15 min)"
 ssh "${SSH_OPTS[@]}" "${TARGET_SSH[@]}" \
