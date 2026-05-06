@@ -17,6 +17,7 @@ import SecretsBundleTab from '@/components/system-backup/SecretsBundleTab';
 import SystemDatabasesTab from '@/components/system-backup/SystemDatabasesTab';
 import WalArchiveTab from '@/components/system-backup/WalArchiveTab';
 import LonghornSnapshotsTab from '@/components/system-backup/LonghornSnapshotsTab';
+import DrDrillTab from '@/components/system-backup/DrDrillTab';
 
 type TabId = 'secrets' | 'system-dbs' | 'stalwart-blob' | 'longhorn-snapshots' | 'wal-archive' | 'dr-drill';
 
@@ -33,7 +34,7 @@ const TABS: ReadonlyArray<TabSpec> = [
   { id: 'stalwart-blob', label: 'Stalwart BLOB', available: false, comingPhase: 'Phase 2' },
   { id: 'longhorn-snapshots', label: 'Longhorn Snapshots', available: true },
   { id: 'wal-archive', label: 'WAL Archive', available: true },
-  { id: 'dr-drill', label: 'DR Drill', available: false, comingPhase: 'Phase 5' },
+  { id: 'dr-drill', label: 'DR Drill', available: true },
 ];
 
 export default function SystemBackupPage() {
@@ -102,7 +103,8 @@ export default function SystemBackupPage() {
         {activeTab === 'system-dbs' && <SystemDatabasesTab />}
         {activeTab === 'wal-archive' && <WalArchiveTab />}
         {activeTab === 'longhorn-snapshots' && <LonghornSnapshotsTab />}
-        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'wal-archive' && activeTab !== 'longhorn-snapshots' && (
+        {activeTab === 'dr-drill' && <DrDrillTab />}
+        {activeTab !== 'secrets' && activeTab !== 'system-dbs' && activeTab !== 'wal-archive' && activeTab !== 'longhorn-snapshots' && activeTab !== 'dr-drill' && (
           <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-8 text-center">
             <AlertTriangle size={32} className="mx-auto text-gray-400 dark:text-gray-500 mb-3" />
             <p className="text-sm text-gray-600 dark:text-gray-400">
