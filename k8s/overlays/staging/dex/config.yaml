@@ -11,12 +11,12 @@
 issuer: https://dex.${DOMAIN}/dex
 
 # Postgres-backed storage: Dex auth_request / auth_code / refresh_token /
-# device_request rows live in the platform's CNPG `app` database (shared
-# with platform-api). Dex creates its own table set on first start
-# (auth_request, auth_code, refresh_token, keys, client, connector,
-# password, offline_session, device_request, device_token) — none of
-# these names collide with platform's own oidc_* / users / clients
-# tables.
+# device_request rows live in the platform's `hosting_platform` database
+# (shared with platform-api, same `platform` SQL user). Dex creates its
+# own table set on first start (auth_request, auth_code, refresh_token,
+# keys, client, connector, password, offline_session, device_request,
+# device_token) — none of these names collide with platform's own
+# oidc_* / users / clients tables.
 #
 # Why postgres: SQLite-on-emptyDir stored auth state per-pod, which
 # made multi-replica Dex deployments incoherent (auth_request created
@@ -25,15 +25,15 @@ issuer: https://dex.${DOMAIN}/dex
 # 0086_oidc_pkce_state.sql migration which fixed the same class of
 # bug on platform-api's own PKCE store.
 #
-# Credentials come from the dex-postgres-credentials Secret (created
-# by Dex's pre-start init container — see deployment.yaml). $ENV
-# substitution is performed by Dex itself.
+# Credentials are pulled from the platform-db-credentials Secret
+# (same one platform-api uses; created during bootstrap). $ENV
+# substitution is performed by Dex on config load via os.ExpandEnv.
 storage:
   type: postgres
   config:
-    host: postgres-rw.platform.svc.cluster.local
+    host: postgres.platform.svc.cluster.local
     port: 5432
-    database: app
+    database: hosting_platform
     user: $DEX_DB_USER
     password: $DEX_DB_PASSWORD
     ssl:
