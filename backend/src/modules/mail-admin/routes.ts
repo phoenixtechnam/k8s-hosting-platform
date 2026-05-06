@@ -126,6 +126,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         app.log.warn({
           userId,
           rotatedAt: result.rotatedAt,
+          recycle: result.recycleResult,
           purgedBlockedIps: purgeResult.purgedCount,
           purgeRan: purgeResult.ran,
         }, 'mail-admin: rotation succeeded (JMAP) + cluster blocklist purged');

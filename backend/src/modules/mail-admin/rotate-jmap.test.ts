@@ -213,7 +213,7 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
       }),
     });
 
-    await rotateAdminPasswordViaJmapImpl(
+    const result = await rotateAdminPasswordViaJmapImpl(
       { ...BASE_OPTS, recyclePodsBeforeVerify: true },
       deps,
     );
@@ -226,22 +226,29 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     expect(patchIdx).toBeGreaterThanOrEqual(0);
     expect(recycleIdx).toBeGreaterThan(patchIdx);
     expect(verifyIdx).toBeGreaterThan(recycleIdx);
+    // 2026-05-06 (Phase 2A.C): the response carries the recycle outcome.
+    expect(result.recycleResult).toEqual({ deletedCount: 3, errors: [] });
   });
 
-  it('recyclePodsBeforeVerify omitted (default) → recyclePods is NOT called', async () => {
+  it('recyclePodsBeforeVerify omitted (default) → recyclePods is NOT called + response.recycleResult is null', async () => {
     // Webmail-master rotation goes through this same code path with
     // recyclePodsBeforeVerify left undefined (its target is a DB account,
     // not an env var; Roundcube is rolled separately by the caller).
     const deps = makeDeps();
-    await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
+    const result = await rotateAdminPasswordViaJmapImpl(BASE_OPTS, deps);
     expect(deps.recyclePods).not.toHaveBeenCalled();
+    expect(result.recycleResult).toBeNull();
   });
 
-  it('recyclePodsBeforeVerify=true tolerates recyclePods failure (best-effort)', async () => {
+  it('recyclePodsBeforeVerify=true tolerates recyclePods failure → response.recycleResult.errors populated', async () => {
     // A recycle failure (e.g. RBAC denies pods/delete) MUST NOT fail the
     // rotation. The Secret has already been patched; Reloader will
     // eventually catch up even without our explicit delete. The verify
     // step then probes whatever pods are alive at the time.
+    //
+    // Phase 2A.C: surface the failure in the response so the admin UI
+    // can render a "recycle failed (RBAC)" warning toast instead of
+    // requiring operators to grep platform-api logs.
     const deps = makeDeps({
       recyclePods: vi.fn().mockRejectedValue(new Error('RBAC: cannot delete pods')),
     });
@@ -252,6 +259,30 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     );
     expect(result.password).toBe('new-secret-password');
     expect(deps.verifyNewPassword).toHaveBeenCalled();
+    expect(result.recycleResult).toEqual({
+      deletedCount: 0,
+      errors: ['RBAC: cannot delete pods'],
+    });
+  });
+
+  it('recyclePodsBeforeVerify=true with per-pod errors → response carries the errors[]', async () => {
+    // The recycler accumulates per-pod delete failures into errors[]
+    // without aborting the loop (best-effort). This test asserts the
+    // partial-failure shape flows through to the response.
+    const deps = makeDeps({
+      recyclePods: vi.fn().mockResolvedValue({
+        deletedCount: 2,
+        errors: ['stalwart-pod-3: RBAC denied'],
+      }),
+    });
+    const result = await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, recyclePodsBeforeVerify: true },
+      deps,
+    );
+    expect(result.recycleResult).toEqual({
+      deletedCount: 2,
+      errors: ['stalwart-pod-3: RBAC denied'],
+    });
   });
 
   it('returns success on verify timeout — Secret was rotated, Stalwart pod is rolling', async () => {

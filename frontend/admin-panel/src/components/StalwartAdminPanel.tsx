@@ -51,6 +51,14 @@ export default function StalwartAdminPanel() {
     username: string;
     password: string;
   } | null>(null);
+  // 2026-05-06 (Phase 2A.C): captured from the rotation response so the UI
+  // can show "N pods recycled" or "recycle failed" without operators having
+  // to grep platform-api logs. null when the last rotation didn't recycle
+  // (webmail-master path) OR no rotation has happened in this session yet.
+  const [lastRecycle, setLastRecycle] = useState<{
+    deletedCount: number;
+    errors: readonly string[];
+  } | null>(null);
 
   const creds = useStalwartCredentials(revealed);
   const rotate = useRotateStalwartPassword();
@@ -171,7 +179,7 @@ export default function StalwartAdminPanel() {
           }}
           onConfirm={async () => {
             try {
-              await rotate.mutateAsync();
+              const resp = await rotate.mutateAsync();
               setConfirmRotate(false);
               rotate.reset();
               setRevealed(true);
@@ -179,10 +187,23 @@ export default function StalwartAdminPanel() {
               // SPA state references the old token and will not pick up
               // the rotated password without a clean reload.
               setShowIframe(false);
+              // Phase 2A.C: capture recycle outcome (may be null when the
+              // backend version is older and doesn't include the field).
+              setLastRecycle(resp.data.recycleResult
+                ? { deletedCount: resp.data.recycleResult.deletedCount, errors: resp.data.recycleResult.errors }
+                : null);
             } catch {
               // error state is surfaced via rotate.error
             }
           }}
+        />
+      )}
+
+      {lastRecycle && (
+        <RecycleResultBanner
+          deletedCount={lastRecycle.deletedCount}
+          errors={lastRecycle.errors}
+          onDismiss={() => setLastRecycle(null)}
         />
       )}
 
@@ -543,6 +564,78 @@ function WebmailMasterRevealCard({ username, password, onDismiss }: WebmailMaste
         <CopyableField label="Username" value={username} testId="webmail-master-username" />
         <CopyableField label="Password" value={password} testId="webmail-master-password" mono />
       </div>
+    </div>
+  );
+}
+
+interface RecycleResultBannerProps {
+  readonly deletedCount: number;
+  readonly errors: readonly string[];
+  readonly onDismiss: () => void;
+}
+
+/**
+ * 2026-05-06 (Phase 2A.C): visible outcome of the post-rotation pod-
+ * recycle step. Green when all pods deleted cleanly; amber when at
+ * least one pod failed to delete (likely RBAC). Without this, an RBAC
+ * regression on pods/delete would silently leave drift in place
+ * because Reloader's async rollout would eventually catch up — but
+ * in the meantime the operator wouldn't know whether the new password
+ * is actually live.
+ */
+function RecycleResultBanner({ deletedCount, errors, onDismiss }: RecycleResultBannerProps) {
+  const hasErrors = errors.length > 0;
+  const palette = hasErrors
+    ? {
+        border: 'border-amber-300 dark:border-amber-700',
+        bg: 'bg-amber-50 dark:bg-amber-900/20',
+        text: 'text-amber-900 dark:text-amber-100',
+        icon: <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400" />,
+      }
+    : {
+        border: 'border-green-200 dark:border-green-800',
+        bg: 'bg-green-50 dark:bg-green-900/20',
+        text: 'text-green-900 dark:text-green-100',
+        icon: <Check size={16} className="text-green-600 dark:text-green-400" />,
+      };
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="rotate-recycle-banner"
+      className={`rounded-lg border ${palette.border} ${palette.bg} p-3 space-y-2`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {palette.icon}
+          <span className={`text-sm font-medium ${palette.text}`}>
+            {hasErrors
+              ? `Stalwart pods recycled with ${errors.length} failure${errors.length === 1 ? '' : 's'} (${deletedCount} deleted)`
+              : `Stalwart pods recycled cleanly (${deletedCount} deleted)`}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className={`rounded-md p-1 hover:bg-white/40 dark:hover:bg-black/40 ${palette.text}`}
+          aria-label="Dismiss"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      {hasErrors && (
+        <ul className={`text-xs ${palette.text} list-disc pl-5 space-y-0.5`}>
+          {errors.map((e, i) => <li key={i} className="font-mono">{e}</li>)}
+        </ul>
+      )}
+      {hasErrors && (
+        <p className={`text-xs ${palette.text}`}>
+          The Secret rotation succeeded — Reloader will eventually replace
+          remaining pods. Drift may persist for a few minutes. Common cause:
+          missing pods/delete or pods/list RBAC on platform-api ServiceAccount.
+        </p>
+      )}
     </div>
   );
 }

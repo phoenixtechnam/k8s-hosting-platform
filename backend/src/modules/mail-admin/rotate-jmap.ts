@@ -116,12 +116,14 @@ export interface RotateJmapDeps {
   verifyNewPassword(password: string): Promise<boolean>;
   /**
    * Best-effort: delete Stalwart pods so kubelet recreates them with
-   * the freshly-patched Secret env. Returns count for logging. Only
-   * called when `opts.recyclePodsBeforeVerify === true`. Test deps
+   * the freshly-patched Secret env. Returns count for logging + the
+   * accumulated per-pod error messages so the rotation handler can
+   * surface a partial failure to the operator instead of just logging.
+   * Only called when `opts.recyclePodsBeforeVerify === true`. Test deps
    * supply a no-op or mock; production deps perform `kubectl delete pod
    * -l app=stalwart-mail-v016` via the K8s client.
    */
-  recyclePods(): Promise<{ deletedCount: number }>;
+  recyclePods(): Promise<{ deletedCount: number; errors?: readonly string[] }>;
   sleep(ms: number): Promise<void>;
   now(): Date;
 }
@@ -279,11 +281,17 @@ export async function rotateAdminPasswordViaJmapImpl(
   //     rotation. The rotation has already succeeded at the Secret level;
   //     Reloader will eventually roll pods even if our explicit recycle
   //     hits an RBAC issue.
+  // 2026-05-06 (Phase 2A.C): capture the recycle outcome and surface it
+  // in the response so the admin UI can render "X pods recycled" /
+  // "recycle failed" without operators having to grep platform-api logs.
+  // null when not requested (webmail-master rotation path).
+  let recycleResult: { deletedCount: number; errors: readonly string[] } | null = null;
   if (opts.recyclePodsBeforeVerify) {
     try {
-      const recycleResult = await deps.recyclePods();
+      const r = await deps.recyclePods();
+      recycleResult = { deletedCount: r.deletedCount, errors: r.errors ?? [] };
       log.info({
-        deletedCount: recycleResult.deletedCount,
+        deletedCount: r.deletedCount,
       }, 'mail-admin: recycled Stalwart pods to refresh env after Secret patch');
     } catch (err) {
       // Best-effort by design — but surface enough detail so an operator
@@ -302,6 +310,7 @@ export async function rotateAdminPasswordViaJmapImpl(
           ? 'platform-api ServiceAccount missing pods/delete or pods/list on namespace=mail'
           : 'unknown — see error message',
       }, 'mail-admin: recyclePods failed — drift between Secret and Stalwart env may persist until Reloader rollout completes (rotation continues; verify-loop will probe whatever pods are alive)');
+      recycleResult = { deletedCount: 0, errors: [errMsg] };
     }
   }
 
@@ -342,6 +351,9 @@ export async function rotateAdminPasswordViaJmapImpl(
     username: opts.username,
     password: plain,
     rotatedAt: deps.now().toISOString(),
+    recycleResult: recycleResult === null
+      ? null
+      : { deletedCount: recycleResult.deletedCount, errors: [...recycleResult.errors] },
   });
 }
 
@@ -463,17 +475,18 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
       }
     },
 
-    async recyclePods(): Promise<{ deletedCount: number }> {
+    async recyclePods(): Promise<{ deletedCount: number; errors: readonly string[] }> {
       // 2026-05-06: dynamic-import the recycler module so the heavy
       // @kubernetes/client-node code stays out of the test path that
       // injects fake deps.
       const { recycleStalwartPods } = await import('./recycle-stalwart-pods.js');
-      return recycleStalwartPods({
+      const r = await recycleStalwartPods({
         kubeconfigPath,
         namespace: 'mail',
         labelSelector: 'app=stalwart-mail-v016',
         gracePeriodSeconds: 15,
       });
+      return { deletedCount: r.deletedCount, errors: r.errors };
     },
 
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
