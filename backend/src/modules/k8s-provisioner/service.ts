@@ -411,6 +411,9 @@ export async function applyPVC(
   }
 
   try {
+    // backup-coverage: captured-by:files
+    // (canonical tenant data PVC `${namespace}-storage`; the files
+    // component tarballs every path under its mount.)
     await k8s.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {

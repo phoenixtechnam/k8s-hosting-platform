@@ -103,6 +103,10 @@ export async function syncAuthSecret(
     };
 
     try {
+      // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
+      // (htpasswd Secret derived from protected_directories DB rows
+      // which the config-tables component captures; reconciler
+      // regenerates this Secret on restore.)
       await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
     } catch (err: unknown) {
       if (isK8s409(err)) {
@@ -685,6 +689,9 @@ async function syncMtlsSecretAndBuildAnnotations(
     data: { 'ca.crt': Buffer.from(caCertPem).toString('base64') },
   };
   try {
+    // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
+    // (mTLS CA cert Secret rebuilt from ingress_route_mtls DB rows
+    // which the config-tables component captures.)
     await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
   } catch (err: unknown) {
     if (isK8s409(err)) {

@@ -795,6 +795,9 @@ function is404(err: unknown): boolean {
 async function applyPVCMib(k8s: K8sClients, namespace: string, sizeMib: number, storageClass: string): Promise<void> {
   const sizeStr = sizeMib % 1024 === 0 ? `${sizeMib / 1024}Gi` : `${sizeMib}Mi`;
   try {
+    // backup-coverage: captured-by:files
+    // (recreate the canonical `${namespace}-storage` PVC during
+    // resize/replace flows; same PVC the files component captures.)
     await k8s.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {

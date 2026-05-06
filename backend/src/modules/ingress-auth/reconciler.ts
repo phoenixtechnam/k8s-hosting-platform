@@ -401,6 +401,10 @@ async function upsertSecret(core: k8s.CoreV1Api, namespace: string): Promise<voi
     await core.replaceNamespacedSecret({ name: SECRET_NAME, namespace, body } as never);
   } catch (err) {
     if (!isNotFound(err)) throw err;
+    // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
+    // (ingress-auth Secret holds session/cookie keys generated from
+    // protected_directories DB rows. config-tables component captures
+    // those rows; reconciler regenerates the Secret on restore.)
     await core.createNamespacedSecret({ namespace, body } as never);
   }
 }

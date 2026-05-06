@@ -196,6 +196,10 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       // user source password are removed by K8s GC whenever the
       // Job is deleted (TTL sweep, operator delete, reconciler
       // cleanup).
+      //
+      // backup-coverage: excluded:transient-job-credential
+      // (per-imapsync-Job ephemeral Secret tied to the Job's
+      // ownerReference; deleted with the Job.)
       await (k8s.core as unknown as {
         createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
       }).createNamespacedSecret({ namespace: mailNamespace(), body: secret });
@@ -475,6 +479,8 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
     jobManifest.metadata!.name = k8sJobName;
 
     try {
+      // backup-coverage: excluded:transient-job-credential
+      // (imapsync reset Job ephemeral Secret; deleted with Job.)
       await (k8s.core as unknown as {
         createNamespacedSecret: (args: { namespace: string; body: unknown }) => Promise<unknown>;
       }).createNamespacedSecret({ namespace: mailNamespace(), body: secret });

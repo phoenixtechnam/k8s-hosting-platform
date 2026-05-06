@@ -83,6 +83,9 @@ export async function syncCertToK8sSecret(
   };
 
   try {
+    // backup-coverage: captured-by:secrets
+    // (kubernetes.io/tls cert + key in tenant ns; the secrets
+    // component captures every TLS Secret in the namespace.)
     await k8s.core.createNamespacedSecret({ namespace, body: secretBody });
   } catch (err: unknown) {
     if (isK8s409(err)) {
