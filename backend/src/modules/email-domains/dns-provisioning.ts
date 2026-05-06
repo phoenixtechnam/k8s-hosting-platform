@@ -50,7 +50,7 @@ function mtaStsPolicyId(domainName: string): string {
   return crypto.createHash('sha256').update(domainName).digest('hex').slice(0, 16);
 }
 
-async function syncRecordToProviders(
+export async function syncRecordToProviders(
   db: Database,
   domainId: string,
   domainName: string,
@@ -181,21 +181,24 @@ function buildBaseRecords(
 ): readonly DnsRecordSpec[] {
   return [
     // ─── Core receiving records ────────────────────────────
+    // MX target is the platform mail-server hostname directly (e.g.
+    // mail.platformdomain.com), NOT a per-client mail.<domainName>
+    // alias. Reasons:
+    //   1. Stalwart's TLS cert covers mail.${PLATFORM_DOMAIN} (single
+    //      SAN) — sending MTAs validate SNI against the cert, so
+    //      pointing at a per-client hostname triggers a TLS-mismatch
+    //      reject by strict receivers (Gmail, Microsoft).
+    //   2. MTA-STS is impossible without a cert that covers the
+    //      MX-target hostname — sticking with the platform hostname
+    //      keeps that path open.
+    //   3. One less DNS record per client (no per-client mail.A).
     {
       recordType: 'MX',
       recordName: domainName,
-      recordValue: `mail.${domainName}`,
+      recordValue: mailServerHostname,
       ttl: 3600,
       priority: 10,
       purpose: 'mx',
-    },
-    {
-      recordType: 'A',
-      recordName: `mail.${domainName}`,
-      recordValue: MAIL_SERVER_IP(),
-      ttl: 3600,
-      priority: null,
-      purpose: 'mail_host',
     },
     // ─── SPF / DKIM / DMARC ────────────────────────────────
     {
@@ -257,55 +260,49 @@ function buildBaseRecords(
       priority: 10,
       purpose: 'srv',
     },
-    // ─── Phase 3.C.2: autoconfig / autodiscover CNAME records ───────
-    // Thunderbird tries https://autoconfig.<domain>/mail/config-v1.1.xml
-    // Outlook tries https://autodiscover.<domain>/Autodiscover/Autodiscover.xml
-    // Both CNAME to the platform's mail hostname, which runs the
-    // public email-autodiscover routes from Phase 3.C.1.
-    {
-      recordType: 'CNAME',
-      recordName: `autoconfig.${domainName}`,
-      recordValue: mailServerHostname,
-      ttl: 3600,
-      priority: null,
-      purpose: 'autoconfig',
-    },
-    {
-      recordType: 'CNAME',
-      recordName: `autodiscover.${domainName}`,
-      recordValue: mailServerHostname,
-      ttl: 3600,
-      priority: null,
-      purpose: 'autoconfig',
-    },
-    // ─── Phase 3.C.2: MTA-STS policy discovery ──────────────────────
-    // Mail servers look up _mta-sts.<domain> TXT for the policy ID,
-    // then fetch https://mta-sts.<domain>/.well-known/mta-sts.txt
-    // for the actual policy. We CNAME mta-sts.<domain> to the
-    // platform autodiscover host so the policy file is served from
-    // the email-autodiscover routes.
-    {
-      recordType: 'TXT',
-      recordName: `_mta-sts.${domainName}`,
-      // Review round-3 MEDIUM-2: derive a stable policy ID from the
-      // domain name instead of Date.now(), so the value is the same
-      // on every call to this builder. MTA-STS clients treat a
-      // changed id= as a policy update and re-fetch; using a
-      // deterministic ID avoids spurious re-fetches and makes the
-      // DNS records view consistent with what was published.
-      recordValue: `v=STSv1; id=${mtaStsPolicyId(domainName)}`,
-      ttl: 3600,
-      priority: null,
-      purpose: 'mta_sts',
-    },
-    {
-      recordType: 'CNAME',
-      recordName: `mta-sts.${domainName}`,
-      recordValue: mailServerHostname,
-      ttl: 3600,
-      priority: null,
-      purpose: 'mta_sts',
-    },
+    // ─── autoconfig / autodiscover CNAMEs (REMOVED 2026-05-06) ──────
+    // Previously this block created CNAMEs autoconfig.<domain> and
+    // autodiscover.<domain> → platform mail hostname. The intent was
+    // to let Thunderbird/Outlook discovery probes find the mail
+    // server. The reality:
+    //
+    //   - Thunderbird probes https://autoconfig.<domain>/...
+    //   - The TLS handshake's SNI = autoconfig.<domain>, but the
+    //     server (Stalwart) only has a cert for the single SAN
+    //     mail.${PLATFORM_DOMAIN} → cert mismatch → handshake fails
+    //   - Same for autodiscover (Outlook).
+    //
+    // Per-client cert provisioning to fix this is significant infra
+    // work (cert-manager Cert CR per client, DNS automation, lifecycle
+    // hooks). It's out of scope for the TLS-bootstrap rewrite. SRV
+    // records (above) are the cheap-but-effective layer that covers
+    // Thunderbird, K-9, FairEmail, Mailspring, partial Apple Mail
+    // without any cert issues. Outlook autodiscover support becomes
+    // a separate follow-up phase if/when customer demand justifies
+    // the per-client cert provisioning.
+    //
+    // The TXT/CNAME entries previously written for these records will
+    // be removed from PowerDNS the next time the domain is
+    // re-provisioned via the existing diff-and-reconcile path.
+    // ─── MTA-STS records (REMOVED 2026-05-06) ───────────────────────
+    // Same cert-mismatch problem as the autoconfig CNAMEs above:
+    // MTA-STS spec (RFC 8461) requires the policy file to be served
+    // over HTTPS at mta-sts.<domain>/.well-known/mta-sts.txt with a
+    // cert that validates against mta-sts.<domain>. Stalwart's single-
+    // SAN cert (mail.${PLATFORM_DOMAIN}) doesn't cover mta-sts.<client>
+    // → policy fetch fails → strict-mode MTAs reject delivery,
+    // testing-mode MTAs downgrade.
+    //
+    // The previously-advertised _mta-sts.<domain> TXT + mta-sts.<domain>
+    // CNAME are dropped together. _mta-sts TXT alone advertises a
+    // policy that can't be fetched, which is worse than no policy
+    // (misleading vs. silent). Both records will be removed from
+    // PowerDNS the next time the domain is re-provisioned.
+    //
+    // Re-introducing MTA-STS requires per-client cert provisioning
+    // (cert-manager Cert CR per client domain covering at least
+    // mta-sts.<client>). Same precondition as Outlook autodiscover —
+    // tracked as a separate phase.
   ];
 }
 
@@ -454,12 +451,26 @@ export async function deprovisionEmailDns(
   const emailRecords = allRecords.filter((r) => {
     if (r.recordType === 'MX') return true;
     if (r.recordType === 'A' && r.recordName?.startsWith('mail.')) return true;
+    if (r.recordType === 'SRV') {
+      // Catches all four mail-discovery SRV records by name prefix
+      // (_imaps._tcp / _imap._tcp / _submissions._tcp / _submission._tcp).
+      const name = r.recordName ?? '';
+      return /^_(imaps?|submissions?)\._tcp\./.test(name);
+    }
+    if (r.recordType === 'CNAME') {
+      // Legacy autoconfig / autodiscover / mta-sts CNAMEs created by
+      // earlier provisioning code (removed 2026-05-06). Cleanup
+      // catches them so re-provisioning leaves no orphans in PowerDNS.
+      const name = r.recordName ?? '';
+      return /^(autoconfig|autodiscover|mta-sts)\./.test(name);
+    }
     if (r.recordType === 'TXT') {
       const val = r.recordValue ?? '';
       return (
         val.startsWith('v=spf1') ||
         val.startsWith('v=DKIM1') ||
-        val.startsWith('v=DMARC1')
+        val.startsWith('v=DMARC1') ||
+        val.startsWith('v=STSv1')
       );
     }
     return false;

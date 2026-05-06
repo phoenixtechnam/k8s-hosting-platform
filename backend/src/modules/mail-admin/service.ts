@@ -131,6 +131,74 @@ export async function proxyStalwartGet(
   });
 }
 
+/**
+ * Proxy a POST (or PUT) to Stalwart's management HTTP API via the k8s
+ * service-proxy. Mirrors proxyStalwartGet but adds a request body
+ * with caller-supplied content-type (defaults to application/json).
+ *
+ * Used by:
+ *   - Hostname change → Bootstrap.serverHostname update (Phase B)
+ *   - Manual DKIM rotation (Phase E)
+ *   - Future write-side admin operations (do NOT use for tenant-
+ *     facing mutations — those should go through stalwart-cli's
+ *     `apply` plan format which is auditable + idempotent)
+ */
+export async function proxyStalwartRequest(
+  kubeconfigPath: string | undefined,
+  method: 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  body: string,
+  contentType = 'application/json',
+): Promise<ProxyResult> {
+  const kc = loadKubeConfig(kubeconfigPath);
+  const cluster = kc.getCurrentCluster();
+  if (!cluster) throw new Error('No active cluster in kubeconfig');
+
+  const proxyPath = `/api/v1/namespaces/${STALWART_NAMESPACE}/services/${STALWART_MGMT_SERVICE}:${STALWART_MGMT_PORT_NAME}/proxy${path}`;
+
+  const httpsOpts = {} as { ca?: string; cert?: string; key?: string; headers?: Record<string, string> };
+  await kc.applyToHTTPSOptions(httpsOpts);
+
+  const headers: Record<string, string> = {
+    ...(httpsOpts.headers ?? {}),
+    Authorization: `Basic ${adminAuth()}`,
+    Accept: 'application/json, text/plain',
+    'Content-Type': contentType,
+    'Content-Length': String(Buffer.byteLength(body, 'utf-8')),
+  };
+
+  const user = kc.getCurrentUser();
+  if (user?.token) headers['Authorization-K8s'] = `Bearer ${user.token}`;
+
+  const { default: https } = await import('node:https');
+
+  return new Promise((resolve, reject) => {
+    const fullUrl = new URL(`${cluster.server}${proxyPath}`);
+    const req = https.request({
+      hostname: fullUrl.hostname,
+      port: fullUrl.port || 443,
+      path: fullUrl.pathname + fullUrl.search,
+      method,
+      headers,
+      ca: httpsOpts.ca,
+      cert: httpsOpts.cert,
+      key: httpsOpts.key,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode ?? 500,
+          body: Buffer.concat(chunks).toString('utf-8'),
+        });
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 // ─── Prometheus parser ───────────────────────────────────────────────────
 
 export interface PromMetric {

@@ -262,13 +262,12 @@ export interface DkimKey {
 interface DkimKeysResponse { readonly data: readonly DkimKey[] }
 
 export interface DkimRotateResult {
-  readonly keyId: string;
   readonly newSelector: string;
-  readonly mode: 'primary' | 'cname' | 'secondary';
-  readonly status: 'pending' | 'active';
-  readonly manualDnsRequired: boolean;
-  readonly dnsRecordName: string;
-  readonly dnsRecordValue: string;
+  readonly newPublicKey: string;
+  readonly txtRecordName: string;
+  readonly txtRecordValue: string;
+  readonly recommendedRetireOldAt: string;
+  readonly stalwartDkimSignatureId: string;
 }
 
 interface DkimRotateResponse { readonly data: DkimRotateResult }
@@ -285,12 +284,17 @@ export function useRotateDkimKey(clientId: string, domainId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch<DkimRotateResponse>(`/api/v1/clients/${clientId}/email/domains/${domainId}/dkim/rotate`, {
+      // 2026-05-06: M13/M12 retired the platform-side DKIM key store;
+      // rotation now uses Stalwart's DkimSignature object via the
+      // platform-api endpoint at /clients/:clientId/email-domains/
+      // :domainId/dkim/rotate. Old /email/domains/... path is gone.
+      apiFetch<DkimRotateResponse>(`/api/v1/clients/${clientId}/email-domains/${domainId}/dkim/rotate`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dkim-keys', clientId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dkim-status', clientId, domainId] });
     },
   });
 }

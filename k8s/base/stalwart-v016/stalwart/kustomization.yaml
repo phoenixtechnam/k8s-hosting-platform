@@ -11,6 +11,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - ingress-mgmt.yaml
+  - ingress-acme.yaml
   - networkpolicy.yaml
   - bootstrap-plan-cm.yaml
   - bootstrap-job.yaml

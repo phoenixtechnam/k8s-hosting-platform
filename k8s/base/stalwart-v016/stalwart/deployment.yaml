@@ -188,6 +188,16 @@ spec:
             - name: mgmt-http
               containerPort: 8080
               protocol: TCP
+            # HTTP listener for ACME HTTP-01 challenge responses
+            # (2026-05-06 TLS-bootstrap rewrite). Cluster-internal —
+            # no hostPort, no externalIPs. Traffic flows: LE →
+            # nginx-ingress :80 → mail-acme-ingress (path-prefix
+            # /.well-known/acme-challenge/*) → this Service:80 →
+            # this pod:80 → Stalwart's `http-acme` NetworkListener
+            # (configured in bootstrap-plan-cm.yaml).
+            - name: http-acme
+              containerPort: 80
+              protocol: TCP
           env:
             # STALWART_RECOVERY_ADMIN provides a temporary HTTP-Basic credential
             # ("admin:<password>") so stalwart-cli can authenticate before the

@@ -2046,6 +2046,88 @@ except Exception:
   fi
 }
 
+scenario_mail_tls() {
+  # Validates the 2026-05-06 TLS-bootstrap rewrite: Stalwart-managed
+  # ACME (HTTP-01), single-SAN cert covering mail.${DOMAIN}, SRV
+  # records targeting that hostname, and the admin SSL-status
+  # endpoint returning sane data.
+  if [[ "${SKIP_MAIL_SCENARIO:-}" == "1" ]]; then
+    log "scenario mail_tls skipped — SKIP_MAIL_SCENARIO=1"
+    return 0
+  fi
+
+  local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.phoenix-host.net}"
+  local mail_hostname="${MAIL_HOSTNAME:-mail.${mail_domain_apex}}"
+  local mail_host="${MAIL_HOST:-89.167.3.56}"
+
+  # ── 1. TLS handshake on each implicit-TLS port — must serve LE
+  #       cert, NOT Stalwart's embedded rcgen self-signed default ──
+  for port in 465 993; do
+    local out; out=$(echo | timeout 8 openssl s_client \
+      -connect "${mail_host}:${port}" \
+      -servername "${mail_hostname}" 2>&1)
+    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
+      ok "mail-tls/${port}: serves LE-issued cert (SNI=${mail_hostname})"
+    elif echo "$out" | grep -qE "rcgen self signed cert|self-signed"; then
+      fail "mail-tls/${port}: serving rcgen self-signed cert — Stalwart-managed ACME has not issued a real cert yet for ${mail_hostname}"
+    else
+      fail "mail-tls/${port}: openssl handshake unexpected output: $(echo "$out" | grep -E 'subject=|issuer=|verify' | head -3)"
+    fi
+  done
+
+  # ── 2. STARTTLS upgrade on submission/SMTP/sieve ports ──
+  for port in 25 587 4190; do
+    local proto="smtp"
+    [[ "$port" == "4190" ]] && proto="sieve"
+    local out
+    out=$(echo "QUIT" | timeout 10 openssl s_client \
+      -connect "${mail_host}:${port}" \
+      -starttls "$proto" \
+      -servername "${mail_hostname}" 2>&1 || true)
+    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
+      ok "mail-tls/${port}: STARTTLS upgrade → LE cert"
+    elif echo "$out" | grep -qE "rcgen self signed cert"; then
+      fail "mail-tls/${port}: STARTTLS upgrade → rcgen self-signed (cert not provisioned)"
+    elif echo "$out" | grep -q "didn't found starttls"; then
+      # openssl <1.1.1 doesn't know `-starttls sieve`; accept implicit
+      # ports as the canonical check.
+      log "mail-tls/${port}: openssl version doesn't support -starttls $proto — skipped"
+    else
+      fail "mail-tls/${port}: unexpected output: $(echo "$out" | head -3)"
+    fi
+  done
+
+  # ── 3. SRV records target mail.${DOMAIN} (single-SAN cert match) ──
+  for rec in _imaps._tcp _submissions._tcp _submission._tcp _imap._tcp; do
+    # SRV target is the LAST whitespace-delimited token in the answer
+    local target
+    target=$(dig +short SRV "${rec}.${mail_domain_apex}" 2>/dev/null \
+      | awk '{print $NF}' | head -1 | sed 's/\.$//')
+    if [[ "$target" == "$mail_hostname" ]]; then
+      ok "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} (matches cert SAN)"
+    elif [[ -z "$target" ]]; then
+      log "mail-tls/srv: ${rec}.${mail_domain_apex} not yet provisioned (expected for the platform's own domain — only client domains get per-domain SRV)"
+    else
+      fail "mail-tls/srv: ${rec}.${mail_domain_apex} → ${target} ≠ ${mail_hostname} (cert mismatch — re-provision DNS for client domains)"
+    fi
+  done
+
+  # ── 4. admin SSL-status endpoint round-trip ──
+  local resp; resp=$(api GET "/admin/email-settings/ssl-status")
+  if echo "$resp" | grep -q '"listeners"'; then
+    local le_count
+    le_count=$(echo "$resp" \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for l in d.get('data',{}).get('listeners',[]) if (l.get('cert') or {}).get('issuer','').lower().find('encrypt') >= 0))" 2>/dev/null || echo 0)
+    if (( le_count >= 4 )); then
+      ok "mail-tls/api: GET /admin/email-settings/ssl-status — ${le_count} listeners serving LE cert"
+    else
+      fail "mail-tls/api: only ${le_count} listeners serving LE cert (expected ≥4); resp head: $(echo "$resp" | head -c 400)"
+    fi
+  else
+    fail "mail-tls/api: ssl-status endpoint returned no listeners: $(echo "$resp" | head -c 300)"
+  fi
+}
+
 case "$SCENARIO" in
   all)
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
@@ -2058,6 +2140,7 @@ case "$SCENARIO" in
     run_scenario bundle
     run_scenario restore
     run_scenario mail
+    run_scenario mail_tls
     run_scenario system_backup
     ;;
   *)

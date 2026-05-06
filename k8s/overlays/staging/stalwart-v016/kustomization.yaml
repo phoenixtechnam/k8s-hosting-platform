@@ -29,16 +29,6 @@ resources:
   # that 0.15 used. The 0.16 Deployment connects directly to its own
   # dedicated mail-pg CNPG cluster (mail-pg-rw.mail.svc.cluster.local)
   # — see base/stalwart-v016/stalwart/deployment.yaml STALWART_PG_HOST.
-  #
-  # Mail-server TLS (2026-05-06): Stalwart 0.16's SMTP/IMAP listeners
-  # were serving Stalwart's embedded rcgen self-signed cert because
-  # Cut 3 never wired through the certificate provisioning that the
-  # 0.15 stack carried. mail-tls-certificate.yaml provisions a real
-  # LE cert for mail/smtp/imap/mx/autoconfig/autodiscover SANs;
-  # cert-apply-job.yaml creates the matching x:Certificate row in
-  # Stalwart's config store via stalwart-cli.
-  - mail-tls-certificate.yaml
-  - cert-apply-job.yaml
 
 patches:
   # Stalwart-mail-v016 Service: LoadBalancer → ClusterIP+externalIPs.
@@ -87,12 +77,24 @@ patches:
       kind: Ingress
       name: stalwart-v016-webadmin
 
-  # Stalwart Deployment: mount the mail-TLS Secret AND consolidate the
-  # Reloader annotation. See deployment-cert-mount.yaml for full
-  # context — the prior inline Reloader-only patch was folded into
-  # the file-based patch so the annotation and the volume cannot
-  # drift apart in future edits.
-  - path: deployment-cert-mount.yaml
+  # Reloader: roll the Deployment when the LE-prod TLS cert is renewed.
+  # The base watches `mail-pg-app-credentials,stalwart-admin-creds`. We
+  # APPEND `stalwart-webadmin-prod-tls` while preserving both base
+  # entries — strategic-merge replaces the annotation value (it's a
+  # single string, not a list), so the patch must include all three.
+  # Code-review CRITICAL fix (2026-05-04): the prior patch listed only
+  # `stalwart-webadmin-prod-tls,stalwart-admin-creds` which silently
+  # dropped `mail-pg-app-credentials` from the watch list — when CNPG
+  # rotates the mail-pg credentials, Stalwart would keep the old
+  # password and fail to connect with no auto-recovery.
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stalwart-mail-v016
+        namespace: mail
+        annotations:
+          secret.reloader.stakater.com/reload: "mail-pg-app-credentials,stalwart-admin-creds,stalwart-webadmin-prod-tls"
     target:
       kind: Deployment
       name: stalwart-mail-v016
