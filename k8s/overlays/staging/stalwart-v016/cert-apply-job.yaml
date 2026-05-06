@@ -67,6 +67,26 @@ spec:
   # retry waits ~10s longer than the previous, so the Job tolerates
   # ~5min of API unavailability before giving up.
   backoffLimit: 10
+  # Default suspended — first-deploy operator unsuspends manually
+  # AFTER:
+  #   1. cert-manager Certificate `stalwart-mail-tls` reports Ready=True
+  #   2. The Stalwart pod has rolled (via Reloader) so /run/stalwart-tls/
+  #      contains the issued cert
+  #   3. The Stalwart pod's source IP is in `x:AllowedIp` (cluster node
+  #      IPs), or Stalwart's auto-portScanning ban will reset the
+  #      Job's mgmt API connection. Bootstrap.sh seeds the AllowedIp
+  #      rows; for in-place fixes the operator runs the rescue Job
+  #      manually first.
+  #
+  # Unsuspend with:
+  #   kubectl -n mail patch job stalwart-v016-cert-apply --type=merge \
+  #     -p '{"spec":{"suspend":false}}'
+  #
+  # After the Job completes once, the Stalwart-side x:Certificate row
+  # is permanent (file path, not contents — cert-manager renewals
+  # don't require re-applying). Subsequent reconciles see a Completed
+  # Job and leave it alone (kustomize.toolkit.fluxcd.io/ssa: merge).
+  suspend: true
   template:
     metadata:
       labels:
