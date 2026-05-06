@@ -217,8 +217,13 @@ spec:
             httpGet:
               path: /healthz/live
               port: mgmt-http
-            # Allow 90s (18 * 5s) for DB schema migration on cold cluster.
-            failureThreshold: 18
+            # Stalwart 0.16's first-time PG schema migration on a CNPG
+            # cluster under load takes 60-180s in the wild — observed on
+            # staging multiple times where the container exits cleanly
+            # at exactly 90s (18*5s) because kubelet sends SIGTERM at the
+            # threshold and Stalwart's signal handler clean-shuts.
+            # Raise to 60 * 5s = 300s grace.
+            failureThreshold: 60
             periodSeconds: 5
             timeoutSeconds: 5
           livenessProbe:
