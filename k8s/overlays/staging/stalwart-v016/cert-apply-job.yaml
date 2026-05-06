@@ -127,52 +127,71 @@ spec:
             - |
               set -eu
 
-              # Plan: create one x:Certificate row pointing at the file
-              # paths on the Stalwart pod. Stalwart resolves the file
-              # at TLS handshake time and parses SANs out of the PEM
-              # (subjectAlternativeNames is a serverSet field). No
-              # NetworkListener changes needed — Stalwart auto-routes
-              # by SNI against the SAN list.
+              CLI_URL="http://stalwart-mgmt-v016.mail.svc.cluster.local:8080"
+              export HOME=/tmp
+              export STALWART_PASSWORD="$${STALWART_RECOVERY_PASSWORD}"
+
+              # IDEMPOTENCY GUARD: query existing Certificate rows
+              # FIRST. Stalwart 0.16's `create` ignores the user-
+              # supplied ID key in the plan (the server auto-
+              # generates an internal ID). That makes `apply` of a
+              # `create` plan NON-IDEMPOTENT — every re-run adds
+              # another row with the same SANs, which then race for
+              # SNI matches at TLS handshake time. Empirically
+              # observed during the 2026-05-06 staging deploy: two
+              # back-to-back applies created two rows with identical
+              # SAN lists (iptnsouqabaa + iptnsmysaaqa).
               #
-              # ID `default-mail-tls` is arbitrary but stable across
-              # re-runs. If you ever need to swap the cert, update the
-              # row by deleting + re-creating with the same ID, or
-              # apply with the `update` verb.
+              # The fix: check whether ANY Certificate row exists
+              # before creating. The `query` subcommand prints `0`
+              # rows (header line only) when empty, otherwise one
+              # data line per row. We grep for `mail.staging` (any
+              # SAN that contains the marker) — present means at
+              # least one row already covers this deployment.
+              echo "Probing for existing Certificate row..."
+              query_out="$$(/shared/stalwart-cli --url "$${CLI_URL}" --user admin query Certificate 2>&1 || true)"
+              if printf '%s\n' "$${query_out}" | grep -qE 'mail\.|smtp\.|imap\.'; then
+                echo "Existing Certificate row(s) found — idempotent skip."
+                printf '%s\n' "$${query_out}"
+                exit 0
+              fi
+
+              # Plan: create one x:Certificate row pointing at the
+              # file paths on the Stalwart pod. Stalwart resolves
+              # the file at TLS-handshake/cert-row-create time and
+              # parses SANs out of the PEM (subjectAlternativeNames
+              # is a serverSet field). No NetworkListener changes
+              # needed — Stalwart auto-routes by SNI against the
+              # SAN list.
               #
               # `printf` (NOT heredoc) — yaml block scalars preserve
               # the indentation prefix on every line of the heredoc
-              # body, which made stalwart-cli v1.0.4 reject the plan
-              # with the unhelpful `error: builder error` (HIGH-fix
-              # follow-up, 2026-05-06).
+              # body, which made stalwart-cli v1.0.4 reject the
+              # plan with the unhelpful `error: builder error`.
               printf '%s\n' '{"@type":"create","object":"Certificate","value":{"default-mail-tls":{"certificate":{"@type":"File","filePath":"/run/stalwart-tls/tls.crt"},"privateKey":{"@type":"File","filePath":"/run/stalwart-tls/tls.key"}}}}' > /tmp/plan.json
 
-              # Sanity-print the rendered plan + a wc so the operator
-              # can confirm it's a single line of well-formed JSON.
+              # Sanity-print so the operator can confirm the plan is
+              # a single line of well-formed JSON via `kubectl logs`.
               echo "--- plan.json (wc=$$(wc -c < /tmp/plan.json) bytes) ---"
               cat /tmp/plan.json
               echo "--- end plan ---"
 
               echo "Applying x:Certificate row..."
 
-              # Capture stalwart-cli output to a file, then check its
-              # actual exit code. The previous `... | tee ...` form
-              # masked stalwart-cli failures because under `set -eu`
-              # in a pipeline the exit status comes from the LAST
-              # command (`tee`), which exits 0 unless writing fails.
-              # That swallowed real connection-refused / 401 / 5xx
-              # errors and reported success — the backoffLimit retry
-              # mechanism never fired. Code-review HIGH fix
-              # (2026-05-06).
+              # Capture stalwart-cli output to a file, then check
+              # its actual exit code. A previous `... | tee ...`
+              # form masked stalwart-cli failures because under
+              # `set -eu` in a pipeline the exit status comes from
+              # the LAST command (`tee`), which exits 0 unless
+              # writing fails. Code-review HIGH fix (2026-05-06).
               cli_rc=0
-              HOME=/tmp \
-              STALWART_PASSWORD="$${STALWART_RECOVERY_PASSWORD}" \
-                /shared/stalwart-cli \
-                  --url "http://stalwart-mgmt-v016.mail.svc.cluster.local:8080" \
-                  --user "admin" \
+              /shared/stalwart-cli \
+                  --url "$${CLI_URL}" \
+                  --user admin \
                   apply --file /tmp/plan.json >/tmp/out.txt 2>&1 || cli_rc=$$?
 
-              # Echo what the CLI said so the operator can read it via
-              # kubectl logs.
+              # Echo what the CLI said so the operator can read it
+              # via kubectl logs.
               cat /tmp/out.txt
 
               if [ "$${cli_rc}" -eq 0 ]; then
@@ -180,13 +199,7 @@ spec:
                 exit 0
               fi
 
-              # Idempotency: treat "already exists" as success.
-              if grep -qE 'already.exists|alreadyExists|conflict|409' /tmp/out.txt; then
-                echo "Certificate row already exists — idempotent success."
-                exit 0
-              fi
-
-              echo "ERROR: stalwart-cli apply failed (rc=$${cli_rc}) with non-conflict error." >&2
+              echo "ERROR: stalwart-cli apply failed (rc=$${cli_rc})." >&2
               exit "$${cli_rc}"
           env:
             # Recovery admin password — Stalwart's HTTP-Basic credential
