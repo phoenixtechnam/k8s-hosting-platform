@@ -7,16 +7,21 @@
 #
 # Stateless by design: nothing is written outside /tmp. Restart-safe.
 #
-# Token blob (base64url-encoded JSON):
+# Token blob (base64url-encoded JSON, v=2):
 #   {
-#     "v": 1,
+#     "v": 2,
 #     "slug": "bobs-slug",
-#     "server_url": "wss://tunnels.example.com/c/bobs-slug/",
+#     "server_url": "wss://bobs-slug.tunnels.example.com/",
 #     "secret": "pwt_<32-bytes-base64url>",
-#     "expose": [
-#       { "name": "web", "local": "127.0.0.1:8080", "remote_port": 8080 }
-#     ]
+#     "expose": [ { "name": "web", "remote_port": 12345 } ]
 #   }
+#
+# The home-side target (where the agent forwards tunnel traffic to) is
+# declared by the operator at runtime via PRIVATE_WORKER_TARGET env var
+# — this is the docker host's loopback, another container in the same
+# compose project, or any reachable host:port. Default if unset:
+# host.docker.internal:<remote_port> (works on Docker Desktop; on Linux
+# Docker, set the env explicitly).
 #
 # frp v0.62.x has no client-side WebSocket-path config — the client always
 # dials /~!frp. The cluster-side NGINX rewrites /c/{slug}/ -> /~!frp; the
@@ -80,8 +85,8 @@ fi
 # 3. Validate schema version + extract fields
 # ---------------------------------------------------------------------------
 v="$(printf '%s' "${json}" | jq -r '.v // empty')"
-if [[ "${v}" != "1" ]]; then
-  die "Unsupported token version v=${v:-<missing>}. This agent build supports v=1. Upgrade the agent image."
+if [[ "${v}" != "2" ]]; then
+  die "Unsupported token version v=${v:-<missing>}. This agent build supports v=2. Upgrade the agent image (or re-mint the token from a platform on a matching version)."
 fi
 
 slug="$(printf '%s' "${json}" | jq -r '.slug // empty')"
@@ -151,24 +156,48 @@ fi
   printf '\n'
 } > "${CONFIG_PATH}"
 
-# Append one [[proxies]] block per expose entry. Use jq's @sh to avoid
-# any shell injection from operator-controlled fields (name, local).
-while IFS=$'\t' read -r name local_addr remote_port; do
-  local_ip="${local_addr%%:*}"
-  local_port="${local_addr##*:}"
-  if [[ -z "${local_ip}" || -z "${local_port}" || "${local_ip}" == "${local_addr}" ]]; then
-    die "Invalid expose.local '${local_addr}' — expected host:port."
+# Where the agent forwards incoming tunnel traffic. Operator-supplied
+# at docker run time. Examples:
+#   - another container in the same compose project: app:80
+#   - the docker host's loopback (Docker Desktop):   host.docker.internal:8080
+#   - a LAN device:                                  192.168.1.5:80
+# Default: host.docker.internal:<remote_port> — works on Docker Desktop
+# and on Linux Docker 20.10+ when run with --add-host=host.docker.internal:host-gateway.
+target_default_host='host.docker.internal'
+target_override="${PRIVATE_WORKER_TARGET:-}"
+
+# Append one [[proxies]] block per expose entry. Validate the target
+# shape (host:port) before writing.
+while IFS=$'\t' read -r name remote_port; do
+  if [[ -n "${target_override}" ]]; then
+    target="${target_override}"
+  else
+    target="${target_default_host}:${remote_port}"
+  fi
+  target_ip="${target%%:*}"
+  target_port="${target##*:}"
+  if [[ -z "${target_ip}" || -z "${target_port}" || "${target_ip}" == "${target}" ]]; then
+    die "Invalid PRIVATE_WORKER_TARGET '${target}' — expected host:port."
+  fi
+  # Character-class whitelist — defends against TOML injection via newlines
+  # or quotes embedded in the env var. Only DNS-label / IPv4 / bracketed-IPv6
+  # characters allowed; port must be a bare 1-65535 integer.
+  if ! [[ "${target_ip}" =~ ^[A-Za-z0-9._\[\]-]+$ ]]; then
+    die "Invalid PRIVATE_WORKER_TARGET host '${target_ip}' — only alphanumeric, dots, hyphens, brackets allowed."
+  fi
+  if ! [[ "${target_port}" =~ ^[0-9]+$ ]] || (( target_port < 1 || target_port > 65535 )); then
+    die "Invalid PRIVATE_WORKER_TARGET port '${target_port}' — must be an integer 1-65535."
   fi
   {
     printf '[[proxies]]\n'
     printf 'name = "%s"\n' "${name}"
     printf 'type = "tcp"\n'
-    printf 'localIP = "%s"\n' "${local_ip}"
-    printf 'localPort = %s\n' "${local_port}"
+    printf 'localIP = "%s"\n' "${target_ip}"
+    printf 'localPort = %s\n' "${target_port}"
     printf 'remotePort = %s\n' "${remote_port}"
     printf '\n'
   } >> "${CONFIG_PATH}"
-done < <(printf '%s' "${json}" | jq -r '.expose[] | [.name, .local, .remote_port] | @tsv')
+done < <(printf '%s' "${json}" | jq -r '.expose[] | [.name, .remote_port] | @tsv')
 
 chmod 0600 "${CONFIG_PATH}" || true
 
@@ -182,8 +211,9 @@ log "  tls          = ${tls_enable}"
 log "  log_level    = ${LOG_LEVEL}"
 log "  config       = ${CONFIG_PATH}"
 log "  admin (loop) = 127.0.0.1:${ADMIN_PORT}"
+log "  target       = ${target_override:-${target_default_host}:<remote_port>}"
 log "  exposing:"
-printf '%s' "${json}" | jq -r '.expose[] | "    - \(.name): \(.local) -> remote :\(.remote_port)"'
+printf '%s' "${json}" | jq -r --arg ovr "${target_override}" --arg dh "${target_default_host}" '.expose[] | "    - \(.name): " + (if $ovr=="" then "\($dh):\(.remote_port)" else $ovr end) + " -> remote :\(.remote_port)"'
 
 # ---------------------------------------------------------------------------
 # 7. Hand off to frpc as PID 1 (under tini, which is our actual PID 1)

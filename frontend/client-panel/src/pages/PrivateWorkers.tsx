@@ -126,15 +126,12 @@ interface CreateModalProps {
 function CreateModal({ clientId, onClose, onCreated }: CreateModalProps) {
   const create = useCreatePrivateWorker(clientId);
   const [name, setName] = useState('');
-  const [exposedPort, setExposedPort] = useState<number | ''>(8080);
   const [description, setDescription] = useState('');
 
   const handleSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
-    if (typeof exposedPort !== 'number') return;
     const input: CreatePrivateWorkerInput = {
       name: name.trim(),
-      exposed_port: exposedPort,
       description: description.trim() ? description.trim() : undefined,
     };
     try {
@@ -195,34 +192,6 @@ function CreateModal({ clientId, onClose, onCreated }: CreateModalProps) {
 
           <div>
             <label
-              htmlFor="pw-create-port"
-              className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
-            >
-              Exposed port <span className="text-red-500">*</span>
-            </label>
-            <input
-              id="pw-create-port"
-              type="number"
-              value={exposedPort}
-              onChange={(e) => {
-                const v = e.target.value;
-                setExposedPort(v === '' ? '' : Number(v));
-              }}
-              min={1}
-              max={65535}
-              placeholder="8080"
-              className={INPUT_CLASS}
-              required
-              data-testid="pw-create-port"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              The TCP port your home service listens on; ingress routes target
-              this.
-            </p>
-          </div>
-
-          <div>
-            <label
               htmlFor="pw-create-description"
               className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
             >
@@ -256,7 +225,7 @@ function CreateModal({ clientId, onClose, onCreated }: CreateModalProps) {
             </button>
             <button
               type="submit"
-              disabled={create.isPending || !name.trim() || typeof exposedPort !== 'number'}
+              disabled={create.isPending || !name.trim()}
               className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
               data-testid="pw-create-submit"
             >
@@ -495,14 +464,6 @@ export default function PrivateWorkers() {
                     className="text-left"
                   />
                   <SortableHeader
-                    label="Port"
-                    sortKey="exposedPort"
-                    currentKey={sortKey}
-                    direction={sortDirection}
-                    onSort={onSort}
-                    className="text-left"
-                  />
-                  <SortableHeader
                     label="Last seen"
                     sortKey="lastSeenAt"
                     currentKey={sortKey}
@@ -516,7 +477,7 @@ export default function PrivateWorkers() {
                 {sortedData.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={5}
                       className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
                       data-testid="pw-search-empty"
                     >
@@ -543,9 +504,6 @@ export default function PrivateWorkers() {
                       </td>
                       <td className="px-5 py-3">
                         <StatusBadge status={w.status} />
-                      </td>
-                      <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-400">
-                        {w.exposedPort}
                       </td>
                       <td
                         className="px-5 py-3 text-gray-500 dark:text-gray-400"

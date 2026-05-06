@@ -303,10 +303,16 @@ function buildComposeHint(worker: PrivateWorkerResponse): string {
     `  ${worker.slug}-agent:`,
     '    image: ghcr.io/k8s-hosting/private-worker-agent:latest',
     '    restart: unless-stopped',
+    '    extra_hosts:',
+    '      - "host.docker.internal:host-gateway"',
     '    environment:',
     '      PRIVATE_WORKER_TOKEN: <paste your saved PRIVATE_WORKER_TOKEN>',
-    `      LOCAL_TARGET: "127.0.0.1:${worker.exposedPort}"`,
-    '    network_mode: host',
+    '      # The agent forwards incoming tunnel traffic to PRIVATE_WORKER_TARGET.',
+    '      # Examples:',
+    '      #   another compose service:    "myapp:80"',
+    '      #   docker host loopback:       "host.docker.internal:8080"',
+    '      #   a LAN device:               "192.168.1.5:80"',
+    '      PRIVATE_WORKER_TARGET: "host.docker.internal:8080"',
   ].join('\n');
 }
 
@@ -337,11 +343,18 @@ function TunnelInfoCard({ worker }: TunnelInfoCardProps) {
         </div>
         <div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
-            Exposed port
+            Cluster routing port
           </div>
           <span className="font-mono text-xs text-gray-800 dark:text-gray-200">
             {worker.exposedPort}
           </span>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Auto-assigned by the platform. The Service exposes this port; ingress
+            routes targeting this worker bind to it. You don&apos;t need to use
+            this number anywhere on your machine — set{' '}
+            <code className="font-mono">PRIVATE_WORKER_TARGET</code> on the agent
+            container to wherever your service actually listens.
+          </p>
         </div>
         <div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">

@@ -163,7 +163,7 @@ export default function PrivateWorkerTokenModal({
             </div>
           </div>
           <div>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Exposed port</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Cluster routing port</span>
             <div className="font-mono text-gray-900 dark:text-gray-100">
               {secret.worker.exposedPort}
             </div>
@@ -243,11 +243,22 @@ export default function PrivateWorkerTokenModal({
           <p className="font-semibold text-gray-900 dark:text-gray-100 mb-2">What now?</p>
           <ol className="list-decimal pl-5 space-y-1 text-xs">
             <li>
-              Start a service on your machine listening on port{' '}
+              Start a service on your machine on whatever port suits you (e.g.{' '}
               <code className="rounded bg-gray-200 dark:bg-gray-700 px-1 py-0.5 font-mono">
-                {secret.worker.exposedPort}
+                8080
               </code>
-              .
+              ).
+            </li>
+            <li>
+              In the docker-compose snippet, set{' '}
+              <code className="rounded bg-gray-200 dark:bg-gray-700 px-1 py-0.5 font-mono">
+                PRIVATE_WORKER_TARGET
+              </code>
+              {' '}to where that service is reachable from the agent (e.g.{' '}
+              <code className="rounded bg-gray-200 dark:bg-gray-700 px-1 py-0.5 font-mono">
+                host.docker.internal:8080
+              </code>
+              ).
             </li>
             <li>
               Paste the docker-compose snippet into a directory and run{' '}

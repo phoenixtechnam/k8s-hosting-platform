@@ -2296,6 +2296,11 @@ export const privateWorkers = pgTable('private_workers', {
   index('private_workers_client_idx').on(table.clientId),
   index('private_workers_status_idx').on(table.status),
   uniqueIndex('private_workers_client_name_uq').on(table.clientId, table.name),
+  // Migration 0089 — backstop for service.ts::allocateExposedPort race.
+  // Without this, two concurrent creates can pick the same lowest-free
+  // port; with it, the second INSERT fails atomically and the caller
+  // retries.
+  uniqueIndex('private_workers_client_port_uq').on(table.clientId, table.exposedPort),
 ]);
 
 export const privateWorkerAudit = pgTable('private_worker_audit', {

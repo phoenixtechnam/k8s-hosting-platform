@@ -181,7 +181,7 @@ phase1_provision() {
 
   local pw_resp wid pw_token
   pw_resp=$(api POST "/clients/$cid/private-workers" "$(jq -nc \
-    '{name:"local-sample-1", exposed_port:8080, description:"local DinD sample"}')")
+    '{name:"local-sample-1", description:"local DinD sample"}')")
   wid=$(echo "$pw_resp" | jq -r '.data.workerId // .data.worker.id // empty')
   pw_token=$(echo "$pw_resp" | jq -r '.data.token // empty')
   if [[ -z "$wid" || -z "$pw_token" ]]; then
@@ -234,8 +234,11 @@ phase2_dial_in() {
     warn "docker pull $AGENT_IMAGE failed — assuming local cache (dev tag?)"
   fi
 
+  docker network create "$DOCKER_NETWORK" >/dev/null 2>&1 || true
+
   if ! docker run -d --rm \
       --name "$DOCKER_ECHO_NAME" \
+      --network "$DOCKER_NETWORK" \
       "$ECHO_IMAGE" \
       -text="$marker" \
       -listen=:8080 >/dev/null 2>&1; then
@@ -246,14 +249,15 @@ phase2_dial_in() {
 
   if ! docker run -d --rm \
       --name "$DOCKER_AGENT_NAME" \
-      --network "container:$DOCKER_ECHO_NAME" \
+      --network "$DOCKER_NETWORK" \
       -e "PRIVATE_WORKER_TOKEN=$pw_token" \
+      -e "PRIVATE_WORKER_TARGET=$DOCKER_ECHO_NAME:8080" \
       "$AGENT_IMAGE" >/dev/null 2>&1; then
     fail "failed to start $DOCKER_AGENT_NAME"
     docker logs "$DOCKER_ECHO_NAME" 2>&1 | tail -20 >&2 || true
     return 1
   fi
-  ok "tunnel agent $DOCKER_AGENT_NAME started"
+  ok "tunnel agent $DOCKER_AGENT_NAME started (target=$DOCKER_ECHO_NAME:8080)"
 
   wait_for 60 "private_workers.last_seen_at recorded" "true" \
     "api GET '/clients/$cid/private-workers/$wid' \

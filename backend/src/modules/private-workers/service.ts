@@ -167,14 +167,19 @@ async function ensureClientSharedSecret(
   return after.secret;
 }
 
-interface TokenBlobV1 {
-  readonly v: 1;
+// Token blob v2: cluster-side concerns only. The home-side target
+// (where the agent forwards traffic to) is declared by the operator at
+// agent runtime via PRIVATE_WORKER_TARGET env, NOT baked into the token.
+// This decouples "which cluster port the worker exposes" (platform-owned,
+// auto-allocated) from "where the agent should send tunnel traffic"
+// (operator-owned, chosen at docker run time).
+interface TokenBlobV2 {
+  readonly v: 2;
   readonly slug: string;
   readonly server_url: string;
   readonly secret: string;
   readonly expose: ReadonlyArray<{
     readonly name: string;
-    readonly local: string;
     readonly remote_port: number;
   }>;
 }
@@ -184,15 +189,14 @@ function buildTokenBlob(
   secret: string,
   exposedPort: number,
 ): string {
-  const blob: TokenBlobV1 = {
-    v: 1,
+  const blob: TokenBlobV2 = {
+    v: 2,
     slug,
     server_url: buildWorkerServerUrl(slug),
     secret,
     expose: [
       {
         name: 'web',
-        local: `127.0.0.1:${exposedPort}`,
         remote_port: exposedPort,
       },
     ],
@@ -200,26 +204,79 @@ function buildTokenBlob(
   return Buffer.from(JSON.stringify(blob), 'utf8').toString('base64url');
 }
 
+// Auto-allocated port range. Per-client frps pod has its own Linux
+// netns so ports collide only within one client; a 10k-slot pool is
+// enormous compared to realistic worker counts.
+const PORT_POOL_LOW = 10000;
+const PORT_POOL_HIGH = 19999;
+
+/**
+ * Pick the lowest unused port in [PORT_POOL_LOW, PORT_POOL_HIGH] for
+ * this client by reading existing rows. The DB-level unique index on
+ * (client_id, exposed_port) (migration 0089) is what actually prevents
+ * a race between SELECT and INSERT — if a concurrent create won the
+ * lowest port, the caller's INSERT fails with a unique-violation and
+ * we get retried. This function only computes the next-best candidate.
+ */
+async function pickExposedPortCandidate(
+  db: Database,
+  clientId: string,
+): Promise<number> {
+  const used = await db
+    .select({ port: privateWorkers.exposedPort })
+    .from(privateWorkers)
+    .where(eq(privateWorkers.clientId, clientId));
+  const usedSet = new Set(used.map((r) => r.port));
+  for (let p = PORT_POOL_LOW; p <= PORT_POOL_HIGH; p++) {
+    if (!usedSet.has(p)) return p;
+  }
+  throw new ApiError(
+    'PORT_POOL_EXHAUSTED',
+    `No free port in [${PORT_POOL_LOW},${PORT_POOL_HIGH}] for this client`,
+    503,
+  );
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  // Postgres SQLSTATE 23505 — unique_violation. Drizzle / pg expose it on
+  // the wrapped error's `code` (or `cause.code`) depending on the driver.
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: unknown; cause?: { code?: unknown } };
+  if (e.code === '23505') return true;
+  if (e.cause && e.cause.code === '23505') return true;
+  return false;
+}
+
 function buildDockerRunCommand(token: string): string {
   return [
     'docker run -d',
     '--name private-worker',
     '--restart unless-stopped',
+    '--add-host=host.docker.internal:host-gateway',
     `-e PRIVATE_WORKER_TOKEN='${token}'`,
+    "-e PRIVATE_WORKER_TARGET='host.docker.internal:8080'",
     getAgentImage(),
   ].join(' ');
 }
 
 function buildDockerComposeYaml(token: string): string {
   return [
-    'version: "3.8"',
     'services:',
     '  private-worker:',
     `    image: ${getAgentImage()}`,
     '    container_name: private-worker',
     '    restart: unless-stopped',
+    '    # Linux Docker needs an explicit host-gateway for host.docker.internal.',
+    '    # Remove this line if your target lives in another compose service.',
+    '    extra_hosts:',
+    '      - "host.docker.internal:host-gateway"',
     '    environment:',
     `      PRIVATE_WORKER_TOKEN: "${token}"`,
+    '      # Where the agent forwards incoming tunnel traffic. Examples:',
+    '      #   another compose service:    PRIVATE_WORKER_TARGET: "myapp:80"',
+    '      #   docker host loopback:       PRIVATE_WORKER_TARGET: "host.docker.internal:8080"',
+    '      #   a LAN device:               PRIVATE_WORKER_TARGET: "192.168.1.5:80"',
+    '      PRIVATE_WORKER_TARGET: "host.docker.internal:8080"',
     '',
   ].join('\n');
 }
@@ -373,21 +430,56 @@ export async function createPrivateWorker(
   const sharedSecret = await ensureClientSharedSecret(db, clientId);
   const workerTokenHash = hashSecret(sharedSecret);
 
-  await db.insert(privateWorkers).values({
-    id,
-    clientId,
-    name: input.name,
-    slug,
-    workerTokenHash,
-    status: 'pending',
-    exposedPort: input.exposed_port,
-    description: input.description ?? null,
-    createdBy,
-  });
+  // Auto-allocate the cluster-side port. End users never pick this —
+  // it's the platform's routing concern (frps allowPorts + Service
+  // targetPort). The home-side target where the agent forwards traffic
+  // is a separate operator-runtime concern, declared via the
+  // PRIVATE_WORKER_TARGET env var on the agent container.
+  //
+  // Race protection: the DB has a unique (client_id, exposed_port)
+  // index (migration 0089). On concurrent creates, both pick the same
+  // lowest-free candidate, the second INSERT fails 23505, we retry.
+  // The retry budget is small (port pool is huge vs realistic worker
+  // counts) — capped at 8 to avoid pathological loops.
+  const MAX_PORT_RETRIES = 8;
+  let exposedPort = -1;
+  let inserted = false;
+  for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
+    exposedPort = await pickExposedPortCandidate(db, clientId);
+    try {
+      await db.insert(privateWorkers).values({
+        id,
+        clientId,
+        name: input.name,
+        slug,
+        workerTokenHash,
+        status: 'pending',
+        exposedPort,
+        description: input.description ?? null,
+        createdBy,
+      });
+      inserted = true;
+      break;
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // Most likely the (client_id, exposed_port) index — racing create.
+        // Retry with a new candidate.
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (!inserted) {
+    throw new ApiError(
+      'PORT_ALLOCATION_RETRY_EXHAUSTED',
+      `Could not allocate an unused port after ${MAX_PORT_RETRIES} attempts`,
+      503,
+    );
+  }
 
   await writeAudit(db, id, 'mint', requesterIp ?? null, {
     createdBy,
-    exposedPort: input.exposed_port,
+    exposedPort,
     slug,
   });
 

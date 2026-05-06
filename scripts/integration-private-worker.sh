@@ -203,7 +203,7 @@ phase1_provision() {
   # caller-supplied; we let the backend assign one for the test).
   local pw_resp
   pw_resp=$(api POST "/clients/$cid/private-workers" "$(jq -nc \
-    '{name:"e2e-test-1", exposed_port:8080, description:"private-worker E2E harness"}')")
+    '{name:"e2e-test-1", description:"private-worker E2E harness"}')")
   local wid pw_token docker_run docker_compose slug
   wid=$(echo "$pw_resp" | jq -r '.data.workerId // .data.worker.id // empty')
   pw_token=$(echo "$pw_resp" | jq -r '.data.token // empty')
@@ -297,12 +297,15 @@ phase2_dial_in() {
   fi
   ok "pulled $ECHO_IMAGE + $AGENT_IMAGE"
 
-  # Start the echo server first; the agent shares its network namespace
-  # so 127.0.0.1:8080 from the agent's perspective IS the echo server.
-  # This sidesteps the fact that the token blob bakes "local: 127.0.0.1:8080"
-  # into the agent config and we have no env-var override for it.
+  # v2 token blob has no baked-in local target. The agent reads
+  # PRIVATE_WORKER_TARGET at runtime. We put both containers on a
+  # custom docker network so the agent can reach the echo by service
+  # name (pw-e2e-echo:8080).
+  docker network create "$DOCKER_NETWORK" >/dev/null 2>&1 || true
+
   if ! docker run -d --rm \
       --name "$DOCKER_ECHO_NAME" \
+      --network "$DOCKER_NETWORK" \
       "$ECHO_IMAGE" \
       -text="$marker" \
       -listen=:8080 >/dev/null 2>&1; then
@@ -311,17 +314,18 @@ phase2_dial_in() {
   fi
   ok "echo container $DOCKER_ECHO_NAME started"
 
-  # Run the agent in the echo's network namespace so loopback is shared.
+  # v2 agent: PRIVATE_WORKER_TARGET points at the echo via docker DNS.
   if ! docker run -d --rm \
       --name "$DOCKER_AGENT_NAME" \
-      --network "container:$DOCKER_ECHO_NAME" \
+      --network "$DOCKER_NETWORK" \
       -e "PRIVATE_WORKER_TOKEN=$pw_token" \
+      -e "PRIVATE_WORKER_TARGET=$DOCKER_ECHO_NAME:8080" \
       "$AGENT_IMAGE" >/dev/null 2>&1; then
     fail "failed to start $DOCKER_AGENT_NAME"
     docker logs "$DOCKER_ECHO_NAME" 2>&1 | tail -20 >&2 || true
     return 1
   fi
-  ok "tunnel agent $DOCKER_AGENT_NAME started (sharing echo netns)"
+  ok "tunnel agent $DOCKER_AGENT_NAME started (target=$DOCKER_ECHO_NAME:8080 on $DOCKER_NETWORK)"
 
   # USER-VISIBLE: agent log shows successful login + proxy registered.
   # frp v0.62 logs "login to server success" on first successful auth, then

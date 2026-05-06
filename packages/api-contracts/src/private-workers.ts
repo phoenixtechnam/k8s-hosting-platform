@@ -13,18 +13,13 @@ export const createPrivateWorkerSchema = z.object({
     .string()
     .min(1, 'Name is required')
     .max(120, 'Name too long'),
-  // Optional — derived from name when omitted. The slug is the routing key in
-  // the wss://tunnels.${DOMAIN}/c/{slug}/ URL, so it must be globally unique.
+  // Optional — derived from name when omitted. The slug is the routing
+  // key in the per-worker `<slug>.tunnels.${DOMAIN}` host, so it must
+  // be globally unique.
   slug: z
     .string()
     .regex(slugRegex, 'slug must be 4-60 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphen')
     .optional(),
-  exposed_port: z
-    .number()
-    .int()
-    .min(1)
-    .max(65535)
-    .describe('TCP port the cluster-side Service listens on; ingress routes target this port'),
   description: z.string().max(1000).optional(),
 });
 
