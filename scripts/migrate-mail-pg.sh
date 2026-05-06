@@ -137,13 +137,23 @@ if kctl get cluster.postgresql.cnpg.io -n "$NAMESPACE" "$TARGET_CLUSTER" >/dev/n
 fi
 log "  target does not exist ✓"
 
-# Auto-detect source credentials secret. Newer CNPG (1.25+) creates a
-# kubernetes.io/basic-auth Secret named <cluster>-app with keys
-# `username`+`password`. Older CNPG (≤1.22) doesn't, so the operator-
-# supplied Secret (e.g. mail-pg-app-credentials) is the only option.
-# --source-secret forces a specific name.
+# Auto-detect source credentials secret. Two Secrets typically exist:
+#   - <cluster>-app: CNPG-managed kubernetes.io/basic-auth Secret. The
+#     password here is auto-rotated by the operator on cluster events.
+#     This is NOT necessarily what the running application uses — when
+#     the cluster was bootstrapped via .bootstrap.recovery (DR drill,
+#     PITR, etc.) the in-DB password reflects the recovered backup,
+#     not the operator's current Secret value, and the CNPG-managed
+#     Secret can drift out of sync. Verified empirically on staging
+#     2026-05-06: the auto-detected mail-pg-app password failed
+#     `pg_dump` auth while mail-pg-app-credentials succeeded.
+#   - <cluster>-app-credentials (or mail-pg-app-credentials): operator-
+#     supplied Opaque Secret referenced by the source manifest's
+#     bootstrap.initdb.secret. This IS what the application connects
+#     with — the source-of-truth password.
+# Prefer the operator-supplied one. --source-secret forces a name.
 if [[ -z "$SOURCE_SECRET" ]]; then
-  for candidate in "${SOURCE_CLUSTER}-app" "mail-pg-app-credentials"; do
+  for candidate in "${SOURCE_CLUSTER}-app-credentials" "mail-pg-app-credentials" "${SOURCE_CLUSTER}-app"; do
     if kctl get secret -n "$NAMESPACE" "$candidate" >/dev/null 2>&1; then
       SOURCE_SECRET="$candidate"
       break
@@ -152,11 +162,37 @@ if [[ -z "$SOURCE_SECRET" ]]; then
 fi
 if [[ -z "$SOURCE_SECRET" ]] || ! kctl get secret -n "$NAMESPACE" "$SOURCE_SECRET" >/dev/null 2>&1; then
   echo "ERROR: source credentials Secret not found in namespace ${NAMESPACE}." >&2
-  echo "  Tried: ${SOURCE_CLUSTER}-app, mail-pg-app-credentials." >&2
+  echo "  Tried: ${SOURCE_CLUSTER}-app-credentials, mail-pg-app-credentials, ${SOURCE_CLUSTER}-app." >&2
   echo "  Pass --source-secret <name> to override." >&2
   exit 1
 fi
-log "  source credentials Secret: ${SOURCE_SECRET} ✓"
+
+# Verify the chosen Secret can actually authenticate before kicking off
+# the import (catches drift between the CNPG-managed Secret and the
+# in-DB password). Spin up a transient pg client pod that runs SELECT 1.
+log "  source credentials Secret: ${SOURCE_SECRET}"
+log "  Probing auth from a transient pod (catches stale-Secret drift early)..."
+src_pw=$(kctl get secret -n "$NAMESPACE" "$SOURCE_SECRET" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
+if [[ -z "$src_pw" ]]; then
+  echo "ERROR: ${SOURCE_SECRET} has no .data.password key." >&2
+  exit 1
+fi
+auth_probe=$(kctl run "auth-probe-$RANDOM" --rm -i --restart=Never \
+  -n "$NAMESPACE" --image=postgres:16-alpine \
+  --env="PGPASSWORD=$src_pw" --command \
+  -- psql -h "${SOURCE_CLUSTER}-rw.${NAMESPACE}.svc.cluster.local" \
+  -U "${DATABASE}" -d "${DATABASE}" -c "SELECT 1" 2>&1 || true)
+if ! printf '%s' "$auth_probe" | grep -q "(1 row)"; then
+  echo "ERROR: auth probe to ${SOURCE_CLUSTER}-rw failed using Secret ${SOURCE_SECRET}." >&2
+  echo "  This means the Secret's password is stale relative to the in-DB" >&2
+  echo "  password. Fix it before retrying — either:" >&2
+  echo "    (a) Update the Secret to match the in-DB password, OR" >&2
+  echo "    (b) Pass --source-secret <other-name> to use a Secret that works." >&2
+  echo "  Probe output:" >&2
+  printf '%s\n' "$auth_probe" | sed 's/^/    /' >&2
+  exit 1
+fi
+log "  auth probe SELECT 1 → (1 row) ✓"
 
 # ─── Probe source row counts ─────────────────────────────────────────────────
 src_pod=$(kctl get pod -n "$NAMESPACE" -l "cnpg.io/cluster=${SOURCE_CLUSTER},role=primary" \
