@@ -5,7 +5,12 @@ namespace: mail
 
 resources:
   - cluster.yaml
-  - scheduled-backup.yaml
+  # NOTE: scheduled-backup.yaml removed 2026-05-07. The static CR used
+  # the deprecated `method: barmanObjectStore` and minimal-trixie images
+  # don't bundle barman-cloud anyway. The system-backup admin UI now
+  # creates ScheduledBackup CRs dynamically with `method: plugin` when
+  # an operator enables WAL archive. See backend/src/modules/system-
+  # backup/wal-archive.ts.
 
 labels:
   - pairs:

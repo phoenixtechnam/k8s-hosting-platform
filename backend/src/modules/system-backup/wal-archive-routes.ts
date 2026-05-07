@@ -5,8 +5,8 @@
  *   POST /api/v1/system-backup/wal-archive/enable
  *   POST /api/v1/system-backup/wal-archive/disable
  *
- * Two known clusters are listed by default (platform/postgres,
- * mail/mail-pg). The list endpoint augments DB intent with a
+ * Two known clusters are listed by default (platform/system-db,
+ * mail/mail-db). The list endpoint augments DB intent with a
  * snapshot of the CNPG CR's `.status` so operators see the actual
  * archive health (last archived WAL, errors).
  */
@@ -35,15 +35,16 @@ import {
 } from './wal-archive.js';
 
 // Hardcoded list — same as the SystemDatabasesTab. Two known system
-// CNPG clusters; new clusters added here when the platform grows.
+// CNPG clusters. The names are version-agnostic (`system-db`, `mail-db`)
+// so future PG-major bumps don't require code/UI updates — just
+// dump+restore into the same-named cluster (or transient + rename).
 //
-// Names track the PG-major bump cadence — postgres → postgres-18 (2026-
-// 05-07), mail-pg → mail-pg-17 (transient) → mail-pg-18. Old clusters
-// stay alive briefly post-cutover as rollback points, but the WAL-archive
-// admin UI only needs to manage the LIVE cluster. Update on every bump.
+// Cluster name history (cleaned up 2026-05-07):
+//   platform: postgres → postgres-18 → system-db
+//   mail:     mail-pg  → mail-pg-17 → mail-pg-18 → mail-db
 const KNOWN_CLUSTERS = [
-  { clusterNamespace: 'platform', clusterName: 'postgres-18' },
-  { clusterNamespace: 'mail',     clusterName: 'mail-pg-18' },
+  { clusterNamespace: 'platform', clusterName: 'system-db' },
+  { clusterNamespace: 'mail',     clusterName: 'mail-db' },
 ] as const;
 
 export async function systemBackupWalArchiveRoutes(app: FastifyInstance): Promise<void> {

@@ -36,7 +36,7 @@ patches:
   - path: postgres-cluster-patch.yaml
     target:
       kind: Cluster
-      name: postgres
+      name: system-db
 
 images:
   - name: ghcr.io/phoenixtechnam/hosting-platform/backend

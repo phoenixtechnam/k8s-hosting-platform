@@ -145,20 +145,20 @@ describe('buildDestinationPath', () => {
   it('joins prefix + ns-cluster suffix', () => {
     expect(buildDestinationPath(
       { id: '1', storageType: 's3', s3Bucket: 'b', s3Prefix: 'top', s3Endpoint: null, s3Region: null, active: true, name: null },
-      'platform', 'postgres-18',
-    )).toBe('s3://b/top/wal-archive/platform-postgres-18');
+      'platform', 'system-db',
+    )).toBe('s3://b/top/wal-archive/platform-system-db');
   });
   it('handles null prefix', () => {
     expect(buildDestinationPath(
       { id: '1', storageType: 's3', s3Bucket: 'b', s3Prefix: null, s3Endpoint: null, s3Region: null, active: true, name: null },
-      'mail', 'mail-pg-18',
-    )).toBe('s3://b/wal-archive/mail-mail-pg-18');
+      'mail', 'mail-db',
+    )).toBe('s3://b/wal-archive/mail-mail-db');
   });
   it('strips leading/trailing slashes from prefix', () => {
     expect(buildDestinationPath(
       { id: '1', storageType: 's3', s3Bucket: 'b', s3Prefix: '//op///', s3Endpoint: null, s3Region: null, active: true, name: null },
-      'mail', 'mail-pg-18',
-    )).toBe('s3://b/op/wal-archive/mail-mail-pg-18');
+      'mail', 'mail-db',
+    )).toBe('s3://b/op/wal-archive/mail-mail-db');
   });
 });
 
@@ -200,7 +200,7 @@ describe('enableWalArchive — plugin model', () => {
     const result = await enableWalArchive({
       db, k8s,
       clusterNamespace: 'platform',
-      clusterName: 'postgres-18',
+      clusterName: 'system-db',
       targetConfigId: 'cfg-1',
       retentionDays: 30,
       operatorUserId: 'admin',
@@ -210,11 +210,11 @@ describe('enableWalArchive — plugin model', () => {
       baseBackupRetentionDays: 30,
     });
 
-    expect(result.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-postgres-18');
+    expect(result.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-system-db');
 
     // 1. Cluster READ (readClusterCR)
     const clusterRead = calls.find((c) => c.verb === 'get' && c.plural === 'clusters');
-    expect(clusterRead?.name).toBe('postgres-18');
+    expect(clusterRead?.name).toBe('system-db');
 
     // 2. ObjectStore CREATE (didn't exist)
     const objectStoreCreate = calls.find((c) => c.verb === 'create' && c.plural === 'objectstores');
@@ -222,9 +222,9 @@ describe('enableWalArchive — plugin model', () => {
     expect(objectStoreCreate?.group).toBe(BARMAN_GROUP);
     expect(objectStoreCreate?.version).toBe(BARMAN_VERSION);
     const osBody = objectStoreCreate?.body as { metadata: { name: string; namespace: string }; spec: { configuration: { destinationPath: string; endpointURL?: string; s3Credentials: unknown; wal: unknown; data: unknown }; retentionPolicy: string } };
-    expect(osBody.metadata.name).toBe('postgres-18-system-store');
+    expect(osBody.metadata.name).toBe('system-db-system-store');
     expect(osBody.metadata.namespace).toBe('platform');
-    expect(osBody.spec.configuration.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-postgres-18');
+    expect(osBody.spec.configuration.destinationPath).toBe('s3://staging-bucket/platform/wal-archive/platform-system-db');
     expect(osBody.spec.configuration.endpointURL).toBe('https://s3.example.com');
     expect(osBody.spec.retentionPolicy).toBe('30d');
 
@@ -235,7 +235,7 @@ describe('enableWalArchive — plugin model', () => {
     expect(patchBody.spec.plugins).toHaveLength(1);
     expect(patchBody.spec.plugins[0].name).toBe(BARMAN_PLUGIN_NAME);
     expect(patchBody.spec.plugins[0].isWALArchiver).toBe(true);
-    expect(patchBody.spec.plugins[0].parameters.barmanObjectName).toBe('postgres-18-system-store');
+    expect(patchBody.spec.plugins[0].parameters.barmanObjectName).toBe('system-db-system-store');
     expect(patchBody.spec.postgresql).toBeDefined();
 
     // 4. ScheduledBackup CREATE with method=plugin
@@ -256,7 +256,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await enableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-pg-18',
+      clusterNamespace: 'mail', clusterName: 'mail-db',
       targetConfigId: 'cfg-1', retentionDays: 14,
       operatorUserId: 'admin', operatorIp: null,
       baseBackupSchedule: '0 0 4 * * *',
@@ -284,7 +284,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await enableWalArchive({
       db, k8s,
-      clusterNamespace: 'platform', clusterName: 'postgres-18',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       targetConfigId: 'cfg-1', retentionDays: 30,
       operatorUserId: 'admin', operatorIp: null,
       // baseBackupSchedule omitted
@@ -304,7 +304,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await expect(enableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-pg-18',
+      clusterNamespace: 'mail', clusterName: 'mail-db',
       targetConfigId: 'cfg-1', retentionDays: 14,
       operatorUserId: 'admin', operatorIp: null,
     })).rejects.toThrow(/s3/i);
@@ -322,7 +322,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await enableWalArchive({
       db, k8s,
-      clusterNamespace: 'platform', clusterName: 'postgres-18',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       targetConfigId: 'cfg-1', retentionDays: 30,
       operatorUserId: 'admin', operatorIp: null,
       archiveTimeout: '5min',
@@ -357,7 +357,7 @@ describe('enableWalArchive — plugin model', () => {
 
     await expect(enableWalArchive({
       db, k8s,
-      clusterNamespace: 'platform', clusterName: 'postgres-18',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       targetConfigId: 'cfg-1', retentionDays: 30,
       operatorUserId: 'admin', operatorIp: null,
     })).rejects.toThrow(/not active/);
@@ -373,7 +373,7 @@ describe('disableWalArchive — plugin teardown', () => {
 
     await disableWalArchive({
       db, k8s,
-      clusterNamespace: 'mail', clusterName: 'mail-pg-18',
+      clusterNamespace: 'mail', clusterName: 'mail-db',
       operatorUserId: 'admin', operatorIp: null,
     });
 
@@ -384,8 +384,8 @@ describe('disableWalArchive — plugin teardown', () => {
     expect(body.spec.plugins).toEqual([]);
 
     // SB + OS deletes
-    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'scheduledbackups' && c.name === 'mail-pg-18-system-backup')).toBeDefined();
-    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'objectstores' && c.name === 'mail-pg-18-system-store')).toBeDefined();
+    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'scheduledbackups' && c.name === 'mail-db-system-backup')).toBeDefined();
+    expect(calls.find((c) => c.verb === 'delete' && c.plural === 'objectstores' && c.name === 'mail-db-system-store')).toBeDefined();
 
     // DB delete + audit log insert
     expect(deletes.length).toBeGreaterThanOrEqual(1);
@@ -395,14 +395,14 @@ describe('disableWalArchive — plugin teardown', () => {
     const { k8s, calls } = makeK8sStub({
       existingPlugins: [
         { name: 'audit.example/plugin', isWALArchiver: false, parameters: { mode: 'verbose' } },
-        { name: BARMAN_PLUGIN_NAME, isWALArchiver: true, parameters: { barmanObjectName: 'postgres-18-system-store' } },
+        { name: BARMAN_PLUGIN_NAME, isWALArchiver: true, parameters: { barmanObjectName: 'system-db-system-store' } },
       ],
     });
     const { db } = makeDbStub();
 
     await disableWalArchive({
       db, k8s,
-      clusterNamespace: 'platform', clusterName: 'postgres-18',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       operatorUserId: 'admin', operatorIp: null,
     });
 
@@ -429,7 +429,7 @@ describe('disableWalArchive — plugin teardown', () => {
     // Should NOT throw — disableWalArchive swallows 404s from each delete.
     await disableWalArchive({
       db, k8s,
-      clusterNamespace: 'platform', clusterName: 'postgres-18',
+      clusterNamespace: 'platform', clusterName: 'system-db',
       operatorUserId: 'admin', operatorIp: null,
     });
 

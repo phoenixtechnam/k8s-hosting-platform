@@ -101,7 +101,7 @@ patches:
       apiVersion: postgresql.cnpg.io/v1
       kind: Cluster
       metadata:
-        name: mail-pg
+        name: mail-db
         namespace: mail
       spec:
         storage:
@@ -111,7 +111,7 @@ patches:
           topologyKey: kubernetes.io/hostname
     target:
       kind: Cluster
-      name: mail-pg
+      name: mail-db
 
   # Ingress: dev TLS cert + relaxed SSL settings
   - patch: |

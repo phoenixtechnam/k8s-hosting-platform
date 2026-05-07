@@ -10,7 +10,7 @@
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: postgres
+  name: system-db
   namespace: platform
 spec:
   storage:

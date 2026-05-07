@@ -26,7 +26,7 @@
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: postgres
+  name: system-db
   namespace: platform
   labels:
     app: postgres
@@ -60,11 +60,15 @@ spec:
   # (mail-pg-2 created → 2 min later "Scaling down — removing
   # mail-pg-2" → repeat forever).
 
-  # Pin to PG 17. PG18 changed the expected mount layout (single
-  # mount at /var/lib/postgresql with PGDATA in subdir) — vanilla
-  # StatefulSet hit this; CNPG abstracts it but we pin for
-  # repeatability. Bump deliberately when upstream stable.
-  imageName: ghcr.io/cloudnative-pg/postgresql:17.5
+  # PostgreSQL 18.3 on Debian 13 (Trixie). The `minimal-trixie`
+  # variant excludes barman-cloud (we use the cnpg-i barman-cloud
+  # plugin instead — see k8s/base/cnpg-system/ + system-backup
+  # module), PGAudit, pgvector, Failover Slots. Adequate for our
+  # workload (only plpgsql + 45 stock extensions used).
+  # `system-*` images are deprecated as of CNPG 1.27 — never use.
+  # `standard-trixie` is the upgrade path if pgvector / PGAudit /
+  # failover-slots are needed in the future.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
 
   bootstrap:
     initdb:
@@ -149,15 +153,13 @@ spec:
 ---
 # Stable Service alias. Keeps app connection strings unchanged
 # (postgres.platform.svc:5432) across CNPG instance scaling +
-# failover AND across PG-major bumps (the externalName updates,
-# the Service name does not — apps' DATABASE_URL stays valid).
-# ExternalName aliases to CNPG's auto-managed <cluster>-rw Service
-# which always routes to the current primary.
+# failover AND across PG-major bumps + cluster renames (the
+# externalName updates, the Service name does NOT — apps'
+# DATABASE_URL stays valid).
 #
-# Bump history: postgres-rw (PG 17.5) → postgres-18-rw (PG 18.3,
-# 2026-05-07). The pre-PG18 `postgres` cluster is still alive in
-# its own namespace as a 24h-soak rollback point; deleting it is
-# a separate PR after the soak completes.
+# Bump+rename history: postgres-rw (PG 17.5) → postgres-18-rw
+# (PG 18.3, 2026-05-07) → system-db-rw (PG 18.3, renamed 2026-05-07
+# to drop version baggage from the cluster name).
 apiVersion: v1
 kind: Service
 metadata:
@@ -168,7 +170,7 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
 spec:
   type: ExternalName
-  externalName: postgres-18-rw.platform.svc.cluster.local
+  externalName: system-db-rw.platform.svc.cluster.local
   ports:
     - name: postgres
       port: 5432

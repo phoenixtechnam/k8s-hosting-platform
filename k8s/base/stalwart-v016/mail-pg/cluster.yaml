@@ -19,10 +19,10 @@
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: mail-pg
+  name: mail-db
   namespace: mail
   # Flux SSA must NOT force spec.instances so that Apply HA can patch
-  # it imperatively via patchCnpgClusters() (same pattern as platform-PG).
+  # it imperatively via patchCnpgClusters() (same pattern as system-db).
   annotations:
     kustomize.toolkit.fluxcd.io/ssa: merge
   labels:
@@ -31,7 +31,9 @@ metadata:
     app.kubernetes.io/component: mail-database
 spec:
   # Inherit pod labels so NetworkPolicies (mail namespace allow-all-
-  # intra-ns) can select by app=mail-pg.
+  # intra-ns) can select by app=mail-pg. Label kept as `mail-pg`
+  # (not the cluster name) so the policy doesn't need to track
+  # cluster renames.
   inheritedMetadata:
     labels:
       app: mail-pg
@@ -42,9 +44,12 @@ spec:
   # patch reverts Apply HA's runtime patch every 60s, oscillating
   # between 1 and 3. CNPG defaults to 1 if unset.
 
-  # Postgres 16 — matches the spike validation. Stalwart 0.16 supports
-  # PG 14+ but we align with the upstream-recommended 16.
-  imageName: ghcr.io/cloudnative-pg/postgresql:16.9
+  # PostgreSQL 18.3 on Debian 13 (Trixie). `minimal-trixie` excludes
+  # barman-cloud (we use the cnpg-i barman-cloud plugin), PGAudit,
+  # pgvector. Stalwart 0.16.3 verified working against this stack on
+  # 2026-05-07. Bump history: 16.9 → 17.5 → 18.0-system-trixie →
+  # 18.3-minimal-trixie. See docs/02-operations/MAIL_PG_PG_MAJOR_UPGRADE.md.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
 
   bootstrap:
     initdb:
