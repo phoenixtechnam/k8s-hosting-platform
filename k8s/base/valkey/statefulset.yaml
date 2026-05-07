@@ -124,33 +124,39 @@ spec:
           command:
             - /bin/sh
             - -c
+            # Flux postBuild substituteFrom resolves ${VAR} at apply
+            # time. Escape the runtime-only references so they reach
+            # the container literally:  $${VAR} → ${VAR}  in the
+            # rendered StatefulSet, which the shell then expands at
+            # runtime against the pod's actual env (HOSTNAME, the
+            # injected REDIS_PASSWORD env-from-secret, etc.).
             - |
               set -eu
               # Pod ordinal is the trailing digit of HOSTNAME (set
               # automatically by the StatefulSet to valkey-N).
-              ORDINAL=${HOSTNAME##*-}
+              ORDINAL=$${HOSTNAME##*-}
 
               # Render valkey.conf
-              sed "s|__REDIS_PASSWORD__|${REDIS_PASSWORD}|g" \
+              sed "s|__REDIS_PASSWORD__|$${REDIS_PASSWORD}|g" \
                 /tmpl/valkey.conf.tmpl > /etc/valkey/valkey.conf
 
               # Pod-0 = primary; pods 1+ replicate from pod-0 via
               # the headless service DNS. Sentinel takes over after
               # first failover; the static replicaof line is then
               # overridden at runtime by Sentinel REPLICAOF commands.
-              if [ "${ORDINAL}" != "0" ]; then
+              if [ "$${ORDINAL}" != "0" ]; then
                 echo "replicaof valkey-0.valkey-headless.redis-system.svc.cluster.local 6379" \
                   >> /etc/valkey/valkey.conf
               fi
 
               # Render sentinel.conf
-              sed "s|__REDIS_PASSWORD__|${REDIS_PASSWORD}|g" \
+              sed "s|__REDIS_PASSWORD__|$${REDIS_PASSWORD}|g" \
                 /tmpl/sentinel.conf.tmpl > /etc/valkey/sentinel.conf
 
               # Lock down the rendered files — they contain the
               # cleartext password.
               chmod 600 /etc/valkey/valkey.conf /etc/valkey/sentinel.conf
-              echo "[setup-config] ordinal=${ORDINAL} config rendered"
+              echo "[setup-config] ordinal=$${ORDINAL} config rendered"
           env:
             - name: REDIS_PASSWORD
               valueFrom:
