@@ -23,7 +23,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import {
   backupJobs,
@@ -41,7 +41,11 @@ import {
   type BackupSystemTrigger,
   type BackupComponentName,
 } from '@k8s-hosting/api-contracts';
-import { captureFilesComponent, type FilesComponentResult } from './components/files.js';
+import {
+  captureFilesComponent,
+  FilesComponentSkippedError,
+  type FilesComponentResult,
+} from './components/files.js';
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 
@@ -155,13 +159,37 @@ export async function runBundle(
   const errors: string[] = [];
   const componentInfos: BackupMetaV1['components'] = {};
 
-  // ── files ──────────────────────────────────────────────────────
+  // Components run in parallel via Promise.allSettled. Each branch
+  // owns its own backup_components row + try/catch + failure
+  // bookkeeping; aggregating after means a single component's failure
+  // never blocks the others. Total wall-clock is now
+  // max(files, mailboxes) instead of the previous serial sum.
+  //
+  // Parallelism contract:
+  //   * `errors[]`, `componentInfos`, and the `*Result` lets are
+  //     written from concurrent async closures. The Node.js event
+  //     loop runs each microtask atomically, so distinct-key writes
+  //     do not interleave. Adding a step that READS these mid-flight
+  //     (i.e., before `await Promise.allSettled` returns) would
+  //     break that contract — keep all aggregation strictly after.
+  //   * Each branch is responsible for finalising its own
+  //     backup_components row to a terminal state (completed, failed,
+  //     or skipped). Branches must not throw out of the IIFE.
   let filesResult: FilesComponentResult | undefined;
+  let configResult: ConfigComponentResult | undefined;
+  let secretsResult: SecretsComponentResult | undefined;
+  let mailboxesResult: import('./components/mailboxes.js').MailboxesComponentResult | undefined;
+
+  const tasks: Array<Promise<void>> = [];
+
+  // ── files ──────────────────────────────────────────────────────
   if (input.components.files) {
-    if (!deps.k8s) {
-      errors.push('files: kubernetes client unavailable');
-      await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes client unavailable');
-    } else {
+    tasks.push((async () => {
+      if (!deps.k8s) {
+        errors.push('files: kubernetes client unavailable');
+        await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes client unavailable');
+        return;
+      }
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'files', 'archive.tar.gz');
       try {
         if (!deps.platformApiUrl) {
@@ -179,52 +207,64 @@ export async function runBundle(
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
         });
-        await markComponentDone(
-          deps.db,
-          componentRowId,
-          { sizeBytes: filesResult.sizeBytes, sha256: filesResult.sha256 },
-        );
+        await markComponentDone(deps.db, componentRowId, { sizeBytes: filesResult.sizeBytes, sha256: filesResult.sha256 });
         componentInfos.files = {
           sizeBytes: filesResult.sizeBytes,
           fileCount: filesResult.fileCount,
           sha256: filesResult.sha256,
         };
       } catch (err) {
+        if (err instanceof FilesComponentSkippedError) {
+          // PVC missing → record skipped, do NOT add to errors[].
+          await markComponentRowSkipped(deps.db, componentRowId, err.reason);
+          return;
+        }
         const msg = (err as Error).message ?? 'files capture failed';
         errors.push(`files: ${msg}`);
         await markComponentRowFailed(deps.db, componentRowId, msg);
       }
-    }
+    })());
   }
 
   // ── config ─────────────────────────────────────────────────────
-  let configResult: ConfigComponentResult | undefined;
   if (input.components.config) {
-    const componentRowId = await insertComponentRow(deps.db, bundleId, 'config', 'db-rows.json.gz');
-    try {
-      configResult = await captureConfigComponent({
-        db: deps.db,
-        clientId: input.clientId,
-        store: deps.store,
-        handle,
-      });
-      await markComponentDone(deps.db, componentRowId, { sizeBytes: configResult.sizeBytes, sha256: null });
-      componentInfos.config = { sizeBytes: configResult.sizeBytes, rowCount: configResult.rowCount };
-    } catch (err) {
-      const msg = (err as Error).message ?? 'config capture failed';
-      errors.push(`config: ${msg}`);
-      await markComponentRowFailed(deps.db, componentRowId, msg);
-    }
+    tasks.push((async () => {
+      const componentRowId = await insertComponentRow(deps.db, bundleId, 'config', 'db-rows.json.gz');
+      try {
+        configResult = await captureConfigComponent({
+          db: deps.db,
+          clientId: input.clientId,
+          store: deps.store,
+          handle,
+        });
+        await markComponentDone(deps.db, componentRowId, { sizeBytes: configResult.sizeBytes, sha256: null });
+        componentInfos.config = { sizeBytes: configResult.sizeBytes, rowCount: configResult.rowCount };
+      } catch (err) {
+        const msg = (err as Error).message ?? 'config capture failed';
+        errors.push(`config: ${msg}`);
+        await markComponentRowFailed(deps.db, componentRowId, msg);
+      }
+    })());
   }
 
   // ── secrets ────────────────────────────────────────────────────
-  let secretsResult: SecretsComponentResult | undefined;
   if (input.components.secrets) {
-    if (!deps.k8s) {
-      errors.push('secrets: kubernetes client unavailable');
-      await markComponentFailed(deps.db, bundleId, 'secrets', 'tls.json.gz.enc', 'kubernetes client unavailable');
-    } else {
+    tasks.push((async () => {
+      if (!deps.k8s) {
+        errors.push('secrets: kubernetes client unavailable');
+        await markComponentFailed(deps.db, bundleId, 'secrets', 'tls.json.gz.enc', 'kubernetes client unavailable');
+        return;
+      }
+      // Skip-when-empty: if the tenant ns has no Secrets at all there
+      // is nothing to encrypt + ship. Still record the component row
+      // (status='skipped') so the coverage drift report stays
+      // consistent.
+      const hasSecrets = await tenantNamespaceHasSecrets(deps.k8s, namespace);
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'secrets', 'tls.json.gz.enc');
+      if (!hasSecrets) {
+        await markComponentRowSkipped(deps.db, componentRowId, `no secrets in namespace ${namespace}`);
+        return;
+      }
       try {
         secretsResult = await captureSecretsComponent({
           k8s: deps.k8s,
@@ -244,24 +284,32 @@ export async function runBundle(
         errors.push(`secrets: ${msg}`);
         await markComponentRowFailed(deps.db, componentRowId, msg);
       }
-    }
+    })());
   }
 
   // ── mailboxes ──────────────────────────────────────────────────
-  let mailboxesResult: import('./components/mailboxes.js').MailboxesComponentResult | undefined;
   if (input.components.mailboxes) {
-    if (!deps.k8s) {
-      errors.push('mailboxes: kubernetes client unavailable');
-      await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'kubernetes client unavailable');
-    } else if (!deps.platformApiUrl) {
-      errors.push('mailboxes: platformApiUrl required for HTTP-upload pattern');
-      await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'platformApiUrl missing');
-    } else {
-      // We don't know the artifactName up-front (one per address).
-      // Insert a parent row with __pending__ which we update after the
-      // capture completes; per-mailbox detail rows can be added in
-      // Phase 4 if needed.
+    tasks.push((async () => {
+      if (!deps.k8s) {
+        errors.push('mailboxes: kubernetes client unavailable');
+        await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'kubernetes client unavailable');
+        return;
+      }
+      if (!deps.platformApiUrl) {
+        errors.push('mailboxes: platformApiUrl required for HTTP-upload pattern');
+        await markComponentFailed(deps.db, bundleId, 'mailboxes', '__pending__', 'platformApiUrl missing');
+        return;
+      }
+      // Skip-when-empty: a client without any mailboxes rows skips
+      // the whole mbsync Job — saves up to 60 min of activeDeadline
+      // on every clientful-of-no-mail bundle. Recorded as `skipped`
+      // so the coverage drift report still tracks the component.
+      const mailboxCount = await countClientMailboxes(deps.db, input.clientId);
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'mailboxes', '__pending__');
+      if (mailboxCount === 0) {
+        await markComponentRowSkipped(deps.db, componentRowId, 'no mailboxes for client');
+        return;
+      }
       try {
         const { captureMailboxesComponent } = await import('./components/mailboxes.js');
         mailboxesResult = await captureMailboxesComponent({
@@ -274,11 +322,7 @@ export async function runBundle(
           platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
         });
-        await markComponentDone(
-          deps.db,
-          componentRowId,
-          { sizeBytes: mailboxesResult.sizeBytes, sha256: null },
-        );
+        await markComponentDone(deps.db, componentRowId, { sizeBytes: mailboxesResult.sizeBytes, sha256: null });
         componentInfos.mailboxes = {
           sizeBytes: mailboxesResult.sizeBytes,
           mailboxCount: mailboxesResult.mailboxCount,
@@ -289,16 +333,19 @@ export async function runBundle(
         errors.push(`mailboxes: ${msg}`);
         await markComponentRowFailed(deps.db, componentRowId, msg);
       }
-    }
+    })());
   }
 
-  // Decide bundle status: every enabled component must be `completed`.
-  const enabled: BackupComponentName[] = [];
-  if (input.components.files) enabled.push('files');
-  if (input.components.config) enabled.push('config');
-  if (input.components.secrets) enabled.push('secrets');
-  if (input.components.mailboxes) enabled.push('mailboxes');
+  // Wait for every component to finish — succeeded, failed, or
+  // skipped. We never reject out of allSettled because each task
+  // already swallowed its own error into `errors[]`; passing this
+  // through as `await Promise.all` would crash the orchestrator on
+  // an unexpected throw.
+  await Promise.allSettled(tasks);
 
+  // Bundle is `completed` iff no component reported a failure into
+  // `errors[]`. `skipped` rows do not contribute — a client with no
+  // mailboxes still produces a fully-completed bundle.
   const status: 'completed' | 'partial' = errors.length === 0 ? 'completed' : 'partial';
 
   // Build + persist meta.json *only* if every requested non-mailbox
@@ -425,6 +472,24 @@ async function markComponentRowFailed(
     .where(eq(backupComponents.id, rowId));
 }
 
+/**
+ * Record a component as `skipped` — used when there is nothing to
+ * capture (no mailboxes, no Secrets, no PVC). Skipped rows do NOT
+ * count as bundle failures; the overall bundle can still be
+ * `completed`. The reason is stored in `last_error` so the operator
+ * UI can show why nothing shipped.
+ */
+async function markComponentRowSkipped(
+  db: Database,
+  rowId: string,
+  reason: string,
+): Promise<void> {
+  await db
+    .update(backupComponents)
+    .set({ status: 'skipped', lastError: reason, finishedAt: new Date() })
+    .where(eq(backupComponents.id, rowId));
+}
+
 async function markComponentFailed(
   db: Database,
   bundleId: string,
@@ -475,4 +540,60 @@ function addDays(d: Date, days: number): Date {
   const next = new Date(d);
   next.setUTCDate(next.getUTCDate() + days);
   return next;
+}
+
+/**
+ * Count the client's mailboxes without dragging the full list across
+ * the wire. Used to decide whether to skip the mailboxes component
+ * entirely. Failure is non-fatal: an error here returns `1` so the
+ * Job runs anyway (better to spawn an empty Job than to silently skip
+ * a component on a transient DB hiccup).
+ */
+async function countClientMailboxes(db: Database, clientId: string): Promise<number> {
+  try {
+    const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { count: string | number }[] }> };
+    const r = await rawDb.execute(
+      sql`SELECT COUNT(*)::int AS count FROM mailboxes WHERE client_id = ${clientId}`,
+    );
+    const c = r.rows[0]?.count;
+    return typeof c === 'number' ? c : Number(c ?? 0);
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Probe for ANY Secret in the tenant namespace. Used to decide
+ * whether to spawn the secrets-component capture (which would
+ * otherwise produce a near-empty AES-256 envelope). Service-account
+ * tokens etc. are excluded because they are recreated on restore by
+ * the platform itself.
+ *
+ * Failure mode: any API error returns `true` so the capture is
+ * attempted (loud failure beats silent skip).
+ *
+ * Threat-model note: a tenant with `secrets/delete` on their own
+ * namespace could in principle wipe their Secrets right before a
+ * scheduled backup, causing this probe to record `skipped` instead
+ * of capturing a (now-empty) component. That requires equivalent of
+ * write-admin on the namespace already — not a new escalation path.
+ * The `skipped` row makes the omission visible in the operator UI
+ * and the coverage drift report; it is not silent.
+ */
+async function tenantNamespaceHasSecrets(
+  k8s: K8sClients,
+  namespace: string,
+): Promise<boolean> {
+  try {
+    const res = await k8s.core.listNamespacedSecret({ namespace });
+    const items = res.items ?? [];
+    return items.some((s) => {
+      const t = s.type ?? '';
+      // skip the kubernetes default service-account token; it is
+      // recreated on restore by the platform-provisioner.
+      return t !== 'kubernetes.io/service-account-token';
+    });
+  } catch {
+    return true;
+  }
 }

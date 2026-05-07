@@ -89,4 +89,45 @@ describe('buildFilesComponentJobSpec', () => {
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
     expect(cmd).not.toMatch(/AWS_ACCESS_KEY|AWS_SECRET|BEGIN OPENSSH|BEGIN RSA|s3\.amazonaws/i);
   });
+
+  it('pins to the supplied node when pinToNode is set', () => {
+    // Pinning is what makes the RWO-Multi-Attach problem go away:
+    // kubelet on the same node bind-mounts the existing volume
+    // attachment instead of asking the attach-detach controller for
+    // a second attachment. Caught E2E 2026-05-07 (32-min hang).
+    const spec = buildFilesComponentJobSpec({ ...baseInput, pinToNode: 'staging2' }) as {
+      spec: { template: { spec: { nodeName?: string } } };
+    };
+    expect(spec.spec.template.spec.nodeName).toBe('staging2');
+  });
+
+  it('omits nodeName when pinToNode is null/undefined', () => {
+    // No pinning when the PVC is unbound (scheduler is free to pick
+    // any node, Longhorn will attach there).
+    const spec = buildFilesComponentJobSpec(baseInput) as {
+      spec: { template: { spec: { nodeName?: string } } };
+    };
+    expect(spec.spec.template.spec.nodeName).toBeUndefined();
+    const spec2 = buildFilesComponentJobSpec({ ...baseInput, pinToNode: null }) as {
+      spec: { template: { spec: { nodeName?: string } } };
+    };
+    expect(spec2.spec.template.spec.nodeName).toBeUndefined();
+  });
+
+  it('sets activeDeadlineSeconds when supplied', () => {
+    // K8s force-kills the Job past this so the orchestrator's poll
+    // sees a terminal Failed condition instead of looping until its
+    // own timeout.
+    const spec = buildFilesComponentJobSpec({ ...baseInput, activeDeadlineSeconds: 1860 }) as {
+      spec: { activeDeadlineSeconds?: number };
+    };
+    expect(spec.spec.activeDeadlineSeconds).toBe(1860);
+  });
+
+  it('omits activeDeadlineSeconds when not supplied or non-positive', () => {
+    const spec = buildFilesComponentJobSpec(baseInput) as { spec: { activeDeadlineSeconds?: number } };
+    expect(spec.spec.activeDeadlineSeconds).toBeUndefined();
+    const spec2 = buildFilesComponentJobSpec({ ...baseInput, activeDeadlineSeconds: 0 }) as { spec: { activeDeadlineSeconds?: number } };
+    expect(spec2.spec.activeDeadlineSeconds).toBeUndefined();
+  });
 });

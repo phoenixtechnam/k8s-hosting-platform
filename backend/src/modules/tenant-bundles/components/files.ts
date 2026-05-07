@@ -63,8 +63,26 @@ export interface CaptureFilesComponentOpts {
   readonly onProgress?: (msg: string) => Promise<void> | void;
 }
 
+/**
+ * Outcome of `captureFilesComponent` when the PVC is missing.
+ * The orchestrator translates this into `status='skipped'` on the
+ * backup_components row instead of a partial bundle.
+ */
+export class FilesComponentSkippedError extends Error {
+  constructor(public readonly reason: string) {
+    super(reason);
+    this.name = 'FilesComponentSkippedError';
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 min for the largest PVCs
 const UPLOAD_TOKEN_TTL_SEC = 30 * 60; // matches Job timeout
+// K8s `activeDeadlineSeconds` is set to the orchestrator's poll
+// timeout MINUS this buffer. That guarantees K8s flips the `Failed`
+// condition first; the orchestrator's next poll iteration then
+// reports a real reason ("DeadlineExceeded") instead of throwing a
+// generic timeout error.
+const JOB_DEADLINE_BUFFER_SEC = 60;
 
 const ARCHIVE_FILENAME = 'archive.tar.gz';
 const TREE_FILENAME = 'tree.jsonl.gz';
@@ -131,12 +149,67 @@ export function buildFilesComponentJobSpec(input: {
   uploadBase: string;
   archiveToken: string;
   treeToken: string;
+  /** Optional node-pin: when the tenant data PVC is RWO and currently
+   *  attached to a tenant pod on this node, kubelet can bind-mount the
+   *  same volume locally without a Multi-Attach error. Without it the
+   *  Job often lands on a different node and hangs forever in
+   *  ContainerCreating. */
+  pinToNode?: string | null;
+  /** Hard wall-clock deadline. K8s force-kills past this with reason
+   *  `DeadlineExceeded`, so the orchestrator's poll sees a terminal
+   *  Failed condition instead of looping until its own timeout. */
+  activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
   const script = buildScript({
     uploadBase: input.uploadBase,
     archiveToken: input.archiveToken,
     treeToken: input.treeToken,
   });
+  const podSpec: Record<string, unknown> = {
+    restartPolicy: 'Never',
+    priorityClassName: 'platform-tenant-overhead',
+    containers: [{
+      name: 'files',
+      image: input.jobImage,
+      imagePullPolicy: 'IfNotPresent',
+      command: ['sh', '-c', script],
+      resources: {
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '500m', memory: '512Mi' },
+      },
+      volumeMounts: [
+        { name: 'source', mountPath: '/source', readOnly: true },
+        // emptyDir for tar/tree intermediate files. Sized generously —
+        // a Phase-3 follow-up will tie this to the client's
+        // plan.max_backup_size_bytes.
+        { name: 'scratch', mountPath: '/tmp' },
+      ],
+    }],
+    volumes: [
+      { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
+      { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
+    ],
+  };
+  if (input.pinToNode) {
+    podSpec.nodeName = input.pinToNode;
+  }
+  const jobSpec: Record<string, unknown> = {
+    backoffLimit: 0,
+    ttlSecondsAfterFinished: 600,
+    template: {
+      metadata: {
+        labels: {
+          'platform.io/component': 'backup-files',
+          'platform.io/client-id': input.clientId,
+          'platform.io/backup-id': input.backupId,
+        },
+      },
+      spec: podSpec,
+    },
+  };
+  if (input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0) {
+    jobSpec.activeDeadlineSeconds = input.activeDeadlineSeconds;
+  }
   return {
     metadata: {
       name: input.jobName,
@@ -147,44 +220,7 @@ export function buildFilesComponentJobSpec(input: {
         'platform.io/backup-id': input.backupId,
       },
     },
-    spec: {
-      backoffLimit: 0,
-      ttlSecondsAfterFinished: 600,
-      template: {
-        metadata: {
-          labels: {
-            'platform.io/component': 'backup-files',
-            'platform.io/client-id': input.clientId,
-            'platform.io/backup-id': input.backupId,
-          },
-        },
-        spec: {
-          restartPolicy: 'Never',
-          priorityClassName: 'platform-tenant-overhead',
-          containers: [{
-            name: 'files',
-            image: input.jobImage,
-            imagePullPolicy: 'IfNotPresent',
-            command: ['sh', '-c', script],
-            resources: {
-              requests: { cpu: '100m', memory: '128Mi' },
-              limits: { cpu: '500m', memory: '512Mi' },
-            },
-            volumeMounts: [
-              { name: 'source', mountPath: '/source', readOnly: true },
-              // emptyDir for tar/tree intermediate files. Sized
-              // generously — a Phase-3 follow-up will tie this to
-              // the client's plan.max_backup_size_bytes.
-              { name: 'scratch', mountPath: '/tmp' },
-            ],
-          }],
-          volumes: [
-            { name: 'source', persistentVolumeClaim: { claimName: input.pvcName, readOnly: true } },
-            { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
-          ],
-        },
-      },
-    },
+    spec: jobSpec,
   };
 }
 
@@ -208,8 +244,27 @@ export async function captureFilesComponent(
     opts.secretsKeyHex,
   );
 
+  // Pre-flight: the PVC must exist. Without this check, a freshly
+  // created client whose provisioning Job hasn't yet created the data
+  // PVC produces a Job that hangs forever in `Pending` waiting for the
+  // claim. FilesComponentSkippedError lets the orchestrator record
+  // status='skipped' instead of marking the bundle partial.
+  const pvcExists = await checkPvcExists(opts.k8s, opts.namespace, opts.pvcName);
+  if (!pvcExists) {
+    throw new FilesComponentSkippedError(
+      `tenant data PVC '${opts.pvcName}' does not exist in namespace '${opts.namespace}' yet`,
+    );
+  }
+
+  // Pin the Job to whatever node currently has the tenant's RWO PVC
+  // attached (if any). Longhorn refuses Multi-Attach: a backup Job
+  // scheduled to a different node sits forever in `ContainerCreating`
+  // with `FailedAttachVolume`. Caught E2E 2026-05-07 (32-min hang).
+  const pinToNode = await findNodeAttachingPvc(opts.k8s, opts.namespace, opts.pvcName);
+
   const uploadBase = `${opts.platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${opts.backupId}/components/files`;
   const jobName = `bk-files-${opts.backupId}`.slice(0, 63);
+  const orchestratorTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spec = buildFilesComponentJobSpec({
     jobName,
     namespace: opts.namespace,
@@ -220,13 +275,15 @@ export async function captureFilesComponent(
     uploadBase,
     archiveToken,
     treeToken,
+    pinToNode,
+    activeDeadlineSeconds: Math.max(60, Math.ceil(orchestratorTimeoutMs / 1000) - JOB_DEADLINE_BUFFER_SEC),
   });
 
   await (opts.k8s.batch as unknown as {
     createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<unknown>;
   }).createNamespacedJob({ namespace: opts.namespace, body: spec });
 
-  await waitForJob(opts.k8s, opts.namespace, jobName, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.onProgress);
+  await waitForJob(opts.k8s, opts.namespace, jobName, orchestratorTimeoutMs, opts.onProgress);
 
   // Stat the archive via the store — this is the authoritative size.
   // sha256 came from the upload sidecar but the store doesn't know
@@ -303,5 +360,69 @@ async function waitForJob(
     }
     if (onProgress) await onProgress('Capturing files…');
     await new Promise((res) => setTimeout(res, 3000));
+  }
+}
+
+/**
+ * Returns the name of the node currently mounting the given RWO PVC,
+ * or null if no pod is using it. Used to pin the backup Job so kubelet
+ * can bind-mount the same volume locally instead of triggering a
+ * Multi-Attach error on a different node.
+ *
+ * Cheap best-effort lookup: if the API call fails for any reason we
+ * fall back to letting the scheduler choose (better to attempt than
+ * to abort the bundle).
+ */
+async function findNodeAttachingPvc(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+): Promise<string | null> {
+  try {
+    const res = await k8s.core.listNamespacedPod({ namespace });
+    for (const pod of res.items ?? []) {
+      const phase = pod.status?.phase;
+      if (phase !== 'Running' && phase !== 'Pending') continue;
+      const usesPvc = (pod.spec?.volumes ?? []).some(
+        (v) => v.persistentVolumeClaim?.claimName === pvcName,
+      );
+      if (!usesPvc) continue;
+      const node = pod.spec?.nodeName;
+      // Defence: K8s node names are RFC1123 DNS labels but treat as
+      // untrusted input — a malformed value here would land in a
+      // Job spec that the apiserver may reject (or worse, silently
+      // accept in some edge cases). Restrict to the documented shape.
+      if (typeof node === 'string' && /^[a-z0-9.\-]+$/i.test(node) && node.length <= 253) {
+        return node;
+      }
+    }
+    return null;
+  } catch {
+    // Best-effort probe: an apiserver blip here just means the Job
+    // is scheduled without a node pin. The original Multi-Attach hang
+    // would still reproduce in that case but the activeDeadlineSeconds
+    // guard now bounds it to at most ~30 min.
+    return null;
+  }
+}
+
+/**
+ * Lightweight existence check for the tenant data PVC. Returns false
+ * (not throws) when the PVC is missing so the caller can decide
+ * whether to skip the component. Any other API error propagates.
+ */
+async function checkPvcExists(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+): Promise<boolean> {
+  try {
+    await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    return true;
+  } catch (err) {
+    const httpErr = err as { code?: number; statusCode?: number };
+    const code = httpErr.code ?? httpErr.statusCode;
+    if (code === 404) return false;
+    throw err;
   }
 }
