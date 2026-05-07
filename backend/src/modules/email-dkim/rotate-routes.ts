@@ -39,7 +39,7 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
     {
       onRequest: [authenticate, requireRole('super_admin', 'admin', 'client_admin', 'support')],
     },
-    async (request, reply) => {
+    async (request) => {
       // Defence-in-depth: validate UUID format on path params before
       // hitting the DB, even though Drizzle parameterises queries.
       const parsedParams = paramsSchema.safeParse(request.params);
