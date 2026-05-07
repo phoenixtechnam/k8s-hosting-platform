@@ -964,7 +964,11 @@ export async function suspendClient(
     // status, webcron off). Runs AFTER quiesce so pods are already
     // gone by the time we pull the ingress rug.
     const { applySuspended } = await import('../client-lifecycle/cascades.js');
-    await applySuspended({ db: ctx.db, k8s: ctx.k8s }, clientId, client.kubernetesNamespace);
+    await applySuspended(
+      { db: ctx.db, k8s: ctx.k8s, triggeredByUserId: opts.triggeredByUserId ?? null },
+      clientId,
+      client.kubernetesNamespace,
+    );
 
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100,
@@ -1027,7 +1031,11 @@ export async function resumeClient(
     // Reverse the suspend cascades — restore ingress backends, re-enable
     // mail, webcron, domains.
     const { applyActive } = await import('../client-lifecycle/cascades.js');
-    await applyActive({ db: ctx.db, k8s: ctx.k8s }, clientId, client.kubernetesNamespace);
+    await applyActive(
+      { db: ctx.db, k8s: ctx.k8s, triggeredByUserId: opts.triggeredByUserId ?? null },
+      clientId,
+      client.kubernetesNamespace,
+    );
 
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Client resumed', completedAt: new Date(),

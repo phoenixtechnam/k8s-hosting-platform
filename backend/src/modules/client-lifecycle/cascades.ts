@@ -31,6 +31,14 @@ import { runTransition, type Transition } from './registry/index.js';
 export interface CascadeCtx {
   readonly db: Database;
   readonly k8s: K8sClients;
+  /**
+   * The admin / client_admin user that initiated the action. Threaded
+   * through to `runTransition` so the Task Tracker chip lights up on
+   * the initiator's session. Optional — cron-driven cascades pass null
+   * (those tasks are scope='system' and only land in notifications on
+   * failure, never in the chip).
+   */
+  readonly triggeredByUserId?: string | null;
 }
 
 /**
@@ -56,6 +64,7 @@ async function dispatchTransition(
   try {
     const result = await runTransition(ctx.db, ctx.k8s, {
       clientId, namespace, transition, fromStatus, toStatus,
+      triggeredByUserId: ctx.triggeredByUserId ?? null,
     });
     return result.transitionId;
   } catch (err) {
