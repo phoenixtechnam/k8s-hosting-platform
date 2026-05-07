@@ -1,54 +1,45 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Save, Loader2, CheckCircle, AlertTriangle, Server } from 'lucide-react';
+import { Save, Loader2, CheckCircle, Server, Lock } from 'lucide-react';
 import { useWebmailSettings, useUpdateWebmailSettings } from '@/hooks/use-webmail-settings';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 /**
- * Platform-wide mail server settings. These power:
- *   - SMTP/IMAP hostname announced in the 220 greeting + TLS cert SAN
- *   - Webmail base URL used by mailbox SSO and the admin panel's "Open Webmail"
- *     affordance
+ * Platform-wide mail server settings.
  *
- * The hostname is the authoritative value the running Stalwart StatefulSet
- * reads from its Secret at startup. Saving a new hostname triggers a rolling
- * restart so the 220 greeting switches within ~10-30s.
+ * The SMTP/IMAP hostname is read-only here — it's set ONCE at platform
+ * install time via bootstrap.sh and locked into Stalwart's Bootstrap
+ * singleton (a deliberate Stalwart 0.16 design constraint, not a
+ * platform limitation). Renaming the mail server is a maintenance-
+ * window operation that requires a snapshot+rebootstrap dance — see
+ * the rename runbook. Showing it here is purely informational.
+ *
+ * The webmail URL is operator-editable: it's used as a fallback by
+ * mailbox SSO links and the admin panel's "Open Webmail" affordance
+ * when a per-domain webmail URL isn't configured.
  */
 export default function MailServerSettings() {
   const { data: response, isLoading, isError, error } = useWebmailSettings();
   const update = useUpdateWebmailSettings();
   const settings = response?.data;
 
-  const [mailServerHostname, setMailServerHostname] = useState('');
   const [defaultWebmailUrl, setDefaultWebmailUrl] = useState('');
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings) {
-      setMailServerHostname(settings.mailServerHostname ?? '');
       setDefaultWebmailUrl(settings.defaultWebmailUrl ?? '');
     }
   }, [settings]);
-
-  const hostnameDirty =
-    settings !== undefined && mailServerHostname !== (settings.mailServerHostname ?? '');
 
   const handleSave = (e: FormEvent) => {
     e.preventDefault();
     setSaved(false);
     setSaveError(null);
 
-    // Send only fields that actually changed so we don't trigger a
-    // Stalwart rollout when editing only the webmail URL.
-    const payload: {
-      mailServerHostname?: string;
-      defaultWebmailUrl?: string;
-    } = {};
-    if (mailServerHostname && mailServerHostname !== (settings?.mailServerHostname ?? '')) {
-      payload.mailServerHostname = mailServerHostname;
-    }
+    const payload: { defaultWebmailUrl?: string } = {};
     if (defaultWebmailUrl && defaultWebmailUrl !== (settings?.defaultWebmailUrl ?? '')) {
       payload.defaultWebmailUrl = defaultWebmailUrl;
     }
@@ -100,29 +91,29 @@ export default function MailServerSettings() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Platform-wide defaults. The hostname is what Stalwart announces on the SMTP
-        220 banner and embeds in its TLS certificate. The webmail URL is the base
-        link used by mailbox single sign-on when a domain doesn&apos;t override it.
+        The SMTP/IMAP hostname is fixed at install time. The webmail URL is the
+        fallback link used by mailbox single sign-on when a domain doesn&apos;t
+        override it.
       </p>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <label htmlFor="mail-hostname" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          <label htmlFor="mail-hostname" className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
             SMTP/IMAP hostname
+            <Lock size={12} className="text-gray-400 dark:text-gray-500" aria-label="install-time, read-only" />
           </label>
-          <input
+          <div
             id="mail-hostname"
-            type="text"
-            value={mailServerHostname}
-            onChange={(e) => setMailServerHostname(e.target.value)}
-            placeholder="mail.example.com"
-            className={`mt-1 ${INPUT_CLASS}`}
-            data-testid="mail-hostname-input"
-            autoComplete="off"
-            spellCheck={false}
-          />
+            data-testid="mail-hostname-readonly"
+            className="mt-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2 font-mono text-sm text-gray-900 dark:text-gray-100"
+          >
+            {settings?.mailServerHostname ?? '—'}
+          </div>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Fully-qualified domain that clients use to connect. rDNS should match for outbound delivery to work reliably.
+            Set during platform install via <code>bootstrap.sh</code>. Stalwart&apos;s
+            Bootstrap singleton locks this value post-install — renaming requires a
+            scheduled snapshot + re-bootstrap maintenance window. See the rename
+            runbook.
           </p>
         </div>
 
@@ -146,17 +137,6 @@ export default function MailServerSettings() {
           </p>
         </div>
       </div>
-
-      {hostnameDirty && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-900 dark:text-amber-200">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-300" />
-          <div>
-            Saving the hostname will <strong>restart the Stalwart mail server</strong>{' '}
-            (brief SMTP/IMAP outage, typically 10-30 seconds). The TLS certificate will
-            also be re-issued to match.
-          </div>
-        </div>
-      )}
 
       <div className="flex items-center gap-3">
         <button

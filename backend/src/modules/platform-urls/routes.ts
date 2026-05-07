@@ -40,6 +40,20 @@ export async function platformUrlsRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
+    // 2026-05-07: same install-time-only constraint as the
+    // /admin/webmail-settings endpoint — Stalwart's Bootstrap
+    // singleton locks serverHostname post-install, and silently
+    // accepting a runtime rename here would leave the cluster
+    // half-migrated. Reject with a clear pointer to the rename
+    // runbook.
+    if (parsed.data.mailServerHostname !== undefined) {
+      throw new ApiError(
+        'MAIL_HOSTNAME_IMMUTABLE',
+        'Mail server hostname is fixed at install time. See the rename runbook for the snapshot+rebootstrap maintenance procedure.',
+        400,
+        { field: 'mailServerHostname' },
+      );
+    }
     await service.updatePlatformUrls(app.db, parsed.data);
     const result = await service.getPlatformUrls(app.db);
     return success(result);

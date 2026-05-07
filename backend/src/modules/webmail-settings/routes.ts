@@ -2,13 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { getWebmailSettings, updateWebmailSettings, getMailServerHostname } from './service.js';
+import { getWebmailSettings, updateWebmailSettings } from './service.js';
 import { updateWebmailSettingsSchema } from '@k8s-hosting/api-contracts';
-import { ensureMailServerCertificate } from '../certificates/service.js';
 import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { reconcileStalwartHostname } from './stalwart-reconciler.js';
 
 export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void> {
   // Phase 3.A.1: k8s client for cert provisioning. Created once at
@@ -54,53 +52,28 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         { field: firstError.path.join('.') },
       );
     }
-    const settings = await updateWebmailSettings(app.db, parsed.data);
 
-    // Phase 3.A.1: if the mail hostname was changed, re-issue the
-    // Stalwart TLS cert to match. Non-blocking on failure — admin can
-    // retry via POST /admin/mail/certificate/ensure.
-    if (k8s && parsed.data.mailServerHostname) {
-      try {
-        await ensureMailServerCertificate(
-          app.db,
-          k8s,
-          parsed.data.mailServerHostname,
-          app.log,
-        );
-      } catch (err) {
-        app.log.warn(
-          { err, hostname: parsed.data.mailServerHostname },
-          'webmail-settings: mail cert ensure failed (non-blocking)',
-        );
-      }
-
-      // Propagate the hostname into the running Stalwart pod by patching
-      // the stalwart-secrets Secret's STALWART_HOSTNAME key and rollout-
-      // restarting the StatefulSet. Stalwart reads this env at startup
-      // (config.toml: hostname = "%{env:STALWART_HOSTNAME}%"), so without
-      // this step the SMTP 220 greeting keeps announcing the old name.
-      // Fire-and-forget with await on error log — the PATCH response is
-      // the DB write; the pod roll happens in the background and shows up
-      // via future SMTP probes / pod status.
-      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      try {
-        const restarted = await reconcileStalwartHostname(
-          parsed.data.mailServerHostname,
-          { kubeconfigPath },
-        );
-        if (restarted) {
-          app.log.info(
-            { hostname: parsed.data.mailServerHostname },
-            'webmail-settings: STALWART_HOSTNAME updated, stalwart-mail StatefulSet restart triggered',
-          );
-        }
-      } catch (err) {
-        app.log.warn(
-          { err, hostname: parsed.data.mailServerHostname },
-          'webmail-settings: stalwart hostname reconcile failed (non-blocking)',
-        );
-      }
+    // 2026-05-07: Stalwart 0.16's Bootstrap.serverHostname is locked
+    // post-bootstrap (`This operation is only allowed bootstrap mode`),
+    // so a runtime PATCH that changed mailServerHostname could only
+    // update the platform_settings DB row — leaving Stalwart, the
+    // SMTP 220 banner, the cert SAN, every client domain's MX/SRV
+    // records, and the outbound EHLO all stale. Reject the field
+    // explicitly with a 400 + clear pointer to the rename runbook so
+    // operators don't end up with a half-migrated cluster. The field
+    // remains in the Zod schema for backward compatibility (existing
+    // API clients won't error on the request shape) but the runtime
+    // gate replaces the silent half-migration with a loud failure.
+    if (parsed.data.mailServerHostname !== undefined) {
+      throw new ApiError(
+        'MAIL_HOSTNAME_IMMUTABLE',
+        'Mail server hostname is fixed at install time. Stalwart 0.16 locks the Bootstrap.serverHostname value once written, so runtime renames would leave the running server, the cert SAN, and every client domain DNS record out of sync. Rename requires a maintenance-window snapshot+rebootstrap procedure — see the rename runbook.',
+        400,
+        { field: 'mailServerHostname' },
+      );
     }
+
+    const settings = await updateWebmailSettings(app.db, parsed.data);
 
     // Phase 3.B.3: if the global rate limit default was changed,
     // reconcile the Stalwart outbound config.
@@ -118,30 +91,26 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     return success(settings);
   });
 
-  // POST /api/v1/admin/mail/certificate/ensure
-  // Phase 3.A.1: manually trigger (or re-trigger) Stalwart mail server
-  // certificate provisioning. Useful when:
-  //   - operator is bootstrapping the production mail stack
-  //   - the previous issuance failed and they want to retry
-  //   - the ClusterIssuer has been changed via /admin/tls-settings
-  //     and they want a fresh cert signed by the new issuer
-  app.post('/admin/mail/certificate/ensure', {
-    onRequest: [authenticate, requireRole('super_admin', 'admin')],
-    schema: {
-      tags: ['Webmail Settings'],
-      summary: 'Ensure the Stalwart mail server TLS certificate exists',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async () => {
-    if (!k8s) {
-      throw new ApiError(
-        'K8S_UNAVAILABLE',
-        'Kubernetes client is not configured — cannot provision mail server certificate',
-        503,
-      );
-    }
-    const hostname = await getMailServerHostname(app.db);
-    const result = await ensureMailServerCertificate(app.db, k8s, hostname, app.log);
-    return success(result);
-  });
+  // 2026-05-07: POST /admin/mail/certificate/ensure removed.
+  //
+  // The endpoint provisioned a cert-manager Certificate CR for the
+  // Stalwart mail hostname — that path was the v0.15 architecture
+  // where the Stalwart pod mounted the resulting Secret. Cut 3
+  // moved Stalwart cert lifecycle into Stalwart itself
+  // (Bootstrap.requestTlsCertificate=true + AcmeProvider Http01),
+  // so a cert-manager Cert CR for the mail hostname is no longer
+  // mounted anywhere — calling this endpoint produced a Cert
+  // resource Stalwart didn't observe, masking the real issue
+  // (Stalwart's own ACME loop) when operators thought they were
+  // re-issuing.
+  //
+  // Operators triggering manual cert re-issue now use:
+  //   1. Inspect: GET /admin/email-settings/ssl-status
+  //   2. Update Domain.certificateManagement.subjectAlternativeNames
+  //      via the Stalwart admin UI (or stalwart-cli)
+  //   3. POST Action=ReloadTlsCertificates + roll the pod if needed
+  //
+  // The corresponding ensureMailServerCertificate() in
+  // certificates/service.ts is now dead code; flagged for removal
+  // in the next v0.15 cleanup pass.
 }
